@@ -1,0 +1,2 @@
+odin GPLv3 public
+https://github.com/TragicWarrior/libvterm.git
