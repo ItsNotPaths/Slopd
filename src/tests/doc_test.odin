@@ -127,6 +127,29 @@ test_doc_multi_cursor_newline :: proc(t: ^testing.T) {
     l1, c1 := head(&d, 1);testing.expect_value(t, l1, 3);testing.expect_value(t, c1, 0)
 }
 
+// Drop-mode trail: each add_cursor leaves the old caret behind and advances the
+// primary, keeping the goal column across short lines. Esc-style collapse keeps
+// only the primary.
+@(test)
+test_doc_add_cursor_trail :: proc(t: ^testing.T) {
+    d := mkdoc("hello\nhi\nworld")
+    defer app.doc_destroy(&d)
+    app.doc_move_end(&d) // {0,5}, goal 5
+
+    testing.expect(t, app.doc_add_cursor(&d, 1, 0)) // -> {1,2} (clamped to "hi")
+    testing.expect(t, app.doc_add_cursor(&d, 1, 0)) // -> {2,5} (goal 5 restored)
+    testing.expect_value(t, len(d.cursors), 3)
+    l, c := head(&d, d.primary);testing.expect_value(t, l, 2);testing.expect_value(t, c, 5)
+    // The middle cursor kept the goal, not its clamped column.
+    testing.expect_value(t, d.cursors[1].head.col, 2)
+
+    testing.expect(t, !app.doc_add_cursor(&d, 1, 0)) // at the last line: no-op
+
+    app.doc_collapse_to_primary(&d)
+    testing.expect_value(t, len(d.cursors), 1)
+    l, c = head(&d, 0);testing.expect_value(t, l, 2);testing.expect_value(t, c, 5)
+}
+
 // Cursors that collide collapse to one.
 @(test)
 test_doc_cursor_merge :: proc(t: ^testing.T) {

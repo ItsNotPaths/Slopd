@@ -41,6 +41,11 @@ App :: struct {
     tree:   FileTree, // filetree aux mode (initialised in main, needs IO)
     editor: Editor, // the text buffers (left pane)
 
+    // Multi-cursor drop chord (no mode/toggle): Alt+A held + a direction drops a
+    // cursor and steps that way, so holding Alt+A and tapping arrows lays a trail.
+    // a_held tracks A the way alt_held tracks Alt. Esc collapses back to one.
+    a_held: bool,
+
     theme:        Theme, // colour palette (loaded from config in main)
     indent:       Indent, // Tab-key indentation policy (from config)
     line_numbers: Line_Numbers, // gutter style (from config)

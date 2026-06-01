@@ -57,6 +57,16 @@ handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
         return
     }
 
+    // Track A held (Alt+A + direction is the cursor-drop chord). Don't return: A
+    // is still an ordinary key (typing, the command line's Ctrl+A).
+    if key == glfw.KEY_A {
+        if action == glfw.PRESS {
+            a.a_held = true
+        } else if action == glfw.RELEASE {
+            a.a_held = false
+        }
+    }
+
     if action != glfw.PRESS && action != glfw.REPEAT {
         return
     }
@@ -67,9 +77,32 @@ handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
         return
     }
 
+    // Escape: collapse a multi-cursor set back to one, else quit.
     if key == glfw.KEY_ESCAPE {
-        glfw.SetWindowShouldClose(window, true)
+        b := editor_current(&a.editor)
+        if a.focus == .Editor && len(b.cursors) > 1 {
+            doc_collapse_to_primary(&b.doc)
+        } else {
+            glfw.SetWindowShouldClose(window, true)
+        }
         return
+    }
+
+    // Cursor-drop chord: Alt+A held + a direction drops a cursor and steps that
+    // way (hold Alt+A, tap arrows to lay a trail). Not a mode — only while A is
+    // physically held. hjkl == arrows. Intercepts before the Alt nav switch.
+    if a.alt_held && a.a_held && a.focus == .Editor {
+        b := &editor_current(&a.editor).doc
+        switch key {
+        case glfw.KEY_UP, glfw.KEY_K:
+            doc_add_cursor(b, -1, 0);return
+        case glfw.KEY_DOWN, glfw.KEY_J:
+            doc_add_cursor(b, +1, 0);return
+        case glfw.KEY_LEFT, glfw.KEY_H:
+            doc_add_cursor(b, 0, -1);return
+        case glfw.KEY_RIGHT, glfw.KEY_L:
+            doc_add_cursor(b, 0, +1);return
+        }
     }
 
     // Bare keys go to the focused element.
@@ -87,6 +120,10 @@ handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
         a.focus = .Editor
     case glfw.KEY_L, glfw.KEY_RIGHT:
         a.focus = .Aux
+
+    // Alt+A is the cursor-drop chord (handled above with a direction); on its own
+    // it is a no-op — the caret is already a cursor at the current location.
+    case glfw.KEY_A:
 
     case glfw.KEY_C:
         cl_open(a)

@@ -104,7 +104,7 @@ draw_editor :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     lh := t.font.line_height
     row_h := i32(lh) + i32(2 * a.scale)
 
-    cur_line := b.cursors[0].head.line // primary cursor drives scroll + the gutter
+    cur_line := b.cursors[b.primary].head.line // primary cursor drives scroll + the gutter
     rows := max(1, int(area.h / row_h))
     if cur_line < b.scroll { // keep the cursor on screen
         b.scroll = cur_line

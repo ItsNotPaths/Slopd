@@ -9,12 +9,13 @@ import "core:strings"
 // instead of splitting). Pure: no rendering and no GL.
 //
 // Invariants, held by every op: >= 1 line, >= 1 cursor, cursors sorted by head
-// ascending and non-overlapping (merged). The primary cursor is cursors[0]
-// (drives scroll-follow and the gutter); a tracked primary index lands with the
-// Stage B add-cursor UI.
+// ascending and non-overlapping (merged). `primary` indexes the cursor that
+// drives scroll-follow and the gutter — for the drop-mode trail it tracks the
+// painting end; after an edit it falls back to the topmost cursor.
 Doc :: struct {
     lines:   [dynamic]Line,
     cursors: [dynamic]Cursor,
+    primary: int,
 }
 
 Pos :: struct {
@@ -74,6 +75,42 @@ doc_clear :: proc(d: ^Doc) {
 doc_reset_cursor :: proc(d: ^Doc, p: Pos) {
     clear(&d.cursors)
     append(&d.cursors, Cursor{anchor = p, head = p, goal = p.col})
+    d.primary = 0
+}
+
+// Drops the rest of the cursors, keeping only the primary (Esc out of a trail).
+doc_collapse_to_primary :: proc(d: ^Doc) {
+    p := d.cursors[d.primary]
+    clear(&d.cursors)
+    append(&d.cursors, p)
+    d.primary = 0
+}
+
+// Adds a cursor offset (dline, dcol) from the primary and makes it the new
+// primary, leaving the old one behind — the drop-mode trail step. Vertical steps
+// keep the goal column; returns false at a document edge (nothing dropped).
+doc_add_cursor :: proc(d: ^Doc, dline, dcol: int) -> bool {
+    p := d.cursors[d.primary]
+    np: Pos
+    goal := p.goal
+    if dline != 0 {
+        nl := p.head.line + dline
+        if nl < 0 || nl >= len(d.lines) {
+            return false
+        }
+        np = Pos{nl, min(p.goal, line_len(&d.lines[nl]))}
+    } else {
+        nc := clamp(p.head.col + dcol, 0, line_len(&d.lines[p.head.line]))
+        if nc == p.head.col {
+            return false
+        }
+        np = Pos{p.head.line, nc}
+        goal = nc
+    }
+    append(&d.cursors, Cursor{anchor = np, head = np, goal = goal})
+    doc_merge_cursors(d)
+    d.primary = doc_index_at(d, np)
+    return true
 }
 
 // Collapses to a single cursor at the very end of the document (history recall,
@@ -346,8 +383,20 @@ doc_apply :: proc(d: ^Doc, edits: []Edit) -> bool {
     for h in heads {
         append(&d.cursors, Cursor{anchor = h, head = h, goal = h.col})
     }
+    d.primary = 0
     doc_merge_cursors(d)
     return changed
+}
+
+// Index of the cursor whose head is at p (after a merge), else the primary.
+@(private = "file")
+doc_index_at :: proc(d: ^Doc, p: Pos) -> int {
+    for c, i in d.cursors {
+        if c.head == p {
+            return i
+        }
+    }
+    return d.primary
 }
 
 // Replaces the text in [start, end) with runes, returning the position just past
@@ -453,4 +502,5 @@ doc_merge_cursors :: proc(d: ^Doc) {
         }
     }
     resize(&d.cursors, w + 1)
+    d.primary = clamp(d.primary, 0, w)
 }
