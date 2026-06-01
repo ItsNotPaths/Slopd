@@ -38,9 +38,13 @@ App :: struct {
     cl_active: bool,
     cl:        CommandLine,
 
-    tree: FileTree, // filetree aux mode (initialised in main, needs IO)
+    tree:   FileTree, // filetree aux mode (initialised in main, needs IO)
+    editor: Editor, // the text buffers (left pane)
 
-    scale: f32, // DPI content scale: logical px * scale = physical px
+    theme:        Theme, // colour palette (loaded from config in main)
+    indent:       Indent, // Tab-key indentation policy (from config)
+    line_numbers: Line_Numbers, // gutter style (from config)
+    scale:        f32, // DPI content scale: logical px * scale = physical px
 }
 
 app_init :: proc(a: ^App) {
@@ -50,4 +54,5 @@ app_init :: proc(a: ^App) {
     a.term_count = 3
     a.term_active = 0
     a.scale = 1
+    cl_init(&a.cl)
 }

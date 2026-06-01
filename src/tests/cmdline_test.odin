@@ -4,8 +4,8 @@ import app ".."
 import "core:testing"
 
 @(private = "file")
-val :: proc(l: ^app.Line) -> string {
-    return app.line_string(l, context.temp_allocator)
+val :: proc(a: ^app.App) -> string {
+    return app.doc_string(&a.cl.doc, context.temp_allocator)
 }
 
 @(test)
@@ -45,14 +45,14 @@ test_cl_history :: proc(t: ^testing.T) {
     a.term_count = 1
     defer app.cl_destroy(&a)
 
-    app.line_set(&a.cl.line, "ls")
+    app.doc_set_text(&a.cl.doc, "ls")
     app.cl_submit(&a)
-    app.line_set(&a.cl.line, "gs")
+    app.doc_set_text(&a.cl.doc, "gs")
     app.cl_submit(&a)
 
     app.cl_open(&a) // hist_idx parked at the live edit
-    app.cl_history_prev(&a);testing.expect_value(t, val(&a.cl.line), "gs")
-    app.cl_history_prev(&a);testing.expect_value(t, val(&a.cl.line), "ls")
-    app.cl_history_next(&a);testing.expect_value(t, val(&a.cl.line), "gs")
-    app.cl_history_next(&a);testing.expect_value(t, val(&a.cl.line), "") // back to live
+    app.cl_history_prev(&a);testing.expect_value(t, val(&a), "gs")
+    app.cl_history_prev(&a);testing.expect_value(t, val(&a), "ls")
+    app.cl_history_next(&a);testing.expect_value(t, val(&a), "gs")
+    app.cl_history_next(&a);testing.expect_value(t, val(&a), "") // back to live
 }

@@ -150,10 +150,9 @@ entry_from :: proc(dir: string, fi: os.File_Info) -> FileEntry {
     mbuf: [10]u8
     sbuf: [16]u8
     tbuf: [24]u8
-    path, _ := filepath.join({dir, fi.name})
     return FileEntry {
         name = strings.clone(fi.name),
-        path = path,
+        path = filepath.join({dir, fi.name}) or_else strings.clone(fi.name),
         is_dir = fi.type == .Directory,
         display = format_row(
             mode_string(mbuf[:], fi.type, fi.mode),

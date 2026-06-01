@@ -40,7 +40,9 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
         return
     }
     if a.cl_active {
-        line_insert_rune(&a.cl.line, codepoint)
+        doc_insert_rune(&a.cl.doc, codepoint)
+    } else if a.focus == .Editor && codepoint >= 32 {
+        buffer_insert_rune(editor_current(&a.editor), codepoint)
     }
 }
 
@@ -70,9 +72,11 @@ handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
         return
     }
 
-    // Bare keys go to the focused element (the buffer becomes a target in part 3).
+    // Bare keys go to the focused element.
     if mods & glfw.MOD_ALT == 0 {
-        if a.focus == .Aux && a.aux_mode == .FileTree {
+        if a.focus == .Editor {
+            buffer_key(a, key, mods)
+        } else if a.focus == .Aux && a.aux_mode == .FileTree {
             filetree_key(a, key, mods)
         }
         return
@@ -132,7 +136,7 @@ handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
 // Command-line key handling (active only). Bare keys edit; Ctrl jumps by word and
 // (A/E) to the line ends, readline-style; Shift extends the selection.
 cl_handle_key :: proc(a: ^App, key, mods: i32) {
-    l := &a.cl.line
+    d := &a.cl.doc
     shift := mods & glfw.MOD_SHIFT != 0
     ctrl := mods & glfw.MOD_CONTROL != 0
 
@@ -144,42 +148,87 @@ cl_handle_key :: proc(a: ^App, key, mods: i32) {
 
     case glfw.KEY_LEFT:
         if ctrl {
-            line_move_word_left(l, shift)
+            doc_move_word_left(d, shift)
         } else {
-            line_move_left(l, shift)
+            doc_move_left(d, shift)
         }
     case glfw.KEY_RIGHT:
         if ctrl {
-            line_move_word_right(l, shift)
+            doc_move_word_right(d, shift)
         } else {
-            line_move_right(l, shift)
+            doc_move_right(d, shift)
         }
     case glfw.KEY_HOME:
-        line_move_home(l, shift)
+        doc_move_home(d, shift)
     case glfw.KEY_END:
-        line_move_end(l, shift)
+        doc_move_end(d, shift)
     case glfw.KEY_A:
-        if ctrl do line_move_home(l, shift) // readline: line start
+        if ctrl do doc_move_home(d, shift) // readline: line start
     case glfw.KEY_E:
-        if ctrl do line_move_end(l, shift) // readline: line end
+        if ctrl do doc_move_end(d, shift) // readline: line end
 
     case glfw.KEY_BACKSPACE:
         if ctrl {
-            line_delete_word_back(l)
+            doc_delete_word_back(d)
         } else {
-            line_delete_back(l)
+            doc_backspace(d)
         }
     case glfw.KEY_DELETE:
         if ctrl {
-            line_delete_word_forward(l)
+            doc_delete_word_forward(d)
         } else {
-            line_delete_forward(l)
+            doc_delete(d)
         }
 
     case glfw.KEY_UP:
         cl_history_prev(a)
     case glfw.KEY_DOWN:
         cl_history_next(a)
+    }
+}
+
+// Buffer key handling (bare keys, when the editor is focused). hjkl TYPE here —
+// only the arrow keys move (non-modal). Ctrl jumps by word, deletes a word, saves.
+buffer_key :: proc(a: ^App, key, mods: i32) {
+    b := editor_current(&a.editor)
+    ctrl := mods & glfw.MOD_CONTROL != 0
+    switch key {
+    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
+        buffer_newline(b)
+    case glfw.KEY_TAB:
+        buffer_indent(b, a.indent)
+    case glfw.KEY_BACKSPACE:
+        if ctrl {
+            buffer_delete_word_back(b)
+        } else {
+            buffer_backspace(b)
+        }
+    case glfw.KEY_DELETE:
+        buffer_delete(b)
+    case glfw.KEY_LEFT:
+        if ctrl {
+            buffer_word_left(b)
+        } else {
+            buffer_left(b)
+        }
+    case glfw.KEY_RIGHT:
+        if ctrl {
+            buffer_word_right(b)
+        } else {
+            buffer_right(b)
+        }
+    case glfw.KEY_UP:
+        buffer_up(b)
+    case glfw.KEY_DOWN:
+        buffer_down(b)
+    case glfw.KEY_HOME:
+        buffer_home(b)
+    case glfw.KEY_END:
+        buffer_end(b)
+    case glfw.KEY_S:
+        if ctrl {
+            _ = buffer_save(b)
+        }
     }
 }
 

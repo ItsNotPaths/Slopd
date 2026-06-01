@@ -26,11 +26,8 @@ Font :: struct {
 
 // Picks the user's font (PITED_FONT) if set and readable, else the bundled Hack.
 choose_font :: proc() -> []u8 {
-    path := os.get_env("PITED_FONT", context.temp_allocator)
-    if path != "" {
-        if data, _ := os.read_entire_file_from_path(path, context.allocator); data != nil {
-            return data
-        }
+    if path := os.get_env("PITED_FONT", context.temp_allocator); path != "" {
+        return os.read_entire_file_from_path(path, context.allocator) or_else HACK_TTF
     }
     return HACK_TTF
 }

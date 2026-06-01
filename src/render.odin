@@ -3,21 +3,12 @@ package main
 import "core:strconv"
 import gl "vendor:OpenGL"
 
-// Rendering for this milestone is solid-color fills via scissor + clear — no
-// shaders, no glyphs yet. Each mode is a distinct color so the layout, focus,
-// split, and the Alt terminal overlay can all be felt before text rendering
-// exists. Labels are stubbed as colored slots.
-
-BG      :: [3]f32{0.06, 0.06, 0.07} // window background / gutter
-EDITOR  :: [3]f32{0.12, 0.14, 0.18} // left pane
-FOCUS   :: [3]f32{0.30, 0.55, 0.90} // focused-pane border
-OVERLAY :: [3]f32{0.02, 0.02, 0.03} // terminal-session strip
-SLOT    :: [3]f32{0.18, 0.18, 0.22} // a terminal session
-SEL     :: [3]f32{0.30, 0.55, 0.90} // selected terminal session
-STRIP   :: [3]f32{0.14, 0.14, 0.17} // bottom status / command strip
-TEXT    :: [3]f32{0.85, 0.86, 0.90} // foreground text (focused)
-TEXT_DIM :: [3]f32{0.45, 0.47, 0.52} // foreground text (unfocused)
-SEL_BG  :: [3]f32{0.20, 0.30, 0.45} // text selection background
+// Rendering: solid-colour fills (scissor+clear) plus glyph text. Every colour
+// comes from the active Theme (a.theme); this file maps palette slots to UI usage:
+//   border_dark -> window gutter / overlay bg   bg -> pane background
+//   accent      -> focus outline / active item  border_light -> status strip
+//   fg / muted  -> text (active / dim)           separator -> selection background
+//   code_return_type -> filetree directory rows  urgent -> ringed-file marker
 
 aux_mode_name :: proc(m: AuxMode) -> string {
     switch m {
@@ -33,15 +24,6 @@ aux_mode_name :: proc(m: AuxMode) -> string {
     return ""
 }
 
-aux_mode_colors := [AuxMode][3]f32 {
-    .FileTree = {0.09, 0.10, 0.12}, // neutral dark — it holds a real listing
-    .Terminal = {0.05, 0.05, 0.06},
-    .Procmon  = {0.18, 0.13, 0.20},
-    .Git      = {0.22, 0.15, 0.10},
-}
-
-FT_DIR :: [3]f32{0.45, 0.70, 0.95} // directory rows in the filetree
-
 // scissor uses a bottom-left origin; our rects are top-left, so flip y.
 fill :: proc(r: Rect, win_h: i32, c: [3]f32) {
     if r.w <= 0 || r.h <= 0 {
@@ -56,34 +38,35 @@ inset :: proc(r: Rect, by: i32) -> Rect {
     return Rect{r.x + by, r.y + by, r.w - 2 * by, r.h - 2 * by}
 }
 
-// A pane: filled with its color, ringed with the focus color when focused.
-panel :: proc(r: Rect, win_h: i32, c: [3]f32, focused: bool, scale: f32) {
+// A pane: filled with bg, ringed with the focus colour when focused.
+panel :: proc(r: Rect, win_h: i32, bg, focus: [3]f32, focused: bool, scale: f32) {
     if focused {
-        fill(r, win_h, FOCUS)
-        fill(inset(r, i32(2 * scale)), win_h, c)
+        fill(r, win_h, focus)
+        fill(inset(r, i32(2 * scale)), win_h, bg)
     } else {
-        fill(r, win_h, c)
+        fill(r, win_h, bg)
     }
 }
 
 render :: proc(a: ^App, t: ^Text, win_w, win_h: i32) {
+    th := &a.theme
     // Viewport must track the framebuffer or the text shader (NDC -> viewport)
     // distorts on resize. Scissor fills use framebuffer coords and don't care.
     gl.Viewport(0, 0, win_w, win_h)
     gl.Enable(gl.SCISSOR_TEST)
-    fill(Rect{0, 0, win_w, win_h}, win_h, BG)
+    fill(Rect{0, 0, win_w, win_h}, win_h, th.border_dark) // gutter / background
 
     lay := compute_layout(win_w, win_h, a)
     pad := i32(8 * a.scale)
 
-    panel(lay.editor, win_h, EDITOR, a.focus == .Editor, a.scale)
-    label(t, "editor", lay.editor, pad, win_w, win_h, a.focus == .Editor)
+    panel(lay.editor, win_h, th.bg, th.accent, a.focus == .Editor, a.scale)
+    draw_editor(t, lay.editor, win_w, win_h, a)
 
-    panel(lay.aux, win_h, aux_mode_colors[a.aux_mode], a.focus == .Aux, a.scale)
+    panel(lay.aux, win_h, th.bg, th.accent, a.focus == .Aux, a.scale)
     if a.aux_mode == .FileTree {
         draw_filetree(t, lay.aux, win_w, win_h, a)
     } else {
-        label(t, aux_mode_name(a.aux_mode), lay.aux, pad, win_w, win_h, a.focus == .Aux)
+        label(t, aux_mode_name(a.aux_mode), lay.aux, pad, win_w, win_h, focus_fg(a, .Aux))
     }
 
     if a.alt_held && a.aux_mode == .Terminal {
@@ -91,45 +74,123 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32) {
     }
 
     // Bottom status / command strip.
-    fill(lay.strip, win_h, STRIP)
+    fill(lay.strip, win_h, th.border_light)
     if a.cl_active {
         draw_command_line(t, lay.strip, a, win_w, win_h)
     } else {
         sx := f32(lay.strip.x + pad)
         sy := f32(lay.strip.y) + (f32(lay.strip.h) - t.font.line_height) / 2
-        text_draw(t, "PitEd", sx, sy, lay.strip, win_w, win_h, TEXT)
-        text_draw(t, aux_mode_name(a.aux_mode), sx + t.font.cell_w * 8, sy, lay.strip, win_w, win_h, TEXT_DIM)
+        text_draw(t, "PitEd", sx, sy, lay.strip, win_w, win_h, th.fg)
+        text_draw(t, aux_mode_name(a.aux_mode), sx + t.font.cell_w * 8, sy, lay.strip, win_w, win_h, th.muted)
     }
+}
+
+@(private = "file")
+focus_fg :: proc(a: ^App, who: Focus) -> [3]f32 {
+    return a.focus == who ? a.theme.fg : a.theme.muted
+}
+
+// The editor: a line-number gutter, the active buffer's lines, the current-line
+// bar, and a caret. Scrolls to keep the cursor visible. (Tabs currently advance
+// one cell — fine for the space-indent default; proper tab width is a TODO.)
+draw_editor :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
+    b := editor_current(&a.editor)
+    th := &a.theme
+    area := inset(pane, i32(2 * a.scale))
+    if area.w <= 0 || area.h <= 0 {
+        return
+    }
+    cw := t.font.cell_w
+    lh := t.font.line_height
+    row_h := i32(lh) + i32(2 * a.scale)
+
+    cur_line := b.cursors[0].head.line // primary cursor drives scroll + the gutter
+    rows := max(1, int(area.h / row_h))
+    if cur_line < b.scroll { // keep the cursor on screen
+        b.scroll = cur_line
+    } else if cur_line >= b.scroll + rows {
+        b.scroll = cur_line - rows + 1
+    }
+
+    gutter := i32(max(2, num_digits(len(b.lines)))) // digits wide
+    text_x := f32(area.x) + f32(gutter + 2) * cw // margin + gutter + gap
+
+    visible := min(rows, len(b.lines) - b.scroll)
+    for k in 0 ..< visible {
+        i := b.scroll + k
+        l := &b.lines[i]
+        y := area.y + i32(k) * row_h
+        ty := f32(y) + (f32(row_h) - lh) / 2
+        on_cur_line := i == cur_line
+
+        if on_cur_line {
+            fill(Rect{area.x, y, area.w, row_h}, win_h, th.separator) // current-line bar
+        }
+
+        buf: [12]u8
+        s := strconv.write_int(buf[:], i64(line_number(a.line_numbers, i, cur_line)), 10)
+        nx := f32(area.x) + cw + f32(gutter - i32(len(s))) * cw // right-align in gutter
+        text_draw(t, s, nx, ty, area, win_w, win_h, on_cur_line ? th.fg : th.muted)
+
+        text_draw_runes(t, l.text[:], text_x, ty, area, win_w, win_h, th.fg)
+
+        // A caret for every cursor sitting on this line (single-cursor = one).
+        for c in b.cursors {
+            if c.head.line == i {
+                caret := Rect{i32(text_x + cw * f32(c.head.col)), y, i32(2 * a.scale), i32(lh)}
+                fill(caret, win_h, th.fg)
+            }
+        }
+    }
+}
+
+@(private = "file")
+num_digits :: proc(n: int) -> int {
+    d := 1
+    for m := n; m >= 10; m /= 10 {
+        d += 1
+    }
+    return d
+}
+
+@(private = "file")
+line_number :: proc(mode: Line_Numbers, line, cursor: int) -> int {
+    if mode == .Relative && line != cursor {
+        return abs(line - cursor)
+    }
+    return line + 1 // absolute (and the cursor line under relative/hybrid)
+}
+
+// Draws a label inside a pane at the top-left.
+label :: proc(t: ^Text, s: string, r: Rect, pad: i32, win_w, win_h: i32, color: [3]f32) {
+    text_draw(t, s, f32(r.x + pad), f32(r.y + pad), r, win_w, win_h, color)
 }
 
 // The command line as it lives in the status strip: prompt, the editable runes,
 // a selection highlight, and a caret. Monospace makes every x pure arithmetic.
 draw_command_line :: proc(t: ^Text, strip: Rect, a: ^App, win_w, win_h: i32) {
     PROMPT :: "> "
-    l := &a.cl.line
+    th := &a.theme
+    l := &a.cl.lines[0] // the command line is one line
+    c := a.cl.cursors[0]
     cw := t.font.cell_w
     lh := t.font.line_height
     pad := i32(8 * a.scale)
     y := f32(strip.y) + (f32(strip.h) - lh) / 2
 
-    text_draw(t, PROMPT, f32(strip.x + pad), y, strip, win_w, win_h, TEXT_DIM)
+    text_draw(t, PROMPT, f32(strip.x + pad), y, strip, win_w, win_h, th.muted)
     ox := f32(strip.x + pad) + cw * f32(len(PROMPT)) // text origin, after the prompt
 
-    if line_has_selection(l) {
-        lo, hi := line_sel_range(l)
-        sel := Rect{i32(ox + cw * f32(lo)), i32(y), i32(cw * f32(hi - lo)), i32(lh)}
-        fill(sel, win_h, SEL_BG)
+    if cursor_has_selection(c) {
+        lo, hi := cursor_range(c)
+        sel := Rect{i32(ox + cw * f32(lo.col)), i32(y), i32(cw * f32(hi.col - lo.col)), i32(lh)}
+        fill(sel, win_h, th.separator)
     }
 
-    text_draw_runes(t, l.text[:], ox, y, strip, win_w, win_h, TEXT)
+    text_draw_runes(t, l.text[:], ox, y, strip, win_w, win_h, th.fg)
 
-    caret := Rect{i32(ox + cw * f32(l.cursor)), i32(y), i32(2 * a.scale), i32(lh)}
-    fill(caret, win_h, TEXT)
-}
-
-// Draws a top-left label inside a pane; brighter when the pane is focused.
-label :: proc(t: ^Text, s: string, r: Rect, pad: i32, win_w, win_h: i32, focused: bool) {
-    text_draw(t, s, f32(r.x + pad), f32(r.y + pad), r, win_w, win_h, focused ? TEXT : TEXT_DIM)
+    caret := Rect{i32(ox + cw * f32(c.head.col)), i32(y), i32(2 * a.scale), i32(lh)}
+    fill(caret, win_h, th.fg)
 }
 
 // The filetree listing: a dired-style header (current dir) then rows, each
@@ -137,6 +198,7 @@ label :: proc(t: ^Text, s: string, r: Rect, pad: i32, win_w, win_h: i32, focused
 // and kept centered as the list scrolls; directories are tinted.
 draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     ft := &a.tree
+    th := &a.theme
     area := inset(pane, i32(2 * a.scale))
     if area.w <= 0 || area.h <= 0 {
         return
@@ -146,7 +208,7 @@ draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     row_h := i32(lh) + i32(2 * a.scale)
     x0 := f32(area.x) + cw // one-cell left margin
 
-    text_draw(t, ft.dir, x0, f32(area.y) + (f32(row_h) - lh) / 2, area, win_w, win_h, TEXT_DIM)
+    text_draw(t, ft.dir, x0, f32(area.y) + (f32(row_h) - lh) / 2, area, win_w, win_h, th.muted)
 
     list_top := area.y + row_h
     max_rows := max(1, int((area.y + area.h - list_top) / row_h))
@@ -158,12 +220,13 @@ draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
         e := &ft.entries[i]
         y := list_top + i32(k) * row_h
         if i == ft.selected {
-            fill(Rect{area.x, y, area.w, row_h}, win_h, SEL_BG)
+            fill(Rect{area.x, y, area.w, row_h}, win_h, th.separator)
         }
         ty := f32(y) + (f32(row_h) - lh) / 2
-        prefix := ring_contains(a, e.path) ? "*" : "-"
-        text_draw(t, prefix, x0, ty, area, win_w, win_h, TEXT_DIM)
-        text_draw(t, e.display, x0 + cw * 2, ty, area, win_w, win_h, e.is_dir ? FT_DIR : TEXT)
+        ringed := ring_contains(a, e.path)
+        prefix := ringed ? "*" : "-"
+        text_draw(t, prefix, x0, ty, area, win_w, win_h, ringed ? th.urgent : th.muted)
+        text_draw(t, e.display, x0 + cw * 2, ty, area, win_w, win_h, e.is_dir ? th.code_return_type : th.fg)
     }
 }
 
@@ -172,6 +235,7 @@ draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
 // highlight rather than covering it), two digits wide, and scrolls to keep the
 // active session visible.
 draw_term_overlay :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
+    th := &a.theme
     area := inset(pane, i32(2 * a.scale)) // sit inside the focus outline
     if area.w <= 0 || area.h <= 0 {
         return
@@ -186,18 +250,18 @@ draw_term_overlay :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     first := clamp(a.term_active - max_rows / 2, 0, max(0, a.term_count - max_rows))
     visible := min(a.term_count - first, max_rows)
 
-    fill(Rect{area.x, area.y, colw, i32(visible) * row_h}, win_h, OVERLAY)
+    fill(Rect{area.x, area.y, colw, i32(visible) * row_h}, win_h, th.border_dark)
 
     for k in 0 ..< visible {
         i := first + k
         y := area.y + i32(k) * row_h
         if i == a.term_active {
-            fill(Rect{area.x, y, colw, row_h}, win_h, SEL)
+            fill(Rect{area.x, y, colw, row_h}, win_h, th.accent)
         }
         buf: [8]u8
         label := strconv.write_int(buf[:], i64(i + 1), 10)
         tx := f32(area.x) + (f32(colw) - cw * f32(len(label))) / 2 // centered
         ty := f32(y) + (f32(row_h) - lh) / 2
-        text_draw(t, label, tx, ty, Rect{area.x, y, colw, row_h}, win_w, win_h, TEXT)
+        text_draw(t, label, tx, ty, Rect{area.x, y, colw, row_h}, win_w, win_h, th.fg)
     }
 }

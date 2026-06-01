@@ -38,6 +38,15 @@ main :: proc() {
 
     app: App
     app_init(&app)
+
+    cfg := load_config()
+    defer config_destroy(&cfg)
+    app.theme = load_theme(cfg.theme_path)
+    app.indent = cfg.indent
+    app.line_numbers = cfg.line_numbers
+
+    editor_init(&app.editor)
+    defer editor_destroy(&app.editor)
     filetree_init(&app.tree)
     defer filetree_destroy(&app.tree)
     if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {
