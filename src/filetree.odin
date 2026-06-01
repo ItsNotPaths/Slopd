@@ -10,7 +10,7 @@ import "core:unicode/utf8"
 
 // FileTree — a self-contained dired-style directory listing. It reads a directory,
 // moves/enters, and pre-formats each row's fixed-width columns. It has NO dependency
-// on the rest of PitEd (no App, no GL), so it can be lifted into another project; the
+// on the rest of Slopd (no App, no GL), so it can be lifted into another project; the
 // host wires up rendering, the unsaved-ring prefix, and what Enter does with a file.
 
 FT_NAME_W :: 24 // name column width, in cells (padded / truncated)
@@ -147,13 +147,23 @@ entry_less :: proc(a, b: FileEntry) -> bool {
 
 @(private = "file")
 entry_from :: proc(dir: string, fi: os.File_Info) -> FileEntry {
+    path := filepath.join({dir, fi.name}) or_else strings.clone(fi.name)
+    // A symlink to a directory should navigate and tint like one; stat follows the
+    // link (broken/circular links fall back to non-dir). The mode column still
+    // shows 'l' so the listing stays honest about what it is.
+    is_dir := fi.type == .Directory
+    if fi.type == .Symlink {
+        if target, err := os.stat(path, context.temp_allocator); err == nil {
+            is_dir = target.type == .Directory
+        }
+    }
     mbuf: [10]u8
     sbuf: [16]u8
     tbuf: [24]u8
     return FileEntry {
         name = strings.clone(fi.name),
-        path = filepath.join({dir, fi.name}) or_else strings.clone(fi.name),
-        is_dir = fi.type == .Directory,
+        path = path,
+        is_dir = is_dir,
         display = format_row(
             mode_string(mbuf[:], fi.type, fi.mode),
             fi.name,

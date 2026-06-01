@@ -22,9 +22,9 @@ Line_Numbers :: enum {
     Relative,
 }
 
-// Config — PitEd's own simple `key: value` file. Points at a theme file and holds
-// a few editor settings. Search order: $PITED_CONFIG, ~/.config/pited/pited.config,
-// ./pited.config. Anything missing keeps the defaults below.
+// Config — Slopd's own simple `key: value` file. Points at a theme file and holds
+// a few editor settings. Search order: $SLOPD_CONFIG, ~/.config/slopd/slopd.config,
+// ./slopd.config. Anything missing keeps the defaults below.
 Config :: struct {
     theme_path:   string, // absolute (owned), or "" for the baked-in default
     indent:       Indent,
@@ -96,17 +96,17 @@ config_destroy :: proc(cfg: ^Config) {
 
 @(private = "file")
 find_config :: proc() -> string {
-    if p := os.get_env("PITED_CONFIG", context.temp_allocator); p != "" && os.exists(p) {
+    if p := os.get_env("SLOPD_CONFIG", context.temp_allocator); p != "" && os.exists(p) {
         return p
     }
     if home := os.get_env("HOME", context.temp_allocator); home != "" {
-        if p, jerr := filepath.join({home, ".config", "pited", "pited.config"}, context.temp_allocator);
+        if p, jerr := filepath.join({home, ".config", "slopd", "slopd.config"}, context.temp_allocator);
            jerr == nil && os.exists(p) {
             return p
         }
     }
-    if os.exists("pited.config") {
-        return "pited.config"
+    if os.exists("slopd.config") {
+        return "slopd.config"
     }
     return ""
 }

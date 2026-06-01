@@ -1,12 +1,13 @@
 package main
 
 import "core:fmt"
+import "core:os"
 import gl "vendor:OpenGL"
 import "vendor:glfw"
 
 WIDTH :: 1200
 HEIGHT :: 760
-TITLE :: "PitEd"
+TITLE :: "Slopd"
 
 GL_MAJOR :: 3
 GL_MINOR :: 3
@@ -38,6 +39,16 @@ main :: proc() {
 
     app: App
     app_init(&app)
+    defer app_destroy(&app)
+
+    // --util: launch with no editor, the aux pane filling the window (the mode an
+    // xdg-portal file picker would start in). Focus is pinned to the aux pane.
+    for arg in os.args[1:] {
+        if arg == "--util" {
+            app.view = .Util
+            app.focus = .Aux
+        }
+    }
 
     cfg := load_config()
     defer config_destroy(&cfg)
@@ -61,6 +72,7 @@ main :: proc() {
     }
 
     // The window owns the App so the "c" key callback can reach it.
+    app.window = window
     glfw.SetWindowUserPointer(window, &app)
     glfw.SetKeyCallback(window, key_callback)
     glfw.SetCharCallback(window, char_callback)
@@ -68,6 +80,11 @@ main :: proc() {
     // Render first, then block until the next event. The UI only redraws when
     // something actually changes, so it idles at 0% CPU.
     for !glfw.WindowShouldClose(window) {
+        // Reclaim last frame's scratch — both render and the event callbacks that
+        // ran during WaitEvents allocate from the temp arena, and nothing temp
+        // escapes into App state, so one free_all per frame keeps it bounded.
+        free_all(context.temp_allocator)
+
         w, h := glfw.GetFramebufferSize(window)
         // Track DPI: re-bake the atlas if the window moved to another monitor.
         if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {

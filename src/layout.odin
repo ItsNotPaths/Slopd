@@ -8,10 +8,11 @@ package main
 // vertically, with the status strip along the bottom.
 
 Layout :: struct {
-    editor: Rect, // left pane (always the text editor)
-    aux:    Rect, // right pane (the aux pane)
+    editor: Rect, // the text editor pane (zero rect when hidden: Util)
+    aux:    Rect, // the aux pane (zero rect when hidden: Zen while editing)
     strip:  Rect, // bottom status / command strip
     gutter: i32,
+    vis:    Pane_Vis, // which panes these rects are for — computed once, here
 }
 
 compute_layout :: proc(win_w, win_h: i32, a: ^App) -> Layout {
@@ -25,18 +26,24 @@ compute_layout :: proc(win_w, win_h: i32, a: ^App) -> Layout {
     }
     content_h := win_h - strip_h
     out.strip = Rect{0, content_h, win_w, strip_h}
+    content := Rect{0, 0, win_w, content_h}
 
-    g := out.gutter
-    editor_w := i32(f32(win_w) * a.split) - g / 2
-    if editor_w < 0 {
-        editor_w = 0
+    // Pane visibility is derived (see panes_visible), so the layout has no hidden
+    // state to track: two panes split by a.split; a lone visible pane fills the
+    // content area; a hidden pane is left a zero rect (render's guards skip it).
+    out.vis = panes_visible(a)
+    vis := out.vis
+    switch {
+    case vis.editor && vis.aux:
+        g := out.gutter
+        editor_w := max(0, i32(f32(win_w) * a.split) - g / 2)
+        aux_x := editor_w + g
+        out.editor = Rect{0, 0, editor_w, content_h}
+        out.aux = Rect{aux_x, 0, max(0, win_w - aux_x), content_h}
+    case vis.aux:
+        out.aux = content
+    case vis.editor:
+        out.editor = content
     }
-    aux_x := editor_w + g
-    aux_w := win_w - aux_x
-    if aux_w < 0 {
-        aux_w = 0
-    }
-    out.editor = Rect{0, 0, editor_w, content_h}
-    out.aux = Rect{aux_x, 0, aux_w, content_h}
     return out
 }

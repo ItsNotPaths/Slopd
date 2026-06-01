@@ -6,7 +6,7 @@ import gl "vendor:OpenGL"
 import stbtt "vendor:stb/truetype"
 
 // The bundled default font, embedded at build time. Fetched into vendor/ by
-// download-deps.sh (Source Foundry's Hack). A user font (PITED_FONT) overrides
+// download-deps.sh (Source Foundry's Hack). A user font (SLOPD_FONT) overrides
 // it at runtime; Hack is the fallback.
 HACK_TTF := #load("../vendor/fonts/Hack-Regular.ttf")
 
@@ -24,9 +24,9 @@ Font :: struct {
     ascent:      f32, // baseline offset from the top, physical px
 }
 
-// Picks the user's font (PITED_FONT) if set and readable, else the bundled Hack.
+// Picks the user's font (SLOPD_FONT) if set and readable, else the bundled Hack.
 choose_font :: proc() -> []u8 {
-    if path := os.get_env("PITED_FONT", context.temp_allocator); path != "" {
+    if path := os.get_env("SLOPD_FONT", context.temp_allocator); path != "" {
         return os.read_entire_file_from_path(path, context.allocator) or_else HACK_TTF
     }
     return HACK_TTF

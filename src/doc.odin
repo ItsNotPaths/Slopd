@@ -2,6 +2,7 @@ package main
 
 import "core:slice"
 import "core:strings"
+import "core:unicode/utf8"
 
 // Doc — the shared multi-cursor editing core beneath the command line and the
 // editor buffer. A stack of pure Lines plus a list of Cursors; single-cursor is
@@ -16,6 +17,7 @@ Doc :: struct {
     lines:   [dynamic]Line,
     cursors: [dynamic]Cursor,
     primary: int,
+    undo:    Undo, // diff/op journal (see undo.odin)
 }
 
 Pos :: struct {
@@ -44,10 +46,13 @@ doc_destroy :: proc(d: ^Doc) {
     }
     delete(d.lines)
     delete(d.cursors)
+    undo_destroy(d)
 }
 
-// Replaces all content; collapses to a single cursor at the origin (file load).
+// Replaces all content; collapses to a single cursor at the origin (file load),
+// and discards undo history (you can't undo past a fresh load).
 doc_set_text :: proc(d: ^Doc, text: string) {
+    undo_destroy(d)
     for &l in d.lines {
         line_destroy(&l)
     }
@@ -86,31 +91,13 @@ doc_collapse_to_primary :: proc(d: ^Doc) {
     d.primary = 0
 }
 
-// Adds a cursor offset (dline, dcol) from the primary and makes it the new
-// primary, leaving the old one behind — the drop-mode trail step. Vertical steps
-// keep the goal column; returns false at a document edge (nothing dropped).
-doc_add_cursor :: proc(d: ^Doc, dline, dcol: int) -> bool {
-    p := d.cursors[d.primary]
-    np: Pos
-    goal := p.goal
-    if dline != 0 {
-        nl := p.head.line + dline
-        if nl < 0 || nl >= len(d.lines) {
-            return false
-        }
-        np = Pos{nl, min(p.goal, line_len(&d.lines[nl]))}
-    } else {
-        nc := clamp(p.head.col + dcol, 0, line_len(&d.lines[p.head.line]))
-        if nc == p.head.col {
-            return false
-        }
-        np = Pos{p.head.line, nc}
-        goal = nc
-    }
-    append(&d.cursors, Cursor{anchor = np, head = np, goal = goal})
-    doc_merge_cursors(d)
-    d.primary = doc_index_at(d, np)
-    return true
+// Leaves a fixed cursor at the free caret's current position (the Alt+A drop).
+// The caret (primary) keeps roaming via the movement ops, so the anchor stays put
+// while you move on. The two sit coincident until the caret steps off; a
+// coincident pair collapses to one when an edit is applied.
+doc_drop_anchor :: proc(d: ^Doc) {
+    p := d.cursors[d.primary].head
+    append(&d.cursors, Cursor{anchor = p, head = p, goal = p.col})
 }
 
 // Collapses to a single cursor at the very end of the document (history recall,
@@ -123,20 +110,21 @@ doc_cursor_to_end :: proc(d: ^Doc) {
 // --- reading ---
 
 doc_string :: proc(d: ^Doc, allocator := context.allocator) -> string {
-    b := strings.builder_make(allocator)
-    for &l, i in d.lines {
-        if i > 0 {
-            strings.write_byte(&b, '\n')
-        }
-        for r in l.text {
-            strings.write_rune(&b, r)
-        }
-    }
-    return strings.to_string(b)
+    last := len(d.lines) - 1
+    return capture_range(d, Pos{0, 0}, Pos{last, line_len(&d.lines[last])}, allocator)
 }
 
 cursor_has_selection :: proc(c: Cursor) -> bool {
     return c.anchor != c.head
+}
+
+doc_has_any_selection :: proc(d: ^Doc) -> bool {
+    for c in d.cursors {
+        if cursor_has_selection(c) {
+            return true
+        }
+    }
+    return false
 }
 
 // The cursor's selection as an ordered (low, high) position pair.
@@ -167,9 +155,9 @@ doc_insert_runes :: proc(d: ^Doc, rs: []rune) -> bool {
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
     for c in d.cursors {
         lo, hi := cursor_range(c)
-        append(&edits, Edit{lo, hi, rs})
+        append(&edits, Edit{lo, hi, rs, 0})
     }
-    return doc_apply(d, edits[:])
+    return doc_commit(d, edits[:])
 }
 
 doc_newline :: proc(d: ^Doc) -> bool {
@@ -178,13 +166,76 @@ doc_newline :: proc(d: ^Doc) -> bool {
     return doc_insert_runes(d, rs)
 }
 
-doc_indent :: proc(d: ^Doc, indent: Indent) -> bool {
-    if indent.kind == .Tab {
-        return doc_insert_rune(d, '\t')
+// --- clipboard (text gather/apply; GLFW I/O lives in input.odin) ---
+
+// The text in [lo, hi), joined with '\n' across lines.
+doc_text :: proc(d: ^Doc, lo, hi: Pos, alloc := context.allocator) -> string {
+    return capture_range(d, lo, hi, alloc)
+}
+
+// Gathers copy text in document order: each cursor's selection, or — when nothing
+// is selected — each cursor's whole line plus a newline. Returns the joined
+// clipboard string and the per-cursor pieces (kept for multi-cursor paste). Both
+// allocated with alloc.
+doc_copy :: proc(d: ^Doc, alloc := context.allocator) -> (joined: string, pieces: []string) {
+    order := cursor_order(d, context.temp_allocator)
+    any_sel := false
+    for c in d.cursors {
+        if cursor_has_selection(c) {
+            any_sel = true
+            break
+        }
     }
-    rs := make([]rune, indent.width, context.temp_allocator)
-    slice.fill(rs, ' ')
-    return doc_insert_runes(d, rs)
+    out := make([dynamic]string, 0, len(order), alloc)
+    for idx in order {
+        c := d.cursors[idx]
+        if any_sel {
+            if !cursor_has_selection(c) {
+                continue
+            }
+            lo, hi := cursor_range(c)
+            append(&out, doc_text(d, lo, hi, alloc))
+        } else {
+            line := c.head.line
+            content := doc_text(d, Pos{line, 0}, Pos{line, line_len(&d.lines[line])}, alloc)
+            append(&out, strings.concatenate({content, "\n"}, alloc))
+        }
+    }
+    sep := any_sel ? "\n" : ""
+    return strings.join(out[:], sep, alloc), out[:]
+}
+
+// Inserts the same text at every cursor (replacing selections) — a plain paste.
+doc_paste :: proc(d: ^Doc, text: string) -> bool {
+    return doc_insert_runes(d, utf8.string_to_runes(text, context.temp_allocator))
+}
+
+// Distributes one piece per cursor in document order (multi-cursor paste of an
+// equal-count multi-cursor copy). Caller guarantees len(pieces) == cursor count.
+doc_paste_pieces :: proc(d: ^Doc, pieces: []string) -> bool {
+    order := cursor_order(d, context.temp_allocator)
+    edits := make([dynamic]Edit, 0, len(order), context.temp_allocator)
+    for idx, k in order {
+        lo, hi := cursor_range(d.cursors[idx])
+        append(&edits, Edit{lo, hi, utf8.string_to_runes(pieces[k], context.temp_allocator), 0})
+    }
+    return doc_commit(d, edits[:])
+}
+
+// Cut: delete each cursor's selection, or — when nothing is selected — its whole
+// line. (Pair the deletion with doc_copy in the caller to fill the clipboard.)
+doc_cut :: proc(d: ^Doc) -> bool {
+    edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
+    for c in d.cursors {
+        lo, hi := cursor_range(c)
+        if !cursor_has_selection(c) {
+            line := c.head.line
+            lo = Pos{line, 0}
+            hi = line < len(d.lines) - 1 ? Pos{line + 1, 0} : Pos{line, line_len(&d.lines[line])}
+        }
+        append(&edits, Edit{lo, hi, nil, 0})
+    }
+    return doc_commit(d, edits[:])
 }
 
 // Backspace: delete the selection, else the rune to the left, else join with the
@@ -194,15 +245,27 @@ doc_backspace :: proc(d: ^Doc) -> bool {
     for c in d.cursors {
         if cursor_has_selection(c) {
             lo, hi := cursor_range(c)
-            append(&edits, Edit{lo, hi, nil})
+            append(&edits, Edit{lo, hi, nil, 0})
         } else if c.head.col > 0 {
-            append(&edits, Edit{Pos{c.head.line, c.head.col - 1}, c.head, nil})
+            // Backspace inside an empty auto-pair "()" removes both halves.
+            line := &d.lines[c.head.line]
+            prev := line.text[c.head.col - 1]
+            if close, ok := pair_close(prev); ok && char_at(line, c.head.col) == close {
+                append(&edits, Edit{Pos{c.head.line, c.head.col - 1}, Pos{c.head.line, c.head.col + 1}, nil, 0})
+            } else {
+                append(&edits, Edit{Pos{c.head.line, c.head.col - 1}, c.head, nil, 0})
+            }
         } else if c.head.line > 0 {
             prev := c.head.line - 1
-            append(&edits, Edit{Pos{prev, line_len(&d.lines[prev])}, c.head, nil})
+            append(&edits, Edit{Pos{prev, line_len(&d.lines[prev])}, c.head, nil, 0})
         }
     }
-    return doc_apply(d, edits[:])
+    return doc_commit(d, edits[:])
+}
+
+// The rune at col on the line, or 0 if past the end.
+char_at :: proc(line: ^Line, col: int) -> rune {
+    return col < line_len(line) ? line.text[col] : 0
 }
 
 // Delete: delete the selection, else the rune to the right, else pull the next
@@ -212,14 +275,14 @@ doc_delete :: proc(d: ^Doc) -> bool {
     for c in d.cursors {
         if cursor_has_selection(c) {
             lo, hi := cursor_range(c)
-            append(&edits, Edit{lo, hi, nil})
+            append(&edits, Edit{lo, hi, nil, 0})
         } else if c.head.col < line_len(&d.lines[c.head.line]) {
-            append(&edits, Edit{c.head, Pos{c.head.line, c.head.col + 1}, nil})
+            append(&edits, Edit{c.head, Pos{c.head.line, c.head.col + 1}, nil, 0})
         } else if c.head.line < len(d.lines) - 1 {
-            append(&edits, Edit{c.head, Pos{c.head.line + 1, 0}, nil})
+            append(&edits, Edit{c.head, Pos{c.head.line + 1, 0}, nil, 0})
         }
     }
-    return doc_apply(d, edits[:])
+    return doc_commit(d, edits[:])
 }
 
 // Delete the word to the left, or join with the previous line at column 0.
@@ -228,16 +291,16 @@ doc_delete_word_back :: proc(d: ^Doc) -> bool {
     for c in d.cursors {
         if cursor_has_selection(c) {
             lo, hi := cursor_range(c)
-            append(&edits, Edit{lo, hi, nil})
+            append(&edits, Edit{lo, hi, nil, 0})
         } else if c.head.col > 0 {
             to := word_left_index(d.lines[c.head.line].text[:], c.head.col)
-            append(&edits, Edit{Pos{c.head.line, to}, c.head, nil})
+            append(&edits, Edit{Pos{c.head.line, to}, c.head, nil, 0})
         } else if c.head.line > 0 {
             prev := c.head.line - 1
-            append(&edits, Edit{Pos{prev, line_len(&d.lines[prev])}, c.head, nil})
+            append(&edits, Edit{Pos{prev, line_len(&d.lines[prev])}, c.head, nil, 0})
         }
     }
-    return doc_apply(d, edits[:])
+    return doc_commit(d, edits[:])
 }
 
 // Delete the word to the right, or pull the next line up at end of line.
@@ -246,166 +309,190 @@ doc_delete_word_forward :: proc(d: ^Doc) -> bool {
     for c in d.cursors {
         if cursor_has_selection(c) {
             lo, hi := cursor_range(c)
-            append(&edits, Edit{lo, hi, nil})
+            append(&edits, Edit{lo, hi, nil, 0})
         } else if c.head.col < line_len(&d.lines[c.head.line]) {
             to := word_right_index(d.lines[c.head.line].text[:], c.head.col)
-            append(&edits, Edit{c.head, Pos{c.head.line, to}, nil})
+            append(&edits, Edit{c.head, Pos{c.head.line, to}, nil, 0})
         } else if c.head.line < len(d.lines) - 1 {
-            append(&edits, Edit{c.head, Pos{c.head.line + 1, 0}, nil})
+            append(&edits, Edit{c.head, Pos{c.head.line + 1, 0}, nil, 0})
         }
     }
-    return doc_apply(d, edits[:])
+    return doc_commit(d, edits[:])
 }
 
-// --- movement (select=true keeps each anchor to extend its selection) ---
-// A plain (non-select) move with an active selection collapses to the edge it
-// moves toward, the standard GUI behavior, rather than stepping from the head.
+// --- movement ---
+// doc_move moves ONLY the free caret (the primary), leaving dropped cursors put
+// (bare-arrow behaviour, the basis of cursor placement); doc_move_all moves every
+// cursor together (the Alt+M one-shot prefix). select=true keeps the anchor to
+// extend a selection; a plain move with a selection collapses to the edge it moves
+// toward, GUI-style. Vertical motion keeps the goal column across short lines.
 
-doc_move_left :: proc(d: ^Doc, select := false) {
+Motion :: enum {
+    Left,
+    Right,
+    Word_Left,
+    Word_Right,
+    Home,
+    End,
+    Up,
+    Down,
+}
+
+doc_move :: proc(d: ^Doc, motion: Motion, select := false) {
+    move_cursor(d, &d.cursors[d.primary], motion, select)
+}
+
+doc_move_all :: proc(d: ^Doc, motion: Motion, select := false) {
     for &c in d.cursors {
-        if !select && cursor_has_selection(c) {
-            lo, _ := cursor_range(c)
-            cursor_place(&c, lo, false)
+        move_cursor(d, &c, motion, select)
+    }
+    doc_merge_cursors(d)
+}
+
+@(private = "file")
+move_cursor :: proc(d: ^Doc, c: ^Cursor, motion: Motion, select: bool) {
+    switch motion {
+    case .Left:
+        if !select && cursor_has_selection(c^) {
+            lo, _ := cursor_range(c^)
+            cursor_place(c, lo, false)
         } else {
-            cursor_place(&c, pos_left(d, c.head), select)
+            cursor_place(c, pos_left(d, c.head), select)
         }
         c.goal = c.head.col
-    }
-    doc_merge_cursors(d)
-}
-
-doc_move_right :: proc(d: ^Doc, select := false) {
-    for &c in d.cursors {
-        if !select && cursor_has_selection(c) {
-            _, hi := cursor_range(c)
-            cursor_place(&c, hi, false)
+    case .Right:
+        if !select && cursor_has_selection(c^) {
+            _, hi := cursor_range(c^)
+            cursor_place(c, hi, false)
         } else {
-            cursor_place(&c, pos_right(d, c.head), select)
+            cursor_place(c, pos_right(d, c.head), select)
         }
         c.goal = c.head.col
-    }
-    doc_merge_cursors(d)
-}
-
-doc_move_word_left :: proc(d: ^Doc, select := false) {
-    for &c in d.cursors {
-        to := word_left_index(d.lines[c.head.line].text[:], c.head.col)
-        cursor_place(&c, Pos{c.head.line, to}, select)
+    case .Word_Left:
+        cursor_place(c, Pos{c.head.line, word_left_index(d.lines[c.head.line].text[:], c.head.col)}, select)
         c.goal = c.head.col
-    }
-    doc_merge_cursors(d)
-}
-
-doc_move_word_right :: proc(d: ^Doc, select := false) {
-    for &c in d.cursors {
-        to := word_right_index(d.lines[c.head.line].text[:], c.head.col)
-        cursor_place(&c, Pos{c.head.line, to}, select)
+    case .Word_Right:
+        cursor_place(c, Pos{c.head.line, word_right_index(d.lines[c.head.line].text[:], c.head.col)}, select)
         c.goal = c.head.col
-    }
-    doc_merge_cursors(d)
-}
-
-doc_move_home :: proc(d: ^Doc, select := false) {
-    for &c in d.cursors {
-        cursor_place(&c, Pos{c.head.line, 0}, select)
+    case .Home:
+        cursor_place(c, Pos{c.head.line, 0}, select)
         c.goal = 0
-    }
-    doc_merge_cursors(d)
-}
-
-doc_move_end :: proc(d: ^Doc, select := false) {
-    for &c in d.cursors {
-        cursor_place(&c, Pos{c.head.line, line_len(&d.lines[c.head.line])}, select)
+    case .End:
+        cursor_place(c, Pos{c.head.line, line_len(&d.lines[c.head.line])}, select)
         c.goal = c.head.col
-    }
-    doc_merge_cursors(d)
-}
-
-// Vertical motion keeps each cursor's goal column so passing through short lines
-// doesn't lose the column.
-doc_move_up :: proc(d: ^Doc, select := false) {
-    for &c in d.cursors {
+    case .Up:
         if c.head.line > 0 {
             line := c.head.line - 1
-            cursor_place(&c, Pos{line, min(c.goal, line_len(&d.lines[line]))}, select)
+            cursor_place(c, Pos{line, min(c.goal, line_len(&d.lines[line]))}, select)
         }
-    }
-    doc_merge_cursors(d)
-}
-
-doc_move_down :: proc(d: ^Doc, select := false) {
-    for &c in d.cursors {
+    case .Down:
         if c.head.line < len(d.lines) - 1 {
             line := c.head.line + 1
-            cursor_place(&c, Pos{line, min(c.goal, line_len(&d.lines[line]))}, select)
+            cursor_place(c, Pos{line, min(c.goal, line_len(&d.lines[line]))}, select)
         }
     }
-    doc_merge_cursors(d)
 }
 
 // --- internals ---
 
 // One replacement: the text in [start, end) becomes runes (which may span lines).
-@(private = "file")
+// caret_delta nudges the resulting caret left of the inserted text's end (same
+// line only): 1 lands it inside a freshly inserted pair, -1 steps it one past
+// (skipping over an existing close). 0 for ordinary edits.
 Edit :: struct {
-    start, end: Pos,
-    runes:      []rune,
+    start, end:  Pos,
+    runes:       []rune,
+    caret_delta: int,
 }
 
 // Applies a set of non-overlapping edits (one per cursor), then rebuilds the
 // cursor list collapsed onto each edit's new end. Edits are applied back-to-front
 // in document order so unprocessed (earlier) edits keep valid coordinates;
-// already-applied (later) results are shifted by each edit's size delta.
-@(private = "file")
-doc_apply :: proc(d: ^Doc, edits: []Edit) -> bool {
-    if len(edits) == 0 {
+// already-applied (later) results are shifted by each edit's size delta. When rec
+// is non-nil it is filled with reversible ops (final-coord ranges + removed text)
+// for the undo journal; undo/redo pass nil and apply raw.
+doc_apply :: proc(d: ^Doc, edits_in: []Edit, rec: ^Batch = nil) -> bool {
+    if len(edits_in) == 0 {
         return false
     }
+    edits := edits_in
     slice.sort_by(edits, proc(a, b: Edit) -> bool {
         return pos_less(a.start, b.start)
     })
 
+    // Drop coincident edits: a free caret resting on a dropped cursor produces the
+    // same range twice, and one position must be edited once, not N times.
+    w := 0
+    for r in 1 ..< len(edits) {
+        if edits[r].start != edits[w].start || edits[r].end != edits[w].end {
+            w += 1
+            edits[w] = edits[r]
+        }
+    }
+    edits = edits[:w + 1]
+
+    // Apply back-to-front. heads/starts track each edit's inserted region in the
+    // final document (its start/end shift as earlier edits land), so the undo
+    // journal can later replace that region with the removed text.
     changed := false
     heads := make([]Pos, len(edits), context.temp_allocator)
+    starts := make([]Pos, len(edits), context.temp_allocator)
+    removed := make([]string, len(edits), context.temp_allocator)
     for i := len(edits) - 1; i >= 0; i -= 1 {
         e := edits[i]
         if e.start != e.end || len(e.runes) > 0 {
             changed = true
         }
-        new_end := doc_replace_range(d, e.start, e.end, e.runes)
+        new_end, gone := doc_replace_range(d, e.start, e.end, e.runes)
         heads[i] = new_end
+        starts[i] = e.start
+        removed[i] = gone
         for j in i + 1 ..< len(edits) {
             heads[j] = shift_pos(heads[j], e.end, new_end)
+            starts[j] = shift_pos(starts[j], e.end, new_end)
+        }
+    }
+
+    if rec != nil {
+        for e, i in edits {
+            ins := utf8.runes_to_string(e.runes, context.temp_allocator)
+            if removed[i] == "" && ins == "" {
+                continue // pure no-op (e.g. backspace at the document origin)
+            }
+            append(
+                &rec.ops,
+                Op {
+                    fwd_lo = e.start,
+                    fwd_hi = e.end,
+                    inv_lo = starts[i],
+                    inv_hi = heads[i],
+                    removed = strings.clone(removed[i]),
+                    inserted = strings.clone(ins),
+                },
+            )
         }
     }
 
     clear(&d.cursors)
-    for h in heads {
-        append(&d.cursors, Cursor{anchor = h, head = h, goal = h.col})
+    for h, i in heads {
+        col := clamp(h.col - edits[i].caret_delta, 0, line_len(&d.lines[h.line]))
+        p := Pos{h.line, col}
+        append(&d.cursors, Cursor{anchor = p, head = p, goal = col})
     }
     d.primary = 0
     doc_merge_cursors(d)
     return changed
 }
 
-// Index of the cursor whose head is at p (after a merge), else the primary.
-@(private = "file")
-doc_index_at :: proc(d: ^Doc, p: Pos) -> int {
-    for c, i in d.cursors {
-        if c.head == p {
-            return i
-        }
-    }
-    return d.primary
-}
-
 // Replaces the text in [start, end) with runes, returning the position just past
-// the inserted text. Mutates d.lines only; cursor fixup is the caller's job.
+// the inserted text and the (temp-allocated) text that was removed. Mutates
+// d.lines only; cursor fixup is the caller's job.
 @(private = "file")
-doc_replace_range :: proc(d: ^Doc, start, end: Pos, runes: []rune) -> Pos {
+doc_replace_range :: proc(d: ^Doc, start, end: Pos, runes: []rune) -> (Pos, string) {
     // Clone the surviving fragments before the line storage is mutated.
     prefix := slice.clone(d.lines[start.line].text[:start.col], context.temp_allocator)
     suffix := slice.clone(d.lines[end.line].text[end.col:], context.temp_allocator)
+    removed := capture_range(d, start, end, context.temp_allocator)
 
     for i in start.line ..= end.line {
         line_destroy(&d.lines[i])
@@ -434,7 +521,59 @@ doc_replace_range :: proc(d: ^Doc, start, end: Pos, runes: []rune) -> Pos {
         seg += 1
         seg_lo = i + 1
     }
-    return new_end
+    return new_end, removed
+}
+
+// The text currently in [start, end), joined with '\n' across lines. Used to
+// record what an edit removed (undo) and to gather copied text.
+@(private = "file")
+capture_range :: proc(d: ^Doc, start, end: Pos, alloc := context.allocator) -> string {
+    b := strings.builder_make(alloc)
+    if start.line == end.line {
+        for r in d.lines[start.line].text[start.col:end.col] {
+            strings.write_rune(&b, r)
+        }
+    } else {
+        for r in d.lines[start.line].text[start.col:] {
+            strings.write_rune(&b, r)
+        }
+        strings.write_byte(&b, '\n')
+        for li in start.line + 1 ..< end.line {
+            for r in d.lines[li].text {
+                strings.write_rune(&b, r)
+            }
+            strings.write_byte(&b, '\n')
+        }
+        for r in d.lines[end.line].text[:end.col] {
+            strings.write_rune(&b, r)
+        }
+    }
+    return strings.to_string(b)
+}
+
+// Cursor indices in document order (cursors aren't kept globally sorted, only
+// merged). Used by clipboard ops that need a stable left-to-right ordering.
+@(private = "file")
+Keyed_Cursor :: struct {
+    lo:  Pos,
+    idx: int,
+}
+
+@(private = "file")
+cursor_order :: proc(d: ^Doc, alloc := context.allocator) -> []int {
+    keyed := make([]Keyed_Cursor, len(d.cursors), context.temp_allocator)
+    for c, i in d.cursors {
+        lo, _ := cursor_range(c)
+        keyed[i] = {lo, i}
+    }
+    slice.sort_by(keyed, proc(a, b: Keyed_Cursor) -> bool {
+        return pos_less(a.lo, b.lo)
+    })
+    out := make([]int, len(keyed), alloc)
+    for k, i in keyed {
+        out[i] = k.idx
+    }
+    return out
 }
 
 // Shifts a position that lay at or after a replacement's end to track the edit.

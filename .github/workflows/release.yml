@@ -18,7 +18,7 @@ on:
         default: false
 
 env:
-  PROJECT_NAME: PitEd
+  PROJECT_NAME: Slopd
 
 jobs:
   build-linux:

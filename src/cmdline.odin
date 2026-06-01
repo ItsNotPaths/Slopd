@@ -100,11 +100,11 @@ cl_exec :: proc(a: ^App, input: string) {
 
     switch cmd {
     case "ls": // goto filetree
-        a.aux_mode = .FileTree
-        a.focus = .Aux
+        set_aux(a, .FileTree)
     case "gs": // goto git
-        a.aux_mode = .Git
-        a.focus = .Aux
+        set_aux(a, .Git)
+    case "zen", "zm": // toggle zen mode (full-width editor; aux on focus only)
+        view_toggle_zen(a)
     case "cd": // builtin: set project root + t1 cwd (stub until terminals exist)
     case: // shell command -> inject into t1 (stub), surface the terminal
         term_focus(a, 1)
@@ -115,7 +115,7 @@ cl_exec :: proc(a: ^App, input: string) {
 // the command line (tN) and Alt+1..9. Clamps n into the existing session range.
 term_focus :: proc(a: ^App, n: int) {
     a.aux_mode = .Terminal
-    a.focus = .Aux
+    set_focus(a, .Aux)
     if a.term_count > 0 {
         a.term_active = clamp(n - 1, 0, a.term_count - 1)
     }

@@ -9,10 +9,11 @@ import "core:strings"
 // single-cursor is just N == 1. The UI to spawn extra cursors is still to come.
 
 Buffer :: struct {
-    using doc: Doc, // lines + cursors
-    path:      string, // owned; "" = unnamed/scratch
-    scroll:    int, // first visible line (view state, clamped at render)
-    dirty:     bool,
+    using doc:     Doc, // lines + cursors
+    path:          string, // owned; "" = unnamed/scratch
+    scroll:        int, // first visible line (view state, clamped at render)
+    dirty:         bool,
+    final_newline: bool, // did the file end in '\n'? preserved on save (POSIX round-trip)
 }
 
 Editor :: struct {
@@ -23,6 +24,7 @@ Editor :: struct {
 editor_init :: proc(e: ^Editor) {
     b: Buffer
     doc_init(&b.doc) // one empty line, one cursor
+    b.final_newline = true // a fresh file gets the conventional trailing newline
     append(&e.buffers, b)
 }
 
@@ -43,7 +45,7 @@ editor_current :: proc(e: ^Editor) -> ^Buffer {
 // scratch buffer if it's untouched, otherwise opens a new buffer. Focuses editor.
 open_file :: proc(a: ^App, path: string) {
     e := &a.editor
-    defer a.focus = .Editor
+    defer set_focus(a, .Editor)
 
     for &b, i in e.buffers {
         if b.path == path {
@@ -92,10 +94,12 @@ buffer_load :: proc(b: ^Buffer, path: string) -> bool {
     if err != nil {
         return false
     }
-    buffer_set_text(b, string(src))
+    content := string(src)
+    buffer_set_text(b, content)
     delete(b.path)
     b.path = strings.clone(path)
     b.dirty = false
+    b.final_newline = strings.has_suffix(content, "\n") // remember it for save
     return true
 }
 
@@ -103,17 +107,13 @@ buffer_save :: proc(b: ^Buffer) -> bool {
     if b.path == "" {
         return false // save-as not implemented yet
     }
-    sb := strings.builder_make()
-    defer strings.builder_destroy(&sb)
-    for &l, i in b.lines {
-        if i > 0 {
-            strings.write_byte(&sb, '\n')
-        }
-        for r in l.text {
-            strings.write_rune(&sb, r)
-        }
+    // doc_string is the single serializer (lines joined by '\n', no trailing one);
+    // re-add the trailing newline only if the loaded file had one.
+    data := doc_string(&b.doc, context.temp_allocator)
+    if b.final_newline {
+        data = strings.concatenate({data, "\n"}, context.temp_allocator)
     }
-    if os.write_entire_file(b.path, transmute([]u8)strings.to_string(sb)) != nil {
+    if os.write_entire_file(b.path, transmute([]u8)data) != nil {
         return false
     }
     b.dirty = false
@@ -124,10 +124,6 @@ buffer_save :: proc(b: ^Buffer) -> bool {
 
 buffer_insert_rune :: proc(b: ^Buffer, r: rune) {
     b.dirty |= doc_insert_rune(&b.doc, r)
-}
-
-buffer_indent :: proc(b: ^Buffer, indent: Indent) {
-    b.dirty |= doc_indent(&b.doc, indent)
 }
 
 buffer_newline :: proc(b: ^Buffer) {
@@ -146,36 +142,30 @@ buffer_delete_word_back :: proc(b: ^Buffer) {
     b.dirty |= doc_delete_word_back(&b.doc)
 }
 
-// --- movement (no edits; the Doc ops wrap across line boundaries) ---
-
-buffer_left :: proc(b: ^Buffer) {
-    doc_move_left(&b.doc)
+buffer_delete_word_forward :: proc(b: ^Buffer) {
+    b.dirty |= doc_delete_word_forward(&b.doc)
 }
 
-buffer_right :: proc(b: ^Buffer) {
-    doc_move_right(&b.doc)
+buffer_undo :: proc(b: ^Buffer) {
+    if doc_undo(&b.doc) {
+        b.dirty = true
+    }
 }
 
-buffer_word_left :: proc(b: ^Buffer) {
-    doc_move_word_left(&b.doc)
+buffer_redo :: proc(b: ^Buffer) {
+    if doc_redo(&b.doc) {
+        b.dirty = true
+    }
 }
 
-buffer_word_right :: proc(b: ^Buffer) {
-    doc_move_word_right(&b.doc)
-}
+// --- movement (no edits; the Doc ops wrap across line boundaries). select=true
+// (Shift) grows a selection; all=true (the Alt+M prefix) moves every cursor rather
+// than just the free caret. ---
 
-buffer_up :: proc(b: ^Buffer) {
-    doc_move_up(&b.doc)
-}
-
-buffer_down :: proc(b: ^Buffer) {
-    doc_move_down(&b.doc)
-}
-
-buffer_home :: proc(b: ^Buffer) {
-    doc_move_home(&b.doc)
-}
-
-buffer_end :: proc(b: ^Buffer) {
-    doc_move_end(&b.doc)
+buffer_motion :: proc(b: ^Buffer, motion: Motion, select := false, all := false) {
+    if all {
+        doc_move_all(&b.doc, motion, select)
+    } else {
+        doc_move(&b.doc, motion, select)
+    }
 }

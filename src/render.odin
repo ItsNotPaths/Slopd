@@ -7,7 +7,8 @@ import gl "vendor:OpenGL"
 // comes from the active Theme (a.theme); this file maps palette slots to UI usage:
 //   border_dark -> window gutter / overlay bg   bg -> pane background
 //   accent      -> focus outline / active item  border_light -> status strip
-//   fg / muted  -> text (active / dim)           separator -> selection background
+//   fg / muted  -> text (active / dim)           selection -> selected text
+//   line_highlight -> current-line bar           separator -> filetree selection
 //   code_return_type -> filetree directory rows  urgent -> ringed-file marker
 
 aux_mode_name :: proc(m: AuxMode) -> string {
@@ -25,6 +26,11 @@ aux_mode_name :: proc(m: AuxMode) -> string {
 }
 
 // scissor uses a bottom-left origin; our rects are top-left, so flip y.
+//
+// One glClear per rect. Cheap here because redraw is event-driven (WaitEvents),
+// not per-frame. When syntax highlighting lands it will batch glyphs by colour in
+// a renderer pass; fold these fills into that pass then (layered: bg fills -> text
+// -> carets/overlays, preserving the current draw order), not before.
 fill :: proc(r: Rect, win_h: i32, c: [3]f32) {
     if r.w <= 0 || r.h <= 0 {
         return
@@ -59,10 +65,15 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32) {
     lay := compute_layout(win_w, win_h, a)
     pad := i32(8 * a.scale)
 
-    panel(lay.editor, win_h, th.bg, th.accent, a.focus == .Editor, a.scale)
+    // The focus ring only disambiguates which of two panes is active; with a single
+    // pane on screen (Zen-editor / Util) it is just a full-window border, so drop
+    // it. Hidden panes carry a zero rect and the draw guards skip them.
+    show_ring := lay.vis.editor && lay.vis.aux
+
+    panel(lay.editor, win_h, th.bg, th.accent, show_ring && a.focus == .Editor, a.scale)
     draw_editor(t, lay.editor, win_w, win_h, a)
 
-    panel(lay.aux, win_h, th.bg, th.accent, a.focus == .Aux, a.scale)
+    panel(lay.aux, win_h, th.bg, th.accent, show_ring && a.focus == .Aux, a.scale)
     if a.aux_mode == .FileTree {
         draw_filetree(t, lay.aux, win_w, win_h, a)
     } else {
@@ -80,7 +91,7 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32) {
     } else {
         sx := f32(lay.strip.x + pad)
         sy := f32(lay.strip.y) + (f32(lay.strip.h) - t.font.line_height) / 2
-        text_draw(t, "PitEd", sx, sy, lay.strip, win_w, win_h, th.fg)
+        text_draw(t, "Slopd", sx, sy, lay.strip, win_w, win_h, th.fg)
         text_draw(t, aux_mode_name(a.aux_mode), sx + t.font.cell_w * 8, sy, lay.strip, win_w, win_h, th.muted)
     }
 }
@@ -124,7 +135,25 @@ draw_editor :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
         on_cur_line := i == cur_line
 
         if on_cur_line {
-            fill(Rect{area.x, y, area.w, row_h}, win_h, th.separator) // current-line bar
+            fill(Rect{area.x, y, area.w, row_h}, win_h, th.line_highlight) // current-line bar
+        }
+
+        // Selection spans: highlight each cursor's selection that covers this line
+        // (first/last line clip to the cursor's columns, interior lines fill out).
+        for c in b.cursors {
+            if !cursor_has_selection(c) {
+                continue
+            }
+            lo, hi := cursor_range(c)
+            if i < lo.line || i > hi.line {
+                continue
+            }
+            start := i == lo.line ? lo.col : 0
+            end := i == hi.line ? hi.col : len(l.text)
+            if end > start {
+                sx := i32(text_x + cw * f32(start))
+                fill(Rect{sx, y, i32(cw * f32(end - start)), row_h}, win_h, th.selection)
+            }
         }
 
         buf: [12]u8
@@ -172,7 +201,6 @@ draw_command_line :: proc(t: ^Text, strip: Rect, a: ^App, win_w, win_h: i32) {
     PROMPT :: "> "
     th := &a.theme
     l := &a.cl.lines[0] // the command line is one line
-    c := a.cl.cursors[0]
     cw := t.font.cell_w
     lh := t.font.line_height
     pad := i32(8 * a.scale)
@@ -181,16 +209,21 @@ draw_command_line :: proc(t: ^Text, strip: Rect, a: ^App, win_w, win_h: i32) {
     text_draw(t, PROMPT, f32(strip.x + pad), y, strip, win_w, win_h, th.muted)
     ox := f32(strip.x + pad) + cw * f32(len(PROMPT)) // text origin, after the prompt
 
-    if cursor_has_selection(c) {
-        lo, hi := cursor_range(c)
-        sel := Rect{i32(ox + cw * f32(lo.col)), i32(y), i32(cw * f32(hi.col - lo.col)), i32(lh)}
-        fill(sel, win_h, th.separator)
+    // Selection spans, then text, then a caret per cursor (single-cursor = one).
+    for c in a.cl.cursors {
+        if cursor_has_selection(c) {
+            lo, hi := cursor_range(c)
+            sel := Rect{i32(ox + cw * f32(lo.col)), i32(y), i32(cw * f32(hi.col - lo.col)), i32(lh)}
+            fill(sel, win_h, th.selection)
+        }
     }
 
     text_draw_runes(t, l.text[:], ox, y, strip, win_w, win_h, th.fg)
 
-    caret := Rect{i32(ox + cw * f32(c.head.col)), i32(y), i32(2 * a.scale), i32(lh)}
-    fill(caret, win_h, th.fg)
+    for c in a.cl.cursors {
+        caret := Rect{i32(ox + cw * f32(c.head.col)), i32(y), i32(2 * a.scale), i32(lh)}
+        fill(caret, win_h, th.fg)
+    }
 }
 
 // The filetree listing: a dired-style header (current dir) then rows, each

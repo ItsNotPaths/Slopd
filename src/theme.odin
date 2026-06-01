@@ -5,15 +5,16 @@ import "core:strconv"
 import "core:strings"
 
 // Theme — a Prawk-compatible colour palette. Theme files use Prawk's
-// `key: #rrggbb` format (so they're interchangeable with Prawk); PitEd parses the
+// `key: #rrggbb` format (so they're interchangeable with Prawk); Slopd parses the
 // same keys plus a few extensions for tree-sitter, and ignores unknown keys.
 // Colours are stored as [3]f32 (0..1) for direct use by the renderer.
 Theme :: struct {
     bg, fg, accent, muted, urgent:                                [3]f32,
     border_light, border_dark, separator:                         [3]f32,
+    selection, line_highlight:                                     [3]f32,
     code_keyword, code_string, code_comment, code_number:         [3]f32,
     code_operator, code_type, code_return_type, cl_inject:        [3]f32,
-    // PitEd extensions (tree-sitter), Gruvbox Material source:
+    // Slopd extensions (tree-sitter), Gruvbox Material source:
     code_function, code_variable, code_constant, code_punctuation: [3]f32,
 }
 
@@ -63,6 +64,8 @@ parse_theme :: proc(content: string, t: ^Theme) {
         case "border_light":     t.border_light = col
         case "border_dark":      t.border_dark = col
         case "separator":        t.separator = col
+        case "selection":        t.selection = col
+        case "line_highlight":   t.line_highlight = col
         case "code_keyword":     t.code_keyword = col
         case "code_string":      t.code_string = col
         case "code_comment":     t.code_comment = col

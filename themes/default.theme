@@ -9,6 +9,10 @@ urgent:        #ea6962
 border_light:  #504945
 border_dark:   #32302f
 separator:     #45403d
+# Source scheme uses alpha: selection = grey5 #504945 @ b0, line_highlight (the
+# current-line bar) = grey7 #383432 @ 90 — pre-blended over bg here (opaque fills).
+selection:     #443f3c
+line_highlight: #322f2e
 code_keyword:  #d3869b
 code_string:   #d8a657
 code_comment:  #928374
@@ -18,8 +22,8 @@ code_type:        #a9b665
 code_return_type: #89b482
 cl_inject:        #ff0000
 
-# PitEd extensions (for tree-sitter), same Gruvbox Material source. Prawk ignores
-# these; PitEd uses them when syntax highlighting lands.
+# Slopd extensions (for tree-sitter), same Gruvbox Material source. Prawk ignores
+# these; Slopd uses them when syntax highlighting lands.
 code_function:    #a9b665
 code_variable:    #d4be98
 code_constant:    #d3869b

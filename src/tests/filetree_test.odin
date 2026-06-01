@@ -28,5 +28,5 @@ test_filetree_nav :: proc(t: ^testing.T) {
     testing.expect(t, strings.has_suffix(ft.dir, "src"))
 
     app.filetree_parent(&ft)
-    testing.expect(t, strings.has_suffix(ft.dir, "PitEd"))
+    testing.expect(t, strings.has_suffix(ft.dir, "Slopd"))
 }

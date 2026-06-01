@@ -2,6 +2,7 @@ package main
 
 import "base:runtime"
 import "core:fmt"
+import "core:strings"
 import "vendor:glfw"
 
 // Input: GLFW key events -> mutations on App. Non-modal, Alt-rooted. Bare keys
@@ -18,8 +19,11 @@ import "vendor:glfw"
 //   Alt+N / Alt+Q             terminal: new / close session (max 99)
 //   Alt+K/Up, Alt+J/Down      terminal: switch session (switcher shows while Alt held)
 //   Alt+[ / Alt+]             nudge the split
-//   Esc                       quit
-// While the command line is active it owns bare keys (see cl_handle_key).
+//   Alt+A (+ direction)       drop a cursor / lay a multi-cursor trail (Esc collapses)
+//   Alt+M                     one-shot prefix: next motion moves every cursor
+//   Esc                       cancel CL, else clear move-all, else collapse cursors, else quit
+// Bare keys go to the focused editable (see cl_handle_key / buffer_key): typing,
+// motion, Tab, undo/redo (Ctrl+Z/Y), save (Ctrl+S), clipboard (Ctrl+C/X/V).
 
 key_callback :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: i32) {
     context = runtime.default_context()
@@ -30,19 +34,23 @@ key_callback :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods
     handle_key(a, window, key, action, mods)
 }
 
-// Unicode text input. The focused editable owns it; for now that is the command
-// line when active. (The buffer becomes a target in Part 3.) Alt-combos like
-// Alt+C must not leak their letter in, hence the alt_held guard.
+// Unicode text input. The focused editable owns it: the command line when active,
+// otherwise the editor buffer (auto-pairs first, else a plain insert). Alt-combos
+// like Alt+C must not leak their letter in, hence the alt_held guard.
 char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     context = runtime.default_context()
     a := (^App)(glfw.GetWindowUserPointer(window))
     if a == nil || a.alt_held {
         return
     }
+    a.move_all_armed = false // typing isn't a motion; cancel a pending move-all
     if a.cl_active {
         doc_insert_rune(&a.cl.doc, codepoint)
     } else if a.focus == .Editor && codepoint >= 32 {
-        buffer_insert_rune(editor_current(&a.editor), codepoint)
+        b := editor_current(&a.editor)
+        if !buffer_autopair(b, codepoint) {
+            buffer_insert_rune(b, codepoint)
+        }
     }
 }
 
@@ -57,11 +65,15 @@ handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
         return
     }
 
-    // Track A held (Alt+A + direction is the cursor-drop chord). Don't return: A
-    // is still an ordinary key (typing, the command line's Ctrl+A).
+    // Track A held (Alt+A + a direction is the cursor-drop chord). Don't return: A
+    // is still an ordinary key (typing, readline Ctrl+A). A bare Alt+A press drops a
+    // cursor at the active editable's caret (command line or buffer).
     if key == glfw.KEY_A {
         if action == glfw.PRESS {
             a.a_held = true
+            if a.alt_held && (a.cl_active || a.focus == .Editor) {
+                doc_drop_anchor(active_doc(a))
+            }
         } else if action == glfw.RELEASE {
             a.a_held = false
         }
@@ -71,138 +83,175 @@ handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
         return
     }
 
-    // While the command line is active it owns bare keys (the focused editable).
-    if a.cl_active {
-        cl_handle_key(a, key, mods)
-        return
-    }
+    d := active_doc(a)
+    editing := a.cl_active || a.focus == .Editor // an editable owns the keys
 
-    // Escape: collapse a multi-cursor set back to one, else quit.
+    // Escape: cancel the command line, else clear a pending move-all prefix, else
+    // collapse a multi-cursor set, else quit.
     if key == glfw.KEY_ESCAPE {
-        b := editor_current(&a.editor)
-        if a.focus == .Editor && len(b.cursors) > 1 {
-            doc_collapse_to_primary(&b.doc)
+        if a.cl_active {
+            cl_cancel(a)
+        } else if a.move_all_armed {
+            a.move_all_armed = false
+        } else if a.focus == .Editor && len(d.cursors) > 1 {
+            doc_collapse_to_primary(d)
         } else {
             glfw.SetWindowShouldClose(window, true)
         }
         return
     }
 
-    // Cursor-drop chord: Alt+A held + a direction drops a cursor and steps that
-    // way (hold Alt+A, tap arrows to lay a trail). Not a mode — only while A is
-    // physically held. hjkl == arrows. Intercepts before the Alt nav switch.
-    if a.alt_held && a.a_held && a.focus == .Editor {
-        b := &editor_current(&a.editor).doc
+    // Cursor-drop chord: while Alt+A is held, each direction moves the free caret
+    // and drops a cursor at the new spot (command line or buffer). hjkl == arrows.
+    if a.alt_held && a.a_held && editing {
+        moved := true
         switch key {
         case glfw.KEY_UP, glfw.KEY_K:
-            doc_add_cursor(b, -1, 0);return
+            doc_move(d, .Up)
         case glfw.KEY_DOWN, glfw.KEY_J:
-            doc_add_cursor(b, +1, 0);return
+            doc_move(d, .Down)
         case glfw.KEY_LEFT, glfw.KEY_H:
-            doc_add_cursor(b, 0, -1);return
+            doc_move(d, .Left)
         case glfw.KEY_RIGHT, glfw.KEY_L:
-            doc_add_cursor(b, 0, +1);return
+            doc_move(d, .Right)
+        case:
+            moved = false
+        }
+        if moved {
+            doc_drop_anchor(d)
+            return
         }
     }
 
-    // Bare keys go to the focused element.
-    if mods & glfw.MOD_ALT == 0 {
-        if a.focus == .Editor {
-            buffer_key(a, key, mods)
-        } else if a.focus == .Aux && a.aux_mode == .FileTree {
-            filetree_key(a, key, mods)
+    // Alt chords. Alt+M (the move-all prefix) and the drop chord above serve both
+    // the command line and the buffer; the pane-nav chords are skipped while the
+    // command line is active (a transient overlay that owns the rest of its keys).
+    if mods & glfw.MOD_ALT != 0 {
+        a.move_all_armed = false // any Alt chord cancels a pending move-all
+        if key == glfw.KEY_M {
+            a.move_all_armed = editing // arm the one-shot move-all prefix
+            return
+        }
+        if a.cl_active {
+            return
+        }
+        switch key {
+        case glfw.KEY_H, glfw.KEY_LEFT:
+            set_focus(a, .Editor)
+        case glfw.KEY_L, glfw.KEY_RIGHT:
+            set_focus(a, .Aux)
+
+        // Alt+A is the cursor-drop chord (handled above); alone it is a no-op.
+        case glfw.KEY_A:
+
+        case glfw.KEY_C:
+            cl_open(a)
+
+        case glfw.KEY_1 ..= glfw.KEY_9: // i3-style quick-jump to terminal N
+            term_focus(a, int(key - glfw.KEY_1) + 1)
+
+        case glfw.KEY_F:
+            set_aux(a, .FileTree)
+        case glfw.KEY_T:
+            set_aux(a, .Terminal)
+        case glfw.KEY_G:
+            set_aux(a, .Git)
+        case glfw.KEY_P:
+            set_aux(a, .Procmon)
+
+        case glfw.KEY_N:
+            if a.aux_mode == .Terminal && a.term_count < 99 {
+                a.term_count += 1
+                a.term_active = a.term_count - 1 // focus the new session
+            }
+        case glfw.KEY_Q:
+            if a.aux_mode == .Terminal && a.term_count > 1 {
+                a.term_count -= 1
+                if a.term_active >= a.term_count {
+                    a.term_active = a.term_count - 1
+                }
+            }
+
+        // Alt+Up/Down is exclusively terminal-session switching.
+        case glfw.KEY_K, glfw.KEY_UP:
+            if a.aux_mode == .Terminal && a.term_count > 0 {
+                a.term_active = (a.term_active - 1 + a.term_count) % a.term_count
+            }
+        case glfw.KEY_J, glfw.KEY_DOWN:
+            if a.aux_mode == .Terminal && a.term_count > 0 {
+                a.term_active = (a.term_active + 1) % a.term_count
+            }
+
+        case glfw.KEY_LEFT_BRACKET:
+            a.split = clampf(a.split - 0.02, 0.15, 0.85)
+        case glfw.KEY_RIGHT_BRACKET:
+            a.split = clampf(a.split + 0.02, 0.15, 0.85)
         }
         return
     }
 
-    switch key {
-    case glfw.KEY_H, glfw.KEY_LEFT:
-        a.focus = .Editor
-    case glfw.KEY_L, glfw.KEY_RIGHT:
-        a.focus = .Aux
-
-    // Alt+A is the cursor-drop chord (handled above with a direction); on its own
-    // it is a no-op — the caret is already a cursor at the current location.
-    case glfw.KEY_A:
-
-    case glfw.KEY_C:
-        cl_open(a)
-
-    case glfw.KEY_1 ..= glfw.KEY_9: // i3-style quick-jump to terminal N
-        term_focus(a, int(key - glfw.KEY_1) + 1)
-
-    case glfw.KEY_F:
-        set_aux(a, .FileTree)
-    case glfw.KEY_T:
-        set_aux(a, .Terminal)
-    case glfw.KEY_G:
-        set_aux(a, .Git)
-    case glfw.KEY_P:
-        set_aux(a, .Procmon)
-
-    case glfw.KEY_N:
-        if a.aux_mode == .Terminal && a.term_count < 99 {
-            a.term_count += 1
-            a.term_active = a.term_count - 1 // focus the new session
-        }
-    case glfw.KEY_Q:
-        if a.aux_mode == .Terminal && a.term_count > 1 {
-            a.term_count -= 1
-            if a.term_active >= a.term_count {
-                a.term_active = a.term_count - 1
-            }
-        }
-
-    // Alt+Up/Down is exclusively terminal-session switching.
-    case glfw.KEY_K, glfw.KEY_UP:
-        if a.aux_mode == .Terminal && a.term_count > 0 {
-            a.term_active = (a.term_active - 1 + a.term_count) % a.term_count
-        }
-    case glfw.KEY_J, glfw.KEY_DOWN:
-        if a.aux_mode == .Terminal && a.term_count > 0 {
-            a.term_active = (a.term_active + 1) % a.term_count
-        }
-
-    case glfw.KEY_LEFT_BRACKET:
-        a.split = clampf(a.split - 0.02, 0.15, 0.85)
-    case glfw.KEY_RIGHT_BRACKET:
-        a.split = clampf(a.split + 0.02, 0.15, 0.85)
+    // Bare keys go to the focused editable, consuming a pending move-all prefix (a
+    // bare modifier on its way to the motion must not eat it).
+    all := false
+    if !is_modifier_key(key) {
+        all = a.move_all_armed
+        a.move_all_armed = false
+    }
+    if a.cl_active {
+        cl_handle_key(a, key, mods, all)
+    } else if a.focus == .Editor {
+        buffer_key(a, key, mods, all)
+    } else if a.focus == .Aux && a.aux_mode == .FileTree {
+        filetree_key(a, key, mods)
     }
 }
 
-// Command-line key handling (active only). Bare keys edit; Ctrl jumps by word and
-// (A/E) to the line ends, readline-style; Shift extends the selection.
-cl_handle_key :: proc(a: ^App, key, mods: i32) {
-    d := &a.cl.doc
+// Editing keys shared by the command line and the buffer (the CL is a one-line
+// buffer): horizontal motion (Ctrl = word), Home/End, and readline Ctrl+A/Ctrl+E,
+// with Shift extending the selection and `all` (the Alt+M prefix) moving every
+// cursor. Returns true if the key was a motion it handled.
+@(private = "file")
+edit_motion :: proc(d: ^Doc, key, mods: i32, all: bool) -> bool {
     shift := mods & glfw.MOD_SHIFT != 0
     ctrl := mods & glfw.MOD_CONTROL != 0
-
+    m: Motion
     switch key {
-    case glfw.KEY_ESCAPE:
-        cl_cancel(a)
+    case glfw.KEY_LEFT:
+        m = ctrl ? .Word_Left : .Left
+    case glfw.KEY_RIGHT:
+        m = ctrl ? .Word_Right : .Right
+    case glfw.KEY_HOME:
+        m = .Home
+    case glfw.KEY_END:
+        m = .End
+    case glfw.KEY_A:
+        if !ctrl {return false}
+        m = .Home // readline: start of line
+    case glfw.KEY_E:
+        if !ctrl {return false}
+        m = .End // readline: end of line
+    case:
+        return false
+    }
+    if all {
+        doc_move_all(d, m, shift)
+    } else {
+        doc_move(d, m, shift)
+    }
+    return true
+}
+
+// Command-line key handling. Shares edit_motion with the buffer; differs only in
+// Enter (submit) and Up/Down (history).
+cl_handle_key :: proc(a: ^App, key, mods: i32, all: bool) {
+    d := &a.cl.doc
+    ctrl := mods & glfw.MOD_CONTROL != 0
+    if edit_motion(d, key, mods, all) {
+        return
+    }
+    switch key {
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
         cl_submit(a)
-
-    case glfw.KEY_LEFT:
-        if ctrl {
-            doc_move_word_left(d, shift)
-        } else {
-            doc_move_left(d, shift)
-        }
-    case glfw.KEY_RIGHT:
-        if ctrl {
-            doc_move_word_right(d, shift)
-        } else {
-            doc_move_right(d, shift)
-        }
-    case glfw.KEY_HOME:
-        doc_move_home(d, shift)
-    case glfw.KEY_END:
-        doc_move_end(d, shift)
-    case glfw.KEY_A:
-        if ctrl do doc_move_home(d, shift) // readline: line start
-    case glfw.KEY_E:
-        if ctrl do doc_move_end(d, shift) // readline: line end
 
     case glfw.KEY_BACKSPACE:
         if ctrl {
@@ -225,15 +274,20 @@ cl_handle_key :: proc(a: ^App, key, mods: i32) {
 }
 
 // Buffer key handling (bare keys, when the editor is focused). hjkl TYPE here —
-// only the arrow keys move (non-modal). Ctrl jumps by word, deletes a word, saves.
-buffer_key :: proc(a: ^App, key, mods: i32) {
+// only the arrow keys move (non-modal). Shares edit_motion with the command line;
+// adds Enter/Tab, vertical motion, deletes, save, undo/redo, and clipboard.
+buffer_key :: proc(a: ^App, key, mods: i32, all: bool) {
     b := editor_current(&a.editor)
     ctrl := mods & glfw.MOD_CONTROL != 0
+    shift := mods & glfw.MOD_SHIFT != 0 // extends the selection
+    if edit_motion(&b.doc, key, mods, all) {
+        return
+    }
     switch key {
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
         buffer_newline(b)
     case glfw.KEY_TAB:
-        buffer_indent(b, a.indent)
+        buffer_tab(b, a.indent)
     case glfw.KEY_BACKSPACE:
         if ctrl {
             buffer_delete_word_back(b)
@@ -241,32 +295,92 @@ buffer_key :: proc(a: ^App, key, mods: i32) {
             buffer_backspace(b)
         }
     case glfw.KEY_DELETE:
-        buffer_delete(b)
-    case glfw.KEY_LEFT:
         if ctrl {
-            buffer_word_left(b)
+            buffer_delete_word_forward(b)
         } else {
-            buffer_left(b)
-        }
-    case glfw.KEY_RIGHT:
-        if ctrl {
-            buffer_word_right(b)
-        } else {
-            buffer_right(b)
+            buffer_delete(b)
         }
     case glfw.KEY_UP:
-        buffer_up(b)
+        buffer_motion(b, .Up, shift, all)
     case glfw.KEY_DOWN:
-        buffer_down(b)
-    case glfw.KEY_HOME:
-        buffer_home(b)
-    case glfw.KEY_END:
-        buffer_end(b)
+        buffer_motion(b, .Down, shift, all)
     case glfw.KEY_S:
         if ctrl {
             _ = buffer_save(b)
         }
+    case glfw.KEY_Z:
+        if ctrl && shift {
+            buffer_redo(b) // Ctrl+Shift+Z alias for redo
+        } else if ctrl {
+            buffer_undo(b)
+        }
+    case glfw.KEY_Y:
+        if ctrl {
+            buffer_redo(b)
+        }
+    case glfw.KEY_C:
+        if ctrl {
+            editor_copy(a)
+        }
+    case glfw.KEY_X:
+        if ctrl {
+            editor_cut(a)
+        }
+    case glfw.KEY_V:
+        if ctrl {
+            editor_paste(a)
+        }
     }
+}
+
+// --- clipboard (system clipboard via GLFW + our remembered multi-cursor copy) ---
+
+// Copy: selections (or whole lines when nothing is selected) to the system
+// clipboard, remembering the pieces so a later equal-count paste can distribute.
+editor_copy :: proc(a: ^App) {
+    b := editor_current(&a.editor)
+    joined, pieces := doc_copy(&b.doc)
+    clipboard_set(a, joined, pieces)
+}
+
+editor_cut :: proc(a: ^App) {
+    b := editor_current(&a.editor)
+    joined, pieces := doc_copy(&b.doc)
+    clipboard_set(a, joined, pieces)
+    if doc_cut(&b.doc) {
+        b.dirty = true
+    }
+}
+
+// Paste: distribute one piece per caret when the clipboard still holds exactly our
+// last multi-cursor copy and the counts line up; otherwise insert the whole text
+// at every caret.
+editor_paste :: proc(a: ^App) {
+    b := editor_current(&a.editor)
+    clip := glfw.GetClipboardString(a.window)
+    changed: bool
+    if len(a.clip_pieces) > 1 && clip == a.clip_joined && len(a.clip_pieces) == len(b.cursors) {
+        changed = doc_paste_pieces(&b.doc, a.clip_pieces)
+    } else {
+        changed = doc_paste(&b.doc, clip)
+    }
+    if changed {
+        b.dirty = true
+    }
+}
+
+// Pushes text to the system clipboard and takes ownership of our copy of it (the
+// joined string + pieces), freeing the previous remembered copy.
+@(private = "file")
+clipboard_set :: proc(a: ^App, joined: string, pieces: []string) {
+    glfw.SetClipboardString(a.window, strings.clone_to_cstring(joined, context.temp_allocator))
+    delete(a.clip_joined)
+    for p in a.clip_pieces {
+        delete(p)
+    }
+    delete(a.clip_pieces)
+    a.clip_joined = joined
+    a.clip_pieces = pieces
 }
 
 // Filetree key handling (bare keys, when the filetree aux pane is focused).
@@ -293,10 +407,27 @@ filetree_key :: proc(a: ^App, key, mods: i32) {
     }
 }
 
+// Bare modifier keys (Shift/Ctrl/Super on their way into a chord) — used so the
+// one-shot move-all prefix survives them to reach the actual motion key.
+@(private = "file")
+is_modifier_key :: proc(key: i32) -> bool {
+    switch key {
+    case glfw.KEY_LEFT_SHIFT,
+         glfw.KEY_RIGHT_SHIFT,
+         glfw.KEY_LEFT_CONTROL,
+         glfw.KEY_RIGHT_CONTROL,
+         glfw.KEY_LEFT_SUPER,
+         glfw.KEY_RIGHT_SUPER,
+         glfw.KEY_CAPS_LOCK:
+        return true
+    }
+    return false
+}
+
 // Jumping to an aux mode focuses the aux pane (like the command-line goto does).
 set_aux :: proc(a: ^App, mode: AuxMode) {
     a.aux_mode = mode
-    a.focus = .Aux
+    set_focus(a, .Aux)
 }
 
 clampf :: proc(v, lo, hi: f32) -> f32 {
