@@ -8,7 +8,7 @@ package main
 // grammars/ at init and re-read on demand (config_pane_refresh).
 
 LangStatus :: struct {
-    name:    string, // borrowed from KNOWN_LANGS (static storage) — not owned
+    name:    string, // borrowed from cp.grammars (the loaded registry) — not owned
     present: bool,   // grammars/<name>.so exists
 }
 
@@ -28,6 +28,7 @@ ConfigPane :: struct {
     editing:  bool, // a settings value is being edited (keys go to `edit`)
     edit:     Doc, // the one-line edit buffer
     dir:      string, // grammars directory (owned)
+    grammars: []Grammar, // the language registry (owned); backs the langs list
     langs:    [dynamic]LangStatus,
 }
 
@@ -37,14 +38,16 @@ config_pane_init :: proc(cp: ^ConfigPane) {
     doc_init(&cp.edit)
     cp.expanded = -1
     cp.dir = grammars_dir()
-    for name in KNOWN_LANGS {
-        append(&cp.langs, LangStatus{name = name, present = grammar_present(cp.dir, name)})
+    cp.grammars = load_grammars()
+    for g in cp.grammars {
+        append(&cp.langs, LangStatus{name = g.name, present = grammar_present(cp.dir, g.name)})
     }
 }
 
 config_pane_destroy :: proc(cp: ^ConfigPane) {
     doc_destroy(&cp.edit)
     delete(cp.langs)
+    grammars_destroy(cp.grammars)
     delete(cp.dir)
 }
 

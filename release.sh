@@ -56,6 +56,13 @@ if [ $DO_LOCAL -eq 1 ]; then
     [ -f "$PROJECT_DIR/slopd.config" ]  && cp "$PROJECT_DIR/slopd.config"  "$RELEASE_DIR/" || true
     [ -d "$PROJECT_DIR/themes" ]        && cp -r "$PROJECT_DIR/themes"     "$RELEASE_DIR/" || true
     mkdir -p "$RELEASE_DIR/grammars"
+    # The language registry (parsed down from Helix's languages.toml) is generated,
+    # not committed — regenerate it straight into the release folder so it ships
+    # beside the binary like themes/ and grammars/. Falls back to copying a locally
+    # generated one if the fetch fails (offline build).
+    python3 "$PROJECT_DIR/tools/gen-languages.py" "$RELEASE_DIR/languages" \
+        || cp "$PROJECT_DIR/languages" "$RELEASE_DIR/" 2>/dev/null \
+        || echo "  WARNING: no language registry generated; highlighting will have no languages" >&2
     echo "==> Local done: $RELEASE_DIR"
 fi
 

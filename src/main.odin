@@ -15,13 +15,13 @@ GL_MAJOR :: 3
 GL_MINOR :: 3
 
 // The theme file to actually load: the config's value if set, else a themes/default.theme
-// shipped beside the binary (asset_dir, same exe-relative rule as grammars/), else ""
+// shipped beside the binary (asset_path, same exe-relative rule as grammars/), else ""
 // for the baked-in default. Result is temp-allocated.
 theme_load_path :: proc(configured: string) -> string {
     if configured != "" {
         return configured
     }
-    cand := filepath.join({asset_dir("themes", context.temp_allocator), "default.theme"}, context.temp_allocator) or_else ""
+    cand := filepath.join({asset_path("themes", context.temp_allocator), "default.theme"}, context.temp_allocator) or_else ""
     return os.exists(cand) ? cand : ""
 }
 

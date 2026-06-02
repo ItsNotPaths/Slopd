@@ -11,8 +11,13 @@ test_config_pane_nav :: proc(t: ^testing.T) {
     app.config_pane_init(&cp)
     defer app.config_pane_destroy(&cp)
 
+    // Seed a deterministic lang list so the nav assertions don't depend on the
+    // generated `languages` registry being present.
+    clear(&cp.langs)
+    append(&cp.langs, app.LangStatus{name = "a"}, app.LangStatus{name = "b"}, app.LangStatus{name = "c"})
+
     rows := app.config_pane_rows(&cp)
-    testing.expect_value(t, rows, app.SETTING_COUNT + len(app.KNOWN_LANGS))
+    testing.expect_value(t, rows, app.SETTING_COUNT + 3)
 
     // Up at the top clamps to 0.
     app.config_pane_move(&cp, -5)

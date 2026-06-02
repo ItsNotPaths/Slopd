@@ -1,2 +1,3 @@
 odin GPLv3 public
-https://github.com/TragicWarrior/libvterm.git
+https://github.com/neovim/libvterm.git
+https://github.com/tree-sitter/tree-sitter.git

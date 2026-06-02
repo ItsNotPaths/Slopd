@@ -9,42 +9,36 @@ import "core:strings"
 // `slopd --health` / `slopd --grammar` CLI flags. Grammars are NOT shipped: the
 // release's grammars/ folder starts empty and a language is installed at runtime
 // (one Enter in the Config pane, or the CLI), which keeps the dist tiny. Each
-// installed grammar is a compiled shared library grammars/<lang>.so. Self-contained:
-// grammars/ (and themes/) resolve next to the executable, so a release folder runs
-// from any cwd.
+// installed grammar is a compiled shared library grammars/<lang>.so plus the
+// grammar's own highlights query grammars/<lang>.scm. Self-contained: grammars/
+// (and themes/, and the `languages` registry) resolve next to the executable, so a
+// release folder runs from any cwd.
 
-// The languages Slopd knows how to install. Helix sources its set from a
-// languages.toml; ours is a small built-in registry for now.
-// TODO(phase2): a declarative registry (extension -> grammar repo + rev + queries).
-KNOWN_LANGS := [?]string {
-    "odin",
-    "c",
-    "cpp",
-    "rust",
-    "go",
-    "python",
-    "javascript",
-    "typescript",
-    "json",
-    "toml",
-    "bash",
-    "markdown",
-    "zig",
-    "lua",
+// One installable language: its name, tree-sitter source repo, the pinned rev, an
+// optional subpath (multi-grammar repos like tree-sitter-typescript), and the file
+// extensions that select it. This is data — loaded from the generated `languages`
+// file (parsed down from Helix's languages.toml by tools/gen-languages.py), not a
+// hardcoded list — so adding a language is a registry refresh, not a recompile.
+Grammar :: struct {
+    name:    string, // owned
+    repo:    string, // owned
+    rev:     string, // owned ("" = track default branch)
+    subpath: string, // owned ("" = grammar at repo root)
+    exts:    []string, // owned (file extensions, no dot)
 }
 
 // The directory holding compiled grammar libs, resolved next to the binary (a
-// release ships Slopd + slopd.config + themes/ + grammars/ side by side). The caller
-// owns the result.
+// release ships Slopd + slopd.config + themes/ + grammars/ + languages side by
+// side). The caller owns the result.
 grammars_dir :: proc(allocator := context.allocator) -> string {
-    return asset_dir("grammars", allocator)
+    return asset_path("grammars", allocator)
 }
 
-// Resolves an asset folder shipped beside the executable. Prefers <exe_dir>/<name>;
-// falls back to ./<name> for `odin run` development. Returns <exe_dir>/<name> even
-// when it doesn't exist yet — it's the write target, since grammars are created on
-// install. The caller owns the result.
-asset_dir :: proc(name: string, allocator := context.allocator) -> string {
+// Resolves an asset (file or folder) shipped beside the executable. Prefers
+// <exe_dir>/<name>; falls back to ./<name> for `odin run` development. Returns
+// <exe_dir>/<name> even when it doesn't exist yet — it's the write target, since
+// grammars are created on install. The caller owns the result.
+asset_path :: proc(name: string, allocator := context.allocator) -> string {
     exe := exe_dir(context.temp_allocator)
     beside := filepath.join({exe, name}, context.temp_allocator) or_else strings.clone(name, context.temp_allocator)
     if os.exists(beside) {
@@ -70,49 +64,261 @@ grammar_lib_path :: proc(dir, lang: string, allocator := context.allocator) -> s
     return filepath.join({dir, lib}, allocator) or_else strings.clone(lib, allocator)
 }
 
+// grammars/<lang>.scm (the installed highlights query) for a given grammars dir.
+// The caller owns the result.
+grammar_query_path :: proc(dir, lang: string, allocator := context.allocator) -> string {
+    scm := fmt.tprintf("%s.scm", lang)
+    return filepath.join({dir, scm}, allocator) or_else strings.clone(scm, allocator)
+}
+
 // Whether a language's compiled grammar is installed.
 grammar_present :: proc(dir, lang: string) -> bool {
     return os.exists(grammar_lib_path(dir, lang, context.temp_allocator))
 }
 
-is_known_lang :: proc(lang: string) -> bool {
-    for l in KNOWN_LANGS {
-        if l == lang {
-            return true
+// --- the language registry (generated `languages` file) ---
+
+// Loads the language registry from the `languages` file beside the binary (parsed
+// down from Helix; see tools/gen-languages.py). Tab-separated, '-' for empty fields:
+//   name <TAB> repo <TAB> rev <TAB> subpath <TAB> ext,ext,...
+// Returns an empty slice if the file is missing (run download-deps.sh to generate
+// it). The result is owned by context.allocator — free it with grammars_destroy
+// (which also uses context.allocator, so the two must pair under the same context).
+load_grammars :: proc() -> []Grammar {
+    path := asset_path("languages", context.temp_allocator)
+    src := os.read_entire_file_from_path(path, context.temp_allocator) or_else nil
+    if src == nil {
+        return nil
+    }
+    out := make([dynamic]Grammar, 0, 256)
+    rest := string(src)
+    for line in strings.split_lines_iterator(&rest) {
+        s := strings.trim_space(line)
+        if len(s) == 0 || s[0] == '#' {
+            continue
+        }
+        f := strings.split(s, "\t", context.temp_allocator)
+        if len(f) < 2 {
+            continue
+        }
+        g := Grammar {
+            name = strings.clone(f[0]),
+            repo = strings.clone(f[1]),
+        }
+        if len(f) > 2 && f[2] != "-" {
+            g.rev = strings.clone(f[2])
+        }
+        if len(f) > 3 && f[3] != "-" {
+            g.subpath = strings.clone(f[3])
+        }
+        if len(f) > 4 && f[4] != "-" {
+            parts := strings.split(f[4], ",", context.temp_allocator)
+            exts := make([]string, len(parts))
+            for p, i in parts {
+                exts[i] = strings.clone(strings.trim_space(p))
+            }
+            g.exts = exts
+        }
+        append(&out, g)
+    }
+    return out[:]
+}
+
+grammars_destroy :: proc(grammars: []Grammar) {
+    for g in grammars {
+        delete(g.name)
+        delete(g.repo)
+        delete(g.rev)
+        delete(g.subpath)
+        for e in g.exts {
+            delete(e)
+        }
+        delete(g.exts)
+    }
+    delete(grammars)
+}
+
+// The registry entry for a language by name, or (nil, false).
+grammar_find :: proc(grammars: []Grammar, name: string) -> (^Grammar, bool) {
+    for &g in grammars {
+        if g.name == name {
+            return &g, true
         }
     }
-    return false
+    return nil, false
 }
 
 // --- install actions (msg is temp-allocated, for printing / surfacing) ---
 
-// Fetch + build a grammar. STUB until the tree-sitter vendor + registry land.
-// TODO(phase2): git clone the grammar repo at its pinned rev into a temp dir, then
-//   cc -shared -fPIC -I<src> parser.c [scanner.c] -o <dir>/<lang>.so
-grammar_install :: proc(dir, lang: string) -> (ok: bool, msg: string) {
-    if !is_known_lang(lang) {
-        return false, fmt.tprintf("%s: unknown language", lang)
+// Runs a command, capturing combined stdout+stderr (temp-allocated). ok iff it
+// exited 0. working_dir "" means the current directory.
+@(private = "file")
+run :: proc(args: []string, working_dir := "") -> (ok: bool, out: string) {
+    state, sout, serr, err := os.process_exec(
+        os.Process_Desc{command = args, working_dir = working_dir},
+        context.temp_allocator,
+    )
+    if err != nil {
+        return false, fmt.tprintf("exec error: %v", err)
     }
-    return false, fmt.tprintf("%s: install not yet implemented", lang)
+    return state.exited && state.exit_code == 0, fmt.tprintf("%s%s", string(sout), string(serr))
 }
 
-// Re-fetch at the pinned rev and rebuild. STUB, same as install.
-// TODO(phase2): implement alongside grammar_install.
-grammar_update :: proc(dir, lang: string) -> (ok: bool, msg: string) {
-    if !is_known_lang(lang) {
-        return false, fmt.tprintf("%s: unknown language", lang)
+// Fetch + build a grammar into grammars/<lang>.so and copy its highlights.scm.
+// Tracks the registry's pinned rev (reproducible), honouring its subpath. The
+// grammar's own queries/highlights.scm is installed alongside (our query source).
+grammar_install :: proc(dir: string, g: Grammar) -> (ok: bool, msg: string) {
+    if g.repo == "" {
+        return false, fmt.tprintf("%s: no grammar source in the registry", g.name)
     }
-    return false, fmt.tprintf("%s: update not yet implemented", lang)
+    if !os.exists(dir) {
+        if err := os.make_directory(dir); err != nil {
+            return false, fmt.tprintf("%s: cannot create %s (%v)", g.name, dir, err)
+        }
+    }
+
+    // Clone + compile in a throwaway temp dir (keeps the cloned repo out of
+    // grammars/), then PUBLISH ATOMICALLY by renaming staged files within grammars/.
+    // Staging in grammars/ keeps the rename on the same filesystem (so it's atomic and
+    // never crosses a mount), and a failed build can't clobber a working install —
+    // the live .so/.scm are only touched by the final rename. Stages are dot-prefixed
+    // and removed on any early return.
+    tmp := os.get_env("TMPDIR", context.temp_allocator)
+    if tmp == "" {
+        tmp = "/tmp"
+    }
+    build := filepath.join({tmp, fmt.tprintf("slopd-grammar-%s", g.name)}, context.temp_allocator) or_else ""
+    run({"rm", "-rf", build}) // clear any stale build dir
+    defer run({"rm", "-rf", build})
+
+    so := grammar_lib_path(dir, g.name, context.temp_allocator)
+    scm := grammar_query_path(dir, g.name, context.temp_allocator)
+    so_stage := fmt.tprintf("%s.tmp", so)
+    scm_stage := fmt.tprintf("%s.tmp", scm)
+    defer {
+        _ = os.remove(so_stage) // no-ops once renamed into place
+        _ = os.remove(scm_stage)
+    }
+
+    // Shallow-fetch exactly the pinned rev (GitHub/GitLab/Codeberg/sr.ht all allow
+    // fetch-by-sha); with no rev, clone the default branch.
+    if g.rev != "" {
+        if err := os.make_directory(build); err != nil {
+            return false, fmt.tprintf("%s: cannot create build dir (%v)", g.name, err)
+        }
+        steps := [][]string {
+            {"git", "init", "-q"},
+            {"git", "remote", "add", "origin", g.repo},
+            {"git", "fetch", "-q", "--depth", "1", "origin", g.rev},
+            {"git", "checkout", "-q", "FETCH_HEAD"},
+        }
+        for step in steps {
+            if sok, sout := run(step, build); !sok {
+                return false, fmt.tprintf("%s: `%s` failed\n%s", g.name, strings.join(step, " ", context.temp_allocator), sout)
+            }
+        }
+    } else if cok, cout := run({"git", "clone", "-q", "--depth", "1", g.repo, build}); !cok {
+        return false, fmt.tprintf("%s: git clone failed\n%s", g.name, cout)
+    }
+
+    // Locate the grammar source (honouring subpath for multi-grammar repos).
+    root := build
+    if g.subpath != "" {
+        root = filepath.join({build, g.subpath}, context.temp_allocator) or_else build
+    }
+    src := filepath.join({root, "src"}, context.temp_allocator) or_else ""
+    parser := filepath.join({src, "parser.c"}, context.temp_allocator) or_else ""
+    if !os.exists(parser) {
+        return false, fmt.tprintf("%s: no src/parser.c (looked in %s)", g.name, src)
+    }
+
+    // Compile to the staging lib, then atomically swap it into place.
+    if cok, cout := compile_grammar(src, parser, build, so_stage); !cok {
+        return false, fmt.tprintf("%s: compile failed\n%s", g.name, cout)
+    }
+    if err := os.rename(so_stage, so); err != nil {
+        return false, fmt.tprintf("%s: publish failed (%v)", g.name, err)
+    }
+
+    // Stage + publish the grammar's own highlights query, if its repo ships one.
+    // Surface a missing query: the grammar will parse but won't colour (Phase 3),
+    // and there's no other signal, so say so rather than report a clean install.
+    has_query := install_query(root, build, scm_stage) && os.rename(scm_stage, scm) == nil
+    if !has_query {
+        return true, fmt.tprintf("%s: installed (no highlights query in repo — parses, won't colour)", g.name)
+    }
+    return true, fmt.tprintf("%s: installed", g.name)
 }
 
-// Remove an installed grammar. Real now — just deletes the compiled lib.
+// Compiles parser.c (+ an optional external scanner) into the shared grammar lib.
+// A C scanner links in one cc -shared; a C++ scanner is compiled separately and
+// linked with c++ (mixing a C parser TU and a C++ scanner TU).
+@(private = "file")
+compile_grammar :: proc(src, parser, build, dest: string) -> (ok: bool, out: string) {
+    inc := fmt.tprintf("-I%s", src)
+    scanner_c := filepath.join({src, "scanner.c"}, context.temp_allocator) or_else ""
+    scanner_cc := filepath.join({src, "scanner.cc"}, context.temp_allocator) or_else ""
+
+    if os.exists(scanner_cc) {
+        po := filepath.join({build, "parser.o"}, context.temp_allocator) or_else ""
+        sco := filepath.join({build, "scanner.o"}, context.temp_allocator) or_else ""
+        if cok, cout := run({"cc", "-c", "-O2", "-fPIC", inc, parser, "-o", po}); !cok {
+            return false, cout
+        }
+        if cok, cout := run({"c++", "-c", "-O2", "-fPIC", inc, scanner_cc, "-o", sco}); !cok {
+            return false, cout
+        }
+        return run({"c++", "-shared", po, sco, "-o", dest})
+    }
+
+    args := make([dynamic]string, 0, 8, context.temp_allocator)
+    append(&args, "cc", "-shared", "-O2", "-fPIC", inc, parser)
+    if os.exists(scanner_c) {
+        append(&args, scanner_c)
+    }
+    append(&args, "-o", dest)
+    return run(args[:])
+}
+
+// Writes the grammar's own queries/highlights.scm to `dest` (our query source).
+// Looks at the grammar root first, then the repo root (subpath grammars). Returns
+// true only if a query was found AND written — the caller surfaces a missing one.
+@(private = "file")
+install_query :: proc(root, build, dest: string) -> (found: bool) {
+    candidates := [?]string {
+        filepath.join({root, "queries", "highlights.scm"}, context.temp_allocator) or_else "",
+        filepath.join({build, "queries", "highlights.scm"}, context.temp_allocator) or_else "",
+    }
+    for c in candidates {
+        if c == "" || !os.exists(c) {
+            continue
+        }
+        data := os.read_entire_file_from_path(c, context.temp_allocator) or_else nil
+        if data == nil {
+            continue
+        }
+        return os.write_entire_file(dest, data) == nil
+    }
+    return false
+}
+
+// Re-fetch at the pinned rev and rebuild — for a pinned registry this is just a
+// reinstall (idempotent); it picks up a registry refresh that bumped the rev.
+grammar_update :: proc(dir: string, g: Grammar) -> (ok: bool, msg: string) {
+    return grammar_install(dir, g)
+}
+
+// Remove an installed grammar (its compiled lib + the highlights query).
 grammar_uninstall :: proc(dir, lang: string) -> (ok: bool, msg: string) {
-    path := grammar_lib_path(dir, lang, context.temp_allocator)
-    if !os.exists(path) {
+    lib := grammar_lib_path(dir, lang, context.temp_allocator)
+    if !os.exists(lib) {
         return false, fmt.tprintf("%s: not installed", lang)
     }
-    if err := os.remove(path); err != nil {
+    if err := os.remove(lib); err != nil {
         return false, fmt.tprintf("%s: remove failed (%v)", lang, err)
+    }
+    if scm := grammar_query_path(dir, lang, context.temp_allocator); os.exists(scm) {
+        _ = os.remove(scm)
     }
     return true, fmt.tprintf("%s: uninstalled", lang)
 }
@@ -143,14 +349,21 @@ grammar_cli :: proc(args: []string) -> (handled: bool) {
 @(private = "file")
 grammar_run_action :: proc(action, lang: string) {
     dir := grammars_dir(context.temp_allocator)
+    grammars := load_grammars()
+    defer grammars_destroy(grammars)
     msg: string
     switch action {
-    case "install":
-        _, msg = grammar_install(dir, lang)
+    case "install", "update":
+        g, found := grammar_find(grammars, lang)
+        if !found {
+            msg = fmt.tprintf("%s: unknown language (not in the registry)", lang)
+        } else if action == "install" {
+            _, msg = grammar_install(dir, g^)
+        } else {
+            _, msg = grammar_update(dir, g^)
+        }
     case "uninstall":
         _, msg = grammar_uninstall(dir, lang)
-    case "update":
-        _, msg = grammar_update(dir, lang)
     case:
         fmt.eprintfln("unknown grammar action: %s (want install|uninstall|update)", action)
         return
@@ -158,11 +371,13 @@ grammar_run_action :: proc(action, lang: string) {
     fmt.println(msg)
 }
 
-// Prints grammar health for one language, or a ✓/✗ table for all known languages.
+// Prints grammar health for one language, or a ✓/✗ table for all registry languages.
 grammar_print_health :: proc(lang: string) {
     dir := grammars_dir(context.temp_allocator)
+    grammars := load_grammars()
+    defer grammars_destroy(grammars)
     if lang != "" {
-        if !is_known_lang(lang) {
+        if _, found := grammar_find(grammars, lang); !found {
             fmt.printfln("%s: unknown language", lang)
             return
         }
@@ -170,8 +385,11 @@ grammar_print_health :: proc(lang: string) {
         return
     }
     fmt.println("grammars:", dir)
-    for l in KNOWN_LANGS {
-        print_health_row(dir, l)
+    if len(grammars) == 0 {
+        fmt.println("  (no language registry — run download-deps.sh to generate `languages`)")
+    }
+    for g in grammars {
+        print_health_row(dir, g.name)
     }
 }
 

@@ -1,3 +1,5 @@
 vendor/
 plan.txt
 slopd
+/languages
+/grammars

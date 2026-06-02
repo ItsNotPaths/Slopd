@@ -26,12 +26,58 @@ fetch() {
     echo "  done."
 }
 
-echo "==> libvterm"
-if [ -d "$VENDOR/libvterm" ] && [ -n "$(ls -A "$VENDOR/libvterm" 2>/dev/null)" ]; then
-    echo "  already present: libvterm"
+echo "==> libvterm (leonerd's, the editor-standard parser; static lib)"
+# leonerd's libvterm (neovim mirror): a pure VT state machine — no PTY, no curses,
+# no I/O. We feed it bytes and read out a cell grid, owning the PTY + rendering
+# ourselves (fits Slopd's GPU glyph grid). It's a handful of dependency-free .c
+# files, so we compile them straight to libvterm.a with cc + ar rather than its
+# libtool-based Makefile — no extra build tooling, same single-binary story as glfw.
+VTERM_SRC="$VENDOR/libvterm"
+VTERM_A="$VTERM_SRC/.libs/libvterm.a"
+if [ -f "$VTERM_A" ]; then
+    echo "  already present: libvterm.a"
 else
-    echo "  cloning libvterm..."
-    git clone --depth=1 "https://github.com/TragicWarrior/libvterm.git" "$VENDOR/libvterm"
+    if [ ! -d "$VTERM_SRC" ] || [ -z "$(ls -A "$VTERM_SRC" 2>/dev/null)" ]; then
+        echo "  cloning libvterm..."
+        git clone --depth=1 "https://github.com/neovim/libvterm.git" "$VTERM_SRC"
+    fi
+    echo "  building static libvterm.a..."
+    (
+        cd "$VTERM_SRC"
+        mkdir -p .libs
+        cc -c -O2 -fPIC -Iinclude -Isrc src/*.c
+        ar rcs .libs/libvterm.a ./*.o
+        rm -f ./*.o
+    )
+    echo "  done."
+fi
+
+echo ""
+echo "==> tree-sitter (runtime parser lib for syntax highlighting; static lib)"
+# The tree-sitter C runtime (parser engine), pinned to a release tag for
+# reproducibility. Per-language GRAMMARS are NOT vendored here — they install at
+# runtime via `slopd --grammar` (git clone + cc the parser to grammars/<lang>.so).
+# This vendors only the engine the editor links against (Odin foreign import). Its
+# whole runtime is the lib/src/lib.c amalgamation, so — like libvterm — we compile
+# that one file straight to libtree-sitter.a with cc + ar, no Makefile needed.
+TS_VERSION="v0.26.9"
+TS_SRC="$VENDOR/tree-sitter"
+TS_A="$TS_SRC/.libs/libtree-sitter.a"
+if [ -f "$TS_A" ]; then
+    echo "  already present: libtree-sitter.a"
+else
+    if [ ! -d "$TS_SRC" ] || [ -z "$(ls -A "$TS_SRC" 2>/dev/null)" ]; then
+        echo "  cloning tree-sitter $TS_VERSION..."
+        git clone --depth=1 --branch "$TS_VERSION" "https://github.com/tree-sitter/tree-sitter.git" "$TS_SRC"
+    fi
+    echo "  building static libtree-sitter.a..."
+    (
+        cd "$TS_SRC"
+        mkdir -p .libs
+        cc -c -O2 -fPIC -Ilib/include -Ilib/src lib/src/lib.c -o lib.o
+        ar rcs .libs/libtree-sitter.a lib.o
+        rm -f lib.o
+    )
     echo "  done."
 fi
 
@@ -97,6 +143,23 @@ echo "==> Hack font (bundled default, from Source Foundry)"
 fetch "Hack" \
     "https://github.com/source-foundry/Hack/releases/download/v3.003/Hack-v3.003-ttf.tar.gz" \
     "$VENDOR/fonts" 1 "ttf/Hack-Regular.ttf"
+
+echo ""
+echo "==> language registry (parsed down from Helix's languages.toml)"
+# Slopd's tree-sitter language set follows Helix: tools/gen-languages.py fetches
+# Helix's languages.toml (pinned) and relabels it into our tiny `languages` file
+# (name + grammar repo/rev/subpath + file extensions). GENERATED, never committed;
+# it resolves beside the binary at runtime like themes/ and grammars/. For dev
+# (`odin run`) that's the project root; release.sh regenerates it into the release
+# folder. Grammars themselves are NOT fetched here — they install at runtime via
+# `slopd --grammar`. Refresh by bumping HELIX_REF in the script and re-running.
+ROOT="$(dirname "$VENDOR")"
+if python3 "$ROOT/tools/gen-languages.py" "$ROOT/languages"; then
+    :
+else
+    echo "  WARNING: language registry generation failed (need python3 + network);" >&2
+    echo "  syntax highlighting will have no languages until it succeeds." >&2
+fi
 
 echo ""
 echo "All deps ready."
