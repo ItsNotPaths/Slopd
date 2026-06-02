@@ -15,18 +15,39 @@ Layout :: struct {
     vis:    Pane_Vis, // which panes these rects are for — computed once, here
 }
 
-compute_layout :: proc(win_w, win_h: i32, a: ^App) -> Layout {
+compute_layout :: proc(win_w, win_h: i32, a: ^App, now: f64) -> Layout {
     out: Layout
     out.gutter = i32(2 * a.scale)
 
-    // Status strip spans the full width along the bottom; the panes fill above.
-    strip_h := i32(24 * a.scale)
+    // Status strip spans the full width along the bottom; the panes fill above. Its
+    // height tracks the font zoom (the command line lives here) so big text doesn't
+    // clip, on top of the DPI scale.
+    strip_h := i32(24 * a.scale * font_zoom_ratio(a))
     if strip_h > win_h {
         strip_h = win_h
     }
     content_h := win_h - strip_h
     out.strip = Rect{0, content_h, win_w, strip_h}
     content := Rect{0, 0, win_w, content_h}
+
+    // Zen: the editor keeps the full width and the aux pane slides in over its right
+    // edge while it holds focus (the reveal is zen_anim, driven by set_focus). The
+    // editor rect just shrinks to the uncovered strip — there's no soft-wrap, so its
+    // glyphs keep their positions and only get clipped at the sliding edge, no reflow.
+    if a.view == .Zen {
+        r := anim_value(&a.zen_anim, now) // 0 hidden .. 1 docked
+        aux_w := max(0, win_w - i32(f32(win_w) * a.split))
+        aux_x := win_w - i32(f32(aux_w) * r)
+        if r > 0.001 {
+            out.editor = Rect{0, 0, aux_x, content_h}
+            out.aux = Rect{aux_x, 0, win_w - aux_x, content_h}
+            out.vis = {true, true}
+        } else {
+            out.editor = content
+            out.vis = {true, false}
+        }
+        return out
+    }
 
     // Pane visibility is derived (see panes_visible), so the layout has no hidden
     // state to track: two panes split by a.split; a lone visible pane fills the

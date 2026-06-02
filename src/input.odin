@@ -6,22 +6,22 @@ import "core:strings"
 import "vendor:glfw"
 
 // Input: GLFW key events -> mutations on App. Non-modal, Alt-rooted. Bare keys
-// stay free for typing (and for navigating a focused aux pane later); navigation
-// between panes lives under Alt.
-//
-// hjkl and the arrow keys are interchangeable: h/Left, j/Down, k/Up, l/Right.
+// stay free for typing; navigation uses the ARROW KEYS only (no hjkl aliases — in a
+// non-modal editor those letters have to type). Pane/terminal navigation lives under
+// Alt.
 //
 // Binds:
-//   Alt+H/Left, Alt+L/Right   focus editor / aux pane
+//   Alt+Left/Right            focus editor / aux pane
 //   Alt+C                     open the command line
 //   Alt+F/T/G/P               aux mode: FileTree / Terminal / Git / Procmon
 //   Alt+1..9                  jump to terminal session N (i3-style)
 //   Alt+N / Alt+Q             terminal: new / close session (max 99)
-//   Alt+K/Up, Alt+J/Down      terminal: switch session (switcher shows while Alt held)
+//   Alt+Up/Down               terminal: switch session (switcher shows while Alt held)
 //   Alt+[ / Alt+]             nudge the split
-//   Alt+A (+ direction)       drop a cursor / lay a multi-cursor trail (Esc collapses)
+//   Alt+A (+ arrow)           drop a cursor / lay a multi-cursor trail (Esc collapses)
 //   Alt+M                     one-shot prefix: next motion moves every cursor
-//   Esc                       cancel CL, else clear move-all, else collapse cursors, else quit
+//   Esc                       cancel CL / move-all / multi-cursor, else Zen on + flip pane side
+//   Ctrl+= / Ctrl+- / Ctrl+0  font zoom: grow / shrink / reset text in every pane (global)
 // Bare keys go to the focused editable (see cl_handle_key / buffer_key): typing,
 // motion, Tab, undo/redo (Ctrl+Z/Y), save (Ctrl+S), clipboard (Ctrl+C/X/V).
 
@@ -31,7 +31,7 @@ key_callback :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods
     if a == nil {
         return
     }
-    handle_key(a, window, key, action, mods)
+    handle_key(a, key, action, mods)
 }
 
 // Unicode text input. The focused editable owns it: the command line when active,
@@ -43,11 +43,18 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     if a == nil || a.alt_held {
         return
     }
+    a.blink_base = glfw.GetTime() // typing: caret solid, then resumes blinking
     a.move_all_armed = false // typing isn't a motion; cancel a pending move-all
     if a.cl_active {
         doc_insert_rune(&a.cl.doc, codepoint)
-    } else if a.focus == .Aux && a.aux_mode == .Config && a.config_pane.editing && codepoint >= 32 {
-        doc_insert_rune(&a.config_pane.edit, codepoint)
+    } else if a.focus == .Aux && a.aux_mode == .Config && codepoint >= 32 {
+        // Only the search box takes text (filtering live); setting and language rows
+        // are dropdowns, navigated with the arrows.
+        cp := &a.config_pane
+        if config_pane_is_search(cp.sel) && cp.open == .None {
+            doc_insert_rune(&cp.search, codepoint)
+            config_pane_filter(cp) // live filter as you type
+        }
     } else if a.focus == .Editor && codepoint >= 32 {
         b := editor_current(&a.editor)
         if !buffer_autopair(b, codepoint) {
@@ -56,11 +63,16 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     }
 }
 
-handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
-    // Track Alt held — drives the terminal-session overlay.
+handle_key :: proc(a: ^App, key, action, mods: i32) {
+    if action == glfw.PRESS || action == glfw.REPEAT {
+        a.blink_base = glfw.GetTime() // any keypress holds the caret solid, then blinks
+    }
+
+    // Track Alt held — drives the terminal-session overlay (fading it in on press).
     if key == glfw.KEY_LEFT_ALT || key == glfw.KEY_RIGHT_ALT {
         if action == glfw.PRESS {
             a.alt_held = true
+            anim_start(&a.switcher_anim, glfw.GetTime(), 0, 1, SWITCHER_DUR)
         } else if action == glfw.RELEASE {
             a.alt_held = false
         }
@@ -89,34 +101,33 @@ handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
     editing := a.cl_active || a.focus == .Editor // an editable owns the keys
 
     // Escape: cancel the command line, else clear a pending move-all prefix, else
-    // collapse a multi-cursor set, else quit.
+    // collapse a multi-cursor set. With nothing to cancel it drives Zen — turning it
+    // on (never off), then flipping the shown pane side (see zen_escape).
     if key == glfw.KEY_ESCAPE {
         if a.cl_active {
             cl_cancel(a)
-        } else if a.focus == .Aux && a.aux_mode == .Config && config_pane_cancel(&a.config_pane) {
-            // cancelled a settings edit or closed the language dropdown
         } else if a.move_all_armed {
             a.move_all_armed = false
         } else if a.focus == .Editor && len(d.cursors) > 1 {
             doc_collapse_to_primary(d)
         } else {
-            glfw.SetWindowShouldClose(window, true)
+            zen_escape(a)
         }
         return
     }
 
-    // Cursor-drop chord: while Alt+A is held, each direction moves the free caret
-    // and drops a cursor at the new spot (command line or buffer). hjkl == arrows.
+    // Cursor-drop chord: while Alt+A is held, each arrow moves the free caret and
+    // drops a cursor at the new spot (command line or buffer).
     if a.alt_held && a.a_held && editing {
         moved := true
         switch key {
-        case glfw.KEY_UP, glfw.KEY_K:
+        case glfw.KEY_UP:
             doc_move(d, .Up)
-        case glfw.KEY_DOWN, glfw.KEY_J:
+        case glfw.KEY_DOWN:
             doc_move(d, .Down)
-        case glfw.KEY_LEFT, glfw.KEY_H:
+        case glfw.KEY_LEFT:
             doc_move(d, .Left)
-        case glfw.KEY_RIGHT, glfw.KEY_L:
+        case glfw.KEY_RIGHT:
             doc_move(d, .Right)
         case:
             moved = false
@@ -140,9 +151,9 @@ handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
             return
         }
         switch key {
-        case glfw.KEY_H, glfw.KEY_LEFT:
+        case glfw.KEY_LEFT:
             set_focus(a, .Editor)
-        case glfw.KEY_L, glfw.KEY_RIGHT:
+        case glfw.KEY_RIGHT:
             set_focus(a, .Aux)
 
         // Alt+A is the cursor-drop chord (handled above); alone it is a no-op.
@@ -177,11 +188,11 @@ handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
             }
 
         // Alt+Up/Down is exclusively terminal-session switching.
-        case glfw.KEY_K, glfw.KEY_UP:
+        case glfw.KEY_UP:
             if a.aux_mode == .Terminal && a.term_count > 0 {
                 a.term_active = (a.term_active - 1 + a.term_count) % a.term_count
             }
-        case glfw.KEY_J, glfw.KEY_DOWN:
+        case glfw.KEY_DOWN:
             if a.aux_mode == .Terminal && a.term_count > 0 {
                 a.term_active = (a.term_active + 1) % a.term_count
             }
@@ -192,6 +203,24 @@ handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
             a.split = clampf(a.split + 0.02, 0.15, 0.85)
         }
         return
+    }
+
+    // Global font zoom: Ctrl +/- resizes text in every pane, Ctrl+0 resets. Gated on
+    // Ctrl-without-Alt so bare =/-/0 still type into the focused editable, and handled
+    // here (not in the per-pane key procs) because the zoom isn't owned by any pane.
+    // The main loop re-bakes the atlas next frame from app.font_px.
+    if mods & glfw.MOD_CONTROL != 0 && mods & glfw.MOD_ALT == 0 {
+        switch key {
+        case glfw.KEY_EQUAL, glfw.KEY_KP_ADD:
+            font_zoom(a, +1)
+            return
+        case glfw.KEY_MINUS, glfw.KEY_KP_SUBTRACT:
+            font_zoom(a, -1)
+            return
+        case glfw.KEY_0, glfw.KEY_KP_0:
+            font_zoom_reset(a)
+            return
+        }
     }
 
     // Bare keys go to the focused editable, consuming a pending move-all prefix (a
@@ -393,13 +422,13 @@ clipboard_set :: proc(a: ^App, joined: string, pieces: []string) {
 filetree_key :: proc(a: ^App, key, mods: i32) {
     ft := &a.tree
     switch key {
-    case glfw.KEY_J, glfw.KEY_DOWN:
+    case glfw.KEY_DOWN:
         filetree_move(ft, 1)
-    case glfw.KEY_K, glfw.KEY_UP:
+    case glfw.KEY_UP:
         filetree_move(ft, -1)
-    case glfw.KEY_L, glfw.KEY_RIGHT:
+    case glfw.KEY_RIGHT:
         filetree_enter(ft) // into the selected folder
-    case glfw.KEY_H, glfw.KEY_LEFT:
+    case glfw.KEY_LEFT:
         filetree_parent(ft) // up to the parent
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
         if mods & glfw.MOD_SHIFT != 0 {
@@ -413,114 +442,149 @@ filetree_key :: proc(a: ^App, key, mods: i32) {
     }
 }
 
-// Config aux pane key handling (bare keys, when the Config pane is focused). Three
-// levels: editing a setting value, an open language dropdown, or list navigation.
-// hjkl == arrows throughout.
+// Config aux pane key handling (bare keys, when the Config pane is focused). Non-modal,
+// arrow-keys-only: Up/Down move between rows; the highlighted row owns the rest. A
+// setting or language row opens a dropdown on Right/Enter (choices for a setting, grammar
+// actions for a language); the search box edits in place (typed chars via char_callback).
 config_key :: proc(a: ^App, key, mods: i32) {
     cp := &a.config_pane
 
-    if cp.editing {
-        if edit_motion(&cp.edit, key, mods, false) {
-            return
-        }
-        ctrl := mods & glfw.MOD_CONTROL != 0
-        switch key {
-        case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
-            config_commit_edit(a)
-        case glfw.KEY_BACKSPACE:
-            if ctrl {
-                doc_delete_word_back(&cp.edit)
-            } else {
-                doc_backspace(&cp.edit)
-            }
-        case glfw.KEY_DELETE:
-            if ctrl {
-                doc_delete_word_forward(&cp.edit)
-            } else {
-                doc_delete(&cp.edit)
-            }
-        }
-        return
-    }
-
-    if cp.expanded >= 0 {
+    if cp.open != .None {
         config_dropdown_key(a, key)
         return
     }
 
     switch key {
-    case glfw.KEY_J, glfw.KEY_DOWN:
-        config_pane_move(cp, 1)
-    case glfw.KEY_K, glfw.KEY_UP:
-        config_pane_move(cp, -1)
-    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER, glfw.KEY_L, glfw.KEY_RIGHT:
-        config_activate(a)
+    case glfw.KEY_UP:
+        config_nav(a, -1)
+        return
+    case glfw.KEY_DOWN:
+        config_nav(a, 1)
+        return
+    }
+
+    // A setting row: Right / Enter opens its choice dropdown.
+    if s, ok := config_pane_setting(cp.sel); ok {
+        switch key {
+        case glfw.KEY_RIGHT, glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
+            config_pane_open_setting(a, s)
+        }
+        return
+    }
+
+    // A language row: Right / Enter opens its options dropdown.
+    if config_pane_lang(cp, cp.sel) != nil {
+        switch key {
+        case glfw.KEY_RIGHT, glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
+            config_activate(a)
+        }
+        return
+    }
+
+    // The search box (the only text-input row): Left/Right move the caret;
+    // Backspace/Delete edit and refilter the language list live.
+    d := &cp.search
+    if edit_motion(d, key, mods, false) {
+        return
+    }
+    ctrl := mods & glfw.MOD_CONTROL != 0
+    switch key {
+    case glfw.KEY_BACKSPACE:
+        if ctrl {doc_delete_word_back(d)} else {doc_backspace(d)}
+        config_pane_filter(cp)
+    case glfw.KEY_DELETE:
+        if ctrl {doc_delete_word_forward(d)} else {doc_delete(d)}
+        config_pane_filter(cp)
     }
 }
 
-// Enter / l on a row: open the settings editor (setting row) or the language's
-// options dropdown (language row).
+// Row navigation (no dropdown open): just move the selection. Settings apply on
+// dropdown-select now, so there's no inline editor to commit/seed across the move.
+@(private = "file")
+config_nav :: proc(a: ^App, delta: int) {
+    config_pane_move(&a.config_pane, delta)
+}
+
+// Right / Enter on a language row opens its options dropdown.
 @(private = "file")
 config_activate :: proc(a: ^App) {
     cp := &a.config_pane
-    if s, ok := config_pane_setting(cp.sel); ok {
-        cp.editing = true
-        doc_set_text(&cp.edit, setting_value(a, s))
-        doc_cursor_to_end(&cp.edit)
-        return
+    if li, ok := config_pane_lang_index(cp, cp.sel); ok {
+        cp.open = .Lang
+        cp.open_idx = li // the language index, stable under filtering
+        cp.opt_sel = -1 // selection stays on the language root; -1 = the root row
     }
-    cp.expanded = cp.sel
-    cp.opt_sel = -1 // selection stays on the language root; -1 = the root row
 }
 
-// Enter on the editor: validate + apply + persist (an invalid value is a no-op,
-// keeping the old setting), then close the editor.
-@(private = "file")
-config_commit_edit :: proc(a: ^App) {
-    cp := &a.config_pane
-    if s, ok := config_pane_setting(cp.sel); ok {
-        val := strings.trim_space(doc_string(&cp.edit, context.temp_allocator))
-        setting_commit(a, s, val)
-    }
-    cp.editing = false
-    doc_clear(&cp.edit)
-}
-
-// Navigation within an open language dropdown.
+// Navigation within an open dropdown — dispatched to the setting or language variant.
 @(private = "file")
 config_dropdown_key :: proc(a: ^App, key: i32) {
+    switch a.config_pane.open {
+    case .Setting:
+        config_setting_dropdown_key(a, key)
+    case .Lang:
+        config_lang_dropdown_key(a, key)
+    case .None:
+    }
+}
+
+// A settings choice dropdown: Up/Down pick within the options (clamped), Left cancels,
+// Enter/Right commits the highlighted choice (validated + persisted) and closes.
+@(private = "file")
+config_setting_dropdown_key :: proc(a: ^App, key: i32) {
     cp := &a.config_pane
-    lang := config_pane_lang(cp, cp.expanded)
-    if lang == nil {
-        cp.expanded = -1
+    s := Setting(cp.open_idx)
+    opts := setting_options(a, s)
+    switch key {
+    case glfw.KEY_DOWN:
+        cp.opt_sel = min(cp.opt_sel + 1, len(opts) - 1)
+    case glfw.KEY_UP:
+        cp.opt_sel = max(cp.opt_sel - 1, 0)
+    case glfw.KEY_LEFT:
+        cp.open = .None // cancel, keep the setting row selected
+    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER, glfw.KEY_RIGHT:
+        if cp.opt_sel >= 0 && cp.opt_sel < len(opts) {
+            setting_commit(a, s, opts[cp.opt_sel])
+        }
+        cp.open = .None
+    }
+}
+
+// Navigation within an open language dropdown. Arrow keys only.
+@(private = "file")
+config_lang_dropdown_key :: proc(a: ^App, key: i32) {
+    cp := &a.config_pane
+    if cp.open_idx < 0 || cp.open_idx >= len(cp.langs) {
+        cp.open = .None
         return
     }
+    lang := &cp.langs[cp.open_idx] // open_idx is a language index
     buf: [len(LangOption)]LangOption
     opts := lang_options(lang.present, buf[:])
     // opt_sel == -1 is the language root (still selected while open); 0.. are options.
     switch key {
-    case glfw.KEY_J, glfw.KEY_DOWN:
+    case glfw.KEY_DOWN:
         if cp.opt_sel >= len(opts) - 1 {
-            cp.expanded = -1 // step out below the dropdown
-            config_pane_move(cp, 1)
+            cp.open = .None // step out below the dropdown
+            config_nav(a, 1)
         } else {
             cp.opt_sel += 1
         }
-    case glfw.KEY_K, glfw.KEY_UP:
+    case glfw.KEY_UP:
         if cp.opt_sel <= -1 {
-            cp.expanded = -1 // step off the root, upward
-            config_pane_move(cp, -1)
+            cp.open = .None // step off the root, upward
+            config_nav(a, -1)
         } else {
             cp.opt_sel -= 1
         }
-    case glfw.KEY_H, glfw.KEY_LEFT:
-        cp.expanded = -1 // collapse, keep the language row selected
-    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER, glfw.KEY_L, glfw.KEY_RIGHT:
+    case glfw.KEY_LEFT:
+        cp.open = .None // collapse, keep the language row selected
+    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER, glfw.KEY_RIGHT:
         if cp.opt_sel == -1 {
-            cp.expanded = -1 // re-Enter on the root minimises
+            cp.open = .None // re-Enter on the root minimises
         } else {
             config_run_option(a, lang.name, opts[cp.opt_sel])
-            cp.expanded = -1
+            cp.open = .None
         }
     }
 }

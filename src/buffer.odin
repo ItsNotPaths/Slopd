@@ -11,7 +11,8 @@ import "core:strings"
 Buffer :: struct {
     using doc:     Doc, // lines + cursors
     path:          string, // owned; "" = unnamed/scratch
-    scroll:        int, // first visible line (view state, clamped at render)
+    scroll:        int, // first visible line, the scroll TARGET (clamped at render)
+    scroll_anim:   Anim, // visual top line tweening toward `scroll` (smooth scroll)
     dirty:         bool,
     final_newline: bool, // did the file end in '\n'? preserved on save (POSIX round-trip)
 }
@@ -87,6 +88,7 @@ buffer_destroy :: proc(b: ^Buffer) {
 buffer_set_text :: proc(b: ^Buffer, text: string) {
     doc_set_text(&b.doc, text)
     b.scroll = 0
+    b.scroll_anim = {} // settled at the top; a reused scratch buffer won't smear from its old scroll
 }
 
 buffer_load :: proc(b: ^Buffer, path: string) -> bool {

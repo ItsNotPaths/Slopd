@@ -8,31 +8,136 @@ import "core:testing"
 @(test)
 test_config_pane_nav :: proc(t: ^testing.T) {
     cp: app.ConfigPane
-    app.config_pane_init(&cp)
+    app.config_pane_init(&cp, nil)
     defer app.config_pane_destroy(&cp)
 
     // Seed a deterministic lang list so the nav assertions don't depend on the
-    // generated `languages` registry being present.
+    // generated `languages` registry being present, then rebuild the filtered view.
     clear(&cp.langs)
     append(&cp.langs, app.LangStatus{name = "a"}, app.LangStatus{name = "b"}, app.LangStatus{name = "c"})
+    app.config_pane_filter(&cp)
 
+    // Layout: settings, the search row, then one row per (filtered) language.
     rows := app.config_pane_rows(&cp)
-    testing.expect_value(t, rows, app.SETTING_COUNT + 3)
+    testing.expect_value(t, rows, app.SETTING_COUNT + 1 + 3)
 
     // Up at the top clamps to 0.
     app.config_pane_move(&cp, -5)
     testing.expect_value(t, cp.sel, 0)
 
-    // The first rows are settings; past them are languages.
+    // Row 0 is a setting; SETTING_COUNT is the search row (neither setting nor lang);
+    // the first language is right after it.
     _, is_setting := app.config_pane_setting(0)
     testing.expect(t, is_setting)
+    testing.expect(t, app.config_pane_is_search(app.SETTING_COUNT))
     _, past := app.config_pane_setting(app.SETTING_COUNT)
     testing.expect(t, !past)
-    testing.expect(t, app.config_pane_lang(&cp, app.SETTING_COUNT) != nil)
+    testing.expect(t, app.config_pane_lang(&cp, app.SETTING_COUNT) == nil)
+    testing.expect(t, app.config_pane_lang(&cp, app.SETTING_COUNT + 1) != nil)
 
     // Down past the end clamps to the last row.
     app.config_pane_move(&cp, rows + 10)
     testing.expect_value(t, cp.sel, rows - 1)
+}
+
+@(test)
+test_config_pane_filter :: proc(t: ^testing.T) {
+    cp: app.ConfigPane
+    app.config_pane_init(&cp, nil)
+    defer app.config_pane_destroy(&cp)
+
+    clear(&cp.langs)
+    append(
+        &cp.langs,
+        app.LangStatus{name = "python"},
+        app.LangStatus{name = "javascript"},
+        app.LangStatus{name = "typescript"},
+        app.LangStatus{name = "c"},
+    )
+
+    app.config_pane_filter(&cp)
+    testing.expect_value(t, len(cp.filtered), 4) // empty query -> all langs
+
+    app.doc_set_text(&cp.search, "script")
+    app.config_pane_filter(&cp)
+    testing.expect_value(t, len(cp.filtered), 2) // javascript, typescript
+
+    app.doc_set_text(&cp.search, "PY") // case-insensitive
+    app.config_pane_filter(&cp)
+    testing.expect_value(t, len(cp.filtered), 1)
+
+    // The first filtered language resolves through the search-row offset.
+    l := app.config_pane_lang(&cp, app.SETTING_COUNT + 1)
+    testing.expect(t, l != nil)
+    testing.expect_value(t, l.name, "python")
+
+    app.doc_set_text(&cp.search, "nomatch")
+    app.config_pane_filter(&cp)
+    testing.expect_value(t, len(cp.filtered), 0)
+}
+
+@(test)
+test_setting_options :: proc(t: ^testing.T) {
+    a: app.App
+
+    indent := app.setting_options(&a, .Indent)
+    testing.expect_value(t, len(indent), 4)
+    testing.expect_value(t, indent[0], "tab")
+    testing.expect_value(t, indent[2], "spaces4")
+
+    ln := app.setting_options(&a, .LineNumbers)
+    testing.expect_value(t, len(ln), 2)
+    testing.expect_value(t, ln[0], "global")
+    testing.expect_value(t, ln[1], "relative")
+
+    // Theme always offers the baked-in default and the Thrawk "global" follow option,
+    // in that order, ahead of any discovered themes/ files.
+    theme := app.setting_options(&a, .Theme)
+    testing.expect(t, len(theme) >= 2)
+    testing.expect_value(t, theme[0], "default")
+    testing.expect_value(t, theme[1], "global")
+}
+
+// Opening a setting dropdown pre-selects the current value so the active choice is
+// highlighted.
+@(test)
+test_config_open_setting :: proc(t: ^testing.T) {
+    a: app.App
+    app.config_pane_init(&a.config_pane, nil)
+    defer app.config_pane_destroy(&a.config_pane)
+
+    a.indent = {.Spaces, 4} // -> "spaces4", index 2 in the indent options
+    app.config_pane_open_setting(&a, .Indent)
+    testing.expect_value(t, a.config_pane.open, app.Open_Kind.Setting)
+    testing.expect_value(t, a.config_pane.opt_sel, 2)
+}
+
+// The "global" theme token resolves to ~/.config/unrawk/active.theme when that file
+// exists (the universal Thrawk theme), and to "" (baked-in default) when it doesn't.
+@(test)
+test_theme_resolve_global :: proc(t: ^testing.T) {
+    home := "/tmp/slopd_home_test"
+    unrawk := "/tmp/slopd_home_test/.config/unrawk"
+    active := "/tmp/slopd_home_test/.config/unrawk/active.theme"
+    for d in ([]string{home, "/tmp/slopd_home_test/.config", unrawk}) {
+        os.make_directory(d)
+    }
+    defer {
+        os.remove(active)
+        os.remove(unrawk)
+        os.remove("/tmp/slopd_home_test/.config")
+        os.remove(home)
+    }
+
+    old := os.get_env("HOME", context.temp_allocator)
+    os.set_env("HOME", home)
+    defer os.set_env("HOME", old)
+
+    os.remove(active) // ensure absent first
+    testing.expect_value(t, app.theme_resolve("global"), "") // missing -> baked-in default
+
+    testing.expect(t, os.write_entire_file(active, transmute([]byte)string("bg: #000000\n")) == nil)
+    testing.expect_value(t, app.theme_resolve("global"), active)
 }
 
 @(test)
@@ -48,28 +153,6 @@ test_lang_options :: proc(t: ^testing.T) {
     testing.expect_value(t, len(present), 3)
     testing.expect_value(t, present[1], app.LangOption.Update)
     testing.expect_value(t, present[2], app.LangOption.Uninstall)
-}
-
-@(test)
-test_config_pane_cancel :: proc(t: ^testing.T) {
-    cp: app.ConfigPane
-    app.config_pane_init(&cp)
-    defer app.config_pane_destroy(&cp)
-
-    // Nothing open: Esc isn't consumed (the app may then quit).
-    testing.expect(t, !app.config_pane_cancel(&cp))
-
-    // An open dropdown closes first.
-    cp.expanded = app.SETTING_COUNT
-    testing.expect(t, app.config_pane_cancel(&cp))
-    testing.expect_value(t, cp.expanded, -1)
-
-    // An in-progress edit cancels before the dropdown.
-    cp.editing = true
-    cp.expanded = app.SETTING_COUNT
-    testing.expect(t, app.config_pane_cancel(&cp))
-    testing.expect(t, !cp.editing)
-    testing.expect_value(t, cp.expanded, app.SETTING_COUNT) // untouched: edit took priority
 }
 
 @(test)

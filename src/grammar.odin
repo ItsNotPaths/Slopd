@@ -148,6 +148,22 @@ grammar_find :: proc(grammars: []Grammar, name: string) -> (^Grammar, bool) {
     return nil, false
 }
 
+// The registry language whose file extensions include `ext` (no leading dot), or
+// ("", false). Used to pick a buffer's grammar for highlighting.
+grammar_for_ext :: proc(grammars: []Grammar, ext: string) -> (name: string, ok: bool) {
+    if ext == "" {
+        return "", false
+    }
+    for g in grammars {
+        for e in g.exts {
+            if e == ext {
+                return g.name, true
+            }
+        }
+    }
+    return "", false
+}
+
 // --- install actions (msg is temp-allocated, for printing / surfacing) ---
 
 // Runs a command, capturing combined stdout+stderr (temp-allocated). ok iff it

@@ -1,5 +1,7 @@
 package main
 
+import "core:strings"
+
 // ConfigPane — the Config aux mode's state: navigation across the settings rows and
 // the language list, the inline settings editor (a one-line Doc, sharing the buffer
 // editing core like the command line does), and each known language's grammar
@@ -8,7 +10,7 @@ package main
 // grammars/ at init and re-read on demand (config_pane_refresh).
 
 LangStatus :: struct {
-    name:    string, // borrowed from cp.grammars (the loaded registry) — not owned
+    name:    string, // borrowed from the App registry (passed to init) — not owned
     present: bool,   // grammars/<name>.so exists
 }
 
@@ -21,33 +23,48 @@ LangOption :: enum {
     Uninstall,
 }
 
+// What kind of row has its dropdown open (if any). Settings pick from a fixed/derived
+// choice list; languages pick a grammar action. Both share opt_sel + the dropdown
+// navigation; open_idx disambiguates which row (a Setting value, or a langs index).
+Open_Kind :: enum {
+    None,
+    Setting,
+    Lang,
+}
+
+// There is no edit "mode": the highlighted row owns the keys directly (non-modal).
+// Settings are chosen from a dropdown (Right/Enter opens it, like a language row);
+// the search row's `search` filters the language list live as you type.
 ConfigPane :: struct {
-    sel:      int, // selected row: [0, SETTING_COUNT) are settings, then one per lang
-    expanded: int, // the language row whose options are open, or -1
+    // Rows: [0, SETTING_COUNT) settings, then the search row, then the FILTERED langs.
+    sel:      int, // selected row
+    open:     Open_Kind, // which row's dropdown is open (None when none)
+    open_idx: int, // Setting(open_idx) when open==.Setting; langs[open_idx] when .Lang
     opt_sel:  int, // selection within an open dropdown: -1 = the language root, 0.. = options
-    editing:  bool, // a settings value is being edited (keys go to `edit`)
-    edit:     Doc, // the one-line edit buffer
+    search:   Doc, // the persistent syntax filter query (live on the search row)
     dir:      string, // grammars directory (owned)
-    grammars: []Grammar, // the language registry (owned); backs the langs list
-    langs:    [dynamic]LangStatus,
+    langs:    [dynamic]LangStatus, // names borrow the App registry (see config_pane_init)
+    filtered: [dynamic]int, // indices into langs matching `search` — the displayed langs
 }
 
 SETTING_COUNT :: len(Setting)
 
-config_pane_init :: proc(cp: ^ConfigPane) {
-    doc_init(&cp.edit)
-    cp.expanded = -1
+// `grammars` is the App-owned registry; the pane borrows each name for its lang list
+// (the App outlives the pane), so the pane frees only its own langs array.
+config_pane_init :: proc(cp: ^ConfigPane, grammars: []Grammar) {
+    doc_init(&cp.search)
+    cp.open = .None
     cp.dir = grammars_dir()
-    cp.grammars = load_grammars()
-    for g in cp.grammars {
+    for g in grammars {
         append(&cp.langs, LangStatus{name = g.name, present = grammar_present(cp.dir, g.name)})
     }
+    config_pane_filter(cp) // filtered = all languages initially
 }
 
 config_pane_destroy :: proc(cp: ^ConfigPane) {
-    doc_destroy(&cp.edit)
+    doc_destroy(&cp.search)
     delete(cp.langs)
-    grammars_destroy(cp.grammars)
+    delete(cp.filtered)
     delete(cp.dir)
 }
 
@@ -58,12 +75,28 @@ config_pane_refresh :: proc(cp: ^ConfigPane) {
     }
 }
 
-// Total navigable rows: the settings block followed by one row per language.
-config_pane_rows :: proc(cp: ^ConfigPane) -> int {
-    return SETTING_COUNT + len(cp.langs)
+// Rebuilds the displayed language list from the search query (case-insensitive
+// substring on the name; empty query shows all). Closes any open dropdown and keeps
+// the selection in range. Call after every change to `search`.
+config_pane_filter :: proc(cp: ^ConfigPane) {
+    clear(&cp.filtered)
+    q := strings.to_lower(strings.trim_space(doc_string(&cp.search, context.temp_allocator)), context.temp_allocator)
+    for l, i in cp.langs {
+        if q == "" || strings.contains(strings.to_lower(l.name, context.temp_allocator), q) {
+            append(&cp.filtered, i)
+        }
+    }
+    cp.open = .None
+    cp.sel = clamp(cp.sel, 0, max(0, config_pane_rows(cp) - 1))
 }
 
-// The Setting at row r, or (_, false) when r is a language row.
+// Total navigable rows: the settings block, the search row, then one row per filtered
+// language.
+config_pane_rows :: proc(cp: ^ConfigPane) -> int {
+    return SETTING_COUNT + 1 + len(cp.filtered)
+}
+
+// The Setting at row r, or (_, false) when r is not a settings row.
 config_pane_setting :: proc(r: int) -> (Setting, bool) {
     if r >= 0 && r < SETTING_COUNT {
         return Setting(r), true
@@ -71,32 +104,46 @@ config_pane_setting :: proc(r: int) -> (Setting, bool) {
     return {}, false
 }
 
-// The language at row r, or nil when r is a settings row.
-config_pane_lang :: proc(cp: ^ConfigPane, r: int) -> ^LangStatus {
-    i := r - SETTING_COUNT
-    if i < 0 || i >= len(cp.langs) {
-        return nil
-    }
-    return &cp.langs[i]
+// The search row sits between the settings and the (filtered) language list.
+config_pane_is_search :: proc(r: int) -> bool {
+    return r == SETTING_COUNT
 }
 
+// The langs index shown at row r, or (_, false) for non-language rows.
+config_pane_lang_index :: proc(cp: ^ConfigPane, r: int) -> (int, bool) {
+    i := r - (SETTING_COUNT + 1)
+    if i < 0 || i >= len(cp.filtered) {
+        return 0, false
+    }
+    return cp.filtered[i], true
+}
+
+// The language at row r, or nil when r is not a language row.
+config_pane_lang :: proc(cp: ^ConfigPane, r: int) -> ^LangStatus {
+    if i, ok := config_pane_lang_index(cp, r); ok {
+        return &cp.langs[i]
+    }
+    return nil
+}
+
+// Pure selection clamp — the caller (config_nav) brackets it with commit/seed.
 config_pane_move :: proc(cp: ^ConfigPane, delta: int) {
     cp.sel = clamp(cp.sel + delta, 0, max(0, config_pane_rows(cp) - 1))
 }
 
-// Esc handling: cancel an in-progress edit, else close an open dropdown. Returns
-// true if it consumed the Esc (so the app doesn't fall through to quitting).
-config_pane_cancel :: proc(cp: ^ConfigPane) -> bool {
-    if cp.editing {
-        cp.editing = false
-        doc_clear(&cp.edit)
-        return true
+// Opens the dropdown for the highlighted setting row, pre-selecting its current
+// value so the active choice is highlighted. No-op off a setting row.
+config_pane_open_setting :: proc(a: ^App, s: Setting) {
+    cp := &a.config_pane
+    cp.open = .Setting
+    cp.open_idx = int(s)
+    cp.opt_sel = 0
+    cur := setting_value(a, s)
+    for o, i in setting_options(a, s) {
+        if o == cur {
+            cp.opt_sel = i
+        }
     }
-    if cp.expanded >= 0 {
-        cp.expanded = -1
-        return true
-    }
-    return false
 }
 
 // The options for a language, written into buf, in display order. The count varies

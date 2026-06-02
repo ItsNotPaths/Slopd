@@ -2,7 +2,6 @@ package main
 
 import "core:fmt"
 import "core:os"
-import "core:path/filepath"
 import "core:strings"
 import gl "vendor:OpenGL"
 import "vendor:glfw"
@@ -13,17 +12,6 @@ TITLE :: "Slopd"
 
 GL_MAJOR :: 3
 GL_MINOR :: 3
-
-// The theme file to actually load: the config's value if set, else a themes/default.theme
-// shipped beside the binary (asset_path, same exe-relative rule as grammars/), else ""
-// for the baked-in default. Result is temp-allocated.
-theme_load_path :: proc(configured: string) -> string {
-    if configured != "" {
-        return configured
-    }
-    cand := filepath.join({asset_path("themes", context.temp_allocator), "default.theme"}, context.temp_allocator) or_else ""
-    return os.exists(cand) ? cand : ""
-}
 
 main :: proc() {
     // Grammar CLI (`slopd --health [lang]`, `slopd --grammar <action> <lang>`) runs
@@ -71,24 +59,30 @@ main :: proc() {
 
     cfg := load_config()
     defer config_destroy(&cfg)
-    app.theme = load_theme(theme_load_path(cfg.theme_path))
+    app.theme = load_theme(theme_resolve(cfg.theme_path))
     app.theme_path = strings.clone(cfg.theme_path) // the raw config value, for the settings pane
     app.indent = cfg.indent
     app.line_numbers = cfg.line_numbers
+    app.font_px = cfg.font_px // persisted font zoom; text_init bakes the atlas at it
 
     editor_init(&app.editor)
     defer editor_destroy(&app.editor)
     filetree_init(&app.tree)
     defer filetree_destroy(&app.tree)
-    config_pane_init(&app.config_pane)
+    app.grammars = load_grammars() // shared by the config pane + the highlighter
+    defer grammars_destroy(app.grammars)
+    config_pane_init(&app.config_pane, app.grammars)
     defer config_pane_destroy(&app.config_pane)
+    highlighter_init(&app.hl)
+    defer highlighter_destroy(&app.hl)
     if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {
         app.scale = sx
     }
 
-    // Glyph renderer. Atlas is baked at physical pixels (15 logical * DPI scale).
+    // Glyph renderer. Atlas is baked at physical pixels (font_px logical * DPI
+    // scale); font_px is the user's zoom level, defaulting to FONT_BASE_PX.
     text: Text
-    if !text_init(&text, choose_font(), 15, app.scale) {
+    if !text_init(&text, choose_font(), app.font_px, app.scale) {
         fmt.eprintln("text_init failed (font/shader)")
         return
     }
@@ -107,14 +101,31 @@ main :: proc() {
         // escapes into App state, so one free_all per frame keeps it bounded.
         free_all(context.temp_allocator)
 
+        now := glfw.GetTime()
         w, h := glfw.GetFramebufferSize(window)
-        // Track DPI: re-bake the atlas if the window moved to another monitor.
+        // Track DPI, then re-bake the atlas if the DPI scale (monitor move) or the
+        // font zoom (Ctrl +/-) changed since last frame. text_apply no-ops otherwise.
         if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {
             app.scale = sx
-            text_set_scale(&text, sx)
         }
-        render(&app, &text, w, h)
+        text_apply(&text, app.font_px, app.scale)
+        render(&app, &text, w, h, now)
         glfw.SwapBuffers(window)
-        glfw.WaitEvents()
+
+        // Debounced font-zoom save: once the size has sat unchanged for FONT_SAVE_DELAY
+        // (the deadline app_next_wake also wakes us for), write it to config and disarm.
+        if app.font_save_at > 0 && now >= app.font_save_at {
+            config_set("font_size", fmt.tprintf("%d", int(app.font_px)))
+            app.font_save_at = 0
+        }
+
+        // Adaptive wait: spin at vsync while something animates, otherwise block
+        // until the next event (0% idle). An external glfw.PostEmptyEvent — e.g. a
+        // future terminal's PTY reader thread — unblocks either wait.
+        if wake := app_next_wake(&app, now); wake >= 0 {
+            glfw.WaitEventsTimeout(wake)
+        } else {
+            glfw.WaitEvents()
+        }
     }
 }

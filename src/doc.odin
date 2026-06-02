@@ -18,6 +18,7 @@ Doc :: struct {
     cursors: [dynamic]Cursor,
     primary: int,
     undo:    Undo, // diff/op journal (see undo.odin)
+    version: u64, // bumped on every content change; lets the highlighter cache its tree
 }
 
 Pos :: struct {
@@ -69,6 +70,7 @@ doc_set_text :: proc(d: ^Doc, text: string) {
         append(&d.lines, Line{})
     }
     doc_reset_cursor(d, {})
+    d.version += 1 // wholesale replacement invalidates any cached highlight tree
 }
 
 // Empties the document back to one blank line with a single cursor at the origin.
@@ -481,6 +483,9 @@ doc_apply :: proc(d: ^Doc, edits_in: []Edit, rec: ^Batch = nil) -> bool {
     }
     d.primary = 0
     doc_merge_cursors(d)
+    if changed {
+        d.version += 1
+    }
     return changed
 }
 

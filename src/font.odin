@@ -1,14 +1,18 @@
 package main
 
 import "core:c"
+import "core:math"
 import "core:os"
 import gl "vendor:OpenGL"
 import stbtt "vendor:stb/truetype"
 
-// The bundled default font, embedded at build time. Fetched into vendor/ by
-// download-deps.sh (Source Foundry's Hack). A user font (SLOPD_FONT) overrides
-// it at runtime; Hack is the fallback.
-HACK_TTF := #load("../vendor/fonts/Hack-Regular.ttf")
+// The bundled default font, embedded at build time. Fetched + subset into vendor/ by
+// download-deps.sh (Iosevka Fixed — no ligatures, strictly uniform advance, so every
+// glyph lands on Slopd's fixed cell grid). The upstream TTF carries thousands of CJK/
+// symbol glyphs (~9MB); we bake only printable ASCII (FONT_FIRST..), so the script
+// strips it to that range (~12KB) before embedding. A user font (SLOPD_FONT) overrides
+// it at runtime; this Iosevka Fixed subset is the fallback.
+IOSEVKA_TTF := #load("../vendor/fonts/IosevkaFixed-Latin.ttf")
 
 // We bake the printable ASCII range into one atlas for now. Lazy insertion of
 // arbitrary Unicode glyphs can come later behind the same Font interface.
@@ -24,12 +28,12 @@ Font :: struct {
     ascent:      f32, // baseline offset from the top, physical px
 }
 
-// Picks the user's font (SLOPD_FONT) if set and readable, else the bundled Hack.
+// Picks the user's font (SLOPD_FONT) if set and readable, else bundled Iosevka Fixed.
 choose_font :: proc() -> []u8 {
     if path := os.get_env("SLOPD_FONT", context.temp_allocator); path != "" {
-        return os.read_entire_file_from_path(path, context.allocator) or_else HACK_TTF
+        return os.read_entire_file_from_path(path, context.allocator) or_else IOSEVKA_TTF
     }
-    return HACK_TTF
+    return IOSEVKA_TTF
 }
 
 // Rasterizes the ASCII range into an atlas texture and records monospace metrics.
@@ -60,7 +64,12 @@ font_load :: proc(f: ^Font, ttf: []u8, px: f32) -> bool {
     f.line_height = f32(ascent - descent + line_gap) * scale
     advance, lsb: c.int
     stbtt.GetCodepointHMetrics(&info, 'M', &advance, &lsb) // monospace: any glyph
-    f.cell_w = f32(advance) * scale
+    // Snap the cell to a whole physical pixel. Glyphs step the pen by this fixed
+    // width (not their own fractional advance), so every cell origin lands on the
+    // same integer grid the carets and selection use — otherwise integer-aligned
+    // glyph ink drifts ±1px per cell against a fractional advance and the text
+    // stops looking precisely monospace.
+    f.cell_w = math.round(f32(advance) * scale)
 
     if f.tex != 0 { // re-bake (e.g. DPI change): replace the old atlas texture
         gl.DeleteTextures(1, &f.tex)

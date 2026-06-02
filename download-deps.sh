@@ -53,29 +53,40 @@ else
 fi
 
 echo ""
-echo "==> tree-sitter (runtime parser lib for syntax highlighting; static lib)"
-# The tree-sitter C runtime (parser engine), pinned to a release tag for
-# reproducibility. Per-language GRAMMARS are NOT vendored here — they install at
-# runtime via `slopd --grammar` (git clone + cc the parser to grammars/<lang>.so).
-# This vendors only the engine the editor links against (Odin foreign import). Its
-# whole runtime is the lib/src/lib.c amalgamation, so — like libvterm — we compile
-# that one file straight to libtree-sitter.a with cc + ar, no Makefile needed.
+echo "==> tree-sitter (Odin bindings + runtime parser lib for syntax highlighting)"
+# Syntax highlighting links the tree-sitter C runtime through laytan/odin-tree-sitter
+# (MIT) — complete, maintained Odin foreign bindings — pinned to a commit. Its foreign
+# import expects tree-sitter/libtree-sitter.a beside the bindings, so we clone the
+# tree-sitter C source (pinned tag) into that subdir and compile its lib.c amalgamation
+# to the .a there (cc + ar, no Makefile — like libvterm). We use ONLY the engine
+# bindings: Slopd owns grammar install (`slopd --grammar`) + runtime dlopen, so the
+# bindings' own grammar-build machinery (build/, per-grammar binding generation) goes
+# unused. Per-language GRAMMARS are NOT vendored — they install at runtime.
 TS_VERSION="v0.26.9"
-TS_SRC="$VENDOR/tree-sitter"
-TS_A="$TS_SRC/.libs/libtree-sitter.a"
-if [ -f "$TS_A" ]; then
-    echo "  already present: libtree-sitter.a"
+TS_BINDINGS_REV="8a33ed2be99736437c00df98cb26e01c2a772b61"
+OTS_SRC="$VENDOR/odin-tree-sitter"
+TS_SRC="$OTS_SRC/tree-sitter"          # where the bindings' foreign import looks
+TS_A="$TS_SRC/libtree-sitter.a"
+if [ -f "$TS_A" ] && [ -f "$OTS_SRC/bindings.odin" ]; then
+    echo "  already present: odin-tree-sitter + libtree-sitter.a"
 else
-    if [ ! -d "$TS_SRC" ] || [ -z "$(ls -A "$TS_SRC" 2>/dev/null)" ]; then
+    if [ ! -f "$OTS_SRC/bindings.odin" ]; then
+        echo "  cloning odin-tree-sitter bindings (pinned $TS_BINDINGS_REV)..."
+        rm -rf "$OTS_SRC"
+        git clone --depth=1 "https://github.com/laytan/odin-tree-sitter.git" "$OTS_SRC"
+        git -C "$OTS_SRC" fetch -q --depth 1 origin "$TS_BINDINGS_REV"
+        git -C "$OTS_SRC" checkout -q "$TS_BINDINGS_REV"
+    fi
+    if [ ! -d "$TS_SRC/lib" ]; then
         echo "  cloning tree-sitter $TS_VERSION..."
+        rm -rf "$TS_SRC"
         git clone --depth=1 --branch "$TS_VERSION" "https://github.com/tree-sitter/tree-sitter.git" "$TS_SRC"
     fi
-    echo "  building static libtree-sitter.a..."
+    echo "  building static libtree-sitter.a (beside the bindings)..."
     (
         cd "$TS_SRC"
-        mkdir -p .libs
         cc -c -O2 -fPIC -Ilib/include -Ilib/src lib/src/lib.c -o lib.o
-        ar rcs .libs/libtree-sitter.a lib.o
+        ar rcs libtree-sitter.a lib.o
         rm -f lib.o
     )
     echo "  done."
@@ -137,12 +148,59 @@ else
 fi
 
 echo ""
-echo "==> Hack font (bundled default, from Source Foundry)"
-# The editor embeds Hack-Regular.ttf at build time (#load). Fetched from the
-# canonical Source Foundry release, not the local system, for reproducibility.
-fetch "Hack" \
-    "https://github.com/source-foundry/Hack/releases/download/v3.003/Hack-v3.003-ttf.tar.gz" \
-    "$VENDOR/fonts" 1 "ttf/Hack-Regular.ttf"
+echo "==> Iosevka Fixed font (bundled default, SIL OFL 1.1)"
+# The editor embeds IosevkaFixed-Latin.ttf at build time (#load). Iosevka Fixed has no
+# ligatures and a strictly uniform advance, so every glyph lands on Slopd's fixed cell
+# grid. Fetched from the canonical upstream release for reproducibility. Two wrinkles:
+#   - The PkgTTF asset is a .zip (not .tar.gz, so the tar-based fetch() can't take it)
+#     and bundles every weight; we pull out just the Regular face with python3's
+#     zipfile (already required for the language registry; avoids depending on unzip).
+#   - The upstream TTF carries thousands of CJK/symbol glyphs (~9MB), but Slopd only
+#     bakes printable ASCII, so we subset it to U+0020-007E with fontTools (~12KB)
+#     before embedding. fontTools is optional: without it we fall back to the full
+#     font (the build still works, just a far larger binary) and print how to get it.
+IOSEVKA_VERSION="34.6.1"
+IOSEVKA_TTF="$VENDOR/fonts/IosevkaFixed-Latin.ttf"
+if [ -f "$IOSEVKA_TTF" ]; then
+    echo "  already present: IosevkaFixed-Latin.ttf"
+else
+    echo "  downloading Iosevka Fixed (large: the PkgTTF zip is ~130MB)..."
+    mkdir -p "$VENDOR/fonts"
+    iosevka_zip="$(mktemp --suffix=.zip)"
+    iosevka_full="$(mktemp --suffix=.ttf)"
+    curl -fsSL \
+        "https://github.com/be5invis/Iosevka/releases/download/v${IOSEVKA_VERSION}/PkgTTF-IosevkaFixed-${IOSEVKA_VERSION}.zip" \
+        -o "$iosevka_zip"
+    python3 - "$iosevka_zip" "$iosevka_full" <<'PY'
+import sys, zipfile
+src, dst = sys.argv[1], sys.argv[2]
+z = zipfile.ZipFile(src)
+matches = [n for n in z.namelist() if n.endswith("IosevkaFixed-Regular.ttf")]
+if len(matches) != 1:
+    sys.exit(f"expected exactly one IosevkaFixed-Regular.ttf in the zip, found {matches}")
+with open(dst, "wb") as f:
+    f.write(z.read(matches[0]))
+PY
+    rm -f "$iosevka_zip"
+    # Subset to printable ASCII if fontTools is available; else ship the full font.
+    if python3 -c "import fontTools.subset" 2>/dev/null; then
+        echo "  subsetting to printable ASCII (fontTools)..."
+        python3 -m fontTools.subset "$iosevka_full" \
+            --unicodes=U+0020-007E \
+            --layout-features='' \
+            --no-hinting \
+            --name-IDs='*' \
+            --recommended-glyphs \
+            --output-file="$IOSEVKA_TTF"
+        rm -f "$iosevka_full"
+    else
+        echo "  WARNING: fontTools not found — embedding the FULL ~9MB font (the binary" >&2
+        echo "  will be much larger). Install it and re-run to get the ~12KB subset:" >&2
+        echo "    python3 -m pip install fonttools   # or your distro's python3-fonttools" >&2
+        mv "$iosevka_full" "$IOSEVKA_TTF"
+    fi
+    echo "  done."
+fi
 
 echo ""
 echo "==> language registry (parsed down from Helix's languages.toml)"

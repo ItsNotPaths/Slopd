@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
 import "core:strconv"
 import "core:strings"
 
@@ -30,12 +31,14 @@ Config :: struct {
     theme_path:   string, // absolute (owned), or "" for the baked-in default
     indent:       Indent,
     line_numbers: Line_Numbers,
+    font_px:      f32, // logical text size in points (font zoom), persisted across runs
 }
 
 load_config :: proc() -> Config {
     cfg := Config {
         indent       = {.Spaces, 4}, // matches the project's 4-space convention
         line_numbers = .Global,
+        font_px      = FONT_BASE_PX,
     }
     path := find_config()
     if path == "" {
@@ -45,7 +48,6 @@ load_config :: proc() -> Config {
     if src == nil {
         return cfg
     }
-    dir := filepath.dir(path) // slices into path; used immediately below
     rest := string(src)
     for line in strings.split_lines_iterator(&rest) {
         s := strings.trim_space(line)
@@ -60,7 +62,9 @@ load_config :: proc() -> Config {
         val := strings.trim_space(s[colon + 1:])
         switch key {
         case "theme":
-            cfg.theme_path = resolve_path(dir, val)
+            // Stored as a raw token (a themes/ name, "global", or "default"); it's
+            // resolved to a file path at load time by theme_resolve.
+            cfg.theme_path = strings.clone(val)
         case "indent":
             if ind, ok := parse_indent(val); ok {
                 cfg.indent = ind
@@ -71,6 +75,10 @@ load_config :: proc() -> Config {
                 cfg.line_numbers = .Global
             case "relative":
                 cfg.line_numbers = .Relative
+            }
+        case "font_size":
+            if n, ok := strconv.parse_int(val, 10); ok {
+                cfg.font_px = clampf(f32(n), FONT_PX_MIN, FONT_PX_MAX)
             }
         }
     }
@@ -112,13 +120,74 @@ find_config :: proc() -> string {
     return ""
 }
 
-// Resolves a theme path: absolute as-is, otherwise relative to the config's dir.
-@(private = "file")
-resolve_path :: proc(dir, val: string) -> string {
-    if filepath.is_abs(val) {
-        return strings.clone(val)
+// Resolves a theme config token to a file path for load_theme ("" => baked-in
+// default). Tokens come from the Config pane's theme dropdown:
+//   "" / "default"        -> themes/default.theme beside the binary (else baked-in)
+//   "global"              -> ~/.config/unrawk/active.theme, the universal Thrawk theme
+//                            (github.com/ItsNotPaths/Thrawk); falls back to default
+//   "<name>"              -> themes/<name>.theme beside the binary
+//   a value containing '/' -> taken literally (back-compat with hand-edited configs)
+// Result is temp-allocated; load_theme falls back to the baked-in default for "".
+theme_resolve :: proc(token: string) -> string {
+    if strings.contains(token, "/") {
+        return strings.clone(token, context.temp_allocator) // literal path, as-is
     }
-    return filepath.join({dir, val}) or_else strings.clone(val)
+    if token == "global" {
+        home := os.get_env("HOME", context.temp_allocator)
+        if home == "" {
+            return ""
+        }
+        p := filepath.join({home, ".config", "unrawk", "active.theme"}, context.temp_allocator) or_else ""
+        return os.exists(p) ? p : ""
+    }
+    name := token == "" ? "default" : token
+    file := fmt.tprintf("%s.theme", name)
+    p := filepath.join({asset_path("themes", context.temp_allocator), file}, context.temp_allocator) or_else ""
+    return os.exists(p) ? p : ""
+}
+
+// The dropdown choices for a setting. Theme is derived (themes/ beside the binary,
+// plus the "default" baked-in and "global" Thrawk-follow options); the others are
+// fixed presets. The theme list is temp-allocated; the fixed ones are static.
+setting_options :: proc(a: ^App, s: Setting) -> []string {
+    switch s {
+    case .LineNumbers:
+        return LINE_NUMBER_OPTS[:]
+    case .Indent:
+        return INDENT_OPTS[:]
+    case .Theme:
+        return theme_options(context.temp_allocator)
+    }
+    return nil
+}
+
+INDENT_OPTS := [?]string{"tab", "spaces2", "spaces4", "spaces8"}
+LINE_NUMBER_OPTS := [?]string{"global", "relative"}
+
+// "default" + "global" first, then every themes/<name>.theme beside the binary,
+// sorted. Names are cloned into `allocator`; the returned slice is too.
+@(private = "file")
+theme_options :: proc(allocator := context.allocator) -> []string {
+    out := make([dynamic]string, 0, 16, allocator)
+    append(&out, "default", "global") // baked-in default + the Thrawk universal theme
+    dir := asset_path("themes", context.temp_allocator)
+    if f, oerr := os.open(dir); oerr == nil {
+        defer os.close(f)
+        it := os.read_directory_iterator_create(f)
+        defer os.read_directory_iterator_destroy(&it)
+        for fi in os.read_directory_iterator(&it) {
+            if !strings.has_suffix(fi.name, ".theme") {
+                continue
+            }
+            base := strings.trim_suffix(fi.name, ".theme")
+            if base == "default" {
+                continue // already offered as the first option
+            }
+            append(&out, strings.clone(base, allocator))
+        }
+    }
+    slice.sort(out[2:]) // keep default/global pinned; sort the discovered themes
+    return out[:]
 }
 
 // --- the editable settings shown in the Config aux pane ---
@@ -161,10 +230,8 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
     switch s {
     case .Theme:
         delete(a.theme_path)
-        a.theme_path = strings.clone(val)
-        // TODO: resolve a relative path against the config dir (load_config does);
-        // here load_theme takes it as-is, so a relative value resolves from cwd.
-        a.theme = load_theme(val) // "" -> baked-in default
+        a.theme_path = strings.clone(val) // store the raw token (name / "global" / "default")
+        a.theme = load_theme(theme_resolve(val)) // resolve to a path; "" -> baked-in default
     case .LineNumbers:
         switch val {
         case "global":   a.line_numbers = .Global

@@ -9,6 +9,16 @@ Rect :: struct {
     x, y, w, h: i32, // top-left origin, pixels
 }
 
+// Font zoom. font_px is the logical text size in points, shared by every pane; the
+// atlas bakes at font_px * DPI scale. Ctrl +/- steps it, Ctrl+0 resets to the base.
+// The chosen size is persisted to config, but debounced: we wait FONT_SAVE_DELAY of
+// no further change before writing, so a burst of Ctrl+/- is one save, not a dozen.
+FONT_BASE_PX :: 15
+FONT_PX_MIN :: 8
+FONT_PX_MAX :: 40
+FONT_PX_STEP :: 1
+FONT_SAVE_DELAY :: 5.0 // seconds the size must sit unchanged before it persists
+
 // There are always two panes: the editor (left) and the aux pane (right). The
 // aux pane shows one of these modes. (The master command line is not a mode —
 // it lives in the bottom status strip + t1.)
@@ -63,6 +73,10 @@ App :: struct {
     config_pane: ConfigPane, // config / syntax aux mode (initialised in main, needs IO)
     editor:      Editor, // the text buffers (left pane)
 
+    grammars: []Grammar, // language registry (owned; loaded in main), shared by the
+    // config pane (lang list) and the highlighter (ext -> grammar)
+    hl: Highlighter, // tree-sitter syntax highlighting (loaded grammars, cached)
+
     // Multi-cursor drop chord (no mode/toggle): Alt+A held + a direction drops a
     // cursor and steps that way, so holding Alt+A and tapping arrows lays a trail.
     // a_held tracks A the way alt_held tracks Alt. Esc collapses back to one.
@@ -72,11 +86,20 @@ App :: struct {
     // every cursor (with Ctrl/Shift) instead of just the free caret, and it clears.
     move_all_armed: bool,
 
+    // Animation state for the redraw scheduler (see anim.odin). blink_base is the
+    // last-input time the caret blink is measured from; the two Anims tween the Zen
+    // aux-pane reveal and the terminal switcher fade.
+    blink_base:    f64,
+    zen_anim:      Anim, // aux-pane reveal in Zen: 0 hidden .. 1 docked
+    switcher_anim: Anim, // terminal switcher fade-in while Alt is held
+
     theme:        Theme, // colour palette (loaded from config in main)
     theme_path:   string, // active theme path (owned, resolved by load_config); "" = baked-in default
     indent:       Indent, // Tab-key indentation policy (from config)
     line_numbers: Line_Numbers, // gutter style (from config)
     scale:        f32, // DPI content scale: logical px * scale = physical px
+    font_px:      f32, // logical text size in points (font zoom); base is FONT_BASE_PX
+    font_save_at: f64, // glfw time to persist font_px at (debounce); 0 = nothing pending
 
     // Clipboard. window is the GLFW handle for the system clipboard; clip_joined /
     // clip_pieces remember our last copy so a multi-cursor paste can distribute
@@ -93,8 +116,11 @@ active_doc :: proc(a: ^App) -> ^Doc {
     if a.cl_active {
         return &a.cl.doc
     }
-    if a.focus == .Aux && a.aux_mode == .Config && a.config_pane.editing {
-        return &a.config_pane.edit
+    if a.focus == .Aux && a.aux_mode == .Config {
+        cp := &a.config_pane
+        if config_pane_is_search(cp.sel) {
+            return &cp.search // the search box is the pane's only text input
+        }
     }
     return &editor_current(&a.editor).doc
 }
@@ -115,9 +141,14 @@ panes_visible :: proc(a: ^App) -> Pane_Vis {
 }
 
 // The one place focus changes — honours each view's invariants. Util has no editor
-// to focus, so focus is pinned to the aux pane there.
+// to focus, so focus is pinned to the aux pane there. In Zen, focus drives the aux
+// pane's slide (revealed while it holds focus), so re-aim the reveal animation here.
 set_focus :: proc(a: ^App, who: Focus) {
     a.focus = a.view == .Util ? .Aux : who
+    if a.view == .Zen {
+        now := glfw.GetTime()
+        anim_start(&a.zen_anim, now, anim_value(&a.zen_anim, now), a.focus == .Aux ? 1 : 0, ZEN_DUR)
+    }
 }
 
 // Toggle zen on/off (the `zen` / `zm` command line builtin). No-op under Util,
@@ -130,6 +161,22 @@ view_toggle_zen :: proc(a: ^App) {
     set_focus(a, .Editor) // land in the editor so zen collapses to full-width at once
 }
 
+// Escape's view action: turn Zen ON (never off), then once in Zen flip which side is
+// shown. Focusing the editor hides the aux pane (full-width editor); focusing the aux
+// pane slides it back in on whatever mode was last there (a.aux_mode persists). No-op
+// under Util, which is a launch mode rather than a runtime view.
+zen_escape :: proc(a: ^App) {
+    if a.view == .Util {
+        return
+    }
+    if a.view != .Zen {
+        a.view = .Zen
+        set_focus(a, a.focus) // enter Zen keeping focus; animates the aux pane to match
+        return
+    }
+    set_focus(a, a.focus == .Aux ? .Editor : .Aux)
+}
+
 app_init :: proc(a: ^App) {
     a.aux_mode = .FileTree
     a.focus = .Editor
@@ -137,7 +184,39 @@ app_init :: proc(a: ^App) {
     a.term_count = 3
     a.term_active = 0
     a.scale = 1
+    a.font_px = FONT_BASE_PX
     cl_init(&a.cl)
+}
+
+// Font zoom: grow/shrink the logical text size in whole points (dir is +1 / -1),
+// clamped to the legible range. Every pane reads the same atlas, so one step here
+// rescales all of them; the main loop re-bakes when font_px changes.
+font_zoom :: proc(a: ^App, dir: int) {
+    font_set_px(a, a.font_px + f32(dir) * FONT_PX_STEP)
+}
+
+font_zoom_reset :: proc(a: ^App) {
+    font_set_px(a, FONT_BASE_PX)
+}
+
+// Applies a new logical size (clamped) and, when it actually changed, arms the
+// debounced config save FONT_SAVE_DELAY out — each further change pushes it back, so
+// only the size you settle on is written.
+@(private = "file")
+font_set_px :: proc(a: ^App, px: f32) {
+    next := clampf(px, FONT_PX_MIN, FONT_PX_MAX)
+    if next == a.font_px {
+        return
+    }
+    a.font_px = next
+    a.font_save_at = glfw.GetTime() + FONT_SAVE_DELAY
+}
+
+// Text size relative to the default. Text-proportional chrome (the command-line
+// strip) scales by this so it keeps pace with the font, while DPI-only paddings
+// (focus rings, gutters) stay put.
+font_zoom_ratio :: proc(a: ^App) -> f32 {
+    return a.font_px / FONT_BASE_PX
 }
 
 // Frees the App-owned state set up here (the command line + the remembered
