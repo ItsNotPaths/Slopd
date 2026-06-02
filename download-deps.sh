@@ -155,10 +155,15 @@ echo "==> Iosevka Fixed font (bundled default, SIL OFL 1.1)"
 #   - The PkgTTF asset is a .zip (not .tar.gz, so the tar-based fetch() can't take it)
 #     and bundles every weight; we pull out just the Regular face with python3's
 #     zipfile (already required for the language registry; avoids depending on unzip).
-#   - The upstream TTF carries thousands of CJK/symbol glyphs (~9MB), but Slopd only
-#     bakes printable ASCII, so we subset it to U+0020-007E with fontTools (~12KB)
-#     before embedding. fontTools is optional: without it we fall back to the full
-#     font (the build still works, just a far larger binary) and print how to get it.
+#   - The upstream TTF carries thousands of glyphs (~9MB), most of them CJK we never
+#     show. We subset to the symbol set a terminal actually needs — Latin, punctuation,
+#     arrows, math, box-drawing, block elements, geometric shapes, Braille, technical
+#     and Powerline glyphs — so any TUI (Claude Code, Helix, …) draws its borders,
+#     cursors and spinners. The renderer bakes these lazily (font.odin), so the subset
+#     only governs which codepoints EXIST, not binary/atlas cost of unused ones. Ranges
+#     are generous: fontTools keeps only codepoints the font actually has. fontTools is
+#     optional: without it we fall back to the full font (the build still works, just a
+#     far larger binary) and print how to get it.
 IOSEVKA_VERSION="34.6.1"
 IOSEVKA_TTF="$VENDOR/fonts/IosevkaFixed-Latin.ttf"
 if [ -f "$IOSEVKA_TTF" ]; then
@@ -182,11 +187,15 @@ with open(dst, "wb") as f:
     f.write(z.read(matches[0]))
 PY
     rm -f "$iosevka_zip"
-    # Subset to printable ASCII if fontTools is available; else ship the full font.
+    # Subset to the terminal symbol set if fontTools is available; else ship the full font.
     if python3 -c "import fontTools.subset" 2>/dev/null; then
-        echo "  subsetting to printable ASCII (fontTools)..."
+        echo "  subsetting to the terminal symbol set (fontTools)..."
+        # Latin + punctuation + Greek; superscripts/currency/letterlike/number-forms;
+        # arrows, math, technical, control pictures; box-drawing, blocks, geometric
+        # shapes; misc symbols, dingbats, math-A, supplemental arrows; Braille; misc
+        # symbols-and-arrows; Powerline (PUA). Generous — subset keeps only what exists.
         python3 -m fontTools.subset "$iosevka_full" \
-            --unicodes=U+0020-007E \
+            --unicodes=U+0020-007E,U+00A0-024F,U+0370-03FF,U+2000-206F,U+2070-209F,U+20A0-20BF,U+2100-218F,U+2190-21FF,U+2200-22FF,U+2300-23FF,U+2400-243F,U+2500-257F,U+2580-259F,U+25A0-25FF,U+2600-26FF,U+2700-27BF,U+27C0-27EF,U+27F0-27FF,U+2800-28FF,U+2900-297F,U+2B00-2BFF,U+E0A0-E0D4 \
             --layout-features='' \
             --no-hinting \
             --name-IDs='*' \

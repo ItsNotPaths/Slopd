@@ -187,18 +187,18 @@ text_draw_runes :: proc(t: ^Text, runes: []rune, x, y: f32, color: [3]f32) {
 // Appends one glyph's two triangles to the glyph batch and advances the pen.
 @(private = "file")
 glyph_push :: proc(t: ^Text, r: rune, xpos, ypos: ^f32, c: [3]f32) {
-    if r < FONT_FIRST || r >= FONT_FIRST + FONT_COUNT {
+    pc, ok := font_glyph(&t.font, r) // bakes into the atlas on first use
+    if !ok { // control char / codepoint the font lacks / atlas full: hold the cell, draw nothing
         xpos^ += t.font.cell_w
         return
     }
-    idx := i32(r) - FONT_FIRST
     q: stbtt.aligned_quad
     // GetPackedQuad would step the pen by the glyph's own (fractional) advance; we
     // ignore that and step by the fixed cell below so the grid stays exactly
     // monospace. The pen we feed in is already integral, so align_to_integer snaps
     // every cell the same way instead of drifting against a fractional accumulator.
     pen := xpos^
-    stbtt.GetPackedQuad(&t.font.chars[0], FONT_ATLAS, FONT_ATLAS, idx, &pen, ypos, &q, true)
+    stbtt.GetPackedQuad(&pc, FONT_ATLAS, FONT_ATLAS, 0, &pen, ypos, &q, true)
     xpos^ += t.font.cell_w
     append(
         &t.glyphs,
@@ -244,6 +244,7 @@ glyph_flush :: proc(t: ^Text, win_w, win_h: i32) {
     if len(t.glyphs) == 0 {
         return
     }
+    font_sync(&t.font) // upload any glyphs baked on demand this pass before they're sampled
     gl.UseProgram(t.glyph_prog)
     gl.Uniform2f(t.glyph_us, f32(win_w), f32(win_h))
     gl.ActiveTexture(gl.TEXTURE0)
