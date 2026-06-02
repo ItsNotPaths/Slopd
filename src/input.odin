@@ -46,6 +46,8 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     a.move_all_armed = false // typing isn't a motion; cancel a pending move-all
     if a.cl_active {
         doc_insert_rune(&a.cl.doc, codepoint)
+    } else if a.focus == .Aux && a.aux_mode == .Config && a.config_pane.editing && codepoint >= 32 {
+        doc_insert_rune(&a.config_pane.edit, codepoint)
     } else if a.focus == .Editor && codepoint >= 32 {
         b := editor_current(&a.editor)
         if !buffer_autopair(b, codepoint) {
@@ -91,6 +93,8 @@ handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
     if key == glfw.KEY_ESCAPE {
         if a.cl_active {
             cl_cancel(a)
+        } else if a.focus == .Aux && a.aux_mode == .Config && config_pane_cancel(&a.config_pane) {
+            // cancelled a settings edit or closed the language dropdown
         } else if a.move_all_armed {
             a.move_all_armed = false
         } else if a.focus == .Editor && len(d.cursors) > 1 {
@@ -203,6 +207,8 @@ handle_key :: proc(a: ^App, window: glfw.WindowHandle, key, action, mods: i32) {
         buffer_key(a, key, mods, all)
     } else if a.focus == .Aux && a.aux_mode == .FileTree {
         filetree_key(a, key, mods)
+    } else if a.focus == .Aux && a.aux_mode == .Config {
+        config_key(a, key, mods)
     }
 }
 
@@ -405,6 +411,137 @@ filetree_key :: proc(a: ^App, key, mods: i32) {
             open_file(a, path)
         }
     }
+}
+
+// Config aux pane key handling (bare keys, when the Config pane is focused). Three
+// levels: editing a setting value, an open language dropdown, or list navigation.
+// hjkl == arrows throughout.
+config_key :: proc(a: ^App, key, mods: i32) {
+    cp := &a.config_pane
+
+    if cp.editing {
+        if edit_motion(&cp.edit, key, mods, false) {
+            return
+        }
+        ctrl := mods & glfw.MOD_CONTROL != 0
+        switch key {
+        case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
+            config_commit_edit(a)
+        case glfw.KEY_BACKSPACE:
+            if ctrl {
+                doc_delete_word_back(&cp.edit)
+            } else {
+                doc_backspace(&cp.edit)
+            }
+        case glfw.KEY_DELETE:
+            if ctrl {
+                doc_delete_word_forward(&cp.edit)
+            } else {
+                doc_delete(&cp.edit)
+            }
+        }
+        return
+    }
+
+    if cp.expanded >= 0 {
+        config_dropdown_key(a, key)
+        return
+    }
+
+    switch key {
+    case glfw.KEY_J, glfw.KEY_DOWN:
+        config_pane_move(cp, 1)
+    case glfw.KEY_K, glfw.KEY_UP:
+        config_pane_move(cp, -1)
+    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER, glfw.KEY_L, glfw.KEY_RIGHT:
+        config_activate(a)
+    }
+}
+
+// Enter / l on a row: open the settings editor (setting row) or the language's
+// options dropdown (language row).
+@(private = "file")
+config_activate :: proc(a: ^App) {
+    cp := &a.config_pane
+    if s, ok := config_pane_setting(cp.sel); ok {
+        cp.editing = true
+        doc_set_text(&cp.edit, setting_value(a, s))
+        doc_cursor_to_end(&cp.edit)
+        return
+    }
+    cp.expanded = cp.sel
+    cp.opt_sel = -1 // selection stays on the language root; -1 = the root row
+}
+
+// Enter on the editor: validate + apply + persist (an invalid value is a no-op,
+// keeping the old setting), then close the editor.
+@(private = "file")
+config_commit_edit :: proc(a: ^App) {
+    cp := &a.config_pane
+    if s, ok := config_pane_setting(cp.sel); ok {
+        val := strings.trim_space(doc_string(&cp.edit, context.temp_allocator))
+        setting_commit(a, s, val)
+    }
+    cp.editing = false
+    doc_clear(&cp.edit)
+}
+
+// Navigation within an open language dropdown.
+@(private = "file")
+config_dropdown_key :: proc(a: ^App, key: i32) {
+    cp := &a.config_pane
+    lang := config_pane_lang(cp, cp.expanded)
+    if lang == nil {
+        cp.expanded = -1
+        return
+    }
+    buf: [len(LangOption)]LangOption
+    opts := lang_options(lang.present, buf[:])
+    // opt_sel == -1 is the language root (still selected while open); 0.. are options.
+    switch key {
+    case glfw.KEY_J, glfw.KEY_DOWN:
+        if cp.opt_sel >= len(opts) - 1 {
+            cp.expanded = -1 // step out below the dropdown
+            config_pane_move(cp, 1)
+        } else {
+            cp.opt_sel += 1
+        }
+    case glfw.KEY_K, glfw.KEY_UP:
+        if cp.opt_sel <= -1 {
+            cp.expanded = -1 // step off the root, upward
+            config_pane_move(cp, -1)
+        } else {
+            cp.opt_sel -= 1
+        }
+    case glfw.KEY_H, glfw.KEY_LEFT:
+        cp.expanded = -1 // collapse, keep the language row selected
+    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER, glfw.KEY_L, glfw.KEY_RIGHT:
+        if cp.opt_sel == -1 {
+            cp.expanded = -1 // re-Enter on the root minimises
+        } else {
+            config_run_option(a, lang.name, opts[cp.opt_sel])
+            cp.expanded = -1
+        }
+    }
+}
+
+// A chosen language option builds a `slopd ...` command and runs it in t1 (the
+// master CL terminal) — the same stubbed seam as the command line's shell path, so
+// these light up when libvterm injection lands. The CLI flags themselves work today.
+@(private = "file")
+config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
+    cmd: string
+    switch opt {
+    case .Health:
+        cmd = fmt.tprintf("slopd --health %s", lang)
+    case .Install:
+        cmd = fmt.tprintf("slopd --grammar install %s", lang)
+    case .Update:
+        cmd = fmt.tprintf("slopd --grammar update %s", lang)
+    case .Uninstall:
+        cmd = fmt.tprintf("slopd --grammar uninstall %s", lang)
+    }
+    run_in_t1(a, cmd)
 }
 
 // Bare modifier keys (Shift/Ctrl/Super on their way into a chord) — used so the

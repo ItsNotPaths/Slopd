@@ -1,6 +1,8 @@
 package main
 
+import "core:fmt"
 import "core:strconv"
+import "core:strings"
 import gl "vendor:OpenGL"
 
 // Rendering: solid-colour fills (scissor+clear) plus glyph text. Every colour
@@ -21,6 +23,8 @@ aux_mode_name :: proc(m: AuxMode) -> string {
         return "procmon"
     case .Git:
         return "git"
+    case .Config:
+        return "config"
     }
     return ""
 }
@@ -76,6 +80,8 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32) {
     panel(lay.aux, win_h, th.bg, th.accent, show_ring && a.focus == .Aux, a.scale)
     if a.aux_mode == .FileTree {
         draw_filetree(t, lay.aux, win_w, win_h, a)
+    } else if a.aux_mode == .Config {
+        draw_config(t, lay.aux, win_w, win_h, a)
     } else {
         label(t, aux_mode_name(a.aux_mode), lay.aux, pad, win_w, win_h, focus_fg(a, .Aux))
     }
@@ -260,6 +266,155 @@ draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
         prefix := ringed ? "*" : "-"
         text_draw(t, prefix, x0, ty, area, win_w, win_h, ringed ? th.urgent : th.muted)
         text_draw(t, e.display, x0 + cw * 2, ty, area, win_w, win_h, e.is_dir ? th.code_return_type : th.fg)
+    }
+}
+
+// The config / syntax pane: a "settings" block (editable key: value rows) then a
+// "syntax" block listing each known language with its grammar status (✓/✗) and, when
+// a row is opened, its install-options dropdown (nested under the language). Section
+// headers are flanked by rules; setting values share one column. One selection
+// highlight (separator), centre-scrolled like the filetree.
+draw_config :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
+    cp := &a.config_pane
+    th := &a.theme
+    area := inset(pane, i32(2 * a.scale))
+    if area.w <= 0 || area.h <= 0 {
+        return
+    }
+    cw := t.font.cell_w
+    lh := t.font.line_height
+    row_h := i32(lh) + i32(2 * a.scale)
+    x0 := f32(area.x) + cw // one-cell left margin
+
+    // Pad every setting key to the widest so all the values (and editors) start in
+    // the same column: "<widest key>: ".
+    keycol := 0
+    for si in 0 ..< SETTING_COUNT {
+        keycol = max(keycol, len(setting_key(Setting(si))))
+    }
+    val_off := f32(keycol + 2) // key + ": "
+
+    // The flat list of display rows; cursor_row tracks the selection's display index
+    // so the scroll can follow it.
+    Row :: struct {
+        text:   string,
+        value:  string, // setting value, drawn at the shared value column; "" otherwise
+        color:  [3]f32,
+        sel:    bool, // draw the selection bar behind this row
+        edit:   bool, // the open settings editor (draw `cp.edit` at the value column)
+        flush:  bool, // a header line (rule or title): drawn flush-left, no value column
+        indent: i32, // extra left margin, in cells
+    }
+    rows := make([dynamic]Row, 0, 48, context.temp_allocator)
+    cursor_row := 0
+
+    // Section headers are a title in accent, flanked by full-width rules.
+    rule_row := Row {
+        text  = strings.repeat("-", max(1, int(f32(area.w) / cw) - 1), context.temp_allocator),
+        color = th.border_light,
+        flush = true,
+    }
+
+    append(&rows, rule_row)
+    append(&rows, Row{text = "settings", color = th.accent, flush = true})
+    append(&rows, rule_row)
+    for si in 0 ..< SETTING_COUNT {
+        s := Setting(si)
+        selected := cp.sel == si
+        if selected {
+            cursor_row = len(rows)
+        }
+        val := setting_value(a, s)
+        append(
+            &rows,
+            Row {
+                text = fmt.tprintf("%s:", setting_key(s)),
+                value = val == "" ? "(default)" : val,
+                color = selected ? th.fg : th.muted,
+                sel = selected,
+                edit = selected && cp.editing,
+                indent = 1,
+            },
+        )
+    }
+
+    append(&rows, rule_row)
+    append(&rows, Row{text = "syntax", color = th.accent, flush = true})
+    append(&rows, rule_row)
+    for &l, i in cp.langs {
+        row := SETTING_COUNT + i
+        open := cp.expanded == row
+        if cp.sel == row {
+            cursor_row = len(rows)
+        }
+        mark := l.present ? "✓" : "✗"
+        append(
+            &rows,
+            Row {
+                text = fmt.tprintf("%s %s", mark, l.name),
+                color = l.present ? th.code_return_type : th.fg,
+                sel = cp.sel == row && (!open || cp.opt_sel == -1), // root stays selectable while open
+                indent = 1,
+            },
+        )
+        if open {
+            buf: [len(LangOption)]LangOption
+            opts := lang_options(l.present, buf[:])
+            for o, oi in opts {
+                osel := cp.opt_sel == oi
+                if osel {
+                    cursor_row = len(rows)
+                }
+                // Indented past the language name (mark + space) so options nest under it.
+                append(&rows, Row{text = lang_option_label(o), color = osel ? th.fg : th.muted, sel = osel, indent = 4})
+            }
+        }
+    }
+
+    // Centre-scroll on the cursor, clamped at the ends (like the filetree).
+    max_rows := max(1, int(area.h / row_h))
+    first := clamp(cursor_row - max_rows / 2, 0, max(0, len(rows) - max_rows))
+    visible := min(len(rows) - first, max_rows)
+
+    for k in 0 ..< visible {
+        r := rows[first + k]
+        y := area.y + i32(k) * row_h
+        if r.sel {
+            fill(Rect{area.x, y, area.w, row_h}, win_h, th.separator)
+        }
+        ty := f32(y) + (f32(row_h) - lh) / 2
+        rx := x0 + cw * f32(r.indent)
+        if r.flush {
+            text_draw(t, r.text, x0, ty, area, win_w, win_h, r.color)
+            continue
+        }
+        text_draw(t, r.text, rx, ty, area, win_w, win_h, r.color)
+        valx := x0 + cw * (f32(r.indent) + val_off)
+        if r.edit {
+            config_draw_edit(t, &cp.edit, valx, y, ty, area, win_w, win_h, a)
+        } else if r.value != "" {
+            text_draw(t, r.value, valx, ty, area, win_w, win_h, th.fg)
+        }
+    }
+}
+
+// The inline settings editor: the edit buffer's runes at `ex` (the value column),
+// with per-cursor selection spans and carets — the command-line treatment, reused.
+@(private = "file")
+config_draw_edit :: proc(t: ^Text, edit: ^Doc, ex: f32, y: i32, ty: f32, area: Rect, win_w, win_h: i32, a: ^App) {
+    th := &a.theme
+    cw := t.font.cell_w
+    lh := t.font.line_height
+    line := &edit.lines[0]
+    for c in edit.cursors {
+        if cursor_has_selection(c) {
+            lo, hi := cursor_range(c)
+            fill(Rect{i32(ex + cw * f32(lo.col)), y, i32(cw * f32(hi.col - lo.col)), i32(lh)}, win_h, th.selection)
+        }
+    }
+    text_draw_runes(t, line.text[:], ex, ty, area, win_w, win_h, th.fg)
+    for c in edit.cursors {
+        fill(Rect{i32(ex + cw * f32(c.head.col)), y, i32(2 * a.scale), i32(lh)}, win_h, th.fg)
     }
 }
 

@@ -17,6 +17,7 @@ AuxMode :: enum {
     Terminal,
     Procmon,
     Git,
+    Config,
 }
 
 Focus :: enum {
@@ -58,8 +59,9 @@ App :: struct {
     cl_active: bool,
     cl:        CommandLine,
 
-    tree:   FileTree, // filetree aux mode (initialised in main, needs IO)
-    editor: Editor, // the text buffers (left pane)
+    tree:        FileTree, // filetree aux mode (initialised in main, needs IO)
+    config_pane: ConfigPane, // config / syntax aux mode (initialised in main, needs IO)
+    editor:      Editor, // the text buffers (left pane)
 
     // Multi-cursor drop chord (no mode/toggle): Alt+A held + a direction drops a
     // cursor and steps that way, so holding Alt+A and tapping arrows lays a trail.
@@ -71,6 +73,7 @@ App :: struct {
     move_all_armed: bool,
 
     theme:        Theme, // colour palette (loaded from config in main)
+    theme_path:   string, // active theme path (owned, resolved by load_config); "" = baked-in default
     indent:       Indent, // Tab-key indentation policy (from config)
     line_numbers: Line_Numbers, // gutter style (from config)
     scale:        f32, // DPI content scale: logical px * scale = physical px
@@ -89,6 +92,9 @@ App :: struct {
 active_doc :: proc(a: ^App) -> ^Doc {
     if a.cl_active {
         return &a.cl.doc
+    }
+    if a.focus == .Aux && a.aux_mode == .Config && a.config_pane.editing {
+        return &a.config_pane.edit
     }
     return &editor_current(&a.editor).doc
 }
@@ -139,6 +145,7 @@ app_init :: proc(a: ^App) {
 // torn down by their own defers.
 app_destroy :: proc(a: ^App) {
     cl_destroy(a)
+    delete(a.theme_path)
     delete(a.clip_joined)
     for p in a.clip_pieces {
         delete(p)

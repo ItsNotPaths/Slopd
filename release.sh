@@ -47,8 +47,15 @@ if [ $DO_LOCAL -eq 1 ]; then
     # Requires ./download-deps.sh to have built the static archive first.
     odin build "$PROJECT_DIR/src" -out:"$RELEASE_DIR/$PROJECT_NAME" \
         -o:speed -define:GLFW_SHARED=false
-    [ -f "$PROJECT_DIR/README.md" ] && cp "$PROJECT_DIR/README.md" "$RELEASE_DIR/" || true
-    [ -f "$PROJECT_DIR/LICENSE" ]   && cp "$PROJECT_DIR/LICENSE"   "$RELEASE_DIR/" || true
+    [ -f "$PROJECT_DIR/README.md" ]     && cp "$PROJECT_DIR/README.md"     "$RELEASE_DIR/" || true
+    [ -f "$PROJECT_DIR/LICENSE" ]       && cp "$PROJECT_DIR/LICENSE"       "$RELEASE_DIR/" || true
+    # Self-contained runtime assets, resolved next to the binary at run time
+    # (asset_dir): the config sample, the themes/, and an empty grammars/. We ship
+    # NO default grammars — a language is installed at runtime from the Config pane
+    # (cf) or `slopd --grammar install`, which keeps the dist tiny.
+    [ -f "$PROJECT_DIR/slopd.config" ]  && cp "$PROJECT_DIR/slopd.config"  "$RELEASE_DIR/" || true
+    [ -d "$PROJECT_DIR/themes" ]        && cp -r "$PROJECT_DIR/themes"     "$RELEASE_DIR/" || true
+    mkdir -p "$RELEASE_DIR/grammars"
     echo "==> Local done: $RELEASE_DIR"
 fi
 

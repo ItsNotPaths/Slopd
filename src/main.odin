@@ -2,6 +2,8 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:path/filepath"
+import "core:strings"
 import gl "vendor:OpenGL"
 import "vendor:glfw"
 
@@ -12,7 +14,24 @@ TITLE :: "Slopd"
 GL_MAJOR :: 3
 GL_MINOR :: 3
 
+// The theme file to actually load: the config's value if set, else a themes/default.theme
+// shipped beside the binary (asset_dir, same exe-relative rule as grammars/), else ""
+// for the baked-in default. Result is temp-allocated.
+theme_load_path :: proc(configured: string) -> string {
+    if configured != "" {
+        return configured
+    }
+    cand := filepath.join({asset_dir("themes", context.temp_allocator), "default.theme"}, context.temp_allocator) or_else ""
+    return os.exists(cand) ? cand : ""
+}
+
 main :: proc() {
+    // Grammar CLI (`slopd --health [lang]`, `slopd --grammar <action> <lang>`) runs
+    // headless — handle it before opening a window, then exit.
+    if grammar_cli(os.args[1:]) {
+        return
+    }
+
     if !glfw.Init() {
         desc, code := glfw.GetError()
         fmt.eprintfln("glfw.Init failed (%d): %s", code, desc)
@@ -52,7 +71,8 @@ main :: proc() {
 
     cfg := load_config()
     defer config_destroy(&cfg)
-    app.theme = load_theme(cfg.theme_path)
+    app.theme = load_theme(theme_load_path(cfg.theme_path))
+    app.theme_path = strings.clone(cfg.theme_path) // the raw config value, for the settings pane
     app.indent = cfg.indent
     app.line_numbers = cfg.line_numbers
 
@@ -60,6 +80,8 @@ main :: proc() {
     defer editor_destroy(&app.editor)
     filetree_init(&app.tree)
     defer filetree_destroy(&app.tree)
+    config_pane_init(&app.config_pane)
+    defer config_pane_destroy(&app.config_pane)
     if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {
         app.scale = sx
     }

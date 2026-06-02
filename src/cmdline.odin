@@ -103,12 +103,25 @@ cl_exec :: proc(a: ^App, input: string) {
         set_aux(a, .FileTree)
     case "gs": // goto git
         set_aux(a, .Git)
+    case "cf": // goto config / syntax pane (re-stat grammars on entry)
+        set_aux(a, .Config)
+        config_pane_refresh(&a.config_pane)
     case "zen", "zm": // toggle zen mode (full-width editor; aux on focus only)
         view_toggle_zen(a)
     case "cd": // builtin: set project root + t1 cwd (stub until terminals exist)
     case: // shell command -> inject into t1 (stub), surface the terminal
-        term_focus(a, 1)
+        run_in_t1(a, input)
     }
+}
+
+// Run a command in t1, the master CL terminal. Injection is stubbed until libvterm
+// — for now this only surfaces t1 (same seam as the shell path above); the command
+// is built and passed through so it runs unchanged once the terminal lands. Shared
+// by the command line's shell path and the Config pane's language options.
+run_in_t1 :: proc(a: ^App, cmd: string) {
+    // TODO(libvterm): inject `cmd` into terminal 1 and execute it.
+    _ = cmd
+    term_focus(a, 1)
 }
 
 // Switch to terminal session n (1-based), surfacing the terminal pane. Shared by
