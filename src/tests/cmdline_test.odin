@@ -37,6 +37,34 @@ test_cl_goto :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_cl_jump :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+    app.buffer_set_text(b, "l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9") // 10 lines
+
+    app.cl_exec(&a, "j 3") // absolute, 1-based -> line index 2
+    testing.expect_value(t, b.cursors[b.primary].head.line, 2)
+    testing.expect_value(t, a.focus, app.Focus.Editor)
+
+    app.cl_exec(&a, "jump 6") // `jump` alias, line index 5
+    testing.expect_value(t, b.cursors[b.primary].head.line, 5)
+
+    app.cl_exec(&a, "j +2") // relative down from 5
+    testing.expect_value(t, b.cursors[b.primary].head.line, 7)
+
+    app.cl_exec(&a, "j -4") // relative up from 7
+    testing.expect_value(t, b.cursors[b.primary].head.line, 3)
+
+    app.cl_exec(&a, "j 999") // clamps to the last line
+    testing.expect_value(t, b.cursors[b.primary].head.line, 9)
+
+    app.cl_exec(&a, "j -999") // clamps to the first line
+    testing.expect_value(t, b.cursors[b.primary].head.line, 0)
+}
+
+@(test)
 test_cl_terminal_prefix :: proc(t: ^testing.T) {
     a: app.App
     fake_sessions(&a, 3)

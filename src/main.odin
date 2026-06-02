@@ -63,6 +63,7 @@ main :: proc() {
     app.theme_path = strings.clone(cfg.theme_path) // the raw config value, for the settings pane
     app.indent = cfg.indent
     app.line_numbers = cfg.line_numbers
+    app.jump_lines = cfg.jump_lines
     app.font_px = cfg.font_px // persisted font zoom; text_init bakes the atlas at it
 
     editor_init(&app.editor)

@@ -32,6 +32,7 @@ Config :: struct {
     indent:       Indent,
     line_numbers: Line_Numbers,
     font_px:      f32, // logical text size in points (font zoom), persisted across runs
+    jump_lines:   int, // how many lines Alt+Up/Down jumps in the editor
 }
 
 load_config :: proc() -> Config {
@@ -39,6 +40,7 @@ load_config :: proc() -> Config {
         indent       = {.Spaces, 4}, // matches the project's 4-space convention
         line_numbers = .Global,
         font_px      = FONT_BASE_PX,
+        jump_lines   = 10,
     }
     path := find_config()
     if path == "" {
@@ -79,6 +81,10 @@ load_config :: proc() -> Config {
         case "font_size":
             if n, ok := strconv.parse_int(val, 10); ok {
                 cfg.font_px = clampf(f32(n), FONT_PX_MIN, FONT_PX_MAX)
+            }
+        case "jump_lines":
+            if n, ok := strconv.parse_int(val, 10); ok && n > 0 {
+                cfg.jump_lines = n
             }
         }
     }

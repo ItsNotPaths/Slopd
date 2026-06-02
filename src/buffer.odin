@@ -164,10 +164,10 @@ buffer_redo :: proc(b: ^Buffer) {
 // (Shift) grows a selection; all=true (the Alt+M prefix) moves every cursor rather
 // than just the free caret. ---
 
-buffer_motion :: proc(b: ^Buffer, motion: Motion, select := false, all := false) {
+buffer_motion :: proc(b: ^Buffer, motion: Motion, select := false, all := false, count := 1) {
     if all {
-        doc_move_all(&b.doc, motion, select)
+        doc_move_all(&b.doc, motion, select, count)
     } else {
-        doc_move(&b.doc, motion, select)
+        doc_move(&b.doc, motion, select, count)
     }
 }

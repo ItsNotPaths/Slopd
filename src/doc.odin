@@ -340,19 +340,21 @@ Motion :: enum {
     Down,
 }
 
-doc_move :: proc(d: ^Doc, motion: Motion, select := false) {
-    move_cursor(d, &d.cursors[d.primary], motion, select)
+// count applies only to vertical motion (Up/Down) — how many lines to jump; the
+// horizontal/Home/End motions ignore it.
+doc_move :: proc(d: ^Doc, motion: Motion, select := false, count := 1) {
+    move_cursor(d, &d.cursors[d.primary], motion, select, count)
 }
 
-doc_move_all :: proc(d: ^Doc, motion: Motion, select := false) {
+doc_move_all :: proc(d: ^Doc, motion: Motion, select := false, count := 1) {
     for &c in d.cursors {
-        move_cursor(d, &c, motion, select)
+        move_cursor(d, &c, motion, select, count)
     }
     doc_merge_cursors(d)
 }
 
 @(private = "file")
-move_cursor :: proc(d: ^Doc, c: ^Cursor, motion: Motion, select: bool) {
+move_cursor :: proc(d: ^Doc, c: ^Cursor, motion: Motion, select: bool, count := 1) {
     switch motion {
     case .Left:
         if !select && cursor_has_selection(c^) {
@@ -384,12 +386,12 @@ move_cursor :: proc(d: ^Doc, c: ^Cursor, motion: Motion, select: bool) {
         c.goal = c.head.col
     case .Up:
         if c.head.line > 0 {
-            line := c.head.line - 1
+            line := max(0, c.head.line - count)
             cursor_place(c, Pos{line, min(c.goal, line_len(&d.lines[line]))}, select)
         }
     case .Down:
         if c.head.line < len(d.lines) - 1 {
-            line := c.head.line + 1
+            line := min(len(d.lines) - 1, c.head.line + count)
             cursor_place(c, Pos{line, min(c.goal, line_len(&d.lines[line]))}, select)
         }
     }

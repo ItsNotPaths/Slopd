@@ -251,8 +251,32 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         view_toggle_zen(a)
     case "put":
         cl_put(a, args)
+    case "j", "jump":
+        cl_jump(a, args)
     }
     return true
+}
+
+// `j N` / `jump N`: move the editor's cursor to a line and reveal it (the render
+// loop scrolls to follow). A bare number is an absolute 1-based line (matching the
+// gutter); a signed `+N`/`-N` is relative to the current line. Out-of-range clamps
+// to the first/last line. The cursor column is kept where it can fit.
+@(private = "file")
+cl_jump :: proc(a: ^App, args: string) {
+    s := strings.trim_space(args)
+    if s == "" {
+        return
+    }
+    n, ok := strconv.parse_int(s, 10) // parses a leading +/-; rejects trailing junk
+    if !ok {
+        return
+    }
+    b := editor_current(&a.editor)
+    cur := b.cursors[b.primary].head
+    target := s[0] == '+' || s[0] == '-' ? cur.line + n : n - 1 // relative vs 1-based absolute
+    target = clamp(target, 0, len(b.lines) - 1)
+    doc_reset_cursor(&b.doc, Pos{target, min(cur.col, line_len(&b.lines[target]))})
+    set_focus(a, .Editor)
 }
 
 // `put [text]`: type the literal text then the editor's current selection into the
@@ -319,7 +343,7 @@ is_term_token :: proc(s: string) -> bool {
 @(private = "file")
 cl_is_builtin :: proc(name: string) -> bool {
     switch name {
-    case "ls", "gs", "cf", "zen", "zm", "put":
+    case "ls", "gs", "cf", "zen", "zm", "put", "j", "jump":
         return true
     }
     return false

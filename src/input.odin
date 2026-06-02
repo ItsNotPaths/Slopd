@@ -169,6 +169,9 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         case glfw.KEY_C:
             cl_open(a)
 
+        case glfw.KEY_W: // open the command line pre-filled for a line jump
+            cl_inject(a, "j ")
+
         case glfw.KEY_1 ..= glfw.KEY_9: // i3-style quick-jump to terminal N
             term_focus(a, int(key - glfw.KEY_1) + 1)
 
@@ -191,14 +194,15 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
                 term_close_active(a)
             }
 
-        // Alt+Up/Down is exclusively terminal-session switching.
-        case glfw.KEY_UP:
-            if a.aux_mode == .Terminal && term_count(a) > 0 {
-                a.term_active = (a.term_active - 1 + term_count(a)) % term_count(a)
-            }
-        case glfw.KEY_DOWN:
-            if a.aux_mode == .Terminal && term_count(a) > 0 {
-                a.term_active = (a.term_active + 1) % term_count(a)
+        // Alt+Up/Down: in the editor, jump app.jump_lines lines (Shift extends the
+        // selection); in the terminal pane, cycle session instead.
+        case glfw.KEY_UP, glfw.KEY_DOWN:
+            motion: Motion = key == glfw.KEY_UP ? .Up : .Down
+            if a.focus == .Editor {
+                buffer_motion(editor_current(&a.editor), motion, mods & glfw.MOD_SHIFT != 0, false, a.jump_lines)
+            } else if a.aux_mode == .Terminal && term_count(a) > 0 {
+                step := key == glfw.KEY_UP ? -1 : 1
+                a.term_active = (a.term_active + step + term_count(a)) % term_count(a)
             }
 
         case glfw.KEY_LEFT_BRACKET:
