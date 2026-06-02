@@ -47,6 +47,8 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     a.move_all_armed = false // typing isn't a motion; cancel a pending move-all
     if a.cl_active {
         doc_insert_rune(&a.cl.doc, codepoint)
+    } else if tf := term_focused(a); tf != nil {
+        terminal_input_rune(tf, codepoint)
     } else if a.focus == .Aux && a.aux_mode == .Config && codepoint >= 32 {
         // Only the search box takes text (filtering live); setting and language rows
         // are dropdowns, navigated with the arrows.
@@ -100,11 +102,16 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     d := active_doc(a)
     editing := a.cl_active || a.focus == .Editor // an editable owns the keys
 
-    // Escape: cancel the command line, else clear a pending move-all prefix, else
-    // collapse a multi-cursor set. With nothing to cancel it drives Zen — turning it
-    // on (never off), then flipping the shown pane side (see zen_escape).
+    // Escape: a focused live terminal gets it first (so vim etc. see it) — Esc is
+    // carved out of the Zen toggle there. Otherwise cancel the command line, clear a
+    // pending move-all prefix, or collapse a multi-cursor set; with nothing to cancel
+    // it drives Zen — turning it on (never off), then flipping the shown pane side.
     if key == glfw.KEY_ESCAPE {
-        if a.cl_active {
+        if a.cl_chain.waiting {
+            cl_chain_clear(a) // abandon a stuck/pending && chain (the shell command runs on)
+        } else if tf := term_focused(a); tf != nil {
+            terminal_input_key(tf, key, mods)
+        } else if a.cl_active {
             cl_cancel(a)
         } else if a.move_all_armed {
             a.move_all_armed = false
@@ -169,32 +176,29 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             set_aux(a, .FileTree)
         case glfw.KEY_T:
             set_aux(a, .Terminal)
+            term_ensure(a) // spawn t1 on first reveal of the terminal pane
         case glfw.KEY_G:
             set_aux(a, .Git)
         case glfw.KEY_P:
             set_aux(a, .Procmon)
 
         case glfw.KEY_N:
-            if a.aux_mode == .Terminal && a.term_count < 99 {
-                a.term_count += 1
-                a.term_active = a.term_count - 1 // focus the new session
+            if a.aux_mode == .Terminal {
+                term_new(a)
             }
         case glfw.KEY_Q:
-            if a.aux_mode == .Terminal && a.term_count > 1 {
-                a.term_count -= 1
-                if a.term_active >= a.term_count {
-                    a.term_active = a.term_count - 1
-                }
+            if a.aux_mode == .Terminal {
+                term_close_active(a)
             }
 
         // Alt+Up/Down is exclusively terminal-session switching.
         case glfw.KEY_UP:
-            if a.aux_mode == .Terminal && a.term_count > 0 {
-                a.term_active = (a.term_active - 1 + a.term_count) % a.term_count
+            if a.aux_mode == .Terminal && term_count(a) > 0 {
+                a.term_active = (a.term_active - 1 + term_count(a)) % term_count(a)
             }
         case glfw.KEY_DOWN:
-            if a.aux_mode == .Terminal && a.term_count > 0 {
-                a.term_active = (a.term_active + 1) % a.term_count
+            if a.aux_mode == .Terminal && term_count(a) > 0 {
+                a.term_active = (a.term_active + 1) % term_count(a)
             }
 
         case glfw.KEY_LEFT_BRACKET:
@@ -221,6 +225,14 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             font_zoom_reset(a)
             return
         }
+    }
+
+    // A focused live terminal owns the rest: send specials + Ctrl-combos to libvterm
+    // (printable text arrives via char_callback). Alt chords and the global Ctrl +/-
+    // zoom were already handled above, so the shell only ever sees its own keys.
+    if tf := term_focused(a); tf != nil {
+        terminal_input_key(tf, key, mods)
+        return
     }
 
     // Bare keys go to the focused editable, consuming a pending move-all prefix (a

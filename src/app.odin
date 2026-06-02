@@ -58,16 +58,25 @@ App :: struct {
     focus:    Focus,
     split:    f32, // editor width as a fraction of the window (0..1)
 
-    // Terminal-session overlay (aux pane, terminal mode only). The session list
-    // is hidden until Alt is held, then Up/Down move the selection.
+    // Terminal sessions (aux pane, terminal mode). Heap-allocated and held by
+    // pointer so the array growing never moves a Terminal out from under its reader
+    // thread (see terminal.odin). t1 is spawned lazily on first use. The switcher
+    // overlay is hidden until Alt is held, then Up/Down move term_active.
     alt_held:    bool,
-    term_count:  int,
+    terminals:   [dynamic]^Terminal,
     term_active: int,
 
     // Master command line. A transient input field in the status strip; when
     // active it grabs bare keys (see input routing).
     cl_active: bool,
     cl:        CommandLine,
+
+    // A submitted line parses into an && chain (builtins + shell steps). The runner
+    // injects shell steps and, when a builtin waits on one, blocks on its exit code
+    // (the OSC sentinel) before continuing — pumped each frame. cl_wait_seq tags each
+    // wrapped injection so its exit report can be matched back.
+    cl_chain:    CLChain,
+    cl_wait_seq: u64,
 
     tree:        FileTree, // filetree aux mode (initialised in main, needs IO)
     config_pane: ConfigPane, // config / syntax aux mode (initialised in main, needs IO)
@@ -181,8 +190,7 @@ app_init :: proc(a: ^App) {
     a.aux_mode = .FileTree
     a.focus = .Editor
     a.split = 0.5
-    a.term_count = 3
-    a.term_active = 0
+    a.term_active = 0 // sessions are spawned lazily (term_ensure)
     a.scale = 1
     a.font_px = FONT_BASE_PX
     cl_init(&a.cl)
@@ -223,6 +231,8 @@ font_zoom_ratio :: proc(a: ^App) -> f32 {
 // clipboard copy). The editor, filetree, and config are initialised in main and
 // torn down by their own defers.
 app_destroy :: proc(a: ^App) {
+    term_destroy_all(a) // kill child shells + join reader threads before GLFW shuts down
+    cl_chain_clear(a) // frees any pending chain (incl. its backing array)
     cl_destroy(a)
     delete(a.theme_path)
     delete(a.clip_joined)

@@ -80,6 +80,8 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
         draw_filetree(t, lay.aux, win_w, win_h, a)
     } else if a.aux_mode == .Config {
         draw_config(t, lay.aux, win_w, win_h, a, now)
+    } else if a.aux_mode == .Terminal {
+        draw_terminal(t, lay.aux, win_w, win_h, a)
     } else {
         label(t, aux_mode_name(a.aux_mode), lay.aux, pad, focus_fg(a, .Aux))
         flush_pane(t, lay.aux, win_w, win_h)
@@ -574,6 +576,70 @@ config_draw_edit :: proc(t: ^Text, edit: ^Doc, ex, ty: f32, a: ^App, now: f64) {
     }
 }
 
+// The terminal: the active session's libvterm cell grid. Snap the pane to whole
+// cells, resize the session to match (no-op when unchanged), fill the default
+// background once, then paint each cell — a per-cell bg fill only when it differs
+// from the default (terminals are mostly default-bg, so that stays cheap), the
+// glyph on top, and a reverse-video block at the cursor. Colours come from the
+// session (theme fg/bg for default cells); reverse attr swaps fg/bg.
+draw_terminal :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
+    th := &a.theme
+    area := inset(pane, i32(2 * a.scale))
+    if area.w <= 0 || area.h <= 0 {
+        return
+    }
+    term := term_current(a)
+    if term == nil { // pane shown before a session exists (shouldn't happen — lazy spawn)
+        flush_pane(t, area, win_w, win_h)
+        return
+    }
+
+    cw := t.font.cell_w
+    rh := max(i32(1), i32(t.font.line_height))
+    cols := max(1, int(f32(area.w) / cw))
+    rows := max(1, int(area.h / rh))
+    terminal_resize(term, rows, cols)
+    terminal_set_default_colors(term, th.fg, th.bg) // follow theme/font changes
+
+    fill(t, area, th.bg) // default background for the whole grid in one quad
+    cur_row, cur_col := terminal_cursor(term)
+
+    glyph: [1]rune
+    for row in 0 ..< rows {
+        cy := area.y + i32(row) * rh
+        for col in 0 ..< cols {
+            cell := terminal_cell(term, row, col) or_continue
+
+            fg, fdef := terminal_color(term, cell.fg)
+            if fdef {
+                fg = th.fg
+            }
+            bg, bdef := terminal_color(term, cell.bg)
+            if bdef {
+                bg = th.bg
+            }
+            // The block cursor is reverse video; XOR with the cell's own reverse attr.
+            reverse := cell.attrs.reverse != (row == cur_row && col == cur_col)
+            if reverse {
+                fg, bg = bg, fg
+            }
+
+            // Tile cell x-edges off the same fractional grid as the glyphs so the bg
+            // fills meet exactly (no seams, no overlap).
+            x0 := i32(f32(area.x) + cw * f32(col))
+            x1 := i32(f32(area.x) + cw * f32(col + 1))
+            if bg != th.bg {
+                fill(t, Rect{x0, cy, x1 - x0, rh}, bg)
+            }
+            if r := rune(cell.chars[0]); r >= 0x20 {
+                glyph[0] = r
+                text_draw_runes(t, glyph[:], f32(x0), f32(cy), fg)
+            }
+        }
+    }
+    flush_pane(t, area, win_w, win_h)
+}
+
 // The terminal switcher: a slim i3-style numbered column shown while Alt is held.
 // It is inset within the pane's focus outline (so it sits seamlessly inside the
 // highlight rather than covering it), two digits wide, and scrolls to keep the
@@ -597,9 +663,10 @@ draw_term_overlay :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now:
     col_fg := lerp3(th.bg, th.fg, f)
 
     // Scroll so the active session stays centered, clamped at the list ends.
+    n := term_count(a)
     max_rows := max(1, int(area.h / row_h))
-    first := clamp(a.term_active - max_rows / 2, 0, max(0, a.term_count - max_rows))
-    visible := min(a.term_count - first, max_rows)
+    first := clamp(a.term_active - max_rows / 2, 0, max(0, n - max_rows))
+    visible := min(n - first, max_rows)
 
     fill(t, Rect{area.x, area.y, colw, i32(visible) * row_h}, col_bg)
 

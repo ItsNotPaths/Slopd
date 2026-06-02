@@ -101,6 +101,13 @@ main :: proc() {
         // escapes into App state, so one free_all per frame keeps it bounded.
         free_all(context.temp_allocator)
 
+        // Drain each session's PTY output (buffered by its reader thread) into the
+        // parser before drawing. The reader's PostEmptyEvent is what woke us.
+        for term in app.terminals {
+            terminal_drain(term)
+        }
+        cl_chain_pump(&app) // advance a pending && chain once its exit code arrives
+
         now := glfw.GetTime()
         w, h := glfw.GetFramebufferSize(window)
         // Track DPI, then re-bake the atlas if the DPI scale (monitor move) or the

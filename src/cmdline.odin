@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:strconv"
 import "core:strings"
 
@@ -82,46 +83,246 @@ cl_recall :: proc(a: ^App, text: string) {
     doc_cursor_to_end(&a.cl.doc)
 }
 
-// Parses and dispatches a submitted command. Builtins (goto + cd) are handled
-// for real; shell commands and tN-injection are stubbed until terminals exist.
+// A submitted line is a chain of `&&` segments, each a Slopd BUILTIN (goto/zen/put,
+// run here) or a SHELL command (injected into a terminal). `&&` is honoured: a step
+// only runs once the preceding shell step exits 0 — detected asynchronously via the
+// OSC exit sentinel, so the chain is pumped a frame at a time (cl_chain_pump).
+// Consecutive shell segments coalesce and keep their `&&` so the shell enforces the
+// conditional among them; only a shell step a builtin waits on gets the sentinel.
+CLStep :: struct {
+    shell: bool,
+    text:  string, // owned; freed by cl_chain_clear
+}
+
+CLChain :: struct {
+    steps:     [dynamic]CLStep,
+    idx:       int,
+    target:    int, // 1-based terminal for this chain's shell injections
+    waiting:   bool, // blocked on the current shell step's exit code
+    wait_id:   u64,
+    wait_term: ^Terminal,
+}
+
+// The private OSC tag must match terminal.odin's OSC_EXIT_TAG.
+@(private = "file")
+EXIT_OSC :: 697
+
+// Parse a submitted line into a chain and start running it. A new line abandons any
+// half-finished chain.
 cl_exec :: proc(a: ^App, input: string) {
-    fields := strings.fields(input, context.temp_allocator)
-    if len(fields) == 0 {
-        return
-    }
-    cmd := fields[0]
+    cl_parse(a, input)
+    cl_chain_pump(a)
+}
 
-    // tN prefix -> focus terminal N. A trailing command would be injected there
-    // (stub for now); a bare tN is just a goto.
-    if len(cmd) >= 2 && cmd[0] == 't' && all_digits(cmd[1:]) {
-        term_focus(a, strconv.parse_int(cmd[1:], 10) or_else 0)
-        return
+// Build the chain from a submitted line (no execution — split out so the parsing is
+// unit-testable on its own). Populates a.cl_chain; a new line abandons any pending
+// chain first.
+cl_parse :: proc(a: ^App, input: string) {
+    cl_chain_clear(a)
+    ch := &a.cl_chain
+    ch.target = 1
+
+    rest := strings.trim_space(input)
+
+    // A leading tN sets the target terminal for the chain's shell parts; alone it is
+    // just a goto. Stripped before segmenting.
+    if first := first_field(rest); is_term_token(first) {
+        ch.target = strconv.parse_int(first[1:], 10) or_else 1
+        term_focus(a, ch.target)
+        rest = strings.trim_space(rest[len(first):])
+        if rest == "" {
+            return // bare tN — goto only
+        }
     }
 
-    switch cmd {
-    case "ls": // goto filetree
-        set_aux(a, .FileTree)
-    case "gs": // goto git
-        set_aux(a, .Git)
-    case "cf": // goto config / syntax pane (re-stat grammars on entry)
-        set_aux(a, .Config)
-        config_pane_refresh(&a.config_pane)
-    case "zen", "zm": // toggle zen mode (full-width editor; aux on focus only)
-        view_toggle_zen(a)
-    case "cd": // builtin: set project root + t1 cwd (stub until terminals exist)
-    case: // shell command -> inject into t1 (stub), surface the terminal
-        run_in_t1(a, input)
+    for seg in strings.split(rest, "&&", context.temp_allocator) {
+        s := strings.trim_space(seg)
+        if s == "" {
+            continue
+        }
+        if cl_is_builtin(first_field(s)) {
+            append(&ch.steps, CLStep{shell = false, text = strings.clone(s)})
+        } else if n := len(ch.steps); n > 0 && ch.steps[n - 1].shell {
+            prev := &ch.steps[n - 1] // coalesce adjacent shell segments (real shell &&)
+            joined := strings.concatenate({prev.text, " && ", s})
+            delete(prev.text)
+            prev.text = joined
+        } else {
+            append(&ch.steps, CLStep{shell = true, text = strings.clone(s)})
+        }
     }
 }
 
-// Run a command in t1, the master CL terminal. Injection is stubbed until libvterm
-// — for now this only surfaces t1 (same seam as the shell path above); the command
-// is built and passed through so it runs unchanged once the terminal lands. Shared
-// by the command line's shell path and the Config pane's language options.
+// Advance the chain as far as it can go this frame: resolve a pending shell step's
+// exit code (short-circuiting on failure), run builtins inline, and inject the next
+// shell step. A non-final shell step (one a later step depends on) is wrapped with
+// the exit sentinel and we return to wait; the final step injects plain.
+cl_chain_pump :: proc(a: ^App) {
+    ch := &a.cl_chain
+    if !ch.waiting && len(ch.steps) == 0 {
+        return // nothing running
+    }
+    if ch.waiting {
+        t := ch.wait_term
+        if t == nil || !t.alive { // the shell died mid-chain
+            cl_chain_clear(a)
+            return
+        }
+        if !(t.exit_ready && t.exit_id == ch.wait_id) {
+            return // command still running
+        }
+        t.exit_ready = false
+        ch.waiting = false
+        if t.exit_code != 0 { // && short-circuit
+            cl_chain_clear(a)
+            return
+        }
+        ch.idx += 1
+    }
+
+    for ch.idx < len(ch.steps) {
+        step := ch.steps[ch.idx]
+        if step.shell {
+            last := ch.idx == len(ch.steps) - 1
+            cl_inject_shell(a, step.text, last)
+            if !last {
+                return // wait for the exit code before the next step
+            }
+        } else if !cl_run_builtin(a, step.text) {
+            cl_chain_clear(a)
+            return
+        }
+        ch.idx += 1
+    }
+    cl_chain_clear(a)
+}
+
+// Inject a shell command into the chain's target terminal. The final step runs
+// plain; a non-final step is wrapped so the shell reports its exit code back via the
+// private OSC, which the runner waits on (see cl_chain_pump).
+@(private = "file")
+cl_inject_shell :: proc(a: ^App, cmd: string, last: bool) {
+    ch := &a.cl_chain
+    term_focus(a, ch.target)
+    t := term_current(a)
+    if t == nil {
+        cl_chain_clear(a)
+        return
+    }
+    if last {
+        terminal_write(t, transmute([]u8)strings.concatenate({cmd, "\n"}, context.temp_allocator))
+        return
+    }
+    id := a.cl_wait_seq
+    a.cl_wait_seq += 1
+    t.exit_ready = false // discard any stale report before we arm this one
+    // A waited step runs in a subshell with the pager neutralised — there is no point
+    // paging a command we're about to `&&`-goto past, and a pager (e.g. git's `less`)
+    // would block forever waiting for a keypress, stalling the whole chain. The
+    // trailing `;printf` always runs, reporting the group's final exit code via the
+    // private OSC (literal \033/\007/%d reach the shell verbatim; libvterm hides it).
+    line := fmt.tprintf(
+        "(export GIT_PAGER=cat PAGER=cat; %s) ;printf '\\033]%d;%d;%%d\\007' \"$?\"\n",
+        cmd,
+        EXIT_OSC,
+        id,
+    )
+    terminal_write(t, transmute([]u8)line)
+    ch.waiting = true
+    ch.wait_id = id
+    ch.wait_term = t
+}
+
+// Run a Slopd builtin. Returns success (builtins always succeed, so a following
+// chain step proceeds).
+@(private = "file")
+cl_run_builtin :: proc(a: ^App, text: string) -> bool {
+    name := first_field(text)
+    args := strings.trim_space(text[len(name):])
+    switch name {
+    case "ls":
+        set_aux(a, .FileTree)
+    case "gs":
+        set_aux(a, .Git)
+    case "cf":
+        set_aux(a, .Config)
+        config_pane_refresh(&a.config_pane)
+    case "zen", "zm":
+        view_toggle_zen(a)
+    case "put":
+        cl_put(a, args)
+    }
+    return true
+}
+
+// `put [text]`: type the literal text then the editor's current selection into the
+// target terminal, with NO trailing newline (composes a command at the prompt).
+@(private = "file")
+cl_put :: proc(a: ^App, args: string) {
+    sel := editor_selection_text(a, context.temp_allocator)
+    parts := args != "" && sel != "" ? []string{args, " ", sel} : []string{args, sel}
+    text := strings.concatenate(parts, context.temp_allocator)
+    term_focus(a, a.cl_chain.target)
+    if t := term_current(a); t != nil {
+        terminal_write(t, transmute([]u8)text)
+    }
+}
+
+cl_chain_clear :: proc(a: ^App) {
+    ch := &a.cl_chain
+    for step in ch.steps {
+        delete(step.text)
+    }
+    delete(ch.steps) // free the backing too — commands are rare, so no need to pool it
+    ch.steps = nil
+    ch.idx = 0
+    ch.waiting = false
+    ch.wait_term = nil
+}
+
+// Run a command in t1, the master CL terminal (the Config pane's language buttons
+// and any plain injection). Surfaces t1 and runs the command — no chaining.
 run_in_t1 :: proc(a: ^App, cmd: string) {
-    // TODO(libvterm): inject `cmd` into terminal 1 and execute it.
-    _ = cmd
     term_focus(a, 1)
+    if t := term_current(a); t != nil {
+        terminal_write(t, transmute([]u8)strings.concatenate({cmd, "\n"}, context.temp_allocator))
+    }
+}
+
+// The editor's current selection as text, or "" when nothing is selected.
+@(private = "file")
+editor_selection_text :: proc(a: ^App, alloc := context.temp_allocator) -> string {
+    b := editor_current(&a.editor)
+    for c in b.cursors {
+        if cursor_has_selection(c) {
+            joined, _ := doc_copy(&b.doc, alloc)
+            return joined
+        }
+    }
+    return ""
+}
+
+@(private = "file")
+first_field :: proc(s: string) -> string {
+    i := 0
+    for i < len(s) && s[i] != ' ' && s[i] != '\t' {
+        i += 1
+    }
+    return s[:i]
+}
+
+@(private = "file")
+is_term_token :: proc(s: string) -> bool {
+    return len(s) >= 2 && s[0] == 't' && all_digits(s[1:])
+}
+
+@(private = "file")
+cl_is_builtin :: proc(name: string) -> bool {
+    switch name {
+    case "ls", "gs", "cf", "zen", "zm", "put":
+        return true
+    }
+    return false
 }
 
 // Switch to terminal session n (1-based), surfacing the terminal pane. Shared by
@@ -129,8 +330,9 @@ run_in_t1 :: proc(a: ^App, cmd: string) {
 term_focus :: proc(a: ^App, n: int) {
     a.aux_mode = .Terminal
     set_focus(a, .Aux)
-    if a.term_count > 0 {
-        a.term_active = clamp(n - 1, 0, a.term_count - 1)
+    term_ensure(a) // surfacing a terminal spawns t1 if none exists yet
+    if term_count(a) > 0 {
+        a.term_active = clamp(n - 1, 0, term_count(a) - 1)
     }
 }
 
