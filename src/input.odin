@@ -17,6 +17,9 @@ import "vendor:glfw"
 //   Alt+1..9                  jump to terminal session N (i3-style)
 //   Alt+N / Alt+Q             terminal: new / close session (max 99)
 //   Alt+Up/Down               terminal: switch session (switcher shows while Alt held)
+//   Ctrl+Alt+Up/Down          terminal: move the row-only copy cursor (scrolls history)
+//   Shift+Alt+Up/Down         terminal: extend a line selection from the copy cursor
+//   Ctrl+Shift+C              terminal: copy the selected lines (Esc / typing exits)
 //   Alt+[ / Alt+]             nudge the split
 //   Alt+A (+ arrow)           drop a cursor / lay a multi-cursor trail (Esc collapses)
 //   Alt+M                     one-shot prefix: next motion moves every cursor
@@ -81,6 +84,16 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         return
     }
 
+    // Track Ctrl/Shift held (fall through — they are still ordinary chord modifiers).
+    // The switcher hides while either is down: Alt+Ctrl / Alt+Shift are the terminal
+    // copy-cursor chords, not session switching.
+    switch key {
+    case glfw.KEY_LEFT_CONTROL, glfw.KEY_RIGHT_CONTROL:
+        a.ctrl_held = action != glfw.RELEASE
+    case glfw.KEY_LEFT_SHIFT, glfw.KEY_RIGHT_SHIFT:
+        a.shift_held = action != glfw.RELEASE
+    }
+
     // Track A held (Alt+A + a direction is the cursor-drop chord). Don't return: A
     // is still an ordinary key (typing, readline Ctrl+A). A bare Alt+A press drops a
     // cursor at the active editable's caret (command line or buffer).
@@ -109,6 +122,8 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     if key == glfw.KEY_ESCAPE {
         if a.cl_chain.waiting {
             cl_chain_clear(a) // abandon a stuck/pending && chain (the shell command runs on)
+        } else if ts := term_sel_target(a); ts != nil && ts.sel_active {
+            terminal_sel_reset(ts) // first Esc leaves line-select, back to the input line
         } else if tf := term_focused(a); tf != nil {
             terminal_input_key(tf, key, mods)
         } else if a.cl_active {
@@ -195,14 +210,24 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             }
 
         // Alt+Up/Down: in the editor, jump app.jump_lines lines (Shift extends the
-        // selection); in the terminal pane, cycle session instead.
+        // selection). In the terminal pane the bare chord cycles session; Ctrl+Alt
+        // moves the row-only copy cursor (scrolling into scrollback), Shift+Alt grows
+        // a line selection from it — Ctrl+Shift+C then copies (see the routing below).
         case glfw.KEY_UP, glfw.KEY_DOWN:
-            motion: Motion = key == glfw.KEY_UP ? .Up : .Down
+            dir := key == glfw.KEY_UP ? -1 : 1
             if a.focus == .Editor {
+                motion: Motion = key == glfw.KEY_UP ? .Up : .Down
                 buffer_motion(editor_current(&a.editor), motion, mods & glfw.MOD_SHIFT != 0, false, a.jump_lines)
             } else if a.aux_mode == .Terminal && term_count(a) > 0 {
-                step := key == glfw.KEY_UP ? -1 : 1
-                a.term_active = (a.term_active + step + term_count(a)) % term_count(a)
+                t := term_current(a)
+                switch {
+                case mods & glfw.MOD_CONTROL != 0:
+                    terminal_sel_move(t, dir, false)
+                case mods & glfw.MOD_SHIFT != 0:
+                    terminal_sel_move(t, dir, true)
+                case:
+                    a.term_active = (a.term_active + dir + term_count(a)) % term_count(a)
+                }
             }
 
         case glfw.KEY_LEFT_BRACKET:
@@ -229,6 +254,15 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             font_zoom_reset(a)
             return
         }
+    }
+
+    // Ctrl+Shift+C copies the terminal's line selection to the clipboard (the shell
+    // gets plain Ctrl+C; Shift carves out the copy). Checked before the routing below
+    // so libvterm never sees it.
+    if ts := term_sel_target(a);
+       ts != nil && key == glfw.KEY_C && mods & glfw.MOD_CONTROL != 0 && mods & glfw.MOD_SHIFT != 0 {
+        term_copy(a, ts)
+        return
     }
 
     // A focused live terminal owns the rest: send specials + Ctrl-combos to libvterm
@@ -392,6 +426,15 @@ editor_copy :: proc(a: ^App) {
     b := editor_current(&a.editor)
     joined, pieces := doc_copy(&b.doc)
     clipboard_set(a, joined, pieces)
+}
+
+// Copy a terminal's selected lines (the line-select cursor's range) to the system
+// clipboard. Plain joined text — no per-cursor pieces, so paste anywhere is literal.
+term_copy :: proc(a: ^App, t: ^Terminal) {
+    if !t.sel_active {
+        return
+    }
+    clipboard_set(a, terminal_selection_text(t), nil)
 }
 
 editor_cut :: proc(a: ^App) {
@@ -625,8 +668,8 @@ config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
 }
 
 // Bare modifier keys (Shift/Ctrl/Super on their way into a chord) — used so the
-// one-shot move-all prefix survives them to reach the actual motion key.
-@(private = "file")
+// one-shot move-all prefix survives them to reach the actual motion key, and so a
+// modifier press (e.g. the Ctrl of Ctrl+Shift+C) doesn't drop a terminal selection.
 is_modifier_key :: proc(key: i32) -> bool {
     switch key {
     case glfw.KEY_LEFT_SHIFT,

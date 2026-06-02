@@ -1,5 +1,6 @@
 package main
 
+import "base:runtime"
 import "core:c"
 import "core:os"
 import "core:strings"
@@ -48,7 +49,37 @@ Terminal :: struct {
     exit_ready: bool,
     exit_id:    u64,
     exit_code:  int,
+
+    // Scrollback + keyboard line-selection (no mouse). Lines scrolling off the top
+    // are captured into `scrollback` (oldest first) via the sb_pushline callback;
+    // `sb_total` counts every line ever pushed, giving each line a STABLE absolute
+    // number that survives new output (scrollback[i] is absolute sb_total-len+i, live
+    // row r is sb_total+r). A row-only copy cursor scrolls through that history and
+    // marks a line range to copy. All of this is main-thread-only (callbacks fire
+    // inside terminal_feed; the cursor is touched only in draw + input). See the
+    // scrollback callbacks and terminal_sel_* below.
+    callbacks:  vt.ScreenCallbacks,
+    sb_ctx:     runtime.Context, // context the sb_* "c" callbacks allocate under
+    scrollback: [dynamic]ScrollLine,
+    sb_total:   int,
+    sel_active: bool, // line-select / scroll mode on (cursor shown)
+    sel_head:   int,  // absolute line of the copy cursor (the moving edge)
+    sel_anchor: int,  // absolute line the selection is pinned at (== head: no span)
+    view_top:   int,  // absolute line drawn at the top row while scrolled
 }
+
+// One captured scrollback row: a clone of the cells libvterm handed us as the line
+// scrolled off the top. Owned by the Terminal; freed in terminal_vt_destroy (and as
+// the oldest lines are trimmed past SCROLLBACK_MAX).
+ScrollLine :: struct {
+    cells: []vt.ScreenCell,
+}
+
+// How many scrolled-off lines to keep, and the slack we let the buffer overshoot
+// before trimming the oldest in one batch (so trimming is amortised O(1) per line,
+// not an O(n) shift on every single scrolled line under heavy output).
+SCROLLBACK_MAX  :: 5000
+SCROLLBACK_TRIM :: SCROLLBACK_MAX / 8
 
 // Bring up the VT state machine at the given grid size: UTF-8 in, hard-reset to a
 // clean screen. Colours stay libvterm's built-in palette until the host seeds the
@@ -71,6 +102,11 @@ terminal_vt_destroy :: proc(t: ^Terminal) {
         t.screen = nil
         t.state = nil
     }
+    for line in t.scrollback {
+        delete(line.cells)
+    }
+    delete(t.scrollback)
+    t.scrollback = nil
 }
 
 // Resize the cell grid to match the pane (called from draw). No-op when unchanged,
@@ -156,6 +192,132 @@ vt_color :: proc(rgb: [3]f32) -> vt.Color {
 }
 
 // ---------------------------------------------------------------------------
+// Scrollback view + keyboard line-selection. The view spans an absolute-numbered
+// space: lines [oldest, sb_total) live in scrollback, [sb_total, bottom] are the
+// live grid rows. A row-only copy cursor (no column — it marks whole lines) walks
+// that space; the view scrolls to keep it on screen. Esc / typing snap back to the
+// live bottom. All main-thread (draw + input).
+// ---------------------------------------------------------------------------
+
+// The oldest absolute line still retained (start of scrollback).
+terminal_oldest :: proc(t: ^Terminal) -> int {
+    return t.sb_total - len(t.scrollback)
+}
+
+// The bottom-most selectable line: the last live grid row.
+terminal_bottom :: proc(t: ^Terminal) -> int {
+    return t.sb_total + t.rows - 1
+}
+
+// A cell at absolute line `n`, column `col`, drawn from the live grid when `n` is
+// on-screen else from captured scrollback. ok=false past either end (blank cell).
+terminal_view_cell :: proc(t: ^Terminal, n, col: int) -> (cell: vt.ScreenCell, ok: bool) {
+    if n >= t.sb_total {
+        return terminal_cell(t, n - t.sb_total, col)
+    }
+    idx := n - terminal_oldest(t)
+    if idx < 0 || idx >= len(t.scrollback) {
+        return {}, false
+    }
+    line := t.scrollback[idx]
+    if col < 0 || col >= len(line.cells) {
+        return {}, false
+    }
+    return line.cells[col], true
+}
+
+// The absolute line shown at the top row: the scrolled position while selecting,
+// else the live grid top (bottom-aligned). Clamped so the view never runs past the
+// oldest history nor below the full live grid.
+terminal_view_top :: proc(t: ^Terminal) -> int {
+    top := t.sel_active ? t.view_top : t.sb_total
+    return clamp(top, terminal_oldest(t), t.sb_total)
+}
+
+// The inclusive absolute line range currently selected (lo..hi). lo==hi is the bare
+// copy cursor (no span) — only the thin cursor line is drawn, no highlight.
+terminal_sel_range :: proc(t: ^Terminal) -> (lo, hi: int) {
+    return min(t.sel_anchor, t.sel_head), max(t.sel_anchor, t.sel_head)
+}
+
+// Move the copy cursor by `delta` lines (negative = up, into history). The first
+// move off the live bottom enters select mode. `extend` (Shift) keeps the anchor to
+// grow a span; otherwise the anchor follows, and returning to the bottom with no
+// span drops back to plain input mode. Scrolls the view to keep the cursor visible.
+terminal_sel_move :: proc(t: ^Terminal, delta: int, extend: bool) {
+    if !t.sel_active {
+        t.sel_active = true
+        t.sel_head = terminal_bottom(t)
+        t.sel_anchor = t.sel_head
+        t.view_top = t.sb_total
+    }
+    t.sel_head = clamp(t.sel_head + delta, terminal_oldest(t), terminal_bottom(t))
+    if !extend {
+        t.sel_anchor = t.sel_head
+    }
+    // Back at the bottom with nothing selected — there is nothing to copy, so leave
+    // select mode and hide the cursor (the "inputting stuff" line).
+    if t.sel_head == terminal_bottom(t) && t.sel_anchor == terminal_bottom(t) {
+        t.sel_active = false
+        return
+    }
+    // Keep the cursor on screen, then clamp to the valid scroll span.
+    if t.sel_head < t.view_top {
+        t.view_top = t.sel_head
+    } else if t.sel_head > t.view_top + t.rows - 1 {
+        t.view_top = t.sel_head - t.rows + 1
+    }
+    t.view_top = clamp(t.view_top, terminal_oldest(t), t.sb_total)
+}
+
+// Leave select/scroll mode: hide the cursor and snap the view back to the live
+// bottom (Esc, or any real keystroke to the shell).
+terminal_sel_reset :: proc(t: ^Terminal) {
+    t.sel_active = false
+}
+
+// The selected lines as text: each line's cells up to its last non-blank, joined by
+// newlines. Caller owns the result. Empty when there is no live selection.
+terminal_selection_text :: proc(t: ^Terminal, alloc := context.allocator) -> string {
+    if !t.sel_active {
+        return ""
+    }
+    lo, hi := terminal_sel_range(t)
+    b := strings.builder_make(alloc)
+    for n in lo ..= hi {
+        terminal_append_line(t, &b, n)
+        if n < hi {
+            strings.write_byte(&b, '\n')
+        }
+    }
+    return strings.to_string(b)
+}
+
+// Append absolute line `n` to `b`, trimming trailing blank cells. A scrollback line
+// caps at its own captured width; a live row at the grid width.
+@(private = "file")
+terminal_append_line :: proc(t: ^Terminal, b: ^strings.Builder, n: int) {
+    width := n >= t.sb_total ? t.cols : len(t.scrollback[n - terminal_oldest(t)].cells)
+    last := -1 // last column holding a visible glyph
+    for col in 0 ..< width {
+        if r := terminal_view_rune(t, n, col); r > 0x20 {
+            last = col
+        }
+    }
+    for col in 0 ..= last {
+        r := terminal_view_rune(t, n, col)
+        strings.write_rune(b, r >= 0x20 ? r : ' ')
+    }
+}
+
+// The primary rune at an absolute (line, col), 0 when blank/out of range.
+@(private = "file")
+terminal_view_rune :: proc(t: ^Terminal, n, col: int) -> rune {
+    cell := terminal_view_cell(t, n, col) or_else vt.ScreenCell{}
+    return rune(cell.chars[0])
+}
+
+// ---------------------------------------------------------------------------
 // PTY + child shell (Slopd owns the PTY in pure core:sys/posix; only TIOCSWINSZ
 // needs a foreign ioctl). The window-size ioctl and its struct are the one bit
 // outside the posix package.
@@ -182,6 +344,7 @@ terminal_spawn :: proc(t: ^Terminal, rows, cols: int) -> bool {
     vt.output_set_callback(t.term, term_output_cb, t) // query replies -> PTY master
     t.fallbacks = vt.StateFallbacks{osc = term_osc_cb} // exit-code OSC -> t.exit_*
     vt.screen_set_unrecognised_fallbacks(t.screen, &t.fallbacks, t)
+    terminal_enable_scrollback(t)
 
     master := posix.posix_openpt({.RDWR, .NOCTTY})
     if master < 0 {
@@ -329,6 +492,65 @@ term_reader_proc :: proc(th: ^thread.Thread) {
     t.alive = false
     sync.mutex_unlock(&t.lock)
     glfw.PostEmptyEvent()
+}
+
+// Start capturing scrolled-off lines into this Terminal's scrollback. Stores a
+// self-pointer in libvterm, so call it only once t has a stable address (the real
+// session does this in terminal_spawn; the test core, which returns a Terminal by
+// value, must call it on the settled copy, never inside the builder).
+terminal_enable_scrollback :: proc(t: ^Terminal) {
+    // The "c" callbacks carry no Odin context; capture the caller's so scrollback is
+    // allocated under the same allocator terminal_vt_destroy frees it with (the heap
+    // in the app, the test runner's tracking allocator under test).
+    t.sb_ctx = context
+    t.callbacks = vt.ScreenCallbacks {
+        sb_pushline = term_sb_pushline_cb,
+        sb_popline  = term_sb_popline_cb,
+    }
+    vt.screen_set_callbacks(t.screen, &t.callbacks, t)
+}
+
+// A line just scrolled off the top: clone its cells into scrollback (oldest first)
+// and bump the running total so absolute line numbers stay stable. Trims the oldest
+// in a batch once we overshoot the cap. "c" callback — establish a context to alloc;
+// it runs on the main thread inside terminal_feed, so the heap allocator is fine.
+@(private = "file")
+term_sb_pushline_cb :: proc "c" (cols: c.int, cells: [^]vt.ScreenCell, user: rawptr) -> c.int {
+    t := (^Terminal)(user)
+    context = t.sb_ctx
+    n := int(cols)
+    line := ScrollLine {
+        cells = make([]vt.ScreenCell, n),
+    }
+    copy(line.cells, cells[:n])
+    append(&t.scrollback, line)
+    t.sb_total += 1
+    if len(t.scrollback) > SCROLLBACK_MAX + SCROLLBACK_TRIM {
+        for i in 0 ..< SCROLLBACK_TRIM {
+            delete(t.scrollback[i].cells)
+        }
+        remove_range(&t.scrollback, 0, SCROLLBACK_TRIM)
+    }
+    return 1
+}
+
+// The screen grew taller and wants a line back at the top: hand over the newest
+// scrollback line and drop it from history (sb_total decremented so the absolute
+// number it carried now resolves to the live row it has become — no double-render).
+// Return 0 when history is empty so libvterm leaves the new row blank.
+@(private = "file")
+term_sb_popline_cb :: proc "c" (cols: c.int, cells: [^]vt.ScreenCell, user: rawptr) -> c.int {
+    t := (^Terminal)(user)
+    context = t.sb_ctx
+    if len(t.scrollback) == 0 {
+        return 0
+    }
+    line := pop(&t.scrollback)
+    n := min(int(cols), len(line.cells))
+    copy(cells[:n], line.cells[:n]) // libvterm pre-blanks the buffer; fill what we have
+    delete(line.cells)
+    t.sb_total -= 1
+    return 1
 }
 
 // libvterm's reply bytes (cursor-position reports, device attributes, ...) go
@@ -529,9 +751,20 @@ term_focused :: proc(a: ^App) -> ^Terminal {
     return t
 }
 
+// The session that owns the line-selection / copy keys: the active terminal when
+// its pane is focused, alive or not (you can still copy a dead shell's output). nil
+// while the command line overlays the pane or another pane has focus.
+term_sel_target :: proc(a: ^App) -> ^Terminal {
+    if a.cl_active || a.focus != .Aux || a.aux_mode != .Terminal {
+        return nil
+    }
+    return term_current(a)
+}
+
 // A printable character typed at a focused terminal (from char_callback). Shift is
 // already baked into the codepoint, so the modifier is none.
 terminal_input_rune :: proc(t: ^Terminal, r: rune) {
+    terminal_sel_reset(t) // typing returns to the live bottom
     vt.keyboard_unichar(t.term, u32(r), vt.MOD_NONE)
 }
 
@@ -540,6 +773,12 @@ terminal_input_rune :: proc(t: ^Terminal, r: rune) {
 // Enter/Tab/Backspace/Escape/arrows/Home/End/Ins/Del/PageUp/Down — plus Ctrl+letter
 // (which GLFW emits no char event for) as a control unichar.
 terminal_input_key :: proc(t: ^Terminal, key, mods: i32) {
+    // A real key for the shell returns to the live bottom — but a bare modifier press
+    // (e.g. the Ctrl/Shift of Ctrl+Shift+C) must NOT, or it would drop the selection
+    // before the copy fires.
+    if !is_modifier_key(key) {
+        terminal_sel_reset(t)
+    }
     vk: vt.Key
     switch key {
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:

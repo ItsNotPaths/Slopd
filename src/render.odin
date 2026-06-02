@@ -87,7 +87,9 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
         flush_pane(t, lay.aux, win_w, win_h)
     }
 
-    if a.alt_held && a.aux_mode == .Terminal {
+    // Switcher overlay: plain Alt only. Alt+Ctrl / Alt+Shift drive the terminal
+    // copy-cursor, so the switcher stays hidden then.
+    if a.alt_held && !a.ctrl_held && !a.shift_held && a.aux_mode == .Terminal {
         draw_term_overlay(t, lay.aux, win_w, win_h, a, now)
     }
 
@@ -604,11 +606,20 @@ draw_terminal :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     fill(t, area, th.bg) // default background for the whole grid in one quad
     cur_row, cur_col := terminal_cursor(term)
 
+    // Scroll-aware view: each on-screen row maps to an absolute line (top + row),
+    // pulling from the live grid or scrollback. While selecting, the block cursor is
+    // suppressed and the selected line range tints with th.selection.
+    top := terminal_view_top(term)
+    sel_lo, sel_hi := terminal_sel_range(term)
+    selecting := term.sel_active && sel_lo != sel_hi
+
     glyph: [1]rune
     for row in 0 ..< rows {
+        n := top + row
+        row_sel := selecting && n >= sel_lo && n <= sel_hi
         cy := area.y + i32(row) * rh
         for col in 0 ..< cols {
-            cell := terminal_cell(term, row, col) or_continue
+            cell := terminal_view_cell(term, n, col) or_continue
 
             fg, fdef := terminal_color(term, cell.fg)
             if fdef {
@@ -618,10 +629,14 @@ draw_terminal :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
             if bdef {
                 bg = th.bg
             }
-            // The block cursor is reverse video; XOR with the cell's own reverse attr.
-            reverse := cell.attrs.reverse != (row == cur_row && col == cur_col)
-            if reverse {
+            // The block cursor is reverse video (live grid only, not while scrolling);
+            // XOR with the cell's own reverse attr.
+            is_cursor := !term.sel_active && n == term.sb_total + cur_row && col == cur_col
+            if cell.attrs.reverse != is_cursor {
                 fg, bg = bg, fg
+            }
+            if row_sel { // selected lines tint uniformly; the glyph stays on top
+                bg = th.selection
             }
 
             // Tile cell x-edges off the same fractional grid as the glyphs so the bg
@@ -635,6 +650,15 @@ draw_terminal :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
                 glyph[0] = r
                 text_draw_runes(t, glyph[:], f32(x0), f32(cy), fg)
             }
+        }
+    }
+
+    // The copy cursor: a thin line drawn at the top edge of its line (sitting between
+    // it and the line above), marking where a copy reads from. Hidden at the bottom
+    // input line (sel_active off).
+    if term.sel_active {
+        if sr := term.sel_head - top; sr >= 0 && sr < rows {
+            caret(t, Rect{area.x, area.y + i32(sr) * rh, area.w, max(1, i32(2 * a.scale))}, th.accent)
         }
     }
     flush_pane(t, area, win_w, win_h)

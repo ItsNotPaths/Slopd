@@ -61,8 +61,12 @@ App :: struct {
     // Terminal sessions (aux pane, terminal mode). Heap-allocated and held by
     // pointer so the array growing never moves a Terminal out from under its reader
     // thread (see terminal.odin). t1 is spawned lazily on first use. The switcher
-    // overlay is hidden until Alt is held, then Up/Down move term_active.
+    // overlay is hidden until Alt is held, then Up/Down move term_active. Ctrl/Shift
+    // held are tracked too: Alt+Ctrl / Alt+Shift are the terminal copy-cursor chords,
+    // and the switcher hides while either is down (it is only for plain-Alt switching).
     alt_held:    bool,
+    ctrl_held:   bool,
+    shift_held:  bool,
     terminals:   [dynamic]^Terminal,
     term_active: int,
 
