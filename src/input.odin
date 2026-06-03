@@ -25,6 +25,7 @@ import "vendor:glfw"
 //   Alt+M                     one-shot prefix: next motion moves every cursor
 //   Esc                       cancel CL / move-all / multi-cursor, else Zen on + flip pane side
 //   Ctrl+= / Ctrl+- / Ctrl+0  font zoom: grow / shrink / reset text in every pane (global)
+//   Ctrl+Enter                editor: collapse / expand the block opening on the line
 // Bare keys go to the focused editable (see cl_handle_key / buffer_key): typing,
 // motion, Tab, undo/redo (Ctrl+Z/Y), save (Ctrl+S), clipboard (Ctrl+C/X/V).
 
@@ -370,7 +371,11 @@ buffer_key :: proc(a: ^App, key, mods: i32, all: bool) {
     }
     switch key {
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
-        buffer_newline(b)
+        if ctrl && a.folding {
+            buffer_fold_toggle(a, b) // collapse/expand the block opening on this line
+        } else {
+            buffer_newline(b)
+        }
     case glfw.KEY_TAB:
         buffer_tab(b, a.indent)
     case glfw.KEY_BACKSPACE:

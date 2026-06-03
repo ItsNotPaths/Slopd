@@ -64,6 +64,9 @@ main :: proc() {
     app.indent = cfg.indent
     app.line_numbers = cfg.line_numbers
     app.jump_lines = cfg.jump_lines
+    app.show_whitespace = cfg.show_whitespace
+    app.show_guides = cfg.show_guides
+    app.folding = cfg.folding
     app.font_px = cfg.font_px // persisted font zoom; text_init bakes the atlas at it
 
     editor_init(&app.editor)

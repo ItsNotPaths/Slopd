@@ -111,6 +111,13 @@ App :: struct {
     indent:       Indent, // Tab-key indentation policy (from config)
     line_numbers: Line_Numbers, // gutter style (from config)
     jump_lines:   int, // lines per Alt+Up/Down editor jump (from config)
+
+    // Editor reading-aids, toggled from the Config pane (all default on). show_whitespace:
+    // the ghosted leading-space dots / tab marks. show_guides: indent guides + the active-
+    // scope rail. folding: whether Ctrl+Enter collapses blocks.
+    show_whitespace: bool,
+    show_guides:     bool,
+    folding:         bool,
     scale:        f32, // DPI content scale: logical px * scale = physical px
     font_px:      f32, // logical text size in points (font zoom); base is FONT_BASE_PX
     font_save_at: f64, // glfw time to persist font_px at (debounce); 0 = nothing pending

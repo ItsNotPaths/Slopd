@@ -98,6 +98,42 @@ test_setting_options :: proc(t: ^testing.T) {
     testing.expect_value(t, theme[1], "global")
 }
 
+// The on/off reading-aid settings: each offers on/off, reflects the App flag as its
+// value, and commits back to the flag (Folding also expands existing folds on off).
+@(test)
+test_onoff_settings :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    defer app.editor_destroy(&a.editor)
+
+    for s in ([]app.Setting{.Folding, .IndentGuides, .Whitespace}) {
+        opts := app.setting_options(&a, s)
+        testing.expect_value(t, len(opts), 2)
+        testing.expect_value(t, opts[0], "on")
+        testing.expect_value(t, opts[1], "off")
+    }
+
+    a.show_guides = true
+    testing.expect_value(t, app.setting_value(&a, .IndentGuides), "on")
+    a.show_guides = false
+    testing.expect_value(t, app.setting_value(&a, .IndentGuides), "off")
+
+    // Turning folding off expands every open fold (the mechanism setting_commit runs;
+    // commit itself persists to a global-env-selected file, so it isn't exercised here
+    // — parallel tests share that env var). The on/off parser round-trips.
+    on, ok := app.parse_on_off("off")
+    testing.expect(t, ok && !on)
+    _, bad := app.parse_on_off("maybe")
+    testing.expect(t, !bad)
+
+    b := app.editor_current(&a.editor)
+    app.buffer_set_text(b, "def f():\n    a = 1\n    b = 2\nx = 3")
+    app.buffer_fold_toggle(&a, b)
+    testing.expect_value(t, len(b.folds), 1)
+    app.editor_clear_folds(&a.editor)
+    testing.expect_value(t, len(b.folds), 0) // folds expanded
+}
+
 // Opening a setting dropdown pre-selects the current value so the active choice is
 // highlighted.
 @(test)

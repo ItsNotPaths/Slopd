@@ -16,6 +16,9 @@ Theme :: struct {
     code_operator, code_type, code_return_type, cl_inject:        [3]f32,
     // Slopd extensions (tree-sitter), Gruvbox Material source:
     code_function, code_variable, code_constant, code_punctuation: [3]f32,
+    // Editor whitespace + indent guides (the dim leading-space dots / tab marks,
+    // the per-level indent guide rail, and the brighter rail of the cursor's scope).
+    whitespace, indent_guide, indent_guide_active:                [3]f32,
 }
 
 // Embedded so the baked-in fallback always matches the shipped default.theme.
@@ -78,6 +81,9 @@ parse_theme :: proc(content: string, t: ^Theme) {
         case "code_variable":    t.code_variable = col
         case "code_constant":    t.code_constant = col
         case "code_punctuation": t.code_punctuation = col
+        case "whitespace":           t.whitespace = col
+        case "indent_guide":         t.indent_guide = col
+        case "indent_guide_active":  t.indent_guide_active = col
         }
     }
 }

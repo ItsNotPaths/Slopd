@@ -28,19 +28,25 @@ Line_Numbers :: enum {
 // a few editor settings. Search order: $SLOPD_CONFIG, ~/.config/slopd/slopd.config,
 // ./slopd.config. Anything missing keeps the defaults below.
 Config :: struct {
-    theme_path:   string, // absolute (owned), or "" for the baked-in default
-    indent:       Indent,
-    line_numbers: Line_Numbers,
-    font_px:      f32, // logical text size in points (font zoom), persisted across runs
-    jump_lines:   int, // how many lines Alt+Up/Down jumps in the editor
+    theme_path:        string, // absolute (owned), or "" for the baked-in default
+    indent:            Indent,
+    line_numbers:      Line_Numbers,
+    font_px:           f32, // logical text size in points (font zoom), persisted across runs
+    jump_lines:        int, // how many lines Alt+Up/Down jumps in the editor
+    show_whitespace:   bool, // ghost the leading-space dots / tab marks
+    show_guides:       bool, // draw indent guides + the active-scope rail
+    folding:           bool, // allow Ctrl+Enter block folding
 }
 
 load_config :: proc() -> Config {
     cfg := Config {
-        indent       = {.Spaces, 4}, // matches the project's 4-space convention
-        line_numbers = .Global,
-        font_px      = FONT_BASE_PX,
-        jump_lines   = 10,
+        indent          = {.Spaces, 4}, // matches the project's 4-space convention
+        line_numbers    = .Global,
+        font_px         = FONT_BASE_PX,
+        jump_lines      = 10,
+        show_whitespace = true, // the guides default on; the config toggles them off
+        show_guides     = true,
+        folding         = true,
     }
     path := find_config()
     if path == "" {
@@ -86,6 +92,12 @@ load_config :: proc() -> Config {
             if n, ok := strconv.parse_int(val, 10); ok && n > 0 {
                 cfg.jump_lines = n
             }
+        case "whitespace":
+            if v, ok := parse_on_off(val); ok {cfg.show_whitespace = v}
+        case "indent_guides":
+            if v, ok := parse_on_off(val); ok {cfg.show_guides = v}
+        case "folding":
+            if v, ok := parse_on_off(val); ok {cfg.folding = v}
         }
     }
     return cfg
@@ -163,12 +175,15 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return INDENT_OPTS[:]
     case .Theme:
         return theme_options(context.temp_allocator)
+    case .Folding, .IndentGuides, .Whitespace:
+        return ON_OFF_OPTS[:]
     }
     return nil
 }
 
 INDENT_OPTS := [?]string{"tab", "spaces2", "spaces4", "spaces8"}
 LINE_NUMBER_OPTS := [?]string{"global", "relative"}
+ON_OFF_OPTS := [?]string{"on", "off"}
 
 // "default" + "global" first, then every themes/<name>.theme beside the binary,
 // sorted. Names are cloned into `allocator`; the returned slice is too.
@@ -206,13 +221,19 @@ Setting :: enum {
     Theme,
     LineNumbers,
     Indent,
+    Folding,
+    IndentGuides,
+    Whitespace,
 }
 
 setting_key :: proc(s: Setting) -> string {
     switch s {
-    case .Theme:       return "theme"
-    case .LineNumbers: return "line_numbers"
-    case .Indent:      return "indent"
+    case .Theme:        return "theme"
+    case .LineNumbers:  return "line_numbers"
+    case .Indent:       return "indent"
+    case .Folding:      return "folding"
+    case .IndentGuides: return "indent_guides"
+    case .Whitespace:   return "whitespace"
     }
     return ""
 }
@@ -222,9 +243,12 @@ setting_key :: proc(s: Setting) -> string {
 // temp arena is reclaimed.
 setting_value :: proc(a: ^App, s: Setting) -> string {
     switch s {
-    case .Theme:       return a.theme_path
-    case .LineNumbers: return a.line_numbers == .Global ? "global" : "relative"
-    case .Indent:      return a.indent.kind == .Tab ? "tab" : fmt.tprintf("spaces%d", a.indent.width)
+    case .Theme:        return a.theme_path
+    case .LineNumbers:  return a.line_numbers == .Global ? "global" : "relative"
+    case .Indent:       return a.indent.kind == .Tab ? "tab" : fmt.tprintf("spaces%d", a.indent.width)
+    case .Folding:      return on_off(a.folding)
+    case .IndentGuides: return on_off(a.show_guides)
+    case .Whitespace:   return on_off(a.show_whitespace)
     }
     return ""
 }
@@ -246,9 +270,32 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         }
     case .Indent:
         a.indent = parse_indent(val) or_return // invalid spec -> no change, return false
+    case .Folding:
+        a.folding = parse_on_off(val) or_return
+        if !a.folding {
+            editor_clear_folds(&a.editor) // expand everything when folding is turned off
+        }
+    case .IndentGuides:
+        a.show_guides = parse_on_off(val) or_return
+    case .Whitespace:
+        a.show_whitespace = parse_on_off(val) or_return
     }
     config_set(setting_key(s), val)
     return true
+}
+
+// Parses the on/off settings' values; ok=false on anything else (an invalid edit
+// keeps the old value, like the other settings).
+parse_on_off :: proc(s: string) -> (val: bool, ok: bool) {
+    switch s {
+    case "on", "true", "yes":  return true, true
+    case "off", "false", "no": return false, true
+    }
+    return false, false
+}
+
+on_off :: proc(b: bool) -> string {
+    return b ? "on" : "off"
 }
 
 // Persists `key: value` to the config file via read-modify-write: the matching key

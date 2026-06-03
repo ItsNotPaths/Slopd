@@ -191,6 +191,54 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
     return rows
 }
 
+// The fold range for a block opening on `line`, from the buffer's parse tree:
+// [line, end_row] where end_row is the last line to hide. Finds the innermost
+// multi-line syntax node that BEGINS on `line` (a brace block, a def/proc body, an
+// array literal, …) and folds down to its last line. ok=false when there's no loaded
+// grammar or no such node — the caller then falls back to an indentation scan.
+highlight_fold_range :: proc(a: ^App, b: ^Buffer, line: int) -> (start, end: int, ok: bool) {
+    if line < 0 || line >= len(b.lines) {
+        return 0, 0, false
+    }
+    g, found := highlighter_grammar(a, b.path)
+    if !found {
+        return 0, 0, false
+    }
+    tree := highlighter_tree(&a.hl, b, g.lang)
+    if tree == nil {
+        return 0, 0, false
+    }
+
+    // Descend at the line's first real token (past the indentation), then climb to
+    // the nearest ancestor that opens here and spans more than one line.
+    col := u32(line_indent_cols(&b.lines[line]))
+    node := ts.node_descendant_for_range(ts.tree_root_node(tree), ts.Point{u32(line), col}, ts.Point{u32(line), col})
+    for !ts.node_is_null(node) {
+        sp := ts.node_start_point(node)
+        ep := ts.node_end_point(node)
+        if int(sp.row) < line {
+            break // ancestors from here up begin above this line — none opens it
+        }
+        if int(sp.row) == line && int(ep.row) > line {
+            last := min(int(ep.row), len(b.lines) - 1)
+            if ep.col == 0 && last > line {
+                last -= 1 // half-open end at column 0 sits on the next line; trim it
+            }
+            // Keep a lone dedented closer (the `}` of a brace block) on its own line.
+            // A node's end point lands on the `}` line or just past it depending on the
+            // grammar, so without this equivalent blocks folded differently — the brace
+            // survived at one nesting depth but not another. Trimming any trailing line
+            // no deeper than the header makes the closer always visible, consistently.
+            if last > line && line_indent_cols(&b.lines[last]) <= line_indent_cols(&b.lines[line]) {
+                last -= 1
+            }
+            return line, last, last > line
+        }
+        node = ts.node_parent(node)
+    }
+    return 0, 0, false
+}
+
 // The loaded grammar for a buffer path's extension, loading on first use and caching.
 // ok=false means no registry match. A not-yet-installed grammar is NOT cached (so a
 // later install is picked up on a subsequent draw); a present-but-broken one IS cached

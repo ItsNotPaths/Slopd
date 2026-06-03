@@ -15,6 +15,8 @@ Buffer :: struct {
     scroll_anim:   Anim, // visual top line tweening toward `scroll` (smooth scroll)
     dirty:         bool,
     final_newline: bool, // did the file end in '\n'? preserved on save (POSIX round-trip)
+    folds:         [dynamic]Fold, // collapsed blocks (Ctrl+Enter); see fold.odin
+    fold_nlines:   int, // line count the folds were valid at (drop them when it changes)
 }
 
 Editor :: struct {
@@ -38,6 +40,14 @@ editor_destroy :: proc(e: ^Editor) {
 
 editor_current :: proc(e: ^Editor) -> ^Buffer {
     return &e.buffers[e.active]
+}
+
+// Expand every fold in every buffer (folding turned off in config).
+editor_clear_folds :: proc(e: ^Editor) {
+    for &b in e.buffers {
+        clear(&b.folds)
+        b.fold_nlines = len(b.lines)
+    }
 }
 
 // --- cross-part seams (called by the filetree / command line) ---
@@ -82,6 +92,7 @@ ring_contains :: proc(a: ^App, path: string) -> bool {
 
 buffer_destroy :: proc(b: ^Buffer) {
     doc_destroy(&b.doc)
+    delete(b.folds)
     delete(b.path)
 }
 
@@ -89,6 +100,8 @@ buffer_set_text :: proc(b: ^Buffer, text: string) {
     doc_set_text(&b.doc, text)
     b.scroll = 0
     b.scroll_anim = {} // settled at the top; a reused scratch buffer won't smear from its old scroll
+    clear(&b.folds) // a wholesale text swap invalidates every fold range
+    b.fold_nlines = len(b.lines)
 }
 
 buffer_load :: proc(b: ^Buffer, path: string) -> bool {
@@ -165,9 +178,42 @@ buffer_redo :: proc(b: ^Buffer) {
 // than just the free caret. ---
 
 buffer_motion :: proc(b: ^Buffer, motion: Motion, select := false, all := false, count := 1) {
+    buffer_sync_folds(b) // a prior same-frame edit may have invalidated the fold set
     if all {
         doc_move_all(&b.doc, motion, select, count)
     } else {
         doc_move(&b.doc, motion, select, count)
     }
+    buffer_skip_hidden(b, motion)
+}
+
+// Keeps cursors off folded (hidden) lines after a motion. A cursor that stepped into
+// a collapsed block is snapped to the fold's visible edge in the direction it moved:
+// backward motions land on the header above the fold, forward motions on the first
+// visible line past it — so a single Up/Down/arrow steps cleanly over a fold.
+@(private = "file")
+buffer_skip_hidden :: proc(b: ^Buffer, motion: Motion) {
+    if len(b.folds) == 0 {
+        return
+    }
+    forward := motion == .Right || motion == .Word_Right || motion == .Down || motion == .End
+    vertical := motion == .Up || motion == .Down
+    for &c in b.cursors {
+        if !buffer_line_hidden(b, c.head.line) {
+            continue
+        }
+        target := forward ? buffer_next_visible(b, c.head.line) : buffer_prev_visible(b, c.head.line)
+        // Vertical motion keeps the goal column; a horizontal wrap lands at the line
+        // edge it would have reached (end of the header / start of the line past it).
+        col := vertical ? min(c.goal, line_len(&b.lines[target])) : (forward ? 0 : line_len(&b.lines[target]))
+        p := Pos{target, col}
+        if !cursor_has_selection(c) {
+            c.anchor = p
+        }
+        c.head = p
+        if !vertical {
+            c.goal = col
+        }
+    }
+    doc_merge_cursors(&b.doc)
 }

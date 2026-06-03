@@ -28,3 +28,11 @@ code_function:    #a9b665
 code_variable:    #d4be98
 code_constant:    #d3869b
 code_punctuation: #928374
+
+# Editor guides — kept subtle so they sit behind the code without competing with it.
+# whitespace: the ghosted leading-space dots / tab marks. indent_guide: the per-level
+# vertical rail. indent_guide_active: the rail of the scope the cursor sits in — a
+# dimmed accent (the gruvbox purple) so the current block reads at a glance.
+whitespace:           #3a3735
+indent_guide:         #3a3735
+indent_guide_active:  #63407b

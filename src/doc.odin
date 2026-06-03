@@ -626,7 +626,7 @@ pos_right :: proc(d: ^Doc, p: Pos) -> Pos {
 
 // Sorts cursors by selection start and fuses any that overlap or touch, keeping
 // the multi-cursor set canonical. Single-cursor docs short-circuit.
-@(private = "file")
+@(private)
 doc_merge_cursors :: proc(d: ^Doc) {
     if len(d.cursors) <= 1 {
         return

@@ -127,12 +127,18 @@ draw_editor :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) 
     lh := t.font.line_height
     row_h := i32(lh) + i32(2 * a.scale)
 
+    buffer_sync_folds(b) // drop folds invalidated by an edit; keep the scroll on a real line
+
     cur_line := b.cursors[b.primary].head.line // primary cursor drives scroll + the gutter
     rows := max(1, int(area.h / row_h))
-    if cur_line < b.scroll { // keep the cursor on screen
+
+    // Scroll-follow in VISIBLE rows (folded lines don't take a row): keep the cursor
+    // within the window, sliding the top down only as far as a real visible line.
+    b.scroll = buffer_prev_visible(b, clamp(b.scroll, 0, len(b.lines) - 1))
+    if cur_line < b.scroll {
         b.scroll = cur_line
-    } else if cur_line >= b.scroll + rows {
-        b.scroll = cur_line - rows + 1
+    } else if buffer_visible_count(b, b.scroll, cur_line) > rows {
+        b.scroll = buffer_back_visible(b, cur_line, rows - 1)
     }
 
     // Smooth scroll: b.scroll is the target top line; the visual top tweens toward
@@ -147,22 +153,32 @@ draw_editor :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) 
     gutter := i32(max(2, num_digits(len(b.lines)))) // digits wide
     text_x := f32(area.x) + f32(gutter + 2) * cw // margin + gutter + gap
 
-    // Cover the viewport plus the partial rows a mid-scroll offset exposes at the
-    // top and bottom; the pane scissor clips the overhang.
+    // The visible lines to fill the viewport (plus the partial rows a mid-scroll
+    // offset exposes top and bottom), walking past folded lines. The visual row index
+    // counts only drawn lines, while line indices skip the hidden ones.
     count := rows + 2
-    hl := highlight_visible(a, b, top, count) // per-row rune colours, or nil
-    for k in 0 ..< count {
-        i := top + k
-        if i < 0 || i >= len(b.lines) {
-            continue
+    unit := indent_unit(a.indent)
+    scope: Scope
+    if a.show_guides {
+        scope = buffer_active_scope(b, cur_line, unit)
+    }
+
+    draw_lines := make([dynamic]int, 0, count, context.temp_allocator)
+    for i := top; i < len(b.lines) && len(draw_lines) < count; i += 1 {
+        if !buffer_line_hidden(b, i) {
+            append(&draw_lines, i)
         }
-        l := &b.lines[i]
-        y := area.y + i32(k) * row_h - off
-        if y >= area.y + area.h || y + row_h <= area.y { // fully clipped — skip
-            continue
-        }
+    }
+    // Highlight over the absolute span the drawn lines occupy (hl is indexed by
+    // line-top, so folded gaps inside the span are simply never read).
+    span := len(draw_lines) > 0 ? draw_lines[len(draw_lines) - 1] - top + 1 : 0
+    hl := highlight_visible(a, b, top, span)
+
+    for line, vrow in draw_lines {
+        l := &b.lines[line]
+        y := area.y + i32(vrow) * row_h - off
         ty := f32(y) + (f32(row_h) - lh) / 2
-        on_cur_line := i == cur_line
+        on_cur_line := line == cur_line
 
         if on_cur_line {
             fill(t, Rect{area.x, y, area.w, row_h}, th.line_highlight) // current-line bar
@@ -175,33 +191,48 @@ draw_editor :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) 
                 continue
             }
             lo, hi := cursor_range(c)
-            if i < lo.line || i > hi.line {
+            if line < lo.line || line > hi.line {
                 continue
             }
-            start := i == lo.line ? lo.col : 0
-            end := i == hi.line ? hi.col : len(l.text)
+            start := line == lo.line ? lo.col : 0
+            end := line == hi.line ? hi.col : len(l.text)
             if end > start {
                 sx := i32(text_x + cw * f32(start))
                 fill(t, Rect{sx, y, i32(cw * f32(end - start)), row_h}, th.selection)
             }
         }
 
+        // Indent guides: a thin vertical rail at each indent level, the cursor's
+        // scope drawn in the active colour. Then the ghosted whitespace markers.
+        if a.show_guides {
+            draw_indent_guides(t, b, line, text_x, y, row_h, cw, unit, th, scope)
+        }
+        if a.show_whitespace {
+            draw_whitespace(t, l, text_x, f32(y), row_h, cw, a.scale, th.whitespace)
+        }
+
         buf: [12]u8
-        s := strconv.write_int(buf[:], i64(line_number(a.line_numbers, i, cur_line)), 10)
+        s := strconv.write_int(buf[:], i64(line_number(a.line_numbers, line, cur_line)), 10)
         nx := f32(area.x) + cw + f32(gutter - i32(len(s))) * cw // right-align in gutter
         text_draw(t, s, nx, ty, on_cur_line ? th.fg : th.muted)
 
-        if hl != nil && hl[k] != nil {
+        k := line - top // index into the highlight rows (absolute-line based)
+        if hl != nil && k < len(hl) && hl[k] != nil {
             draw_runes_colored(t, l.text[:], hl[k], text_x, ty, th.fg)
         } else {
             text_draw_runes(t, l.text[:], text_x, ty, th.fg)
+        }
+
+        // A folded header carries a marker after its text so the collapse is visible.
+        if buffer_fold_index(b, line) >= 0 {
+            draw_fold_marker(t, text_x + cw * (f32(len(l.text)) + 0.5), f32(y), lh, a.scale, th.accent)
         }
 
         // A caret for every cursor sitting on this line (single-cursor = one), shown
         // on the blink's "on" phase.
         if caret_blink_on(a, now) {
             for c in b.cursors {
-                if c.head.line == i {
+                if c.head.line == line {
                     // Align the caret with the glyph cell (at ty), not the padded row top.
                     caret(t, Rect{i32(text_x + cw * f32(c.head.col)), i32(ty), i32(2 * a.scale), i32(lh)}, th.fg)
                 }
@@ -210,6 +241,61 @@ draw_editor :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) 
     }
 
     flush_pane(t, area, win_w, win_h)
+}
+
+// Indent guides for one line: a thin vertical rail at the left edge of each indent
+// level the line sits at. The rail of the cursor's enclosing scope (sc_level, over
+// rows [sc_lo, sc_hi]) is drawn in the active colour so the current block stands out.
+@(private = "file")
+draw_indent_guides :: proc(t: ^Text, b: ^Buffer, line: int, text_x: f32, y, row_h: i32, cw: f32, unit: int, th: ^Theme, scope: Scope) {
+    levels := buffer_indent_levels(b, line, unit)
+    gw := max(i32(1), i32(cw) / 16) // hairline, ~1px
+    aw := gw * 2 // the active scope rail is a touch thicker so it reads as the focus
+    for lvl in 0 ..< levels {
+        // Sit the rail half a cell into the indentation it marks, not hard against the
+        // glyph grid — it reads as a guide between columns rather than under them.
+        gx := i32(text_x + cw * (f32(lvl * unit) + 0.5))
+        if scope_highlights(scope, line, lvl) {
+            fill(t, Rect{gx - (aw - gw) / 2, y, aw, row_h}, th.indent_guide_active) // centred on the rail
+        } else {
+            fill(t, Rect{gx, y, gw, row_h}, th.indent_guide)
+        }
+    }
+}
+
+// Ghosted whitespace markers over a line's LEADING indentation: a small centred dot
+// per space, a short horizontal stroke per tab. Only the indent run is marked — inner
+// spacing between words stays clean. y is the row top; row_h the padded row height.
+@(private = "file")
+draw_whitespace :: proc(t: ^Text, l: ^Line, text_x, y: f32, row_h: i32, cw, scale: f32, color: [3]f32) {
+    for r, col in l.text {
+        if r != ' ' && r != '\t' {
+            break
+        }
+        cx := text_x + cw * f32(col)
+        if r == ' ' {
+            d := max(i32(2), i32(2 * scale)) // a small square dot
+            dx := i32(cx + (cw - f32(d)) / 2)
+            dy := i32(y) + (row_h - d) / 2
+            fill(t, Rect{dx, dy, d, d}, color)
+        } else { // tab: a short stroke across the cell, vertically centred
+            h := max(i32(1), i32(scale))
+            sx := i32(cx + cw * 0.2)
+            sy := i32(y) + (row_h - h) / 2
+            fill(t, Rect{sx, sy, i32(cw * 0.6), h}, color)
+        }
+    }
+}
+
+// The collapsed-block marker: three dots trailing a folded header line, in accent.
+@(private = "file")
+draw_fold_marker :: proc(t: ^Text, x, y, lh: f32, scale: f32, color: [3]f32) {
+    d := max(i32(2), i32(2 * scale))
+    cy := i32(y + lh / 2) - d / 2
+    for k in 0 ..< 3 {
+        dx := i32(x + f32(k) * (f32(d) + 2 * scale))
+        fill(t, Rect{dx, cy, d, d}, color)
+    }
 }
 
 // Draws a line's runes split into runs of one colour each (syntax highlighting).
