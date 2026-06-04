@@ -102,6 +102,12 @@ load_config :: proc() -> Config {
             if v, ok := parse_on_off(val); ok {cfg.folding = v}
         case "folder_cd":
             if v, ok := parse_stage_run(val); ok {cfg.folder_cd_run = v}
+        case "git_checkout":
+            if v, ok := parse_stage_run(val); ok {cfg.git_checkout_run = v}
+        case "git_commit":
+            if v, ok := parse_stage_run(val); ok {cfg.git_commit_run = v}
+        case "risky_mode":
+            if v, ok := parse_on_off(val); ok {cfg.risky_mode = v}
         }
     }
     return cfg
