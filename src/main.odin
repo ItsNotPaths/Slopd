@@ -116,6 +116,7 @@ main :: proc() {
         cl_chain_pump(&app) // advance a pending && chain once its exit code arrives
 
         now := glfw.GetTime()
+        git_scroll_pump(&app, now) // advance a held diff auto-scroll at its (accelerating) tick
         w, h := glfw.GetFramebufferSize(window)
         // Track DPI, then re-bake the atlas if the DPI scale (monitor move) or the
         // font zoom (Ctrl +/-) changed since last frame. text_apply no-ops otherwise.

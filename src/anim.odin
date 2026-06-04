@@ -61,6 +61,12 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     if a.view == .Split && anim_active(&a.split_anim, now) { // git pane widen/narrow
         wake = sched_min(wake, FRAME_BUDGET)
     }
+    if a.aux_mode == .Git && anim_active(&a.git.diff_scroll_anim, now) { // diff smooth scroll
+        wake = sched_min(wake, FRAME_BUDGET)
+    }
+    if a.aux_mode == .Git && a.git.scroll_dir != 0 { // diff auto-scroll: wake for the next tick
+        wake = sched_min(wake, max(0, a.git.scroll_next - now))
+    }
     if a.alt_held && a.aux_mode == .Terminal && anim_active(&a.switcher_anim, now) { // switcher fade
         wake = sched_min(wake, FRAME_BUDGET)
     }

@@ -84,7 +84,7 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
     } else if a.aux_mode == .Terminal {
         draw_terminal(t, lay.aux, win_w, win_h, a)
     } else if a.aux_mode == .Git {
-        draw_git(t, lay.aux, win_w, win_h, a)
+        draw_git(t, lay.aux, win_w, win_h, a, now)
     } else {
         label(t, aux_mode_name(a.aux_mode), lay.aux, pad, focus_fg(a, .Aux))
         flush_pane(t, lay.aux, win_w, win_h)
@@ -114,6 +114,24 @@ focus_fg :: proc(a: ^App, who: Focus) -> [3]f32 {
 // How long a scroll step takes to settle (seconds). Short by design — spartan.
 @(private = "file")
 SCROLL_DUR :: 0.09
+
+// Smooth-scroll bookkeeping shared by the editor and the diff viewer: re-aim `anim` at
+// the integer target `to` when it changes, then return the floored top row + the sub-row
+// pixel offset to shift drawing by (the partial top row is clipped by the pane scissor).
+// `top` may be negative when over-scrolled past the first row, so floor (not trunc).
+@(private = "file")
+smooth_scroll :: proc(anim: ^Anim, to: int, now: f64, row_h: i32) -> (top: int, off: i32) {
+    if f32(to) != anim.to {
+        anim_start(anim, now, anim_value(anim, now), f32(to), SCROLL_DUR)
+    }
+    disp := anim_value(anim, now)
+    top = int(disp)
+    if disp < f32(top) { // int() truncates toward zero; step down for a true floor
+        top -= 1
+    }
+    off = i32((disp - f32(top)) * f32(row_h))
+    return
+}
 
 // The editor: a line-number gutter, the active buffer's lines, the current-line
 // bar, and a caret. Scrolls to keep the cursor visible, the view sliding smoothly
@@ -146,12 +164,7 @@ draw_editor :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) 
 
     // Smooth scroll: b.scroll is the target top line; the visual top tweens toward
     // it. Re-arm only when the target moves, so a settled view never re-renders.
-    if f32(b.scroll) != b.scroll_anim.to {
-        anim_start(&b.scroll_anim, now, anim_value(&b.scroll_anim, now), f32(b.scroll), SCROLL_DUR)
-    }
-    disp := anim_value(&b.scroll_anim, now)
-    top := int(disp) // disp >= 0, so this floors to the first (partial) row
-    off := i32((disp - f32(top)) * f32(row_h)) // pixels of `top` scrolled above the fold
+    top, off := smooth_scroll(&b.scroll_anim, b.scroll, now, row_h)
 
     gutter := i32(max(2, num_digits(len(b.lines)))) // digits wide
     text_x := f32(area.x) + f32(gutter + 2) * cw // margin + gutter + gap
@@ -690,13 +703,17 @@ config_draw_edit :: proc(t: ^Text, edit: ^Doc, ex, ty: f32, a: ^App, now: f64) {
 // / commit editor gets the rest. (The editor itself is GIT_EDITOR_SPLIT — layout.odin.)
 GIT_SIDEBAR_FRAC :: f32(0.40)
 
+// Draw the selection playhead line. Off for now (selection still works off its row) —
+// kept as a switch for a future idea.
+DIFF_SHOW_PLAYHEAD :: false
+
 // The git aux mode (Sublime-Merge-lite, KB-only). The aux pane carries two sub-columns
 // parted by a hairline: a SIDEBAR (branch strip + Status + Log, ported from Prawk) on
 // the left and a DIFF VIEWER / COMMIT EDITOR on the right. Each column composites under
 // its own scissor so text can't bleed across the rule. SCAFFOLD: the two-column layout,
 // the divider, and the per-region focus tint are in; the git data, the diff, and
 // staging are Phase 1 (see the "Git (aux mode)" section of plan.txt).
-draw_git :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
+draw_git :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) {
     th := &a.theme
     area := inset(pane, i32(2 * a.scale))
     if area.w <= 0 || area.h <= 0 {
@@ -704,20 +721,21 @@ draw_git :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     }
 
     // Split into the sidebar (left) and the diff / commit column (right), parted by a
-    // one-pixel rule. `right` spans the rule + the diff so they composite under one
-    // scissor; the diff content insets past the rule.
+    // one-pixel rule. The diff column manages its own flushes (it scissors the scrolled
+    // content separately from the static title/commit chrome — see git_draw_diff).
     div_w := max(i32(1), i32(a.scale))
     side_w := clamp(i32(f32(area.w) * GIT_SIDEBAR_FRAC), 0, area.w)
     sidebar := Rect{area.x, area.y, side_w, area.h}
-    right := Rect{area.x + side_w, area.y, area.w - side_w, area.h}
-    diff := Rect{right.x + div_w, area.y, max(0, right.w - div_w), area.h}
+    rule := Rect{area.x + side_w, area.y, div_w, area.h}
+    diff := Rect{rule.x + div_w, area.y, max(0, area.w - side_w - div_w), area.h}
 
     git_draw_sidebar(t, sidebar, a)
     flush_pane(t, sidebar, win_w, win_h)
 
-    fill(t, Rect{right.x, area.y, div_w, area.h}, th.border_light) // the column rule
-    git_draw_diff(t, diff, a)
-    flush_pane(t, right, win_w, win_h)
+    fill(t, rule, th.border_light) // the column rule
+    flush_pane(t, rule, win_w, win_h)
+
+    git_draw_diff(t, diff, a, win_w, win_h, now)
 }
 
 // One left-aligned text row, vertically centred in a row_h band whose top is at y.
@@ -771,18 +789,18 @@ git_draw_zone :: proc(
     }
 }
 
-// Colour a working-tree entry by its porcelain status: untracked dim, deletions in the
-// urgent slot, additions green (the directory slot), everything else (modified/renamed)
-// in the normal foreground.
+// Colour a working-tree entry by what Space will do to it: staged entries green (the
+// directory slot — "in the index"), untracked dim, an unstaged deletion urgent, other
+// unstaged changes in the normal foreground.
 @(private = "file")
 git_status_color :: proc(code: string, th: ^Theme) -> [3]f32 {
     switch {
+    case git_is_staged(code):
+        return th.code_return_type
     case strings.contains(code, "?"):
         return th.muted
     case strings.contains(code, "D"):
         return th.urgent
-    case strings.contains(code, "A"):
-        return th.code_return_type
     case:
         return th.fg
     }
@@ -863,11 +881,59 @@ git_diff_color :: proc(kind: DiffLineKind, th: ^Theme) -> [3]f32 {
     }
 }
 
-// The diff viewer / commit editor (the aux pane's right column). A title naming what is
-// shown, then the parsed diff tinted by line kind and scrolled by g.diff_scroll, then a
-// commit-editor strip reserved at the bottom (a placeholder until the message Doc lands).
+// One display row of the diff column, flattened for scrolling. hunk = -1 for preamble /
+// file-title rows; header marks the @@ line (carries the checkbox).
 @(private = "file")
-git_draw_diff :: proc(t: ^Text, area: Rect, a: ^App) {
+DiffRow :: struct {
+    text:     string,
+    color:    [3]f32,
+    hunk:     int,
+    header:   bool,
+    selected: bool,
+}
+
+// A faint hatch shade derived from the block background: brighten a dark bg / darken a
+// light one. The nudge is exaggerated for mid-luminance backgrounds (where a fixed shift
+// reads weakest) and never zero, but kept small so text stays readable over it.
+@(private = "file")
+git_stripe_color :: proc(bg: [3]f32) -> [3]f32 {
+    lum := 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b
+    d := lum - 0.5
+    if d < 0 {
+        d = -d
+    }
+    amt := 0.05 + 0.10 * (1 - d * 2) // 0.05 at the extremes, 0.15 at mid-luminance
+    target := lum < 0.5 ? [3]f32{1, 1, 1} : [3]f32{0, 0, 0}
+    return lerp3(bg, target, amt)
+}
+
+// Diagonal hatch over a row's rect — repeating 45° parallelograms, phased by the row's
+// absolute y so they connect across rows. Marks a CHECKED (staged-selection) hunk so it
+// reads as included even when its header checkbox is scrolled out of view. The content
+// scissor clips the slant overhang.
+@(private = "file")
+git_draw_stripes :: proc(t: ^Text, r: Rect, c: [3]f32, scale: f32) {
+    P := max(i32(8), i32(16 * scale)) // stripe period
+    thick := P / 3 // stripe width
+    rh := r.h
+    // Bands lie where (x + y) is a multiple of P; per row, one parallelogram per band
+    // (top-left x = k*P - y), slanted down-left by rh (45°). Padding covers the slant.
+    kmin := (r.x - thick + r.y) / P - 1
+    kmax := (r.x + r.w + rh + r.y) / P + 1
+    for k := kmin; k <= kmax; k += 1 {
+        lx := k * P - r.y
+        top, bot := f32(r.y), f32(r.y + rh)
+        fill_quad(t, {f32(lx), top}, {f32(lx + thick), top}, {f32(lx - rh + thick), bot}, {f32(lx - rh), bot}, c)
+    }
+}
+
+// The diff viewer / commit editor (the aux pane's right column): a title, then the diff
+// as hunk BLOCKS (each with a checkbox + @@ header + tinted body), SMOOTH-scrolled, with
+// a centred horizontal PLAYHEAD — whatever hunk overlaps it is the selected one (rail-
+// marked). A commit-editor strip is reserved at the bottom. Chrome (title + strip) and the
+// scrolled content are flushed under separate scissors so the content can't bleed over them.
+@(private = "file")
+git_draw_diff :: proc(t: ^Text, area: Rect, a: ^App, win_w, win_h: i32, now: f64) {
     g := &a.git
     if !g.is_repo {
         return // nothing to diff/commit; the sidebar already says "not a git repository"
@@ -878,39 +944,97 @@ git_draw_diff :: proc(t: ^Text, area: Rect, a: ^App) {
     row_h := i32(lh) + i32(2 * a.scale)
     x0 := f32(area.x) + cw
     focused := a.focus == .Aux && a.aux_mode == .Git
+    diff_focused := focused && g.region == .Diff
 
-    // Title: what the diff shows (a path, a commit, or the working tree).
-    diff_head := focused && g.region == .Diff ? th.accent : th.muted
-    title := g.diff_title == "" ? "working tree" : g.diff_title
-    git_row(t, title, x0, area.y, row_h, lh, diff_head)
-
-    // Reserve a commit strip at the bottom; the diff fills the space above. If the pane
-    // is too short for both, the diff takes the whole height and the strip is dropped.
     list_top := area.y + row_h
     strip_h := row_h * 3
     sy := area.y + area.h - strip_h
     has_strip := sy > list_top + row_h
     diff_bottom := has_strip ? sy : area.y + area.h
 
-    if len(g.diff) == 0 {
-        git_row(t, "(no changes)", x0 + cw, list_top, row_h, lh, th.muted)
-    } else {
-        max_rows := int(max(i32(0), (diff_bottom - list_top) / row_h))
-        first := clamp(g.diff_scroll, 0, max(0, len(g.diff) - max_rows))
-        visible := min(len(g.diff) - first, max_rows)
-        for k in 0 ..< visible {
-            l := g.diff[first + k]
-            git_row(t, l.text, x0, list_top + i32(k) * row_h, row_h, lh, git_diff_color(l.kind, th))
+    // --- chrome: title + commit strip, flushed clipped to the whole column ---
+    git_row(t, g.diff_title == "" ? "working tree" : g.diff_title, x0, area.y, row_h, lh, diff_focused ? th.accent : th.muted)
+    if has_strip {
+        fill(t, Rect{area.x, sy, area.w, max(i32(1), i32(a.scale))}, th.border_light)
+        commit_head := focused && g.region == .Commit ? th.accent : th.muted
+        git_row(t, "commit", x0, sy + row_h / 2, row_h, lh, commit_head)
+        git_row(t, "commit message…", x0 + cw, sy + row_h / 2 + row_h, row_h, lh, th.muted)
+    }
+    flush_pane(t, area, win_w, win_h)
+
+    // --- scrolled content, clipped to the band between title and strip ---
+    content := Rect{area.x, list_top, area.w, max(i32(0), diff_bottom - list_top)}
+    max_rows := int(max(i32(0), content.h / row_h))
+    g.diff_view_rows = max_rows // publish so nav knows the playhead offset
+    offset := max_rows / 2
+
+    // Flatten files -> rows (preamble, then per file a title + each hunk block: its @@
+    // header row, its body lines, then a spacer row). Must match git_diff_rows' counting.
+    rows := make([dynamic]DiffRow, 0, 128, context.temp_allocator)
+    for s in g.diff_preamble {
+        append(&rows, DiffRow{text = s, color = th.muted, hunk = -1})
+    }
+    hk := 0
+    for f in g.diff_files {
+        title := f.path != "" ? f.path : (len(f.header) > 0 ? f.header[0] : "(file)")
+        append(&rows, DiffRow{text = title, color = th.code_return_type, hunk = -1})
+        for h in f.hunks {
+            append(&rows, DiffRow{text = h.header, hunk = hk, header = true, selected = h.selected})
+            for l in h.lines {
+                append(&rows, DiffRow{text = l.text, color = git_diff_color(l.kind, th), hunk = hk, selected = h.selected})
+            }
+            append(&rows, DiffRow{text = "", hunk = -1}) // spacer between blocks
+            hk += 1
         }
     }
 
-    if !has_strip {
+    if len(rows) == 0 {
+        git_row(t, "(no changes)", x0 + cw, list_top, row_h, lh, th.muted)
+        flush_pane(t, content, win_w, win_h)
         return
     }
-    fill(t, Rect{area.x, sy, area.w, max(i32(1), i32(a.scale))}, th.border_light)
-    commit_head := focused && g.region == .Commit ? th.accent : th.muted
-    git_row(t, "commit", x0, sy + row_h / 2, row_h, lh, commit_head)
-    git_row(t, "commit message…", x0 + cw, sy + row_h / 2 + row_h, row_h, lh, th.muted)
+
+    // A fresh diff centres its first hunk on the playhead, once (snap, no slide).
+    if g.diff_recenter && git_hunk_count(g) > 0 {
+        g.diff_scroll = clamp(git_hunk_top_row(g, 0) - offset, git_scroll_lo(g), git_scroll_hi(g))
+        g.diff_scroll_anim = Anim{to = f32(g.diff_scroll)}
+        g.diff_recenter = false
+    }
+    g.hunk_cur = git_hunk_at_row(g, g.diff_scroll + offset) // the hunk under the playhead
+
+    // Smooth scroll: top may be negative (over-scrolled to centre an edge hunk); skip the
+    // blank rows then.
+    top, off := smooth_scroll(&g.diff_scroll_anim, g.diff_scroll, now, row_h)
+    for k in 0 ..< max_rows + 2 {
+        ri := top + k
+        if ri < 0 || ri >= len(rows) {
+            continue
+        }
+        r := rows[ri]
+        y := list_top + i32(k) * row_h - off
+        if r.hunk >= 0 {
+            fill(t, Rect{area.x, y, area.w, row_h}, th.line_highlight) // block background
+            if r.selected { // checked for staging: faint diagonal hatch (visible without the header)
+                git_draw_stripes(t, Rect{area.x, y, area.w, row_h}, git_stripe_color(th.line_highlight), a.scale)
+            }
+            if r.hunk == g.hunk_cur {
+                fill(t, Rect{area.x, y, i32(2 * a.scale), row_h}, th.accent) // focus rail
+            }
+        }
+        ty := f32(y) + (f32(row_h) - lh) / 2
+        tx := x0
+        if r.header && g.diff_stageable {
+            text_draw(t, r.selected ? "[x]" : "[ ]", tx, ty, r.selected ? th.code_return_type : th.muted)
+            tx += cw * 4 // box + a gap
+        }
+        text_draw(t, r.text, tx, ty, r.header ? (r.hunk == g.hunk_cur ? th.accent : th.muted) : r.color)
+    }
+    // The playhead: a horizontal line at the viewport's vertical centre (over the text).
+    // Off by default (selection works off its row regardless) — a switch for later.
+    if DIFF_SHOW_PLAYHEAD {
+        caret(t, Rect{area.x, list_top + i32(offset) * row_h, area.w, max(i32(1), i32(2 * a.scale))}, th.accent)
+    }
+    flush_pane(t, content, win_w, win_h)
 }
 
 // The terminal: the active session's libvterm cell grid. Snap the pane to whole

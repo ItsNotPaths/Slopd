@@ -27,6 +27,15 @@ REPO_FIND_BUDGET :: 3.0
 // trivial; the sidebar only shows what fits anyway.
 GIT_LOG_LIMIT :: 50
 
+// Holding Up/Down auto-scrolls the diff ONE line per tick, the tick rate ramping from
+// slow to full speed over DIFF_SCROLL_RAMP seconds held (intervals in seconds — we adjust
+// the rate, not the step). Alt+Up/Down jump whole hunks. The selection "playhead" is a
+// line at the vertical CENTRE of the diff viewport (offset = diff_view_rows/2): whichever
+// hunk overlaps it is selected; edge hunks reach the centre via over-scroll.
+DIFF_SCROLL_SLOW :: 0.13 // first tick interval (slow start)
+DIFF_SCROLL_FAST :: 0.018 // full-speed interval
+DIFF_SCROLL_RAMP :: 1.0 // seconds of holding to reach full speed
+
 // One working-tree change from `git status --porcelain`: a two-char XY status code
 // (index + worktree) and the path. Strings are owned by the GitPane.
 StatusEntry :: struct {
@@ -40,9 +49,9 @@ Commit :: struct {
     subject: string, // the summary line
 }
 
-// A single line of a parsed diff, tagged for colouring. Hunks (the @@ groups) aren't
-// modelled as a tree yet — that grouping arrives with staging, which needs hunk
-// boundaries; for viewing, a flat tagged list is all the renderer wants.
+// A body line of a hunk, tagged for colouring. (Hunk/Header kinds are produced by the
+// classifier but only Context/Add/Del occur in a hunk body; the @@ and file-header lines
+// live elsewhere — see DiffHunk / DiffFile.)
 DiffLineKind :: enum {
     Context, // unchanged line (or anything unrecognised)
     Add, // +added
@@ -54,6 +63,23 @@ DiffLineKind :: enum {
 DiffLine :: struct {
     kind: DiffLineKind,
     text: string, // the raw line, owned
+}
+
+// One @@ hunk: its header line, its body lines, and the staging checkbox. The raw text
+// (header + each line.text, verbatim) is what git_build_patch reassembles for git apply.
+DiffHunk :: struct {
+    header:   string, // the "@@ -a,b +c,d @@ ctx" line (owned)
+    lines:    [dynamic]DiffLine, // body lines (owned)
+    selected: bool, // the checkbox — included when staging the selection
+}
+
+// One file section of a diff: its header block (diff --git / index / --- / +++ / mode
+// lines, owned verbatim so a patch can be rebuilt) and its hunks. `path` is the new-side
+// path, for the block title only.
+DiffFile :: struct {
+    header: [dynamic]string, // file-header lines in order (owned)
+    path:   string, // display path (owned); "" falls back to header[0]
+    hunks:  [dynamic]DiffHunk,
 }
 
 // Which sub-region of the git pane owns the arrows. Left/Right switch between the
@@ -85,12 +111,23 @@ GitPane :: struct {
     status:     [dynamic]StatusEntry, // working-tree changes (owned)
     commits:    [dynamic]Commit, // recent log on the current branch (owned)
 
-    // The diff shown in the right column. Defaults to the whole working tree (the live
-    // view); Enter on a Status file or a Log commit loads that instead; Alt+Q reverts to
-    // live. diff_title names what's shown; diff_scroll is the top visible line.
-    diff:        [dynamic]DiffLine, // parsed lines of the current diff (owned)
-    diff_title:  string, // what the diff shows: a path, a commit, or "working tree" (owned)
-    diff_scroll: int, // first visible diff line
+    // The diff shown in the right column, parsed into files -> hunks so each hunk renders
+    // as a block with a checkbox. diff_preamble holds any lines before the first file (a
+    // `git show` commit header). hunk_cur is the focused hunk, flattened across files
+    // (Up/Down move it; render centres on it). diff_stageable gates the checkboxes +
+    // Tab-staging (true for a working diff, false when browsing a commit).
+    diff_preamble:  [dynamic]string, // owned
+    diff_files:     [dynamic]DiffFile, // owned
+    diff_title:     string, // a path, a commit, or "working tree" (owned)
+    hunk_cur:         int, // hunk under the playhead (derived in render); -1 when none
+    diff_stageable:   bool, // checkboxes + Tab-stage active
+    diff_scroll:      int, // target top DISPLAY row (may go negative: over-scroll to centre edge hunks)
+    diff_scroll_anim: Anim, // the visual top (fractional rows) — the editor's smooth scroll
+    diff_view_rows:   int, // visible diff rows, published by render so nav knows the playhead offset
+    diff_recenter:    bool, // a fresh diff: render centres the first hunk on the playhead once
+    scroll_dir:       int, // held auto-scroll direction (0 none / -1 up / +1 down)
+    scroll_t0:        f64, // glfw time the hold began (drives the tick-rate ramp)
+    scroll_next:      f64, // glfw time of the next auto-scroll tick
 }
 
 git_init :: proc(g: ^GitPane) {
@@ -101,7 +138,8 @@ git_destroy :: proc(g: ^GitPane) {
     git_clear(g)
     delete(g.status)
     delete(g.commits)
-    delete(g.diff)
+    delete(g.diff_preamble)
+    delete(g.diff_files)
 }
 
 // Drop all loaded repo state (so git_refresh is idempotent and git_destroy is clean).
@@ -126,16 +164,39 @@ git_clear :: proc(g: ^GitPane) {
     g.is_repo = false
 }
 
-// Free the currently shown diff (its lines + title). Separate from git_clear so a diff
-// can be swapped (git_set_diff) without touching the rest of the repo state.
+// Free the currently shown diff (preamble + files + hunks + title). Separate from
+// git_clear so a diff can be swapped (git_set_diff) without touching the rest of the
+// repo state. Frees nested backing arrays too; git_destroy frees the two top-level ones.
 git_clear_diff :: proc(g: ^GitPane) {
-    for l in g.diff {
-        delete(l.text)
+    for s in g.diff_preamble {
+        delete(s)
     }
-    clear(&g.diff)
+    clear(&g.diff_preamble)
+    for f in g.diff_files {
+        for s in f.header {
+            delete(s)
+        }
+        delete(f.header)
+        delete(f.path)
+        for h in f.hunks {
+            delete(h.header)
+            for l in h.lines {
+                delete(l.text)
+            }
+            delete(h.lines)
+        }
+        delete(f.hunks)
+    }
+    clear(&g.diff_files)
     delete(g.diff_title)
     g.diff_title = ""
+    g.hunk_cur = -1
+    g.diff_stageable = false
     g.diff_scroll = 0
+    g.diff_scroll_anim = Anim{} // snap (no slide from the previous diff)
+    g.diff_view_rows = 0
+    g.diff_recenter = false
+    g.scroll_dir = 0 // cancel any held auto-scroll
 }
 
 // Left/Right switch between the two columns: the sidebar and the right (diff / commit)
@@ -163,27 +224,216 @@ git_tab :: proc(g: ^GitPane) {
     }
 }
 
-// Move the selection within the focused region with Up/Down: the active sidebar list,
-// or the diff scroll. The commit editor's caret arrives with the message Doc.
+// Up/Down in the SIDEBAR move the active section's selection. (The diff region's Up/Down
+// is the held auto-scroll — git_scroll_*; the commit editor's caret arrives with its Doc.)
 git_move_sel :: proc(g: ^GitPane, dir: int) {
-    switch g.region {
-    case .Sidebar:
-        if g.section == .Status {
-            if n := len(g.status); n > 0 {
-                g.sel_status = clamp(g.sel_status + dir, 0, n - 1)
-            }
-        } else {
-            if n := len(g.commits); n > 0 {
-                g.sel_log = clamp(g.sel_log + dir, 0, n - 1)
-            }
-        }
-    case .Diff:
-        if n := len(g.diff); n > 0 {
-            g.diff_scroll = clamp(g.diff_scroll + dir, 0, n - 1)
-        }
-    case .Commit:
-    // commit editor caret lands with the message Doc
+    if g.region != .Sidebar {
+        return
     }
+    if g.section == .Status {
+        if n := len(g.status); n > 0 {
+            g.sel_status = clamp(g.sel_status + dir, 0, n - 1)
+        }
+    } else {
+        if n := len(g.commits); n > 0 {
+            g.sel_log = clamp(g.sel_log + dir, 0, n - 1)
+        }
+    }
+}
+
+// Total hunks across all files (the space hunk_cur indexes).
+git_hunk_count :: proc(g: ^GitPane) -> int {
+    n := 0
+    for f in g.diff_files {
+        n += len(f.hunks)
+    }
+    return n
+}
+
+// The hunk at flattened index `idx`, or nil. The pointer is valid until the diff is
+// reloaded (used immediately by the caller).
+git_hunk_ptr :: proc(g: ^GitPane, idx: int) -> ^DiffHunk {
+    if idx < 0 {
+        return nil
+    }
+    i := idx
+    for fi in 0 ..< len(g.diff_files) {
+        if i < len(g.diff_files[fi].hunks) {
+            return &g.diff_files[fi].hunks[i]
+        }
+        i -= len(g.diff_files[fi].hunks)
+    }
+    return nil
+}
+
+// Space in the diff toggles the focused hunk's checkbox (only when stageable).
+git_toggle_hunk :: proc(g: ^GitPane) {
+    if !g.diff_stageable {
+        return
+    }
+    if h := git_hunk_ptr(g, g.hunk_cur); h != nil {
+        h.selected = !h.selected
+    }
+}
+
+// The diff's total display rows. MUST match git_draw_diff's layout: the preamble lines,
+// then per file a title row, then per hunk a header row + its body lines + a spacer row.
+git_diff_rows :: proc(g: ^GitPane) -> int {
+    n := len(g.diff_preamble)
+    for f in g.diff_files {
+        n += 1 // file title
+        for h in f.hunks {
+            n += 1 + len(h.lines) + 1 // header + body + spacer
+        }
+    }
+    return n
+}
+
+// The display row of hunk k's header (where a jump scrolls so the hunk sits at the top).
+git_hunk_top_row :: proc(g: ^GitPane, k: int) -> int {
+    row := len(g.diff_preamble)
+    idx := 0
+    for f in g.diff_files {
+        row += 1
+        for h in f.hunks {
+            if idx == k {
+                return row
+            }
+            row += 1 + len(h.lines) + 1
+            idx += 1
+        }
+    }
+    return row
+}
+
+// The hunk "at the top" of a viewport scrolled to `row`: the last hunk whose header is at
+// or above `row`, so its body fills the screen below. 0 when `row` is before the first.
+git_hunk_at_row :: proc(g: ^GitPane, row: int) -> int {
+    best := 0
+    r := len(g.diff_preamble)
+    idx := 0
+    for f in g.diff_files {
+        r += 1
+        for h in f.hunks {
+            if r <= row {
+                best = idx
+            }
+            r += 1 + len(h.lines) + 1
+            idx += 1
+        }
+    }
+    return best
+}
+
+// The playhead's row offset from the top of the diff viewport — its vertical centre.
+git_sel_offset :: proc(g: ^GitPane) -> int {
+    return g.diff_view_rows / 2
+}
+
+// Scroll bounds so the playhead sweeps from the first hunk's header to the last:
+// diff_scroll in [hunk_top(0)-offset, hunk_top(last)-offset]. lo may be negative (over-
+// scroll: blank above lets the first hunk reach the centre). Both 0 when there are none.
+git_scroll_lo :: proc(g: ^GitPane) -> int {
+    if git_hunk_count(g) == 0 {
+        return 0
+    }
+    return git_hunk_top_row(g, 0) - git_sel_offset(g)
+}
+git_scroll_hi :: proc(g: ^GitPane) -> int {
+    n := git_hunk_count(g)
+    if n == 0 {
+        return 0
+    }
+    return git_hunk_top_row(g, n - 1) - git_sel_offset(g)
+}
+
+// Move the diff scroll target by `dir` rows (one line per auto-scroll tick; the visual
+// position tweens via the smooth-scroll anim). The selected hunk is re-derived from the
+// playhead in render. `dir` may be large in tests to exercise clamping.
+git_diff_scroll :: proc(g: ^GitPane, dir: int) {
+    if git_hunk_count(g) == 0 {
+        return
+    }
+    g.diff_scroll = clamp(g.diff_scroll + dir, git_scroll_lo(g), git_scroll_hi(g))
+}
+
+// Begin (or continue) the held auto-scroll. A REPEAT for the same direction is ignored —
+// our own ramping tick (git_scroll_pump) drives it, not the OS key-repeat rate.
+git_scroll_start :: proc(g: ^GitPane, dir: int, now: f64) {
+    if g.scroll_dir == dir {
+        return
+    }
+    g.scroll_dir = dir
+    g.scroll_t0 = now
+    git_diff_scroll(g, dir) // the immediate first line
+    g.scroll_next = now + DIFF_SCROLL_SLOW
+}
+
+// Stop the held auto-scroll when its arrow is released.
+git_scroll_release :: proc(g: ^GitPane, dir: int) {
+    if g.scroll_dir == dir {
+        g.scroll_dir = 0
+    }
+}
+
+// The current tick interval: ramps from SLOW to FAST over DIFF_SCROLL_RAMP seconds held.
+git_scroll_interval :: proc(held: f64) -> f64 {
+    s := clamp(held / DIFF_SCROLL_RAMP, 0.0, 1.0)
+    return DIFF_SCROLL_SLOW + (DIFF_SCROLL_FAST - DIFF_SCROLL_SLOW) * s
+}
+
+// Per-frame pump (main loop): while an arrow is held in the focused diff, advance one line
+// each time the (accelerating) tick is due. Stops itself if focus / region left the diff.
+git_scroll_pump :: proc(a: ^App, now: f64) {
+    g := &a.git
+    if g.scroll_dir == 0 {
+        return
+    }
+    if a.aux_mode != .Git || a.focus != .Aux || g.region != .Diff {
+        g.scroll_dir = 0
+        return
+    }
+    if now >= g.scroll_next {
+        git_diff_scroll(g, g.scroll_dir)
+        g.scroll_next = now + git_scroll_interval(now - g.scroll_t0)
+    }
+}
+
+// Alt+Up/Down: target the previous/next hunk and scroll so it lands on the playhead.
+git_diff_jump_hunk :: proc(g: ^GitPane, dir: int) {
+    n := git_hunk_count(g)
+    if n == 0 {
+        return
+    }
+    k := clamp(g.hunk_cur + dir, 0, n - 1)
+    g.diff_scroll = git_hunk_top_row(g, k) - git_sel_offset(g) // centres hunk k on the playhead
+}
+
+// A file is "staged" (so Space will UNstage it) when its index column shows a change
+// and its worktree column is clean. Untracked ('?') and worktree-dirty entries are not.
+git_is_staged :: proc(code: string) -> bool {
+    return len(code) == 2 && code[0] != ' ' && code[0] != '?' && code[1] == ' '
+}
+
+// Space on a Status file toggles it staged/unstaged (file-level: git add / git reset),
+// then reloads. Hunk-level staging comes later. No-op off the Status list. `git add`
+// also stages deletions; `git reset` unstages back to the worktree.
+git_stage_toggle :: proc(a: ^App) {
+    g := &a.git
+    if !g.is_repo || g.region != .Sidebar || g.section != .Status {
+        return
+    }
+    if g.sel_status >= len(g.status) {
+        return
+    }
+    e := g.status[g.sel_status]
+    path := strings.clone(e.path, context.temp_allocator) // survives the reload below
+    if git_is_staged(e.code) {
+        git_run(g, "reset", "--", path)
+    } else {
+        git_run(g, "add", "--", path)
+    }
+    git_refresh(a) // re-read status + the working diff (selection is clamped, kept)
 }
 
 // Enter on a sidebar row loads its diff into the right column: a Status file's working
@@ -331,34 +581,142 @@ git_load_log :: proc(g: ^GitPane) {
     }
 }
 
-// The whole working-tree diff — the default "live" view, and where Alt+Q returns.
+// The whole working-tree diff — the default "live" view (stageable per hunk), and where
+// Alt+Q returns.
 git_load_live :: proc(g: ^GitPane) {
     out, _ := git_run(g, "diff")
-    git_set_diff(g, out, "working tree")
+    git_set_diff(g, out, "working tree", true)
 }
 
-// The working diff for one path (Status -> Enter). Empty for an untracked or binary file
-// — the renderer then shows "(no changes)". (-z gave us a literal path, safe to pass.)
+// The working diff for one path (Status -> Enter), stageable. Empty for an untracked or
+// binary file — the renderer then shows "(no changes)". (-z gave a literal path.)
 git_load_diff_file :: proc(g: ^GitPane, path: string) {
     out, _ := git_run(g, "diff", "--", path)
-    git_set_diff(g, out, path)
+    git_set_diff(g, out, path, true)
 }
 
-// A commit's full diff (Log -> Enter), via `git show`.
+// A commit's full diff (Log -> Enter), via `git show`. Read-only: not stageable.
 git_load_diff_commit :: proc(g: ^GitPane, hash, subject: string) {
     out, _ := git_run(g, "show", hash)
-    git_set_diff(g, out, fmt.tprintf("%s %s", hash, subject))
+    git_set_diff(g, out, fmt.tprintf("%s %s", hash, subject), false)
 }
 
-// Replace the shown diff: parse `raw` into tagged lines and set the title. Resets the
-// scroll to the top. `title` and each line are cloned (owned).
-git_set_diff :: proc(g: ^GitPane, raw, title: string) {
+// Replace the shown diff: parse `raw` into files/hunks, set the title + stageable flag,
+// and focus the first hunk. `title` and every line are cloned (owned).
+git_set_diff :: proc(g: ^GitPane, raw, title: string, stageable: bool) {
     git_clear_diff(g)
     g.diff_title = strings.clone(title)
+    g.diff_stageable = stageable
+    git_parse_diff(g, raw)
+    g.hunk_cur = git_hunk_count(g) > 0 ? 0 : -1
+    g.diff_recenter = true // render centres the first hunk on the playhead once
+}
+
+// Parse unified-diff text into g.diff_preamble (anything before the first file — a
+// `git show` commit header) and g.diff_files (each with its verbatim header block +
+// hunks). Body lines are classified for colour; the @@ line and file-header lines are
+// kept raw so git_build_patch can reassemble a valid patch.
+git_parse_diff :: proc(g: ^GitPane, raw: string) {
     text := raw
     for line in strings.split_lines_iterator(&text) {
-        append(&g.diff, DiffLine{kind = git_diff_classify(line), text = strings.clone(line)})
+        if strings.has_prefix(line, "diff --git") {
+            append(&g.diff_files, DiffFile{})
+            append(&g.diff_files[len(g.diff_files) - 1].header, strings.clone(line))
+            continue
+        }
+        fi := len(g.diff_files) - 1
+        if fi < 0 {
+            append(&g.diff_preamble, strings.clone(line))
+            continue
+        }
+        if strings.has_prefix(line, "@@") {
+            append(&g.diff_files[fi].hunks, DiffHunk{header = strings.clone(line)})
+            continue
+        }
+        if len(g.diff_files[fi].hunks) == 0 {
+            // file-header block (index / --- / +++ / mode / binary) before the first hunk
+            append(&g.diff_files[fi].header, strings.clone(line))
+            if strings.has_prefix(line, "+++ b/") {
+                delete(g.diff_files[fi].path) // free the tentative "--- a/" path first
+                g.diff_files[fi].path = strings.clone(line[6:])
+            } else if g.diff_files[fi].path == "" && strings.has_prefix(line, "--- a/") {
+                g.diff_files[fi].path = strings.clone(line[6:]) // tentative (deleted files: +++ is /dev/null)
+            }
+            continue
+        }
+        hi := len(g.diff_files[fi].hunks) - 1
+        append(
+            &g.diff_files[fi].hunks[hi].lines,
+            DiffLine{kind = git_diff_classify(line), text = strings.clone(line)},
+        )
     }
+}
+
+// Build a `git apply` patch from the checked hunks: for each file with >=1 selected hunk,
+// its header block then those hunks (header + body lines), verbatim. Files with nothing
+// selected are omitted; "" when nothing is selected at all.
+git_build_patch :: proc(g: ^GitPane, allocator := context.allocator) -> string {
+    b := strings.builder_make(allocator)
+    for f in g.diff_files {
+        any := false
+        for h in f.hunks {
+            if h.selected {
+                any = true
+                break
+            }
+        }
+        if !any {
+            continue
+        }
+        for hl in f.header {
+            strings.write_string(&b, hl)
+            strings.write_byte(&b, '\n')
+        }
+        for h in f.hunks {
+            if !h.selected {
+                continue
+            }
+            strings.write_string(&b, h.header)
+            strings.write_byte(&b, '\n')
+            for l in h.lines {
+                strings.write_string(&b, l.text)
+                strings.write_byte(&b, '\n')
+            }
+        }
+    }
+    return strings.to_string(b)
+}
+
+// Write the patch to a temp file and apply it to the index. --recount lets a SUBSET of a
+// file's hunks apply even though later hunks' @@ counts assumed the skipped ones. The
+// temp file lives in .git (or the root as a fallback) and is removed before the reload,
+// so it never appears in status.
+git_apply_cached :: proc(g: ^GitPane, patch: string) -> bool {
+    gitdir := filepath.join({g.root, ".git"}, context.temp_allocator) or_else ""
+    base := os.is_dir(gitdir) ? gitdir : g.root
+    tmp := filepath.join({base, "slopd-stage.patch"}, context.temp_allocator) or_else ""
+    if tmp == "" {
+        return false
+    }
+    if os.write_entire_file(tmp, transmute([]byte)patch) != nil {
+        return false
+    }
+    defer os.remove(tmp)
+    _, ok := git_run(g, "apply", "--cached", "--recount", tmp)
+    return ok
+}
+
+// Tab in the diff: stage every checked hunk, then move to the commit editor. With nothing
+// checked it just switches (a plain Tab). After staging, the working diff reloads so the
+// staged hunks drop out.
+git_stage_selected :: proc(a: ^App) {
+    g := &a.git
+    patch := git_build_patch(g, context.temp_allocator)
+    if patch != "" {
+        git_apply_cached(g, patch)
+        git_refresh(a)
+    }
+    g.region = .Commit
 }
 
 // Tag a diff line for colouring. Order matters: hunk headers and the file-header block

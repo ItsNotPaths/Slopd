@@ -154,6 +154,17 @@ caret :: proc(t: ^Text, r: Rect, c: [3]f32) {
     }
 }
 
+// Queues an arbitrary 4-corner quad (p0->p1->p2->p3, e.g. a slanted parallelogram) into
+// the under-quad layer. Points are physical px in top-left space — used for diagonal
+// hatching, which axis-aligned fill() can't express.
+fill_quad :: proc(t: ^Text, p0, p1, p2, p3: [2]f32, c: [3]f32) {
+    append(
+        &t.under,
+        p0.x, p0.y, c.r, c.g, c.b,  p1.x, p1.y, c.r, c.g, c.b,  p2.x, p2.y, c.r, c.g, c.b,
+        p0.x, p0.y, c.r, c.g, c.b,  p2.x, p2.y, c.r, c.g, c.b,  p3.x, p3.y, c.r, c.g, c.b,
+    )
+}
+
 @(private = "file")
 push_quad :: proc(buf: ^[dynamic]f32, r: Rect, c: [3]f32) {
     x0, y0 := f32(r.x), f32(r.y)

@@ -113,6 +113,12 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         }
     }
 
+    // The diff's held auto-scroll is our own accelerating repeat (git_scroll_pump), so end
+    // it when the arrow is released.
+    if action == glfw.RELEASE && (key == glfw.KEY_UP || key == glfw.KEY_DOWN) && a.aux_mode == .Git {
+        git_scroll_release(&a.git, key == glfw.KEY_UP ? -1 : 1)
+    }
+
     if action != glfw.PRESS && action != glfw.REPEAT {
         return
     }
@@ -243,6 +249,8 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
                 case:
                     a.term_active = (a.term_active + dir + term_count(a)) % term_count(a)
                 }
+            } else if a.aux_mode == .Git && a.focus == .Aux && a.git.region == .Diff {
+                git_diff_jump_hunk(&a.git, dir) // jump to the prev/next hunk (smooth-scrolled)
             }
 
         case glfw.KEY_LEFT_BRACKET:
@@ -317,17 +325,35 @@ git_key :: proc(a: ^App, key, mods: i32) {
     g := &a.git
     switch key {
     case glfw.KEY_TAB:
-        git_tab(g)
+        if g.region == .Diff {
+            git_stage_selected(a) // stage the checked hunks, then go to the commit editor
+        } else {
+            git_tab(g)
+        }
     case glfw.KEY_UP:
-        git_move_sel(g, -1)
+        if g.region == .Diff {
+            git_scroll_start(g, -1, glfw.GetTime()) // held = accelerating auto-scroll
+        } else {
+            git_move_sel(g, -1)
+        }
     case glfw.KEY_DOWN:
-        git_move_sel(g, 1)
+        if g.region == .Diff {
+            git_scroll_start(g, 1, glfw.GetTime())
+        } else {
+            git_move_sel(g, 1)
+        }
     case glfw.KEY_LEFT:
         git_move_region(g, -1)
     case glfw.KEY_RIGHT:
         git_move_region(g, 1)
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
         git_activate(a)
+    case glfw.KEY_SPACE:
+        if g.region == .Diff {
+            git_toggle_hunk(g) // check/uncheck the focused hunk
+        } else {
+            git_stage_toggle(a) // sidebar: stage/unstage the whole file
+        }
     }
 }
 
