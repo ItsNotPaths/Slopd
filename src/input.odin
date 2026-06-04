@@ -13,13 +13,17 @@ import "vendor:glfw"
 // Binds:
 //   Alt+Left/Right            focus editor / aux pane
 //   Alt+C                     open the command line
+//   Alt+W                     open the command line pre-filled for a line jump ("j ")
+//   Alt+Enter                 filetree: cd to the selected folder (stage in CL, or run; config)
 //   Alt+F/T/G/P               aux mode: FileTree / Terminal / Git / Procmon
 //   Alt+1..9                  jump to terminal session N (i3-style)
 //   Alt+N / Alt+Q             terminal: new / close session (max 99)
+//   Alt+L                     terminal: lock/unlock its cwd (tu skips it; number greyed)
 //   Alt+Up/Down               terminal: switch session (switcher shows while Alt held)
 //   Ctrl+Alt+Up/Down          terminal: move the row-only copy cursor (scrolls history)
 //   Shift+Alt+Up/Down         terminal: extend a line selection from the copy cursor
 //   Ctrl+Shift+C              terminal: copy the selected lines (Esc / typing exits)
+//   Ctrl+Up/Down              editor: jump app.jump_lines lines (Shift extends selection)
 //   Alt+[ / Alt+]             nudge the split
 //   Alt+A (+ arrow)           drop a cursor / lay a multi-cursor trail (Esc collapses)
 //   Alt+M                     one-shot prefix: next motion moves every cursor
@@ -188,6 +192,11 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         case glfw.KEY_W: // open the command line pre-filled for a line jump
             cl_inject(a, "j ")
 
+        case glfw.KEY_ENTER, glfw.KEY_KP_ENTER: // filetree: cd to the selected folder
+            if a.aux_mode == .FileTree && a.focus == .Aux {
+                filetree_cd_selected(a)
+            }
+
         case glfw.KEY_1 ..= glfw.KEY_9: // i3-style quick-jump to terminal N
             term_focus(a, int(key - glfw.KEY_1) + 1)
 
@@ -209,17 +218,20 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             if a.aux_mode == .Terminal {
                 term_close_active(a)
             }
+        case glfw.KEY_L: // lock/unlock the active terminal's cwd (tu skips locked)
+            if a.aux_mode == .Terminal {
+                if t := term_current(a); t != nil {
+                    t.locked = !t.locked
+                }
+            }
 
-        // Alt+Up/Down: in the editor, jump app.jump_lines lines (Shift extends the
-        // selection). In the terminal pane the bare chord cycles session; Ctrl+Alt
-        // moves the row-only copy cursor (scrolling into scrollback), Shift+Alt grows
-        // a line selection from it — Ctrl+Shift+C then copies (see the routing below).
+        // Alt+Up/Down drives the terminal pane: the bare chord cycles session; Ctrl+Alt
+        // moves the row-only copy cursor (scrolling into scrollback), Shift+Alt grows a
+        // line selection from it — Ctrl+Shift+C then copies (see the routing below). The
+        // editor's line jump moved off this onto Ctrl+Up/Down (see buffer_key).
         case glfw.KEY_UP, glfw.KEY_DOWN:
             dir := key == glfw.KEY_UP ? -1 : 1
-            if a.focus == .Editor {
-                motion: Motion = key == glfw.KEY_UP ? .Up : .Down
-                buffer_motion(editor_current(&a.editor), motion, mods & glfw.MOD_SHIFT != 0, false, a.jump_lines)
-            } else if a.aux_mode == .Terminal && term_count(a) > 0 {
+            if a.aux_mode == .Terminal && term_count(a) > 0 {
                 t := term_current(a)
                 switch {
                 case mods & glfw.MOD_CONTROL != 0:
@@ -289,6 +301,18 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         filetree_key(a, key, mods)
     } else if a.focus == .Aux && a.aux_mode == .Config {
         config_key(a, key, mods)
+    } else if a.focus == .Aux && a.aux_mode == .Git {
+        git_key(a, key, mods)
+    }
+}
+
+// Git aux mode keys (SCAFFOLD): Tab / Shift+Tab cycle the focused sub-region. Arrow
+// keys are reserved for the focused region's navigation, and Alt+Q (revert a loaded
+// diff to live) lands in Phase 1 with the status/log/diff model.
+git_key :: proc(a: ^App, key, mods: i32) {
+    switch key {
+    case glfw.KEY_TAB:
+        git_cycle_region(&a.git, mods & glfw.MOD_SHIFT != 0 ? -1 : 1)
     }
 }
 
@@ -390,10 +414,10 @@ buffer_key :: proc(a: ^App, key, mods: i32, all: bool) {
         } else {
             buffer_delete(b)
         }
-    case glfw.KEY_UP:
-        buffer_motion(b, .Up, shift, all)
+    case glfw.KEY_UP: // Ctrl jumps app.jump_lines at once (Shift extends the selection)
+        buffer_motion(b, .Up, shift, all, ctrl ? a.jump_lines : 1)
     case glfw.KEY_DOWN:
-        buffer_motion(b, .Down, shift, all)
+        buffer_motion(b, .Down, shift, all, ctrl ? a.jump_lines : 1)
     case glfw.KEY_S:
         if ctrl {
             _ = buffer_save(b)
@@ -495,14 +519,18 @@ filetree_key :: proc(a: ^App, key, mods: i32) {
     case glfw.KEY_LEFT:
         filetree_parent(ft) // up to the parent
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
-        if mods & glfw.MOD_SHIFT != 0 {
-            // Shift+Enter on a dir: set the project root via the command line.
-            if e := filetree_selected(ft); e != nil && e.is_dir {
-                cl_inject(a, fmt.tprintf("cd %s", e.path))
-            }
-        } else if path, is_file := filetree_activate(ft); is_file {
+        if path, is_file := filetree_activate(ft); is_file {
             open_file(a, path)
         }
+    }
+}
+
+// Alt+Enter on a selected folder: set the project root via a `cd <path>` command —
+// staged in the command line for review, or run at once, per the folder_cd config.
+// No-op unless a directory is selected.
+filetree_cd_selected :: proc(a: ^App) {
+    if e := filetree_selected(&a.tree); e != nil && e.is_dir {
+        cl_dispatch(a, fmt.tprintf("cd %s", e.path), a.folder_cd_run)
     }
 }
 

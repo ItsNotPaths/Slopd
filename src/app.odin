@@ -1,5 +1,7 @@
 package main
 
+import "core:os"
+import "core:strings"
 import "vendor:glfw"
 
 // Application state — the single source of truth. Everything else (layout,
@@ -82,8 +84,15 @@ App :: struct {
     cl_chain:    CLChain,
     cl_wait_seq: u64,
 
+    // The project root: the directory the `cd` command-line builtin sets (NOT a shell
+    // cd — it's captured by Slopd). New terminals spawn here, the `tu` builtin syncs
+    // every unlocked terminal to it, the git pane (and other root-scoped tools) read
+    // it, and the idle status strip shows it. Owned; defaults to the launch cwd.
+    project_root: string,
+
     tree:        FileTree, // filetree aux mode (initialised in main, needs IO)
     config_pane: ConfigPane, // config / syntax aux mode (initialised in main, needs IO)
+    git:         GitPane, // git aux mode (Sublime-Merge-lite; initialised in main)
     editor:      Editor, // the text buffers (left pane)
 
     grammars: []Grammar, // language registry (owned; loaded in main), shared by the
@@ -105,12 +114,13 @@ App :: struct {
     blink_base:    f64,
     zen_anim:      Anim, // aux-pane reveal in Zen: 0 hidden .. 1 docked
     switcher_anim: Anim, // terminal switcher fade-in while Alt is held
+    split_anim:    Anim, // editor/aux split widen while git is the aux mode (carries the editor fraction)
 
     theme:        Theme, // colour palette (loaded from config in main)
     theme_path:   string, // active theme path (owned, resolved by load_config); "" = baked-in default
     indent:       Indent, // Tab-key indentation policy (from config)
     line_numbers: Line_Numbers, // gutter style (from config)
-    jump_lines:   int, // lines per Alt+Up/Down editor jump (from config)
+    jump_lines:   int, // lines per Ctrl+Up/Down editor jump (from config)
 
     // Editor reading-aids, toggled from the Config pane (all default on). show_whitespace:
     // the ghosted leading-space dots / tab marks. show_guides: indent guides + the active-
@@ -118,6 +128,11 @@ App :: struct {
     show_whitespace: bool,
     show_guides:     bool,
     folding:         bool,
+
+    // Filetree Alt+Enter on a folder produces a `cd <path>` command line. When
+    // folder_cd_run is set it executes at once; otherwise it's staged in the CL for
+    // the user to review and run with Enter (the reviewable default). See cl_dispatch.
+    folder_cd_run:   bool,
     scale:        f32, // DPI content scale: logical px * scale = physical px
     font_px:      f32, // logical text size in points (font zoom); base is FONT_BASE_PX
     font_save_at: f64, // glfw time to persist font_px at (debounce); 0 = nothing pending
@@ -203,8 +218,11 @@ app_init :: proc(a: ^App) {
     a.focus = .Editor
     a.split = 0.5
     a.term_active = 0 // sessions are spawned lazily (term_ensure)
+    a.split_anim = Anim{to = a.split} // settled at the base ratio; git mode widens it
     a.scale = 1
     a.font_px = FONT_BASE_PX
+    cwd, err := os.get_working_directory(context.allocator) // owned; the launch cwd
+    a.project_root = err == nil ? cwd : strings.clone(".")
     cl_init(&a.cl)
 }
 
@@ -246,6 +264,7 @@ app_destroy :: proc(a: ^App) {
     term_destroy_all(a) // kill child shells + join reader threads before GLFW shuts down
     cl_chain_clear(a) // frees any pending chain (incl. its backing array)
     cl_destroy(a)
+    delete(a.project_root)
     delete(a.theme_path)
     delete(a.clip_joined)
     for p in a.clip_pieces {

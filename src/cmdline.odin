@@ -1,6 +1,8 @@
 package main
 
 import "core:fmt"
+import "core:os"
+import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 
@@ -34,10 +36,24 @@ cl_open :: proc(a: ^App) {
     a.cl.hist_idx = len(a.cl.history)
 }
 
-// Pre-fill the command line with text and open it (filetree Shift+Enter -> cd).
+// Pre-fill the command line with text and open it (a UI gesture staging a command
+// for the user to review and run with Enter — e.g. the filetree folder cd).
 cl_inject :: proc(a: ^App, text: string) {
     cl_open(a)
     cl_recall(a, text)
+}
+
+// A UI gesture that produces a full command line either STAGES it (cl_inject: pre-fill
+// the CL and wait for the user's Enter) or RUNS it immediately — chosen per action by
+// config. Staging is the reviewable default; `run` is the insta-enter shortcut. Used
+// by the filetree folder cd (a.folder_cd_run); other inject sites that pre-fill an
+// INCOMPLETE command for the user to finish (e.g. Alt+W's "j ") stay cl_inject.
+cl_dispatch :: proc(a: ^App, text: string, run: bool) {
+    if run {
+        cl_exec(a, text)
+    } else {
+        cl_inject(a, text)
+    }
 }
 
 cl_cancel :: proc(a: ^App) {
@@ -253,8 +269,62 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         cl_put(a, args)
     case "j", "jump":
         cl_jump(a, args)
+    case "cd":
+        cl_cd(a, args)
+    case "tu":
+        cl_tu(a)
     }
     return true
+}
+
+// `cd [dir]` (builtin): set the PROJECT ROOT — captured by Slopd, never sent to a
+// shell. Relative paths resolve against the current root and a leading ~ expands to
+// $HOME; a bare `cd` (or `cd ~`) goes home. Only an existing directory is accepted,
+// so a typo leaves the root untouched. New terminals spawn here; `tu` syncs the
+// unlocked ones; the idle status strip shows it.
+@(private = "file")
+cl_cd :: proc(a: ^App, args: string) {
+    dir := cl_resolve_dir(a, strings.trim_space(args))
+    defer delete(dir)
+    if dir == "" || !os.is_dir(dir) {
+        return
+    }
+    delete(a.project_root)
+    a.project_root = strings.clone(dir)
+}
+
+// Resolve a `cd` argument to an absolute, cleaned directory path (owned by caller).
+@(private = "file")
+cl_resolve_dir :: proc(a: ^App, arg: string) -> string {
+    home := os.get_env("HOME", context.temp_allocator)
+    raw: string
+    switch {
+    case arg == "" || arg == "~":
+        raw = home != "" ? home : a.project_root
+    case strings.has_prefix(arg, "~/"):
+        raw = filepath.join({home, arg[2:]}, context.temp_allocator) or_else arg
+    case filepath.is_abs(arg):
+        raw = arg
+    case:
+        raw = filepath.join({a.project_root, arg}, context.temp_allocator) or_else arg
+    }
+    return filepath.clean(raw) or_else strings.clone(raw)
+}
+
+// `tu` (terminal update) builtin: push `cd <project root>` into every UNLOCKED live
+// terminal so they all follow the project root at once. Locked sessions (Alt+L) keep
+// their own cwd. A background sync — it changes no focus, unlike the goto builtins.
+@(private = "file")
+cl_tu :: proc(a: ^App) {
+    if a.project_root == "" {
+        return
+    }
+    line := fmt.tprintf("cd \"%s\"\n", a.project_root)
+    for t in a.terminals {
+        if t.alive && !t.locked {
+            terminal_write(t, transmute([]u8)line)
+        }
+    }
 }
 
 // `j N` / `jump N`: move the editor's cursor to a line and reveal it (the render
@@ -343,7 +413,7 @@ is_term_token :: proc(s: string) -> bool {
 @(private = "file")
 cl_is_builtin :: proc(name: string) -> bool {
     switch name {
-    case "ls", "gs", "cf", "zen", "zm", "put", "j", "jump":
+    case "ls", "gs", "cf", "zen", "zm", "put", "j", "jump", "cd", "tu":
         return true
     }
     return false

@@ -20,6 +20,7 @@ FRAME_BUDGET :: 1.0 / 120.0
 // Animation timings (seconds) — short by design, in keeping with the spartan ethos.
 BLINK_HALF :: 0.5 // caret on for this long, then off for this long
 ZEN_DUR :: 0.12 // aux-pane slide in/out
+GIT_SPLIT_DUR :: 0.12 // editor/aux split widen entering/leaving git mode (zen-paced)
 SWITCHER_DUR :: 0.10 // terminal switcher fade-in
 
 Anim :: struct {
@@ -55,6 +56,9 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
         wake = sched_min(wake, FRAME_BUDGET)
     }
     if a.view == .Zen && anim_active(&a.zen_anim, now) { // aux-pane slide
+        wake = sched_min(wake, FRAME_BUDGET)
+    }
+    if a.view == .Split && anim_active(&a.split_anim, now) { // git pane widen/narrow
         wake = sched_min(wake, FRAME_BUDGET)
     }
     if a.alt_held && a.aux_mode == .Terminal && anim_active(&a.switcher_anim, now) { // switcher fade

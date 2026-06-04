@@ -159,6 +159,51 @@ test_cl_parse_target_prefix :: proc(t: ^testing.T) {
     testing.expect_value(t, a.cl_chain.steps[0].text, "git status")
 }
 
+@(test)
+test_cl_parse_cd_tu_builtins :: proc(t: ^testing.T) {
+    a: app.App
+    defer app.cl_chain_clear(&a)
+    app.cl_parse(&a, "cd src && tu") // both are captured builtins, never shell
+    steps := a.cl_chain.steps[:]
+    testing.expect_value(t, len(steps), 2)
+    testing.expect(t, !steps[0].shell, "cd is a builtin")
+    testing.expect_value(t, steps[0].text, "cd src")
+    testing.expect(t, !steps[1].shell, "tu is a builtin")
+    testing.expect_value(t, steps[1].text, "tu")
+}
+
+// `cd` sets the project root: absolute paths land verbatim, relative ones resolve
+// against the current root, and a non-directory leaves the root untouched.
+@(test)
+test_cl_cd_project_root :: proc(t: ^testing.T) {
+    a: app.App
+    defer delete(a.project_root)
+    app.cl_exec(&a, "cd /tmp")
+    testing.expect_value(t, a.project_root, "/tmp")
+    app.cl_exec(&a, "cd ..") // relative: /tmp/.. -> /
+    testing.expect_value(t, a.project_root, "/")
+    app.cl_exec(&a, "cd /no/such/dir/zzz") // typo: root unchanged
+    testing.expect_value(t, a.project_root, "/")
+}
+
+// A config-driven CL action either stages its command (opens the CL, runs nothing) or
+// runs it at once (no CL) — the filetree folder cd via a.folder_cd_run.
+@(test)
+test_cl_dispatch_stage_vs_run :: proc(t: ^testing.T) {
+    a: app.App
+    defer delete(a.project_root)
+
+    app.cl_dispatch(&a, "cd /tmp", false) // stage
+    testing.expect(t, a.cl_active, "stage opens the command line")
+    testing.expect_value(t, val(&a), "cd /tmp")
+    testing.expect_value(t, a.project_root, "") // not executed
+    app.cl_cancel(&a)
+
+    app.cl_dispatch(&a, "cd /tmp", true) // run
+    testing.expect(t, !a.cl_active, "run leaves the command line closed")
+    testing.expect_value(t, a.project_root, "/tmp") // executed
+}
+
 // --- chain runner (&& honours exit status; exit codes simulated, no shell) ---
 
 @(test)

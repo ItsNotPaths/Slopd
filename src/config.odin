@@ -32,10 +32,11 @@ Config :: struct {
     indent:            Indent,
     line_numbers:      Line_Numbers,
     font_px:           f32, // logical text size in points (font zoom), persisted across runs
-    jump_lines:        int, // how many lines Alt+Up/Down jumps in the editor
+    jump_lines:        int, // how many lines Ctrl+Up/Down jumps in the editor
     show_whitespace:   bool, // ghost the leading-space dots / tab marks
     show_guides:       bool, // draw indent guides + the active-scope rail
     folding:           bool, // allow Ctrl+Enter block folding
+    folder_cd_run:     bool, // filetree Alt+Enter: run the `cd` at once vs stage it in the CL
 }
 
 load_config :: proc() -> Config {
@@ -47,6 +48,7 @@ load_config :: proc() -> Config {
         show_whitespace = true, // the guides default on; the config toggles them off
         show_guides     = true,
         folding         = true,
+        folder_cd_run   = false, // stage the cd in the CL by default (reviewable)
     }
     path := find_config()
     if path == "" {
@@ -98,6 +100,8 @@ load_config :: proc() -> Config {
             if v, ok := parse_on_off(val); ok {cfg.show_guides = v}
         case "folding":
             if v, ok := parse_on_off(val); ok {cfg.folding = v}
+        case "folder_cd":
+            if v, ok := parse_stage_run(val); ok {cfg.folder_cd_run = v}
         }
     }
     return cfg
@@ -177,6 +181,8 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return theme_options(context.temp_allocator)
     case .Folding, .IndentGuides, .Whitespace:
         return ON_OFF_OPTS[:]
+    case .FolderCd:
+        return STAGE_RUN_OPTS[:]
     }
     return nil
 }
@@ -184,6 +190,7 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
 INDENT_OPTS := [?]string{"tab", "spaces2", "spaces4", "spaces8"}
 LINE_NUMBER_OPTS := [?]string{"global", "relative"}
 ON_OFF_OPTS := [?]string{"on", "off"}
+STAGE_RUN_OPTS := [?]string{"stage", "run"}
 
 // "default" + "global" first, then every themes/<name>.theme beside the binary,
 // sorted. Names are cloned into `allocator`; the returned slice is too.
@@ -224,6 +231,7 @@ Setting :: enum {
     Folding,
     IndentGuides,
     Whitespace,
+    FolderCd,
 }
 
 setting_key :: proc(s: Setting) -> string {
@@ -234,6 +242,7 @@ setting_key :: proc(s: Setting) -> string {
     case .Folding:      return "folding"
     case .IndentGuides: return "indent_guides"
     case .Whitespace:   return "whitespace"
+    case .FolderCd:     return "folder_cd"
     }
     return ""
 }
@@ -249,6 +258,7 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .Folding:      return on_off(a.folding)
     case .IndentGuides: return on_off(a.show_guides)
     case .Whitespace:   return on_off(a.show_whitespace)
+    case .FolderCd:     return a.folder_cd_run ? "run" : "stage"
     }
     return ""
 }
@@ -279,9 +289,21 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.show_guides = parse_on_off(val) or_return
     case .Whitespace:
         a.show_whitespace = parse_on_off(val) or_return
+    case .FolderCd:
+        a.folder_cd_run = parse_stage_run(val) or_return
     }
     config_set(setting_key(s), val)
     return true
+}
+
+// Parses the folder-cd action's stage/run value; ok=false on anything else (an invalid
+// edit keeps the old value, like the other settings).
+parse_stage_run :: proc(s: string) -> (run: bool, ok: bool) {
+    switch s {
+    case "stage": return false, true
+    case "run":   return true, true
+    }
+    return false, false
 }
 
 // Parses the on/off settings' values; ok=false on anything else (an invalid edit

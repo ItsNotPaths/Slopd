@@ -67,6 +67,7 @@ main :: proc() {
     app.show_whitespace = cfg.show_whitespace
     app.show_guides = cfg.show_guides
     app.folding = cfg.folding
+    app.folder_cd_run = cfg.folder_cd_run
     app.font_px = cfg.font_px // persisted font zoom; text_init bakes the atlas at it
 
     editor_init(&app.editor)
@@ -77,6 +78,8 @@ main :: proc() {
     defer grammars_destroy(app.grammars)
     config_pane_init(&app.config_pane, app.grammars)
     defer config_pane_destroy(&app.config_pane)
+    git_init(&app.git)
+    defer git_destroy(&app.git)
     highlighter_init(&app.hl)
     defer highlighter_destroy(&app.hl)
     if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {

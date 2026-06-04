@@ -31,6 +31,11 @@ Terminal :: struct {
     pid:    posix.pid_t,
     alive:  bool,
 
+    // Directory lock (Alt+L). A locked session keeps its own cwd: the `tu` builtin
+    // skips it, and the switcher draws its number greyed. Purely advisory state —
+    // nothing else reads it.
+    locked: bool,
+
     // Reader thread -> main loop handoff. The thread appends PTY output to inbuf
     // under lock and wakes the loop (PostEmptyEvent); the loop drains it into the
     // parser. Only the raw bytes cross threads — never a vterm_* call.
@@ -339,7 +344,7 @@ foreign libc {
 // running $SHELL wired to the slave as its controlling terminal. Returns false (and
 // leaves the Terminal with pty == -1) if any step fails. On success a reader thread
 // is pumping the master fd.
-terminal_spawn :: proc(t: ^Terminal, rows, cols: int) -> bool {
+terminal_spawn :: proc(t: ^Terminal, rows, cols: int, cwd := "") -> bool {
     terminal_vt_init(t, rows, cols)
     vt.output_set_callback(t.term, term_output_cb, t) // query replies -> PTY master
     t.fallbacks = vt.StateFallbacks{osc = term_osc_cb} // exit-code OSC -> t.exit_*
@@ -368,9 +373,13 @@ terminal_spawn :: proc(t: ^Terminal, rows, cols: int) -> bool {
     shell := term_shell()
     argv := []cstring{shell, nil}
     envp := term_build_env()
+    // The child chdir's here before exec so the shell starts in the project root; an
+    // empty cwd leaves it in our own. Cloned up front — the child may not allocate.
+    dir := cwd == "" ? cstring(nil) : strings.clone_to_cstring(cwd)
     defer {
         delete(name)
         delete(shell)
+        delete(dir)
         term_free_env(envp)
     }
 
@@ -381,6 +390,9 @@ terminal_spawn :: proc(t: ^Terminal, rows, cols: int) -> bool {
     }
     if pid == 0 {
         // CHILD — pre-allocated cstrings only, no Odin allocation, ending in exec.
+        if dir != nil {
+            posix.chdir(dir) // start in the project root (best effort; ignore failure)
+        }
         posix.setsid() // new session; the first tty opened becomes controlling
         slave := posix.open(name, {.RDWR}) // no NOCTTY: claim it as the controlling tty
         if slave < 0 {
@@ -693,7 +705,7 @@ term_new :: proc(a: ^App) {
         return
     }
     t := new(Terminal)
-    if !terminal_spawn(t, TERM_INIT_ROWS, TERM_INIT_COLS) {
+    if !terminal_spawn(t, TERM_INIT_ROWS, TERM_INIT_COLS, a.project_root) {
         free(t)
         return
     }

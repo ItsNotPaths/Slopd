@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:os"
 import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
@@ -82,6 +83,8 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
         draw_config(t, lay.aux, win_w, win_h, a, now)
     } else if a.aux_mode == .Terminal {
         draw_terminal(t, lay.aux, win_w, win_h, a)
+    } else if a.aux_mode == .Git {
+        draw_git(t, lay.aux, win_w, win_h, a)
     } else {
         label(t, aux_mode_name(a.aux_mode), lay.aux, pad, focus_fg(a, .Aux))
         flush_pane(t, lay.aux, win_w, win_h)
@@ -408,6 +411,25 @@ draw_status :: proc(t: ^Text, strip: Rect, a: ^App) {
     )
     rx := f32(strip.x + strip.w - pad) - cw * f32(len(right))
     text_draw(t, right, rx, y, th.muted)
+
+    // Center: the project root (~-abbreviated), so the `cd`-captured root the git pane
+    // and `tu` use is always visible while the command line is idle.
+    root := home_abbrev(a.project_root, context.temp_allocator)
+    if root != "" {
+        rootx := f32(strip.x) + (f32(strip.w) - cw * f32(len(root))) / 2
+        text_draw(t, root, rootx, y, th.muted)
+    }
+}
+
+// Abbreviate a leading $HOME to ~ for display (e.g. /home/me/src -> ~/src). Returns a
+// borrowed slice of `path` when nothing changes, else a fresh string in `alloc`.
+@(private = "file")
+home_abbrev :: proc(path: string, alloc := context.allocator) -> string {
+    home := os.get_env("HOME", context.temp_allocator)
+    if home != "" && strings.has_prefix(path, home) {
+        return strings.concatenate({"~", path[len(home):]}, alloc)
+    }
+    return path
 }
 
 // Modeline language label: the registry's name for the file's extension, else the
@@ -664,6 +686,104 @@ config_draw_edit :: proc(t: ^Text, edit: ^Doc, ex, ty: f32, a: ^App, now: f64) {
     }
 }
 
+// The git pane's sidebar takes this fraction of the aux pane's width; the diff viewer
+// / commit editor gets the rest. (The editor itself is GIT_EDITOR_SPLIT — layout.odin.)
+GIT_SIDEBAR_FRAC :: f32(0.40)
+
+// The git aux mode (Sublime-Merge-lite, KB-only). The aux pane carries two sub-columns
+// parted by a hairline: a SIDEBAR (branch strip + Status + Log, ported from Prawk) on
+// the left and a DIFF VIEWER / COMMIT EDITOR on the right. Each column composites under
+// its own scissor so text can't bleed across the rule. SCAFFOLD: the two-column layout,
+// the divider, and the per-region focus tint are in; the git data, the diff, and
+// staging are Phase 1 (see the "Git (aux mode)" section of plan.txt).
+draw_git :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
+    th := &a.theme
+    area := inset(pane, i32(2 * a.scale))
+    if area.w <= 0 || area.h <= 0 {
+        return
+    }
+
+    // Split into the sidebar (left) and the diff / commit column (right), parted by a
+    // one-pixel rule. `right` spans the rule + the diff so they composite under one
+    // scissor; the diff content insets past the rule.
+    div_w := max(i32(1), i32(a.scale))
+    side_w := clamp(i32(f32(area.w) * GIT_SIDEBAR_FRAC), 0, area.w)
+    sidebar := Rect{area.x, area.y, side_w, area.h}
+    right := Rect{area.x + side_w, area.y, area.w - side_w, area.h}
+    diff := Rect{right.x + div_w, area.y, max(0, right.w - div_w), area.h}
+
+    git_draw_sidebar(t, sidebar, a)
+    flush_pane(t, sidebar, win_w, win_h)
+
+    fill(t, Rect{right.x, area.y, div_w, area.h}, th.border_light) // the column rule
+    git_draw_diff(t, diff, a)
+    flush_pane(t, right, win_w, win_h)
+}
+
+// One left-aligned text row, vertically centred in a row_h band whose top is at y.
+@(private = "file")
+git_row :: proc(t: ^Text, s: string, x: f32, y, row_h: i32, lh: f32, color: [3]f32) {
+    text_draw(t, s, x, f32(y) + (f32(row_h) - lh) / 2, color)
+}
+
+// The sidebar: Prawk's three stacked zones — a branch strip, the working-tree Status,
+// and the Log. SCAFFOLD: zone headers + placeholders; the headers light (accent) when
+// the sidebar holds the git pane's region focus.
+@(private = "file")
+git_draw_sidebar :: proc(t: ^Text, area: Rect, a: ^App) {
+    g := &a.git
+    th := &a.theme
+    lh := t.font.line_height
+    cw := t.font.cell_w
+    row_h := i32(lh) + i32(2 * a.scale)
+    x0 := f32(area.x) + cw // one-cell left margin
+    head := a.focus == .Aux && a.aux_mode == .Git && g.region == .Sidebar ? th.accent : th.muted
+
+    y := area.y
+    git_row(t, "⎇ branch", x0, y, row_h, lh, head) // branch strip
+    y += row_h + row_h / 2
+
+    git_row(t, "status", x0, y, row_h, lh, head) // working tree
+    y += row_h
+    git_row(t, "working tree", x0 + cw, y, row_h, lh, th.muted)
+    y += row_h + row_h / 2
+
+    git_row(t, "log", x0, y, row_h, lh, head) // commits on the selected branch
+    y += row_h
+    git_row(t, "commits", x0 + cw, y, row_h, lh, th.muted)
+}
+
+// The diff viewer / commit editor: the working diff up top, the commit message in a
+// bottom strip. SCAFFOLD: headers + placeholders; the diff header lights when region
+// is Diff, the commit strip when region is Commit.
+@(private = "file")
+git_draw_diff :: proc(t: ^Text, area: Rect, a: ^App) {
+    g := &a.git
+    th := &a.theme
+    lh := t.font.line_height
+    cw := t.font.cell_w
+    row_h := i32(lh) + i32(2 * a.scale)
+    x0 := f32(area.x) + cw
+    focused := a.focus == .Aux && a.aux_mode == .Git
+
+    // Diff viewer — the live working tree by default, or the sidebar's selection.
+    diff_head := focused && g.region == .Diff ? th.accent : th.muted
+    git_row(t, "diff", x0, area.y, row_h, lh, diff_head)
+    git_row(t, "live working tree", x0 + cw, area.y + row_h, row_h, lh, th.muted)
+
+    // Commit editor — a bottom strip (rule + header + the message line). The message
+    // becomes a live Doc in Phase 2; the placeholder marks where it sits.
+    strip_h := row_h * 3
+    sy := area.y + area.h - strip_h
+    if sy <= area.y + row_h * 2 {
+        return // pane too short for the commit strip
+    }
+    fill(t, Rect{area.x, sy, area.w, max(i32(1), i32(a.scale))}, th.border_light)
+    commit_head := focused && g.region == .Commit ? th.accent : th.muted
+    git_row(t, "commit", x0, sy + row_h / 2, row_h, lh, commit_head)
+    git_row(t, "commit message…", x0 + cw, sy + row_h / 2 + row_h, row_h, lh, th.muted)
+}
+
 // The terminal: the active session's libvterm cell grid. Snap the pane to whole
 // cells, resize the session to match (no-op when unchanged), fill the default
 // background once, then paint each cell — a per-cell bg fill only when it differs
@@ -771,6 +891,7 @@ draw_term_overlay :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now:
     col_bg := lerp3(th.bg, th.border_dark, f)
     col_active := lerp3(th.bg, th.accent, f)
     col_fg := lerp3(th.bg, th.fg, f)
+    col_lock := lerp3(th.bg, th.muted, f) // a locked session's number is greyed (Alt+L)
 
     // Scroll so the active session stays centered, clamped at the list ends.
     n := term_count(a)
@@ -790,7 +911,7 @@ draw_term_overlay :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now:
         s := strconv.write_int(buf[:], i64(i + 1), 10)
         tx := f32(area.x) + (f32(colw) - cw * f32(len(s))) / 2 // centered
         ty := f32(y) + (f32(row_h) - lh) / 2
-        text_draw(t, s, tx, ty, col_fg)
+        text_draw(t, s, tx, ty, a.terminals[i].locked ? col_lock : col_fg)
     }
 
     flush_pane(t, area, win_w, win_h)
