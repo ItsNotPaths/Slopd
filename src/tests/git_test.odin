@@ -55,6 +55,7 @@ test_load_state :: proc(t: ^testing.T) {
     }
 
     g: app.GitPane
+    app.git_init(&g) // sets up the grep / commit Docs the loaders + filter rely on
     g.root = root // ownership transfers to g; git_destroy frees it (no separate delete)
     g.is_repo = true
     defer app.git_destroy(&g)
@@ -102,18 +103,25 @@ test_git_nav :: proc(t: ^testing.T) {
     app.git_move_region(&g, -1)
     testing.expect_value(t, g.region, app.GitRegion.Sidebar) // back to the sidebar
 
-    // Tab swaps the focused column's sub-mode: Status/Log in the sidebar...
+    // Tab cycles the focused column's sub-mode: Status -> Log -> Branch -> Status in the
+    // sidebar...
     testing.expect_value(t, g.section, app.GitSection.Status)
     app.git_tab(&g)
     testing.expect_value(t, g.section, app.GitSection.Log)
     app.git_tab(&g)
+    testing.expect_value(t, g.section, app.GitSection.Branch)
+    app.git_tab(&g)
     testing.expect_value(t, g.section, app.GitSection.Status)
-    // ...and diff <-> commit message in the right column.
-    g.region = .Diff
+    // ...and Grep -> Select -> Diff -> Commit -> Grep in the right column.
+    g.region = .Grep
+    app.git_tab(&g)
+    testing.expect_value(t, g.region, app.GitRegion.Select)
+    app.git_tab(&g)
+    testing.expect_value(t, g.region, app.GitRegion.Diff)
     app.git_tab(&g)
     testing.expect_value(t, g.region, app.GitRegion.Commit)
     app.git_tab(&g)
-    testing.expect_value(t, g.region, app.GitRegion.Diff)
+    testing.expect_value(t, g.region, app.GitRegion.Grep)
 
     // Selection moves only in the sidebar and clamps to the active list's length.
     g.region = .Sidebar
@@ -264,6 +272,14 @@ test_diff_scroll :: proc(t: ^testing.T) {
     testing.expect_value(t, g.diff_scroll, -4)
     app.git_diff_scroll(&g, 99)
     testing.expect_value(t, g.diff_scroll, 7)
+
+    // A SHORT viewport (4 rows, offset 2): centring the last hunk (top row 12) gives 10, but
+    // the diff is 16 rows, so scroll_hi extends to 16-4 = 12 so the last hunk's final line
+    // clears the bottom (the commit bar) rather than staying cut off.
+    g.diff_view_rows = 4
+    testing.expect_value(t, app.git_scroll_hi(&g), 12)
+    app.git_diff_scroll(&g, 99)
+    testing.expect_value(t, g.diff_scroll, 12)
 }
 
 // The held auto-scroll's tick interval ramps from slow (at press) to fast (held a while).
@@ -271,9 +287,9 @@ test_diff_scroll :: proc(t: ^testing.T) {
 test_diff_scroll_ramp :: proc(t: ^testing.T) {
     slow := app.git_scroll_interval(0) // just pressed
     fast := app.git_scroll_interval(2.0) // held past the ramp -> clamped to full speed
-    half := app.git_scroll_interval(0.5)
-    testing.expect(t, slow > 0.12 && slow < 0.14) // slow start (~0.13)
-    testing.expect(t, fast > 0.017 && fast < 0.019) // full speed (~0.018)
+    half := app.git_scroll_interval(0.15) // mid-ramp (RAMP is 0.4s)
+    testing.expect(t, slow > 0.11 && slow < 0.13) // slow start (~0.12)
+    testing.expect(t, fast > 0.009 && fast < 0.011) // full speed (~0.010)
     testing.expect(t, half < slow && half > fast) // monotonic in between (faster over time)
 }
 
@@ -341,4 +357,159 @@ test_diff_stage_patch :: proc(t: ^testing.T) {
     patch2 := app.git_build_patch(&g, context.temp_allocator)
     testing.expect(t, !strings.contains(patch2, "a/foo.txt"))
     testing.expect(t, strings.contains(patch2, "a/bar.txt"))
+}
+
+// The grep filter hides hunks whose file path AND body lines miss the query; layout + nav
+// then run over the visible set, and select-all acts only on what passes the filter.
+@(test)
+test_diff_grep_filter :: proc(t: ^testing.T) {
+    g: app.GitPane
+    app.git_init(&g)
+    defer app.git_destroy(&g)
+    app.git_set_diff(&g, SAMPLE_DIFF, "work", true)
+    testing.expect_value(t, app.git_hunk_count(&g), 3) // no filter: all visible
+
+    // Filter by path -> only bar.txt's single hunk survives; foo.txt drops out entirely.
+    app.git_set_grep(&g, "bar")
+    testing.expect_value(t, app.git_hunk_count(&g), 1)
+    testing.expect(t, g.diff_files[0].hidden) // foo.txt filtered out (title + hunks gone)
+    testing.expect(t, !g.diff_files[1].hidden)
+    testing.expect_value(t, g.hunk_cur, 0) // focus re-anchored to the first visible hunk
+
+    // Filter by body content -> only the hunk containing "+y" (foo's second) survives.
+    app.git_set_grep(&g, "+y")
+    testing.expect_value(t, app.git_hunk_count(&g), 1)
+    testing.expect(t, g.diff_files[0].hunks[0].hidden)
+    testing.expect(t, !g.diff_files[0].hunks[1].hidden)
+
+    // Select-all acts only on the visible hunk; the hidden ones stay unchecked.
+    app.git_check_filtered(&g, true)
+    testing.expect(t, g.diff_files[0].hunks[1].selected)
+    testing.expect(t, !g.diff_files[0].hunks[0].selected)
+    testing.expect(t, !g.diff_files[1].hunks[0].selected)
+
+    // Clearing the filter restores every hunk; the earlier check survived.
+    app.git_set_grep(&g, "")
+    testing.expect_value(t, app.git_hunk_count(&g), 3)
+    testing.expect(t, g.diff_files[0].hunks[1].selected)
+}
+
+// Multisearch: '+'-separated terms are OR'd — a hunk shows if it matches ANY term.
+@(test)
+test_diff_grep_multi :: proc(t: ^testing.T) {
+    g: app.GitPane
+    app.git_init(&g)
+    defer app.git_destroy(&g)
+    app.git_set_diff(&g, SAMPLE_DIFF, "work", true)
+
+    // "foo + bar" shows both files' hunks (all three); whitespace around terms is trimmed.
+    app.git_set_grep(&g, "foo + bar")
+    testing.expect_value(t, app.git_hunk_count(&g), 3)
+    testing.expect(t, !g.diff_files[0].hidden)
+    testing.expect(t, !g.diff_files[1].hidden)
+
+    // A non-matching term OR a real body term: "zzz + n" matches only bar's hunk (its "+n"
+    // body line); foo has no 'n' in its path or bodies.
+    app.git_set_grep(&g, "zzz + n")
+    testing.expect_value(t, app.git_hunk_count(&g), 1)
+    testing.expect(t, g.diff_files[0].hidden)
+    testing.expect(t, !g.diff_files[1].hidden)
+}
+
+// The Select button auto-cycles: select-all when nothing visible is checked, else clear.
+@(test)
+test_toggle_all :: proc(t: ^testing.T) {
+    g: app.GitPane
+    app.git_init(&g)
+    defer app.git_destroy(&g)
+    app.git_set_diff(&g, SAMPLE_DIFF, "work", true)
+
+    testing.expect(t, !app.git_any_checked(&g))
+    app.git_toggle_all(&g) // none checked -> select all
+    testing.expect(t, app.git_any_checked(&g))
+    testing.expect(t, g.diff_files[0].hunks[0].selected && g.diff_files[1].hunks[0].selected)
+    app.git_toggle_all(&g) // some checked -> clear all
+    testing.expect(t, !app.git_any_checked(&g))
+}
+
+// The branch strip: cycling clamps, and the hover defaults to the checked-out branch.
+@(test)
+test_branch_nav :: proc(t: ^testing.T) {
+    g: app.GitPane
+    app.git_init(&g)
+    defer app.git_destroy(&g)
+    append(&g.branches, strings.clone("main"))
+    append(&g.branches, strings.clone("feature"))
+    append(&g.branches, strings.clone("fix"))
+    g.branch = strings.clone("feature")
+
+    app.git_sel_branch_to_current(&g)
+    testing.expect_value(t, g.sel_branch, 1) // hovers the checked-out branch
+
+    app.git_branch_cycle(&g, 1)
+    testing.expect_value(t, g.sel_branch, 2)
+    app.git_branch_cycle(&g, 5)
+    testing.expect_value(t, g.sel_branch, 2) // clamped at the last
+    app.git_branch_cycle(&g, -9)
+    testing.expect_value(t, g.sel_branch, 0) // clamped at the first
+}
+
+// The slot machine moves the live diff into a snapshot, fills it with shuffled, repeated
+// single-hunk REELS that spin down to a random resting row, and restores the snapshot verbatim
+// on payout. SAMPLE_DIFF has 3 visible hunks, padded to >= SPIN_MIN_REELS (ceil(30/3)*3 = 30).
+@(test)
+test_spin :: proc(t: ^testing.T) {
+    g: app.GitPane
+    app.git_init(&g)
+    defer app.git_destroy(&g)
+    app.git_set_diff(&g, SAMPLE_DIFF, "two files", true)
+    g.diff_view_rows = 10
+
+    units := app.git_hunk_count(&g) // 3 visible hunks
+    reels := ((30 + units - 1) / units) * units // padded to >= SPIN_MIN_REELS, a multiple of units
+    testing.expect(t, app.git_spin_begin(&g, 1.0))
+    testing.expect(t, g.spin.active)
+    testing.expect_value(t, g.diff_title, "🎰 lucky dip")
+    testing.expect_value(t, app.git_hunk_count(&g), reels) // 10 reps * 3 reels
+    testing.expect_value(t, len(g.diff_files), reels) // each reel is its own one-hunk file
+    testing.expect(t, g.spin.to > g.spin.from) // lands below the top: the reels spin downward
+    testing.expect(t, !app.git_spin_begin(&g, 2.0)) // a second spin while one runs is a no-op
+
+    app.git_spin_restore(&g) // payout: the original two-file diff comes back untouched
+    testing.expect(t, !g.spin.active)
+    testing.expect_value(t, len(g.diff_files), 2)
+    testing.expect_value(t, app.git_hunk_count(&g), 3)
+    testing.expect_value(t, g.diff_files[0].path, "foo.txt")
+}
+
+// git_cl_settle is the pane's CL feedback: a committed selection ships (clearing the message
+// + checkboxes) on a real submit, and survives a back-off. A spin unwinds either way.
+@(test)
+test_cl_settle :: proc(t: ^testing.T) {
+    a: app.App
+    app.git_init(&a.git)
+    defer app.git_destroy(&a.git)
+    app.git_set_diff(&a.git, SAMPLE_DIFF, "two files", true)
+    app.doc_set_text(&a.git.commit_msg, "wip")
+    a.git.diff_files[0].hunks[0].selected = true
+
+    // Backing off (Esc / an empty submit) leaves the message + selection intact.
+    a.git.cl_wait = .Commit
+    app.git_cl_settle(&a, .Commit, false)
+    testing.expect_value(t, a.git.cl_wait, app.GitCLKind.None)
+    testing.expect(t, app.git_any_checked(&a.git))
+
+    // Shipping clears both — the commit bar finally empties on send.
+    a.git.cl_wait = .Commit
+    app.git_cl_settle(&a, .Commit, true)
+    testing.expect(t, !app.git_any_checked(&a.git))
+    testing.expect_value(t, app.doc_string(&a.git.commit_msg, context.temp_allocator), "")
+
+    // A spin in flight is unwound whichever way its CL goes.
+    a.git.diff_view_rows = 10
+    testing.expect(t, app.git_spin_begin(&a.git, 3.0))
+    a.git.cl_wait = .Spin
+    app.git_cl_settle(&a, .Spin, false)
+    testing.expect(t, !a.git.spin.active)
+    testing.expect_value(t, len(a.git.diff_files), 2)
 }

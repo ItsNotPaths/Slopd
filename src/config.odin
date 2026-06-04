@@ -37,6 +37,9 @@ Config :: struct {
     show_guides:       bool, // draw indent guides + the active-scope rail
     folding:           bool, // allow Ctrl+Enter block folding
     folder_cd_run:     bool, // filetree Alt+Enter: run the `cd` at once vs stage it in the CL
+    git_checkout_run:  bool, // git branch Enter: run `git checkout` at once vs stage it
+    git_commit_run:    bool, // git commit Enter: run the commit recipe at once vs stage it
+    risky_mode:        bool, // git slot machine: auto-send the lucky-dip commit (no review)
 }
 
 load_config :: proc() -> Config {
@@ -49,6 +52,9 @@ load_config :: proc() -> Config {
         show_guides     = true,
         folding         = true,
         folder_cd_run   = false, // stage the cd in the CL by default (reviewable)
+        git_checkout_run = false, // stage branch checkout / commit in the CL by default
+        git_commit_run  = false,
+        risky_mode      = false, // the lucky-dip commit is staged for review by default
     }
     path := find_config()
     if path == "" {
@@ -185,9 +191,9 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return INDENT_OPTS[:]
     case .Theme:
         return theme_options(context.temp_allocator)
-    case .Folding, .IndentGuides, .Whitespace:
+    case .Folding, .IndentGuides, .Whitespace, .RiskyMode:
         return ON_OFF_OPTS[:]
-    case .FolderCd:
+    case .FolderCd, .GitCheckout, .GitCommit:
         return STAGE_RUN_OPTS[:]
     }
     return nil
@@ -238,6 +244,9 @@ Setting :: enum {
     IndentGuides,
     Whitespace,
     FolderCd,
+    GitCheckout,
+    GitCommit,
+    RiskyMode,
 }
 
 setting_key :: proc(s: Setting) -> string {
@@ -249,6 +258,9 @@ setting_key :: proc(s: Setting) -> string {
     case .IndentGuides: return "indent_guides"
     case .Whitespace:   return "whitespace"
     case .FolderCd:     return "folder_cd"
+    case .GitCheckout:  return "git_checkout"
+    case .GitCommit:    return "git_commit"
+    case .RiskyMode:    return "risky_mode"
     }
     return ""
 }
@@ -265,6 +277,9 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .IndentGuides: return on_off(a.show_guides)
     case .Whitespace:   return on_off(a.show_whitespace)
     case .FolderCd:     return a.folder_cd_run ? "run" : "stage"
+    case .GitCheckout:  return a.git_checkout_run ? "run" : "stage"
+    case .GitCommit:    return a.git_commit_run ? "run" : "stage"
+    case .RiskyMode:    return on_off(a.risky_mode)
     }
     return ""
 }
@@ -297,6 +312,12 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.show_whitespace = parse_on_off(val) or_return
     case .FolderCd:
         a.folder_cd_run = parse_stage_run(val) or_return
+    case .GitCheckout:
+        a.git_checkout_run = parse_stage_run(val) or_return
+    case .GitCommit:
+        a.git_commit_run = parse_stage_run(val) or_return
+    case .RiskyMode:
+        a.risky_mode = parse_on_off(val) or_return
     }
     config_set(setting_key(s), val)
     return true

@@ -1,20 +1,22 @@
 package main
 
 import "core:fmt"
+import "core:math/rand"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 import "core:time"
 
-// GitPane — the Git aux mode's state (Sublime-Merge-lite, KB-only). The aux pane is
-// split into two sub-columns: a SIDEBAR ported from Prawk's gitpane.nim (a branch
-// strip, a working-tree Status section, and a Log) and a DIFF VIEWER / COMMIT EDITOR.
-// Selecting in the sidebar loads a diff on the right; Alt+Q reverts a loaded diff to
-// the live working tree.
+// GitPane — the Git aux mode's state (Sublime-Merge-lite, KB-only). The aux pane is split
+// into two sub-columns: a SIDEBAR ported from Prawk's gitpane.nim (a branch strip, a
+// folder-grouped working-tree Status section, and a Log) and a persistent DIFF VIEWER +
+// COMMIT EDITOR. The right column always shows the full working-tree diff; the sidebar and
+// the grep bar FILTER it, the hunk checkboxes are the commit selection, and Ctrl+Enter
+// commits the checked set. Alt+Q reverts a browsed commit back to the live working tree.
 //
-// Phase 1 is being filled in incrementally; diff parsing, selection, and staging
-// follow (see the "Git (aux mode)" section of plan.txt). Repo state is read by
-// shelling out to the `git` CLI (git_run), the project's chosen porcelain.
+// Repo state is read by shelling out to the `git` CLI (git_run), the project's chosen
+// porcelain. See the "Git (aux mode)" section of plan.txt for the full design.
 
 // A repo search walks at most this many seconds before giving up. A parent walk is
 // normally microseconds; the budget is insurance against a hung stat on a slow or
@@ -32,9 +34,9 @@ GIT_LOG_LIMIT :: 50
 // the rate, not the step). Alt+Up/Down jump whole hunks. The selection "playhead" is a
 // line at the vertical CENTRE of the diff viewport (offset = diff_view_rows/2): whichever
 // hunk overlaps it is selected; edge hunks reach the centre via over-scroll.
-DIFF_SCROLL_SLOW :: 0.13 // first tick interval (slow start)
-DIFF_SCROLL_FAST :: 0.018 // full-speed interval
-DIFF_SCROLL_RAMP :: 1.0 // seconds of holding to reach full speed
+DIFF_SCROLL_SLOW :: 0.12 // first tick interval (slow start)
+DIFF_SCROLL_FAST :: 0.010 // full-speed interval (higher top speed)
+DIFF_SCROLL_RAMP :: 0.4 // seconds of holding to reach full speed (snappy ramp-up)
 
 // One working-tree change from `git status --porcelain`: a two-char XY status code
 // (index + worktree) and the path. Strings are owned by the GitPane.
@@ -67,37 +69,77 @@ DiffLine :: struct {
 
 // One @@ hunk: its header line, its body lines, and the staging checkbox. The raw text
 // (header + each line.text, verbatim) is what git_build_patch reassembles for git apply.
+// `hidden` is derived (git_filter_apply) from the grep query — a hidden hunk drops out of
+// layout, nav, and render so the playhead only ever lands on a visible one.
 DiffHunk :: struct {
     header:   string, // the "@@ -a,b +c,d @@ ctx" line (owned)
     lines:    [dynamic]DiffLine, // body lines (owned)
-    selected: bool, // the checkbox — included when staging the selection
+    selected: bool, // the checkbox — included in the commit selection
+    hidden:   bool, // filtered out by the grep query (derived)
 }
 
 // One file section of a diff: its header block (diff --git / index / --- / +++ / mode
 // lines, owned verbatim so a patch can be rebuilt) and its hunks. `path` is the new-side
-// path, for the block title only.
+// path, for the block title only. `hidden` (derived) drops a file whose every hunk was
+// filtered out, so its title row goes with them.
 DiffFile :: struct {
     header: [dynamic]string, // file-header lines in order (owned)
     path:   string, // display path (owned); "" falls back to header[0]
     hunks:  [dynamic]DiffHunk,
+    hidden: bool, // no visible hunk passes the grep query (derived)
 }
 
 // Which sub-region of the git pane owns the arrows. Left/Right switch between the
-// sidebar and the right column; within the right column Tab swaps its two states, so
-// Diff and Commit are reached there (see git_move_region / git_tab). Up/Down act within
-// the focused region.
+// sidebar and the right column; within the right column Tab cycles its three states —
+// the Grep filter bar, the Diff list, and the Commit message (see git_move_region /
+// git_tab). Up/Down act within the focused region. '/' jumps straight to Grep.
 GitRegion :: enum {
     Sidebar,
+    Grep,
+    Select, // the select-all / deselect-all toggle button (beside the grep bar)
     Diff,
     Commit,
 }
 
-// The sidebar's two selectable sections (Prawk's GitSection): the working-tree changes
-// (whose diffs load on the right) and the commit Log. Tab toggles between them while the
-// sidebar is focused; Up/Down then move the selection within the active one.
+// The sidebar's selectable sections (Prawk's GitSection): the branch strip (where
+// Left/Right swap branches), the working-tree Status (whose files filter the diff), and the
+// commit Log. Tab cycles between them while the sidebar is focused; Up/Down then move the
+// selection within Status/Log (Branch uses Left/Right).
 GitSection :: enum {
     Status,
     Log,
+    Branch,
+}
+
+// Why the git pane is waiting on the command line. Set when the pane HANDS the CL a
+// command (a commit recipe, or a slot-machine payout) so it can react when that command
+// ships or is dropped — the pane's one piece of CL feedback (git_cl_settle, driven by
+// cl_submit / cl_cancel). None when the pane isn't waiting on anything.
+GitCLKind :: enum {
+    None,
+    Commit, // a real commit recipe: clear the message + selection once it ships
+    Spin,   // a slot-machine payout: unwind the spin whether it ships or is dropped
+}
+
+// The "lucky dip" slot-machine gag (Ctrl+Shift+Alt+S). The live diff is moved into the
+// saved_* snapshot and replaced by shuffled, repeated single-hunk REELS in g.diff_files,
+// which then scroll past a FIXED centre reticle and decelerate (spin_ease: gentle wind-up,
+// long settle) onto a RANDOM resting row `to` — the reticle stops wherever it lands, top or
+// middle or bottom of a hunk, uncontrolled. On land the hunk under it wins: a commit for it
+// is injected with a lucky message, and the CL's outcome triggers git_spin_restore, which
+// moves the snapshot back. The motion is driven directly from start_t (git_spin_disp), not
+// the smooth-scroll anim. See git_spin_begin / git_spin_pump / git_spin_restore.
+GitSpin :: struct {
+    active:          bool, // a spin is on screen (decelerating, or awaiting its CL payout)
+    landed:          bool, // the reels have stopped — the payout was injected
+    start_t:         f64, // glfw time the spin began (drives the easing)
+    from:            f32, // start scroll row (the top of the reel run)
+    to:              f32, // the RANDOM resting scroll row — the winner is whatever it rests on
+    saved_files:     [dynamic]DiffFile, // the pre-spin diff, moved aside (restored on payout)
+    saved_preamble:  [dynamic]string,
+    saved_title:     string,
+    saved_scroll:    int,
+    saved_stageable: bool,
 }
 
 GitPane :: struct {
@@ -105,9 +147,11 @@ GitPane :: struct {
     section:    GitSection, // the active sidebar section (Tab toggles it)
     sel_status: int, // selected row in the Status list
     sel_log:    int, // selected row in the Log list
+    sel_branch: int, // hovered row in the branch strip (Left/Right cycle it)
     root:       string, // the discovered repo working-tree root (owned); "" when none
     is_repo:    bool, // whether `root` names a real repo (set by git_refresh)
     branch:     string, // the checked-out branch (owned); "" when detached / none
+    branches:   [dynamic]string, // all local branch names (owned), for the swap strip
     status:     [dynamic]StatusEntry, // working-tree changes (owned)
     commits:    [dynamic]Commit, // recent log on the current branch (owned)
 
@@ -119,6 +163,13 @@ GitPane :: struct {
     diff_preamble:  [dynamic]string, // owned
     diff_files:     [dynamic]DiffFile, // owned
     diff_title:     string, // a path, a commit, or "working tree" (owned)
+
+    // The diff/commit column's two text fields (region == .Grep / .Commit). grep is a
+    // single-line live filter over the always-on diff (path OR body match); commit_msg is
+    // the multi-line message Ctrl+Enter commits the checked hunks under. Both persist
+    // across a diff swap / refresh (you stay mid-filter / mid-message); freed in destroy.
+    grep:       Doc, // the diff filter query; empty = show everything
+    commit_msg: Doc, // the commit message editor
     hunk_cur:         int, // hunk under the playhead (derived in render); -1 when none
     diff_stageable:   bool, // checkboxes + Tab-stage active
     diff_scroll:      int, // target top DISPLAY row (may go negative: over-scroll to centre edge hunks)
@@ -128,28 +179,41 @@ GitPane :: struct {
     scroll_dir:       int, // held auto-scroll direction (0 none / -1 up / +1 down)
     scroll_t0:        f64, // glfw time the hold began (drives the tick-rate ramp)
     scroll_next:      f64, // glfw time of the next auto-scroll tick
+
+    cl_wait: GitCLKind, // why the pane is waiting on the command line (CL feedback)
+    spin:    GitSpin, // the slot-machine gag, when one is running
 }
 
 git_init :: proc(g: ^GitPane) {
     g.region = .Sidebar
+    doc_init(&g.grep)
+    doc_init(&g.commit_msg)
 }
 
 git_destroy :: proc(g: ^GitPane) {
     git_clear(g)
     delete(g.status)
     delete(g.commits)
+    delete(g.branches)
     delete(g.diff_preamble)
     delete(g.diff_files)
+    doc_destroy(&g.grep)
+    doc_destroy(&g.commit_msg)
 }
 
 // Drop all loaded repo state (so git_refresh is idempotent and git_destroy is clean).
 // Frees every owned string and empties the lists; the backing arrays survive for reuse
 // (git_destroy deletes those).
 git_clear :: proc(g: ^GitPane) {
+    git_spin_discard(g) // drop any in-flight gag's snapshot before its diff is freed below
     delete(g.root)
     g.root = ""
     delete(g.branch)
     g.branch = ""
+    for b in g.branches {
+        delete(b)
+    }
+    clear(&g.branches)
     for e in g.status {
         delete(e.code)
         delete(e.path)
@@ -172,7 +236,24 @@ git_clear_diff :: proc(g: ^GitPane) {
         delete(s)
     }
     clear(&g.diff_preamble)
-    for f in g.diff_files {
+    git_free_files(g.diff_files)
+    clear(&g.diff_files)
+    delete(g.diff_title)
+    g.diff_title = ""
+    g.hunk_cur = -1
+    g.diff_stageable = false
+    g.diff_scroll = 0
+    g.diff_scroll_anim = Anim{} // snap (no slide from the previous diff)
+    g.diff_view_rows = 0
+    g.diff_recenter = false
+    g.scroll_dir = 0 // cancel any held auto-scroll
+}
+
+// Free a diff-file list's contents (header lines, path, hunks, body lines) WITHOUT
+// touching the backing array — the caller clears or deletes that. Shared by git_clear_diff
+// and the slot machine's snapshot teardown (git_spin_discard).
+git_free_files :: proc(files: [dynamic]DiffFile) {
+    for f in files {
         for s in f.header {
             delete(s)
         }
@@ -187,16 +268,6 @@ git_clear_diff :: proc(g: ^GitPane) {
         }
         delete(f.hunks)
     }
-    clear(&g.diff_files)
-    delete(g.diff_title)
-    g.diff_title = ""
-    g.hunk_cur = -1
-    g.diff_stageable = false
-    g.diff_scroll = 0
-    g.diff_scroll_anim = Anim{} // snap (no slide from the previous diff)
-    g.diff_view_rows = 0
-    g.diff_recenter = false
-    g.scroll_dir = 0 // cancel any held auto-scroll
 }
 
 // Left/Right switch between the two columns: the sidebar and the right (diff / commit)
@@ -399,26 +470,40 @@ git_toggle_hunk :: proc(g: ^GitPane) {
     }
 }
 
-// The diff's total display rows. MUST match git_draw_diff's layout: the preamble lines,
-// then per file a title row, then per hunk a header row + its body lines + a spacer row.
+// The diff's total VISIBLE display rows. MUST match git_draw_diff's layout: the preamble
+// lines, then per visible file a title row, then per visible hunk a header row + its body
+// lines + a spacer row. Hidden files/hunks (filtered out) take no rows.
 git_diff_rows :: proc(g: ^GitPane) -> int {
     n := len(g.diff_preamble)
     for f in g.diff_files {
+        if f.hidden {
+            continue
+        }
         n += 1 // file title
         for h in f.hunks {
+            if h.hidden {
+                continue
+            }
             n += 1 + len(h.lines) + 1 // header + body + spacer
         }
     }
     return n
 }
 
-// The display row of hunk k's header (where a jump scrolls so the hunk sits at the top).
+// The display row of visible hunk k's header (where a jump scrolls so the hunk sits at the
+// top). k indexes the visible sequence (hidden hunks skipped), matching hunk_cur.
 git_hunk_top_row :: proc(g: ^GitPane, k: int) -> int {
     row := len(g.diff_preamble)
     idx := 0
     for f in g.diff_files {
+        if f.hidden {
+            continue
+        }
         row += 1
         for h in f.hunks {
+            if h.hidden {
+                continue
+            }
             if idx == k {
                 return row
             }
@@ -429,15 +514,22 @@ git_hunk_top_row :: proc(g: ^GitPane, k: int) -> int {
     return row
 }
 
-// The hunk "at the top" of a viewport scrolled to `row`: the last hunk whose header is at
-// or above `row`, so its body fills the screen below. 0 when `row` is before the first.
+// The visible hunk "at the top" of a viewport scrolled to `row`: the last visible hunk
+// whose header is at or above `row`, so its body fills the screen below. 0 when `row` is
+// before the first.
 git_hunk_at_row :: proc(g: ^GitPane, row: int) -> int {
     best := 0
     r := len(g.diff_preamble)
     idx := 0
     for f in g.diff_files {
+        if f.hidden {
+            continue
+        }
         r += 1
         for h in f.hunks {
+            if h.hidden {
+                continue
+            }
             if r <= row {
                 best = idx
             }
@@ -453,9 +545,9 @@ git_sel_offset :: proc(g: ^GitPane) -> int {
     return g.diff_view_rows / 2
 }
 
-// Scroll bounds so the playhead sweeps from the first hunk's header to the last:
-// diff_scroll in [hunk_top(0)-offset, hunk_top(last)-offset]. lo may be negative (over-
-// scroll: blank above lets the first hunk reach the centre). Both 0 when there are none.
+// Scroll bounds so the playhead sweeps from the first hunk's header to the last, with extra
+// room at the bottom so a tall final hunk fully clears the commit bar. lo may be negative
+// (over-scroll: blank above lets the first hunk reach the centre). Both 0 when there are none.
 git_scroll_lo :: proc(g: ^GitPane) -> int {
     if git_hunk_count(g) == 0 {
         return 0
@@ -467,7 +559,13 @@ git_scroll_hi :: proc(g: ^GitPane) -> int {
     if n == 0 {
         return 0
     }
-    return git_hunk_top_row(g, n - 1) - git_sel_offset(g)
+    // The last hunk's header centred on the playhead, OR — when that hunk is taller than
+    // half the viewport — far enough that its LAST line clears the bottom of the band (the
+    // commit bar), whichever scrolls further. Without the second term a tall final hunk
+    // stays cut off below the commit box.
+    centre_last := git_hunk_top_row(g, n - 1) - git_sel_offset(g)
+    clear_last := git_diff_rows(g) - g.diff_view_rows
+    return max(centre_last, clear_last)
 }
 
 // Move the diff scroll target by `dir` rows (one line per auto-scroll tick; the visual
@@ -538,9 +636,11 @@ git_is_staged :: proc(code: string) -> bool {
     return len(code) == 2 && code[0] != ' ' && code[0] != '?' && code[1] == ' '
 }
 
-// Space on a Status file toggles it staged/unstaged (file-level: git add / git reset),
-// then reloads. Hunk-level staging comes later. No-op off the Status list. `git add`
-// also stages deletions; `git reset` unstages back to the worktree.
+// Space on a Status file: check (or uncheck) every hunk of that file in the always-on
+// diff — file-level selection without touching the index, so the hunks stay VISIBLE (you
+// see what you're committing) rather than vanishing. If all its hunks are already checked,
+// the toggle clears them; otherwise it checks them all. No-op off the Status list, or on a
+// file with no diff hunks (untracked / binary).
 git_stage_toggle :: proc(a: ^App) {
     g := &a.git
     if !g.is_repo || g.region != .Sidebar || g.section != .Status {
@@ -549,28 +649,49 @@ git_stage_toggle :: proc(a: ^App) {
     if g.sel_status >= len(g.status) {
         return
     }
-    e := g.status[g.sel_status]
-    path := strings.clone(e.path, context.temp_allocator) // survives the reload below
-    if git_is_staged(e.code) {
-        git_run(g, "reset", "--", path)
-    } else {
-        git_run(g, "add", "--", path)
+    path := g.status[g.sel_status].path
+    all, any := true, false
+    for &f in g.diff_files {
+        if f.path != path {
+            continue
+        }
+        for &h in f.hunks {
+            any = true
+            all &&= h.selected
+        }
     }
-    git_refresh(a) // re-read status + the working diff (selection is clamped, kept)
+    if !any {
+        return
+    }
+    want := !all // every hunk already checked -> clear; otherwise check them all
+    for &f in g.diff_files {
+        if f.path != path {
+            continue
+        }
+        for &h in f.hunks {
+            h.selected = want
+        }
+    }
 }
 
-// Enter on a sidebar row loads its diff into the right column: a Status file's working
-// diff, or a Log commit's full diff. No-op off the sidebar or on an empty list.
+// Enter on a sidebar row, by section: Branch injects `git checkout <hovered>`; a Status
+// file FILTERS the always-on diff to its path (grep set, focus moves to the diff) instead
+// of loading a separate per-file view; a Log commit loads its full read-only diff. No-op
+// off the sidebar or on an empty list.
 git_activate :: proc(a: ^App) {
     g := &a.git
     if !g.is_repo || g.region != .Sidebar {
         return
     }
-    if g.section == .Status {
+    switch g.section {
+    case .Branch:
+        git_checkout_inject(a)
+    case .Status:
         if g.sel_status < len(g.status) {
-            git_load_diff_file(g, g.status[g.sel_status].path)
+            git_set_grep(g, g.status[g.sel_status].path)
+            g.region = .Diff
         }
-    } else {
+    case .Log:
         if g.sel_log < len(g.commits) {
             c := g.commits[g.sel_log]
             git_load_diff_commit(g, c.hash, c.subject)
@@ -592,6 +713,7 @@ git_refresh :: proc(a: ^App) {
     g.root = root
     g.is_repo = true
     git_load_branch(g)
+    git_load_branches(g)
     git_load_status(g)
     git_load_log(g)
     git_load_live(g) // default the diff to the whole working tree (the live view)
@@ -599,6 +721,7 @@ git_refresh :: proc(a: ^App) {
     // is a later refinement; clamping preserves position when it still exists.
     g.sel_status = clamp(g.sel_status, 0, max(0, len(g.status) - 1))
     g.sel_log = clamp(g.sel_log, 0, max(0, len(g.commits) - 1))
+    git_sel_branch_to_current(g) // hover the checked-out branch by default
 }
 
 // Walk up from `start` until a git repo is found — a directory holding `.git` (a
@@ -662,10 +785,62 @@ git_load_branch :: proc(g: ^GitPane) {
     }
 }
 
+// All local branches (the swap strip), one name per line via the plumbing format (no `*`
+// decoration to strip). Order is git's own (alphabetical); the current branch is among them.
+git_load_branches :: proc(g: ^GitPane) {
+    out, ok := git_run(g, "branch", "--format=%(refname:short)")
+    if !ok {
+        return
+    }
+    text := out
+    for line in strings.split_lines_iterator(&text) {
+        name := strings.trim_space(line)
+        if name != "" {
+            append(&g.branches, strings.clone(name))
+        }
+    }
+}
+
+// Park the branch-strip hover on the checked-out branch (so it opens pointing at "you are
+// here"). Falls back to 0 when the current branch isn't in the list (detached HEAD).
+git_sel_branch_to_current :: proc(g: ^GitPane) {
+    g.sel_branch = 0
+    for b, i in g.branches {
+        if b == g.branch {
+            g.sel_branch = i
+            return
+        }
+    }
+}
+
+// Left/Right on the branch strip move the hover; clamped to the list.
+git_branch_cycle :: proc(g: ^GitPane, dir: int) {
+    if n := len(g.branches); n > 0 {
+        g.sel_branch = clamp(g.sel_branch + dir, 0, n - 1)
+    }
+}
+
+// Enter on the branch strip: stage (or run, per git_checkout) `git checkout <hovered>` in
+// the command line. No-op when the hover is already the checked-out branch or the list is
+// empty.
+git_checkout_inject :: proc(a: ^App) {
+    g := &a.git
+    if g.sel_branch < 0 || g.sel_branch >= len(g.branches) {
+        return
+    }
+    target := g.branches[g.sel_branch]
+    if target == g.branch {
+        return // already on it
+    }
+    cl_dispatch(a, fmt.tprintf("git checkout %s", target), a.git_checkout_run)
+}
+
 // The working tree, from `git status --porcelain -z`. The -z form is NUL-separated and
 // leaves paths LITERAL (no quoting/escaping), so they can be passed straight to
 // `git diff -- <path>`. Each record is "XY <space> path"; a rename/copy (X is R/C) adds a
 // following field with the original path, which we skip. A clean tree yields no records.
+// Sorted by path so same-folder files cluster — the sidebar groups them under directory
+// headers, and Up/Down then walks them in the order they're shown.
 git_load_status :: proc(g: ^GitPane) {
     out, ok := git_run(g, "status", "--porcelain", "-z")
     if !ok {
@@ -685,6 +860,9 @@ git_load_status :: proc(g: ^GitPane) {
             i += 1 // rename/copy: the next field is the original path — consume it
         }
     }
+    slice.sort_by(g.status[:], proc(a, b: StatusEntry) -> bool {
+        return strings.compare(a.path, b.path) < 0
+    })
 }
 
 // The recent log on the current branch: hash + subject, tab-separated so subjects with
@@ -704,18 +882,15 @@ git_load_log :: proc(g: ^GitPane) {
     }
 }
 
-// The whole working-tree diff — the default "live" view (stageable per hunk), and where
-// Alt+Q returns.
+// The whole working-tree diff against HEAD — the always-on view (every uncommitted hunk,
+// staged or not, so checking/unchecking never makes a row vanish), and where Alt+Q returns.
+// Falls back to a plain `git diff` on an unborn HEAD (a repo with no commits yet).
 git_load_live :: proc(g: ^GitPane) {
-    out, _ := git_run(g, "diff")
+    out, ok := git_run(g, "diff", "HEAD")
+    if !ok {
+        out, _ = git_run(g, "diff") // unborn branch: no HEAD to diff against
+    }
     git_set_diff(g, out, "working tree", true)
-}
-
-// The working diff for one path (Status -> Enter), stageable. Empty for an untracked or
-// binary file — the renderer then shows "(no changes)". (-z gave a literal path.)
-git_load_diff_file :: proc(g: ^GitPane, path: string) {
-    out, _ := git_run(g, "diff", "--", path)
-    git_set_diff(g, out, path, true)
 }
 
 // A commit's full diff (Log -> Enter), via `git show`. Read-only: not stageable.
@@ -731,8 +906,7 @@ git_set_diff :: proc(g: ^GitPane, raw, title: string, stageable: bool) {
     g.diff_title = strings.clone(title)
     g.diff_stageable = stageable
     git_parse_diff(g, raw)
-    g.hunk_cur = git_hunk_count(g) > 0 ? 0 : -1
-    g.diff_recenter = true // render centres the first hunk on the playhead once
+    git_filter_apply(g) // apply the live grep query, focus the first visible hunk, recenter
 }
 
 // Parse unified-diff text into g.diff_preamble (anything before the first file — a
@@ -810,36 +984,60 @@ git_build_patch :: proc(g: ^GitPane, allocator := context.allocator) -> string {
     return strings.to_string(b)
 }
 
-// Write the patch to a temp file and apply it to the index. --recount lets a SUBSET of a
-// file's hunks apply even though later hunks' @@ counts assumed the skipped ones. The
-// temp file lives in .git (or the root as a fallback) and is removed before the reload,
-// so it never appears in status.
-git_apply_cached :: proc(g: ^GitPane, patch: string) -> bool {
-    gitdir := filepath.join({g.root, ".git"}, context.temp_allocator) or_else ""
-    base := os.is_dir(gitdir) ? gitdir : g.root
-    tmp := filepath.join({base, "slopd-stage.patch"}, context.temp_allocator) or_else ""
-    if tmp == "" {
-        return false
-    }
-    if os.write_entire_file(tmp, transmute([]byte)patch) != nil {
-        return false
-    }
-    defer os.remove(tmp)
-    _, ok := git_run(g, "apply", "--cached", "--recount", tmp)
-    return ok
+// Enter in the commit message: assemble the commit RECIPE and inject it into the command
+// line (staged for review, or run at once per git_commit). The checked hunks' patch and the
+// message are written to temp files under .git (never shown in status), and the injected
+// chain resets the index to HEAD, applies the patch, and commits from the message file:
+//   git -C <root> reset -q && git -C <root> apply --cached --recount <patch> && git -C <root> commit -F <msg>
+// `commit -F <file>` sidesteps quoting a multi-line message; the paths are quoted for spaces.
+// No-op without a message or a non-empty selection. Slopd owns the index while open.
+git_commit_inject :: proc(a: ^App) {
+    msg := strings.trim_space(doc_string(&a.git.commit_msg, context.temp_allocator))
+    git_commit_send(a, msg, .Commit, a.git_commit_run)
 }
 
-// Tab in the diff: stage every checked hunk, then move to the commit editor. With nothing
-// checked it just switches (a plain Tab). After staging, the working diff reloads so the
-// staged hunks drop out.
-git_stage_selected :: proc(a: ^App) {
+// Assemble the commit recipe for the CHECKED hunks under `msg` and hand it to the command
+// line — staged for review, or run at once when `run`. `kind` tags why the pane is calling
+// (a typed commit vs a slot-machine payout) so git_cl_settle can react to the CL's outcome.
+// No-op without a message or a non-empty selection.
+git_commit_send :: proc(a: ^App, msg: string, kind: GitCLKind, run: bool) {
     g := &a.git
-    patch := git_build_patch(g, context.temp_allocator)
-    if patch != "" {
-        git_apply_cached(g, patch)
-        git_refresh(a)
+    if !g.is_repo {
+        return
     }
-    g.region = .Commit
+    patch := git_build_patch(g, context.temp_allocator)
+    if msg == "" || patch == "" {
+        return
+    }
+    // Temp files live in .git (or the root as a fallback) so they never appear in status;
+    // reused (same names) each commit, never accumulating.
+    gitdir := filepath.join({g.root, ".git"}, context.temp_allocator) or_else ""
+    base := os.is_dir(gitdir) ? gitdir : g.root
+    patch_path := filepath.join({base, "slopd-stage.patch"}, context.temp_allocator) or_else ""
+    msg_path := filepath.join({base, "slopd-commit.msg"}, context.temp_allocator) or_else ""
+    if patch_path == "" || msg_path == "" {
+        return
+    }
+    if os.write_entire_file(patch_path, transmute([]byte)patch) != nil {
+        return
+    }
+    if os.write_entire_file(msg_path, transmute([]byte)msg) != nil {
+        return
+    }
+    cmd := fmt.tprintf(
+        `git -C "%s" reset -q && git -C "%s" apply --cached --recount "%s" && git -C "%s" commit -F "%s"`,
+        g.root,
+        g.root,
+        patch_path,
+        g.root,
+        msg_path,
+    )
+    cl_dispatch(a, cmd, run)
+    if run {
+        git_cl_settle(a, kind, true) // ran synchronously — settle as shipped now
+    } else {
+        g.cl_wait = kind // staged in the CL: settle on its submit / cancel
+    }
 }
 
 // Tag a diff line for colouring. Order matters: hunk headers and the file-header block
@@ -869,4 +1067,228 @@ git_diff_classify :: proc(line: string) -> DiffLineKind {
     case:
         return .Context
     }
+}
+
+// --- the slot machine ("lucky dip") + the command-line feedback it leans on ---
+
+SPIN_DUR :: 4.2 // seconds the reels spin then settle — long, so it lingers slow
+SPIN_INTRO :: f32(0.22) // fraction of the spin spent winding up (ease-in); the rest decelerates
+SPIN_MIN_REELS :: 30 // pad short diffs to at least this many reels (a long runway to spin down)
+
+// The spin's easing: a gentle ease-in wind-up over the first SPIN_INTRO of the time, then a
+// long ease-out (cubic) glide that decelerates the whole rest of the way to the stop. Both
+// phases meet at the same peak velocity, so the reels start slow, blur only briefly, then
+// take their time ticking down — no jarring full-speed start, no sudden stop. Maps the time
+// fraction t in [0,1] to the distance fraction covered in [0,1].
+@(private = "file")
+spin_ease :: proc(t: f32) -> f32 {
+    a := SPIN_INTRO
+    vp := 1.0 / (a * 0.5 + (1 - a) / 3.0) // peak velocity that makes the two phases cover all of [0,1]
+    if t < a {
+        u := t / a
+        return vp * a * u * u * 0.5 // ease-in: distance under a 0->vp velocity ramp
+    }
+    w := (t - a) / (1 - a)
+    return vp * a * 0.5 + vp * (1 - a) * (1 - (1 - w) * (1 - w) * (1 - w)) / 3.0 // ease-out tail
+}
+
+// The eased fractional scroll position (display rows) at `now` — the reels' live offset.
+git_spin_disp :: proc(s: ^GitSpin, now: f64) -> f32 {
+    t := clamp(f32((now - s.start_t) / SPIN_DUR), 0, 1)
+    return s.from + (s.to - s.from) * spin_ease(t)
+}
+
+// The command line reports back: a command the git pane staged has SHIPPED (Enter / a
+// run-mode dispatch) or been DROPPED (Esc). Only acts when the pane was actually waiting
+// (cl_wait set, cleared here). A typed commit clears the message + selection once it ships
+// — the bar finally empties on send; a slot-machine spin unwinds either way. This is the
+// pane's only CL feedback; cl_submit / cl_cancel call it.
+git_cl_settle :: proc(a: ^App, kind: GitCLKind, shipped: bool) {
+    g := &a.git
+    g.cl_wait = .None
+    switch kind {
+    case .None:
+    case .Commit:
+        if shipped {
+            doc_clear(&g.commit_msg) // the work went out: empty the commit bar
+            for &f in g.diff_files {
+                for &h in f.hunks {
+                    h.selected = false // and clear the checkboxes it committed
+                }
+            }
+        }
+    case .Spin:
+        git_spin_restore(g) // back to the pre-spin diff, shipped or not
+    }
+}
+
+// Free a spin's saved snapshot without restoring it — teardown (git_destroy via git_clear)
+// or a hard reset mid-spin. No-op when no spin is parked.
+git_spin_discard :: proc(g: ^GitPane) {
+    s := &g.spin
+    if !s.active {
+        return
+    }
+    git_free_files(s.saved_files)
+    delete(s.saved_files)
+    for str in s.saved_preamble {
+        delete(str)
+    }
+    delete(s.saved_preamble)
+    delete(s.saved_title)
+    g.spin = {}
+    g.cl_wait = .None
+}
+
+// One visible hunk of the (now saved) diff, paired with its file — a reel SOURCE. Pointers
+// into saved_files stay valid because the snapshot isn't mutated until the restore.
+@(private = "file")
+Reel :: struct {
+    f: ^DiffFile,
+    h: ^DiffHunk,
+}
+
+// Kick off the slot machine: move the live diff into the snapshot and fill diff_files with
+// shuffled, repeated single-hunk REELS, then aim the spin from the top down to a RANDOM
+// resting scroll. The reels scroll past the fixed centre reticle (driven by git_spin_disp)
+// and decelerate to that row — wherever it lands is the winner. Returns false (no-op) unless
+// a stageable diff has at least one visible hunk. git_spin_pump pays out when it settles.
+git_spin_begin :: proc(g: ^GitPane, now: f64) -> bool {
+    if g.spin.active || !g.diff_stageable || git_hunk_count(g) == 0 {
+        return false
+    }
+    rand.reset_u64(transmute(u64)now) // vary the shuffle + the lucky message each spin
+
+    // Move the live diff aside; the reels take its place (a nil dynamic appends fresh).
+    s := &g.spin
+    s^ = GitSpin {
+        active          = true,
+        saved_files     = g.diff_files,
+        saved_preamble  = g.diff_preamble,
+        saved_title     = g.diff_title,
+        saved_scroll    = g.diff_scroll,
+        saved_stageable = g.diff_stageable,
+    }
+    g.diff_files = nil
+    g.diff_preamble = nil
+    g.diff_title = strings.clone("🎰 lucky dip")
+    g.diff_recenter = false // we aim the scroll ourselves below — don't let render re-centre
+
+    // Gather the visible hunks of the saved diff as reel sources.
+    src := make([dynamic]Reel, 0, 16, context.temp_allocator)
+    for &f in s.saved_files {
+        if f.hidden {
+            continue
+        }
+        for &h in f.hunks {
+            if !h.hidden {
+                append(&src, Reel{&f, &h})
+            }
+        }
+    }
+
+    // Fill diff_files with shuffled, repeated clones until there are enough reels to read as
+    // a spin. Each reel is a one-hunk file (its header + the hunk) so the playhead lands on
+    // a clean boundary and git_build_patch yields a valid one-hunk patch.
+    reps := (SPIN_MIN_REELS + len(src) - 1) / len(src)
+    for _ in 0 ..< reps {
+        rand.shuffle(src[:])
+        for u in src {
+            reel := DiffFile{path = strings.clone(u.f.path)}
+            for hl in u.f.header {
+                append(&reel.header, strings.clone(hl))
+            }
+            append(&reel.hunks, git_clone_hunk(u.h)) // a fresh reel: unselected, visible
+            append(&g.diff_files, reel)
+        }
+    }
+
+    // Spin from the top of the runway down to a RANDOM resting scroll in its lower ~2/3, so
+    // the reels turn a good while and the centre reticle stops on whatever row it happens to
+    // — top, middle, or bottom of a reel, never snapped to a hunk boundary. The winner is
+    // read off it on land (git_spin_pump). The visual is driven from start_t, not the anim.
+    lo := git_scroll_lo(g)
+    hi := git_scroll_hi(g)
+    s.start_t = now
+    s.from = f32(lo)
+    s.to = f32(lo + (hi - lo) / 3 + rand.int_max(max(1, (hi - lo) * 2 / 3 + 1)))
+    g.diff_scroll = int(s.to) // keep the scroll target / bounds sane; render shows the eased pos
+    g.region = .Diff
+    return true
+}
+
+// Deep-clone one hunk for a reel: a copy of the header + body lines, unselected and visible
+// (the spin selects the winner itself). The source stays owned by the snapshot.
+@(private = "file")
+git_clone_hunk :: proc(h: ^DiffHunk) -> DiffHunk {
+    c := DiffHunk{header = strings.clone(h.header)}
+    for l in h.lines {
+        append(&c.lines, DiffLine{kind = l.kind, text = strings.clone(l.text)})
+    }
+    return c
+}
+
+// Per-frame (main loop): once the reels have settled, stop and pay out — the winner is the
+// hunk under the reticle wherever it came to rest. No-op until then, or with no spin running.
+git_spin_pump :: proc(a: ^App, now: f64) {
+    g := &a.git
+    if !g.spin.active || g.spin.landed || now < g.spin.start_t + SPIN_DUR {
+        return
+    }
+    s := &g.spin
+    s.landed = true
+    g.diff_scroll = int(s.to) // rest exactly on the random landing row
+    g.diff_scroll_anim = Anim{to = f32(g.diff_scroll)} // snap; render's normal path takes over
+    g.hunk_cur = git_hunk_at_row(g, g.diff_scroll + git_sel_offset(g)) // the hunk under the reticle
+
+    // Select ONLY the winning reel, so the committed patch is just that one hunk.
+    for &f in g.diff_files {
+        for &h in f.hunks {
+            h.selected = false
+        }
+    }
+    if h := git_hunk_ptr(g, g.hunk_cur); h != nil {
+        h.selected = true
+    }
+    git_commit_send(a, git_lucky_message(g), .Spin, a.risky_mode)
+}
+
+// Unwind a spin: free the reels and move the saved pre-spin diff back, restoring the scroll
+// so the pane looks as it did before the gag. The grep filter's hidden flags rode along on
+// the saved hunks, so no re-filter is needed.
+git_spin_restore :: proc(g: ^GitPane) {
+    s := &g.spin
+    if !s.active {
+        return
+    }
+    git_clear_diff(g) // free the reels' contents + reset the diff fields
+    delete(g.diff_files) // and the reels' backing arrays (git_clear_diff only clears)
+    delete(g.diff_preamble)
+    g.diff_files = s.saved_files // move the snapshot back
+    g.diff_preamble = s.saved_preamble
+    g.diff_title = s.saved_title
+    g.diff_stageable = s.saved_stageable
+    g.diff_scroll = s.saved_scroll
+    g.diff_scroll_anim = Anim{to = f32(s.saved_scroll)} // snap; no slide from the reels
+    g.spin = {} // active=false; the snapshot's headers are now owned by g again
+}
+
+// A random celebratory commit message for the slot machine, in the repo author's name.
+@(private = "file")
+git_lucky_message :: proc(g: ^GitPane) -> string {
+    name := "somebody"
+    if out, ok := git_run(g, "config", "user.name"); ok {
+        if n := strings.trim_space(out); n != "" {
+            name = n
+        }
+    }
+    templates := []string {
+        "%s felt lucky today",
+        "%s rolled the dice 🎲",
+        "%s hit the jackpot 🎰",
+        "lucky dip, courtesy of %s",
+        "%s left this one to fate",
+        "%s spun the wheel and shipped it",
+    }
+    return fmt.tprintf(rand.choice(templates), name)
 }

@@ -707,12 +707,16 @@ GIT_SIDEBAR_FRAC :: f32(0.40)
 // kept as a switch for a future idea.
 DIFF_SHOW_PLAYHEAD :: false
 
+// The commit message box grows line by line from COMMIT_MIN_ROWS tall, capped at
+// COMMIT_MAX_ROWS (then it scrolls within itself — handled by the field renderer).
+COMMIT_MIN_ROWS :: 2
+COMMIT_MAX_ROWS :: 16
+
 // The git aux mode (Sublime-Merge-lite, KB-only). The aux pane carries two sub-columns
-// parted by a hairline: a SIDEBAR (branch strip + Status + Log, ported from Prawk) on
-// the left and a DIFF VIEWER / COMMIT EDITOR on the right. Each column composites under
-// its own scissor so text can't bleed across the rule. SCAFFOLD: the two-column layout,
-// the divider, and the per-region focus tint are in; the git data, the diff, and
-// staging are Phase 1 (see the "Git (aux mode)" section of plan.txt).
+// parted by a hairline: a SIDEBAR (branch strip + folder-grouped Status + Log, ported from
+// Prawk) on the left and a persistent DIFF VIEWER + COMMIT EDITOR on the right. Each column
+// composites under its own scissor so text can't bleed across the rule (see the "Git (aux
+// mode)" section of plan.txt).
 draw_git :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) {
     th := &a.theme
     area := inset(pane, i32(2 * a.scale))
@@ -744,17 +748,23 @@ git_row :: proc(t: ^Text, s: string, x: f32, y, row_h: i32, lh: f32, color: [3]f
     text_draw(t, s, x, f32(y) + (f32(row_h) - lh) / 2, color)
 }
 
-// A sidebar zone row: display text + its colour. Built per-frame in temp memory.
+// A sidebar zone row: display text + its colour, plus its selectable item index (the
+// g.status / g.commits row it stands for; -1 for a non-selectable folder header) and a
+// cell indent (files nested under a directory header). Built per-frame in temp memory.
 @(private = "file")
 ZoneRow :: struct {
-    text:  string,
-    color: [3]f32,
+    text:   string,
+    color:  [3]f32,
+    item:   int,
+    indent: i32,
 }
 
-// Draws a titled sidebar zone within `zone`: the title, then its rows centre-scrolled
-// to keep `sel` visible (like the filetree). When `active`, the selected row carries the
-// selection bar. `sel` < 0 means no selection (e.g. an empty list's placeholder). The
-// title uses `head`; rows use their own colours.
+// Draws a titled sidebar zone within `zone`: the title, then its rows centre-scrolled to
+// keep the selected ITEM visible (like the filetree). `sel` is an item index (a g.status /
+// g.commits row); the zone finds the display row standing for it, since folder headers sit
+// between file rows. When `active`, that row carries the selection bar. `sel` < 0 means no
+// selection (e.g. an empty list's placeholder). The title uses `head`; rows use their own
+// colours and per-row indent.
 @(private = "file")
 git_draw_zone :: proc(
     t: ^Text,
@@ -777,21 +787,42 @@ git_draw_zone :: proc(
     if max_rows == 0 || len(rows) == 0 {
         return
     }
-    first := sel >= 0 ? clamp(sel - max_rows / 2, 0, max(0, len(rows) - max_rows)) : 0
+    // The display row standing for the selected item (headers carry item == -1).
+    sel_row := -1
+    if sel >= 0 {
+        for r, i in rows {
+            if r.item == sel {
+                sel_row = i
+                break
+            }
+        }
+    }
+    anchor := max(0, sel_row)
+    first := clamp(anchor - max_rows / 2, 0, max(0, len(rows) - max_rows))
     visible := min(len(rows) - first, max_rows)
     for k in 0 ..< visible {
         i := first + k
         y := list_top + i32(k) * row_h
-        if active && i == sel {
+        if active && i == sel_row {
             fill(t, Rect{zone.x, y, zone.w, row_h}, th.separator)
         }
-        git_row(t, rows[i].text, x0 + cw, y, row_h, lh, rows[i].color)
+        git_row(t, rows[i].text, x0 + cw + f32(rows[i].indent) * cw, y, row_h, lh, rows[i].color)
     }
 }
 
-// Colour a working-tree entry by what Space will do to it: staged entries green (the
-// directory slot — "in the index"), untracked dim, an unstaged deletion urgent, other
-// unstaged changes in the normal foreground.
+// The directory portion of a status path ("src/tests/x" -> "src/tests"), or "" for a
+// top-level file. Drives the sidebar's folder grouping.
+@(private = "file")
+git_dir_of :: proc(path: string) -> string {
+    if i := strings.last_index_byte(path, '/'); i >= 0 {
+        return path[:i]
+    }
+    return ""
+}
+
+// Colour a working-tree entry by its porcelain code: staged entries green (the "directory
+// slot" — in the index), untracked dim, an unstaged deletion urgent, other unstaged changes
+// in the normal foreground.
 @(private = "file")
 git_status_color :: proc(code: string, th: ^Theme) -> [3]f32 {
     switch {
@@ -825,25 +856,56 @@ git_draw_sidebar :: proc(t: ^Text, area: Rect, a: ^App) {
     }
 
     side_focused := a.focus == .Aux && a.aux_mode == .Git && g.region == .Sidebar
+    branch_focused := side_focused && g.section == .Branch
 
-    // Branch strip.
-    branch := g.branch == "" ? "(detached)" : g.branch
-    git_row(t, fmt.tprintf("⎇ %s", branch), x0, area.y, row_h, lh, side_focused ? th.accent : th.muted)
+    // Branch strip: the branch name. The checked-out branch is the main highlight (accent);
+    // while the strip is focused, Left/Right cycle the hover, and a hovered OTHER branch
+    // shows grey (Enter to switch to it).
+    if branch_focused {
+        fill(t, Rect{area.x, area.y, area.w, row_h}, th.separator) // focus bar
+    }
+    name: string
+    name_col: [3]f32
+    if branch_focused && len(g.branches) > 0 && g.branches[g.sel_branch] != g.branch {
+        name, name_col = g.branches[g.sel_branch], th.muted // hovering a different branch
+    } else {
+        name = g.branch == "" ? "(detached)" : g.branch
+        name_col = th.accent // the checked-out branch — main highlight
+    }
+    git_row(t, name, x0, area.y, row_h, lh, name_col)
     body_top := area.y + row_h + row_h / 2
 
-    // Build the two zones' rows in temp memory: Status coloured by kind ("(clean)" when
-    // empty), the Log in the plain foreground.
+    // Build the two zones' rows in temp memory. Status groups by parent directory: a dim
+    // folder header per directory, then its files indented under it (basename only). The
+    // entries are pre-sorted by path (git_load_status) so one pass clusters them; each file
+    // row keeps its g.status index for selection. Empty -> a "(clean)" placeholder. The Log
+    // is a flat foreground list, each row tagged with its commit index.
     srows := make([dynamic]ZoneRow, 0, max(1, len(g.status)), context.temp_allocator)
     if len(g.status) == 0 {
-        append(&srows, ZoneRow{"(clean)", th.muted})
+        append(&srows, ZoneRow{text = "(clean)", color = th.muted, item = -1})
     } else {
-        for e in g.status {
-            append(&srows, ZoneRow{fmt.tprintf("%s %s", e.code, e.path), git_status_color(e.code, th)})
+        prev_dir := "\x00" // sentinel: unequal to any real dir, so the first row emits one
+        for e, i in g.status {
+            dir := git_dir_of(e.path)
+            if dir != prev_dir && dir != "" {
+                append(&srows, ZoneRow{text = fmt.tprintf("%s/", dir), color = th.muted, item = -1})
+            }
+            prev_dir = dir
+            name := dir == "" ? e.path : e.path[len(dir) + 1:] // basename under the header
+            append(
+                &srows,
+                ZoneRow {
+                    text = fmt.tprintf("%s %s", e.code, name),
+                    color = git_status_color(e.code, th),
+                    item = i,
+                    indent = dir == "" ? 0 : 1,
+                },
+            )
         }
     }
     lrows := make([dynamic]ZoneRow, 0, len(g.commits), context.temp_allocator)
-    for c in g.commits {
-        append(&lrows, ZoneRow{fmt.tprintf("%s %s", c.hash, c.subject), th.fg})
+    for c, i in g.commits {
+        append(&lrows, ZoneRow{text = fmt.tprintf("%s %s", c.hash, c.subject), color = th.fg, item = i})
     }
 
     // Split the body: Status on top, Log below.
@@ -927,11 +989,12 @@ git_draw_stripes :: proc(t: ^Text, r: Rect, c: [3]f32, scale: f32) {
     }
 }
 
-// The diff viewer / commit editor (the aux pane's right column): a title, then the diff
-// as hunk BLOCKS (each with a checkbox + @@ header + tinted body), SMOOTH-scrolled, with
-// a centred horizontal PLAYHEAD — whatever hunk overlaps it is the selected one (rail-
-// marked). A commit-editor strip is reserved at the bottom. Chrome (title + strip) and the
-// scrolled content are flushed under separate scissors so the content can't bleed over them.
+// The diff viewer / commit editor (the aux pane's right column). Top chrome: the diff
+// title, then a grep filter bar + select-all/none actions. Middle: the always-on diff as
+// hunk BLOCKS (checkbox + @@ header + tinted body), SMOOTH-scrolled, a centred PLAYHEAD
+// picking the selected hunk (rail-marked); hunks filtered out by grep take no rows. Bottom
+// chrome: the commit message box (grows line by line). Chrome and the scrolled content are
+// flushed under separate scissors so the content can't bleed over the bars.
 @(private = "file")
 git_draw_diff :: proc(t: ^Text, area: Rect, a: ^App, win_w, win_h: i32, now: f64) {
     g := &a.git
@@ -946,39 +1009,48 @@ git_draw_diff :: proc(t: ^Text, area: Rect, a: ^App, win_w, win_h: i32, now: f64
     focused := a.focus == .Aux && a.aux_mode == .Git
     diff_focused := focused && g.region == .Diff
 
-    list_top := area.y + row_h
-    strip_h := row_h * 3
+    // The commit strip grows with the message; the diff fills the band between the top
+    // chrome (title + grep bar) and the strip.
+    msg_rows := clamp(len(g.commit_msg.lines), COMMIT_MIN_ROWS, COMMIT_MAX_ROWS)
+    strip_h := row_h * i32(1 + msg_rows)
+    list_top := area.y + row_h * 2 // title row + grep/actions bar
     sy := area.y + area.h - strip_h
     has_strip := sy > list_top + row_h
     diff_bottom := has_strip ? sy : area.y + area.h
 
-    // --- chrome: title + commit strip, flushed clipped to the whole column ---
+    // --- chrome: title, grep bar, commit strip — all flushed clipped to the whole column ---
     git_row(t, g.diff_title == "" ? "working tree" : g.diff_title, x0, area.y, row_h, lh, diff_focused ? th.accent : th.muted)
+    git_draw_grepbar(t, area, a, now)
     if has_strip {
-        fill(t, Rect{area.x, sy, area.w, max(i32(1), i32(a.scale))}, th.border_light)
-        commit_head := focused && g.region == .Commit ? th.accent : th.muted
-        git_row(t, "commit", x0, sy + row_h / 2, row_h, lh, commit_head)
-        git_row(t, "commit message…", x0 + cw, sy + row_h / 2 + row_h, row_h, lh, th.muted)
+        git_draw_commit(t, Rect{area.x, sy, area.w, strip_h}, a, msg_rows, now)
     }
     flush_pane(t, area, win_w, win_h)
 
-    // --- scrolled content, clipped to the band between title and strip ---
+    // --- scrolled content, clipped to the band between the bars ---
     content := Rect{area.x, list_top, area.w, max(i32(0), diff_bottom - list_top)}
     max_rows := int(max(i32(0), content.h / row_h))
     g.diff_view_rows = max_rows // publish so nav knows the playhead offset
     offset := max_rows / 2
 
-    // Flatten files -> rows (preamble, then per file a title + each hunk block: its @@
-    // header row, its body lines, then a spacer row). Must match git_diff_rows' counting.
+    // Flatten the VISIBLE files -> rows (preamble, then per file a title + each visible
+    // hunk block: its @@ header row, its body lines, then a spacer row). Hidden files/hunks
+    // (filtered by grep) are skipped; the hk index counts visible hunks to match hunk_cur.
+    // Must match git_diff_rows' counting.
     rows := make([dynamic]DiffRow, 0, 128, context.temp_allocator)
     for s in g.diff_preamble {
         append(&rows, DiffRow{text = s, color = th.muted, hunk = -1})
     }
     hk := 0
     for f in g.diff_files {
+        if f.hidden {
+            continue
+        }
         title := f.path != "" ? f.path : (len(f.header) > 0 ? f.header[0] : "(file)")
         append(&rows, DiffRow{text = title, color = th.code_return_type, hunk = -1})
         for h in f.hunks {
+            if h.hidden {
+                continue
+            }
             append(&rows, DiffRow{text = h.header, hunk = hk, header = true, selected = h.selected})
             for l in h.lines {
                 append(&rows, DiffRow{text = l.text, color = git_diff_color(l.kind, th), hunk = hk, selected = h.selected})
@@ -989,22 +1061,41 @@ git_draw_diff :: proc(t: ^Text, area: Rect, a: ^App, win_w, win_h: i32, now: f64
     }
 
     if len(rows) == 0 {
-        git_row(t, "(no changes)", x0 + cw, list_top, row_h, lh, th.muted)
+        empty := git_grep_query(g) != "" ? "(no matches)" : "(no changes)"
+        git_row(t, empty, x0 + cw, list_top, row_h, lh, th.muted)
         flush_pane(t, content, win_w, win_h)
         return
     }
 
-    // A fresh diff centres its first hunk on the playhead, once (snap, no slide).
+    // A fresh diff (or filter change) centres its first visible hunk on the playhead, once
+    // (snap, no slide).
     if g.diff_recenter && git_hunk_count(g) > 0 {
         g.diff_scroll = clamp(git_hunk_top_row(g, 0) - offset, git_scroll_lo(g), git_scroll_hi(g))
         g.diff_scroll_anim = Anim{to = f32(g.diff_scroll)}
         g.diff_recenter = false
     }
+    // Scroll position. While the reels are SPINNING it's driven straight off the spin's easing
+    // (a fractional row position) so it glides; otherwise the smooth-scroll anim tweens it (top
+    // may go negative — over-scrolled to centre an edge hunk; later rows skip the blanks).
+    spinning := g.spin.active && !g.spin.landed
+    top: int
+    off: i32
+    if spinning {
+        disp := git_spin_disp(&g.spin, now)
+        top = int(disp)
+        if disp < f32(top) { // floor (int() truncates toward zero)
+            top -= 1
+        }
+        off = i32((disp - f32(top)) * f32(row_h))
+        g.diff_scroll = top // keep the target near the visible position
+    } else {
+        top, off = smooth_scroll(&g.diff_scroll_anim, g.diff_scroll, now, row_h)
+    }
     g.hunk_cur = git_hunk_at_row(g, g.diff_scroll + offset) // the hunk under the playhead
 
-    // Smooth scroll: top may be negative (over-scrolled to centre an edge hunk); skip the
-    // blank rows then.
-    top, off := smooth_scroll(&g.diff_scroll_anim, g.diff_scroll, now, row_h)
+    // The playhead is a fixed centre reticle and the hunks scroll under it (CS2 case-opening,
+    // vertical) — so the per-hunk rail/accent is held back until they land (then it reveals
+    // the winner sitting under the reticle).
     for k in 0 ..< max_rows + 2 {
         ri := top + k
         if ri < 0 || ri >= len(rows) {
@@ -1012,12 +1103,13 @@ git_draw_diff :: proc(t: ^Text, area: Rect, a: ^App, win_w, win_h: i32, now: f64
         }
         r := rows[ri]
         y := list_top + i32(k) * row_h - off
+        marked := !spinning && r.hunk == g.hunk_cur
         if r.hunk >= 0 {
             fill(t, Rect{area.x, y, area.w, row_h}, th.line_highlight) // block background
-            if r.selected { // checked for staging: faint diagonal hatch (visible without the header)
+            if r.selected { // checked for the commit: faint diagonal hatch (visible without the header)
                 git_draw_stripes(t, Rect{area.x, y, area.w, row_h}, git_stripe_color(th.line_highlight), a.scale)
             }
-            if r.hunk == g.hunk_cur {
+            if marked {
                 fill(t, Rect{area.x, y, i32(2 * a.scale), row_h}, th.accent) // focus rail
             }
         }
@@ -1027,14 +1119,128 @@ git_draw_diff :: proc(t: ^Text, area: Rect, a: ^App, win_w, win_h: i32, now: f64
             text_draw(t, r.selected ? "[x]" : "[ ]", tx, ty, r.selected ? th.code_return_type : th.muted)
             tx += cw * 4 // box + a gap
         }
-        text_draw(t, r.text, tx, ty, r.header ? (r.hunk == g.hunk_cur ? th.accent : th.muted) : r.color)
+        text_draw(t, r.text, tx, ty, r.header ? (marked ? th.accent : th.muted) : r.color)
     }
-    // The playhead: a horizontal line at the viewport's vertical centre (over the text).
-    // Off by default (selection works off its row regardless) — a switch for later.
-    if DIFF_SHOW_PLAYHEAD {
+    // The playhead: a horizontal line at the viewport's vertical centre (over the text). Off
+    // in normal use (selection works off its row regardless), but always lit during a spin —
+    // the fixed reticle the reels stop under.
+    if DIFF_SHOW_PLAYHEAD || g.spin.active {
         caret(t, Rect{area.x, list_top + i32(offset) * row_h, area.w, max(i32(1), i32(2 * a.scale))}, th.accent)
     }
     flush_pane(t, content, win_w, win_h)
+}
+
+// The grep filter bar (the diff column's second chrome row): a magnifier + the live query
+// (or a hint), and right-aligned select-all / unselect-all actions with the checked/visible
+// hunk counts. The actions show only for a stageable diff (a working tree, not a browsed
+// commit).
+@(private = "file")
+// The filter bar row, split into two equal halves at the search-bar height, divided by a
+// short rule with a small buffer: the GREP field on the left, the select-all / deselect-all
+// toggle button on the right. Each half lights when its region is focused.
+git_draw_grepbar :: proc(t: ^Text, area: Rect, a: ^App, now: f64) {
+    g := &a.git
+    th := &a.theme
+    lh := t.font.line_height
+    cw := t.font.cell_w
+    row_h := i32(lh) + i32(2 * a.scale)
+    gy := area.y + row_h
+    top := f32(gy) + (f32(row_h) - lh) / 2
+    focused := a.focus == .Aux && a.aux_mode == .Git
+    grep_focused := focused && g.region == .Grep
+
+    mid := area.x + area.w / 2
+    buf := i32(cw) // buffer between the divider and each half's content
+    // The divider rule between the two halves.
+    fill(t, Rect{mid, gy + i32(3 * a.scale), max(i32(1), i32(a.scale)), row_h - i32(6 * a.scale)}, th.border_light)
+
+    // Left half: the grep field (or a hint when empty + unfocused), highlighted when focused.
+    left := Rect{area.x, gy, mid - area.x - buf, row_h}
+    if grep_focused {
+        fill(t, left, th.line_highlight)
+    }
+    lx := f32(left.x) + cw
+    if line_len(&g.grep.lines[0]) == 0 && !grep_focused {
+        git_row(t, "filter (/)", lx, gy, row_h, lh, th.muted)
+    } else {
+        git_draw_field(t, &g.grep, 0, lx, top, a, grep_focused, now)
+    }
+
+    // Right half: the select-all / deselect-all toggle (region .Select). Its label follows
+    // state — "select all" when nothing in the filtered set is checked, else "deselect all".
+    if g.diff_stageable {
+        sel_focused := focused && g.region == .Select
+        right := Rect{mid + buf, gy, area.x + area.w - (mid + buf), row_h}
+        if sel_focused {
+            fill(t, right, th.line_highlight)
+        }
+        label := git_any_checked(g) ? "deselect all" : "select all"
+        text_draw(t, label, f32(right.x) + cw, top, sel_focused ? th.accent : th.muted)
+    }
+}
+
+
+// The commit strip (the diff column's bottom chrome): a divider, a "commit" header, then
+// the message Doc — msg_rows lines tall (grown from COMMIT_MIN_ROWS as you type), editable
+// when the Commit region is focused; a hint while empty and unfocused.
+@(private = "file")
+git_draw_commit :: proc(t: ^Text, strip: Rect, a: ^App, msg_rows: int, now: f64) {
+    g := &a.git
+    th := &a.theme
+    lh := t.font.line_height
+    cw := t.font.cell_w
+    row_h := i32(lh) + i32(2 * a.scale)
+    x0 := f32(strip.x) + cw
+    focused := a.focus == .Aux && a.aux_mode == .Git
+    commit_focused := focused && g.region == .Commit
+
+    fill(t, Rect{strip.x, strip.y, strip.w, max(i32(1), i32(a.scale))}, th.border_light)
+    git_row(t, "commit", x0, strip.y, row_h, lh, commit_focused ? th.accent : th.muted)
+
+    msg_top := strip.y + row_h
+    empty := len(g.commit_msg.lines) == 1 && line_len(&g.commit_msg.lines[0]) == 0
+    if empty && !commit_focused {
+        git_row(t, "commit message…", x0 + cw, msg_top, row_h, lh, th.muted)
+        return
+    }
+    // Show a window of msg_rows lines anchored at the tail, scrolled up if the caret sits
+    // above it so a message longer than the cap stays navigable. (msg_rows == line count
+    // until the message exceeds COMMIT_MAX_ROWS, so the window is usually the whole thing.)
+    first := max(0, len(g.commit_msg.lines) - msg_rows)
+    if caret_line := g.commit_msg.cursors[g.commit_msg.primary].head.line; caret_line < first {
+        first = caret_line
+    }
+    for li in first ..< min(len(g.commit_msg.lines), first + msg_rows) {
+        y := msg_top + i32(li - first) * row_h
+        git_draw_field(t, &g.commit_msg, li, x0 + cw, f32(y) + (f32(row_h) - lh) / 2, a, commit_focused, now)
+    }
+}
+
+// One line of a Doc text field at (x, top): its runes, plus a selection span + caret only
+// while `active` (the focused region) so idle fields don't blink. The single-line variant
+// of config_draw_edit, shared by the grep bar and the commit box.
+@(private = "file")
+git_draw_field :: proc(t: ^Text, d: ^Doc, li: int, x, top: f32, a: ^App, active: bool, now: f64) {
+    th := &a.theme
+    cw := t.font.cell_w
+    lh := t.font.line_height
+    y := i32(top)
+    if active {
+        for c in d.cursors {
+            lo, hi := cursor_range(c)
+            if cursor_has_selection(c) && lo.line == li && hi.line == li {
+                fill(t, Rect{i32(x + cw * f32(lo.col)), y, i32(cw * f32(hi.col - lo.col)), i32(lh)}, th.selection)
+            }
+        }
+    }
+    text_draw_runes(t, d.lines[li].text[:], x, top, th.fg)
+    if active && caret_blink_on(a, now) {
+        for c in d.cursors {
+            if c.head.line == li {
+                caret(t, Rect{i32(x + cw * f32(c.head.col)), y, i32(2 * a.scale), i32(lh)}, th.fg)
+            }
+        }
+    }
 }
 
 // The terminal: the active session's libvterm cell grid. Snap the pane to whole

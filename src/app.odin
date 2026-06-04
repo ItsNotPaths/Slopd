@@ -133,6 +133,17 @@ App :: struct {
     // folder_cd_run is set it executes at once; otherwise it's staged in the CL for
     // the user to review and run with Enter (the reviewable default). See cl_dispatch.
     folder_cd_run:   bool,
+
+    // Git pane CL injections, same stage-vs-run policy as folder_cd: Enter on a branch
+    // produces `git checkout <branch>`; Enter in the commit box produces the staged-commit
+    // recipe. When the matching flag is set the command fires at once, else it's staged in
+    // the CL for review.
+    git_checkout_run: bool,
+    git_commit_run:   bool,
+
+    // The git pane's slot-machine gag (Ctrl+Shift+Alt+S): when risky_mode is on the
+    // lucky-dip commit auto-sends (run, no review); otherwise it's staged in the CL.
+    risky_mode: bool,
     scale:        f32, // DPI content scale: logical px * scale = physical px
     font_px:      f32, // logical text size in points (font zoom); base is FONT_BASE_PX
     font_save_at: f64, // glfw time to persist font_px at (debounce); 0 = nothing pending

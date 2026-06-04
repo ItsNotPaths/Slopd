@@ -68,6 +68,9 @@ main :: proc() {
     app.show_guides = cfg.show_guides
     app.folding = cfg.folding
     app.folder_cd_run = cfg.folder_cd_run
+    app.git_checkout_run = cfg.git_checkout_run
+    app.git_commit_run = cfg.git_commit_run
+    app.risky_mode = cfg.risky_mode
     app.font_px = cfg.font_px // persisted font zoom; text_init bakes the atlas at it
 
     editor_init(&app.editor)
@@ -117,6 +120,7 @@ main :: proc() {
 
         now := glfw.GetTime()
         git_scroll_pump(&app, now) // advance a held diff auto-scroll at its (accelerating) tick
+        git_spin_pump(&app, now) // pay out the slot-machine gag once its reels settle
         w, h := glfw.GetFramebufferSize(window)
         // Track DPI, then re-bake the atlas if the DPI scale (monitor move) or the
         // font zoom (Ctrl +/-) changed since last frame. text_apply no-ops otherwise.

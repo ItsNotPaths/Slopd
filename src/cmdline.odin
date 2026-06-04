@@ -59,12 +59,16 @@ cl_dispatch :: proc(a: ^App, text: string, run: bool) {
 cl_cancel :: proc(a: ^App) {
     a.cl_active = false
     doc_clear(&a.cl.doc)
+    git_cl_settle(a, a.git.cl_wait, false) // a git command staged here was dropped (no-op otherwise)
 }
 
 cl_submit :: proc(a: ^App) {
     input := strings.trim_space(doc_string(&a.cl.doc, context.temp_allocator))
     a.cl_active = false
     doc_clear(&a.cl.doc)
+    // A git command staged here SHIPS on a real submit, backs off on an empty line (no-op
+    // when the pane wasn't waiting). Settled before exec so the pane reacts this frame.
+    git_cl_settle(a, a.git.cl_wait, input != "")
     if input == "" {
         return
     }

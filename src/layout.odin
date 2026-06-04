@@ -51,7 +51,9 @@ compute_layout :: proc(win_w, win_h: i32, a: ^App, now: f64) -> Layout {
     // glyphs keep their positions and only get clipped at the sliding edge, no reflow.
     if a.view == .Zen {
         r := anim_value(&a.zen_anim, now) // 0 hidden .. 1 docked
-        aux_w := max(0, win_w - i32(f32(win_w) * a.split))
+        // Use the git-widened, animated `split` (not the raw a.split) so the git aux pane
+        // gets its full 3/4 width in Zen too, and the widen EASES rather than snapping.
+        aux_w := max(0, win_w - i32(f32(win_w) * split))
         aux_x := win_w - i32(f32(aux_w) * r)
         if r > 0.001 {
             out.editor = Rect{0, 0, aux_x, content_h}

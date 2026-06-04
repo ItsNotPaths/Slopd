@@ -65,6 +65,21 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
             doc_insert_rune(&cp.search, codepoint)
             config_pane_filter(cp) // live filter as you type
         }
+    } else if a.focus == .Aux && a.aux_mode == .Git && codepoint >= 32 {
+        // The grep filter and commit message take text; elsewhere a bare '/' jumps to the
+        // filter bar (consumed here so it leaves no stray slash behind).
+        g := &a.git
+        #partial switch g.region {
+        case .Grep:
+            doc_insert_rune(&g.grep, codepoint)
+            git_filter_apply(g) // live filter as you type
+        case .Commit:
+            doc_insert_rune(&g.commit_msg, codepoint)
+        case:
+            if codepoint == '/' {
+                g.region = .Grep
+            }
+        }
     } else if a.focus == .Editor && codepoint >= 32 {
         b := editor_current(&a.editor)
         if !buffer_autopair(b, codepoint) {
@@ -224,13 +239,22 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             if a.aux_mode == .Terminal {
                 term_close_active(a)
             } else if a.aux_mode == .Git {
-                git_load_live(&a.git) // revert a loaded (historical) diff to the live working tree
+                // Back to the full every-file view: clear the grep filter, then reload the
+                // live working tree (also drops a browsed historical commit).
+                doc_clear(&a.git.grep)
+                git_load_live(&a.git)
             }
         case glfw.KEY_L: // lock/unlock the active terminal's cwd (tu skips locked)
             if a.aux_mode == .Terminal {
                 if t := term_current(a); t != nil {
                     t.locked = !t.locked
                 }
+            }
+
+        case glfw.KEY_S: // Ctrl+Shift+Alt+S in the git pane: spin the slot-machine "lucky dip"
+            if mods & glfw.MOD_CONTROL != 0 && mods & glfw.MOD_SHIFT != 0 &&
+               a.aux_mode == .Git && a.focus == .Aux {
+                git_spin_begin(&a.git, glfw.GetTime())
             }
 
         // Alt+Up/Down drives the terminal pane: the bare chord cycles session; Ctrl+Alt
@@ -316,45 +340,107 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     }
 }
 
-// Git aux mode keys. Arrows drive navigation: Up/Down move the selection in the focused
-// list, Left/Right switch between the sidebar and the right (diff / commit) column. Tab
-// swaps the focused column's two sub-modes — Status/Log in the sidebar, diff browsing vs.
-// commit message in the right column. (Enter to load a diff, and Alt+Q to revert it,
-// land with the diff model.)
+// Git aux mode keys (arrows only). Tab cycles the focused column's sub-modes; Left/Right
+// switch column, EXCEPT on the branch strip where they're captured to swap branches. Enter
+// activates the focus (checkout / filter-to-file / load commit / toggle-all / inject commit);
+// Space checks hunks. The grep + commit fields edit in place. Alt+Q (handled in handle_key)
+// clears the filter back to the full working tree.
 git_key :: proc(a: ^App, key, mods: i32) {
     g := &a.git
+    if g.spin.active {
+        return // the slot machine owns the pane while it spins (it lands, then the CL drives)
+    }
+    shift := mods & glfw.MOD_SHIFT != 0
+
+    // The two in-place text fields consume motion + editing keys. In the commit message a
+    // plain Enter INJECTS the commit recipe; Shift+Enter inserts a newline (it grows line by
+    // line). Anything they don't handle falls through to navigation.
+    #partial switch g.region {
+    case .Grep:
+        v := g.grep.version
+        if git_field_key(&g.grep, key, mods) {
+            if g.grep.version != v {
+                git_filter_apply(g) // re-filter only when the query CHANGED, not on caret motion
+            }
+            return
+        }
+    case .Commit:
+        if key == glfw.KEY_ENTER || key == glfw.KEY_KP_ENTER {
+            if shift {
+                doc_newline(&g.commit_msg)
+            } else {
+                git_commit_inject(a)
+            }
+            return
+        }
+        if git_field_key(&g.commit_msg, key, mods) {
+            return
+        }
+    }
+
     switch key {
     case glfw.KEY_TAB:
-        if g.region == .Diff {
-            git_stage_selected(a) // stage the checked hunks, then go to the commit editor
-        } else {
-            git_tab(g)
-        }
+        git_tab(g) // sidebar Status/Log/Branch; right Grep/Select/Diff/Commit
     case glfw.KEY_UP:
         if g.region == .Diff {
             git_scroll_start(g, -1, glfw.GetTime()) // held = accelerating auto-scroll
-        } else {
+        } else if g.region == .Sidebar {
             git_move_sel(g, -1)
         }
     case glfw.KEY_DOWN:
         if g.region == .Diff {
             git_scroll_start(g, 1, glfw.GetTime())
-        } else {
+        } else if g.region == .Sidebar {
             git_move_sel(g, 1)
         }
     case glfw.KEY_LEFT:
-        git_move_region(g, -1)
-    case glfw.KEY_RIGHT:
-        git_move_region(g, 1)
-    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
-        git_activate(a)
-    case glfw.KEY_SPACE:
-        if g.region == .Diff {
-            git_toggle_hunk(g) // check/uncheck the focused hunk
+        if g.region == .Sidebar && g.section == .Branch {
+            git_branch_cycle(g, -1) // captured: swap branches, don't leave the strip
         } else {
-            git_stage_toggle(a) // sidebar: stage/unstage the whole file
+            git_move_region(g, -1)
+        }
+    case glfw.KEY_RIGHT:
+        if g.region == .Sidebar && g.section == .Branch {
+            git_branch_cycle(g, 1)
+        } else {
+            git_move_region(g, 1)
+        }
+    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
+        if g.region == .Select {
+            git_toggle_all(g) // the select-all / deselect-all button
+        } else {
+            git_activate(a)
+        }
+    case glfw.KEY_SPACE:
+        #partial switch g.region {
+        case .Diff:
+            git_toggle_hunk(g) // check/uncheck the focused hunk
+        case .Select:
+            git_toggle_all(g)
+        case .Sidebar:
+            git_stage_toggle(a) // check/uncheck the whole file's hunks
         }
     }
+}
+
+// Editing keys for an in-pane git text field (the grep filter / commit message): shared
+// motion (edit_motion) + backspace/delete, Ctrl for word-wise. Returns true if it consumed
+// the key. Newline / commit are the caller's job (they differ per field).
+@(private = "file")
+git_field_key :: proc(d: ^Doc, key, mods: i32) -> bool {
+    if edit_motion(d, key, mods, false) {
+        return true
+    }
+    ctrl := mods & glfw.MOD_CONTROL != 0
+    switch key {
+    case glfw.KEY_BACKSPACE:
+        if ctrl {doc_delete_word_back(d)} else {doc_backspace(d)}
+        return true
+    case glfw.KEY_DELETE:
+        if ctrl {doc_delete_word_forward(d)} else {doc_delete(d)}
+        return true
+    }
+    return false
 }
 
 // Editing keys shared by the command line and the buffer (the CL is a one-line
