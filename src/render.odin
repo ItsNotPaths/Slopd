@@ -726,39 +726,152 @@ git_row :: proc(t: ^Text, s: string, x: f32, y, row_h: i32, lh: f32, color: [3]f
     text_draw(t, s, x, f32(y) + (f32(row_h) - lh) / 2, color)
 }
 
-// The sidebar: Prawk's three stacked zones — a branch strip, the working-tree Status,
-// and the Log. SCAFFOLD: zone headers + placeholders; the headers light (accent) when
-// the sidebar holds the git pane's region focus.
+// A sidebar zone row: display text + its colour. Built per-frame in temp memory.
+@(private = "file")
+ZoneRow :: struct {
+    text:  string,
+    color: [3]f32,
+}
+
+// Draws a titled sidebar zone within `zone`: the title, then its rows centre-scrolled
+// to keep `sel` visible (like the filetree). When `active`, the selected row carries the
+// selection bar. `sel` < 0 means no selection (e.g. an empty list's placeholder). The
+// title uses `head`; rows use their own colours.
+@(private = "file")
+git_draw_zone :: proc(
+    t: ^Text,
+    title: string,
+    rows: []ZoneRow,
+    zone: Rect,
+    row_h: i32,
+    lh: f32,
+    head: [3]f32,
+    th: ^Theme,
+    sel: int,
+    active: bool,
+) {
+    cw := t.font.cell_w
+    x0 := f32(zone.x) + cw // header at one cell; rows indent one more
+    git_row(t, title, x0, zone.y, row_h, lh, head)
+
+    list_top := zone.y + row_h
+    max_rows := int(max(i32(0), (zone.y + zone.h - list_top) / row_h))
+    if max_rows == 0 || len(rows) == 0 {
+        return
+    }
+    first := sel >= 0 ? clamp(sel - max_rows / 2, 0, max(0, len(rows) - max_rows)) : 0
+    visible := min(len(rows) - first, max_rows)
+    for k in 0 ..< visible {
+        i := first + k
+        y := list_top + i32(k) * row_h
+        if active && i == sel {
+            fill(t, Rect{zone.x, y, zone.w, row_h}, th.separator)
+        }
+        git_row(t, rows[i].text, x0 + cw, y, row_h, lh, rows[i].color)
+    }
+}
+
+// Colour a working-tree entry by its porcelain status: untracked dim, deletions in the
+// urgent slot, additions green (the directory slot), everything else (modified/renamed)
+// in the normal foreground.
+@(private = "file")
+git_status_color :: proc(code: string, th: ^Theme) -> [3]f32 {
+    switch {
+    case strings.contains(code, "?"):
+        return th.muted
+    case strings.contains(code, "D"):
+        return th.urgent
+    case strings.contains(code, "A"):
+        return th.code_return_type
+    case:
+        return th.fg
+    }
+}
+
+// The sidebar: Prawk's stacked zones — a branch strip, the working-tree Status, and the
+// Log — populated from git (git_refresh). The ACTIVE section's header lights (accent)
+// and its selection shows when the sidebar is focused (Tab toggles which section is
+// active). Status takes the top half of the body, the Log the rest. When the project
+// root resolves to no repo, the strip says so.
 @(private = "file")
 git_draw_sidebar :: proc(t: ^Text, area: Rect, a: ^App) {
     g := &a.git
     th := &a.theme
     lh := t.font.line_height
-    cw := t.font.cell_w
     row_h := i32(lh) + i32(2 * a.scale)
-    x0 := f32(area.x) + cw // one-cell left margin
-    head := a.focus == .Aux && a.aux_mode == .Git && g.region == .Sidebar ? th.accent : th.muted
+    x0 := f32(area.x) + t.font.cell_w // one-cell left margin
 
-    y := area.y
-    git_row(t, "⎇ branch", x0, y, row_h, lh, head) // branch strip
-    y += row_h + row_h / 2
+    if !g.is_repo {
+        git_row(t, "not a git repository", x0, area.y, row_h, lh, th.muted)
+        return
+    }
 
-    git_row(t, "status", x0, y, row_h, lh, head) // working tree
-    y += row_h
-    git_row(t, "working tree", x0 + cw, y, row_h, lh, th.muted)
-    y += row_h + row_h / 2
+    side_focused := a.focus == .Aux && a.aux_mode == .Git && g.region == .Sidebar
 
-    git_row(t, "log", x0, y, row_h, lh, head) // commits on the selected branch
-    y += row_h
-    git_row(t, "commits", x0 + cw, y, row_h, lh, th.muted)
+    // Branch strip.
+    branch := g.branch == "" ? "(detached)" : g.branch
+    git_row(t, fmt.tprintf("⎇ %s", branch), x0, area.y, row_h, lh, side_focused ? th.accent : th.muted)
+    body_top := area.y + row_h + row_h / 2
+
+    // Build the two zones' rows in temp memory: Status coloured by kind ("(clean)" when
+    // empty), the Log in the plain foreground.
+    srows := make([dynamic]ZoneRow, 0, max(1, len(g.status)), context.temp_allocator)
+    if len(g.status) == 0 {
+        append(&srows, ZoneRow{"(clean)", th.muted})
+    } else {
+        for e in g.status {
+            append(&srows, ZoneRow{fmt.tprintf("%s %s", e.code, e.path), git_status_color(e.code, th)})
+        }
+    }
+    lrows := make([dynamic]ZoneRow, 0, len(g.commits), context.temp_allocator)
+    for c in g.commits {
+        append(&lrows, ZoneRow{fmt.tprintf("%s %s", c.hash, c.subject), th.fg})
+    }
+
+    // Split the body: Status on top, Log below.
+    body_h := max(i32(0), area.y + area.h - body_top)
+    half := body_h / 2
+    status_rect := Rect{area.x, body_top, area.w, half}
+    log_rect := Rect{area.x, body_top + half, area.w, body_h - half}
+
+    status_active := side_focused && g.section == .Status
+    log_active := side_focused && g.section == .Log
+    status_sel := len(g.status) > 0 ? g.sel_status : -1 // skip the "(clean)" placeholder
+    log_sel := len(g.commits) > 0 ? g.sel_log : -1
+
+    git_draw_zone(t, "status", srows[:], status_rect, row_h, lh, status_active ? th.accent : th.muted, th, status_sel, status_active)
+    git_draw_zone(t, "log", lrows[:], log_rect, row_h, lh, log_active ? th.accent : th.muted, th, log_sel, log_active)
 }
 
-// The diff viewer / commit editor: the working diff up top, the commit message in a
-// bottom strip. SCAFFOLD: headers + placeholders; the diff header lights when region
-// is Diff, the commit strip when region is Commit.
+// Colour a diff line by kind: additions green (the directory slot), deletions urgent,
+// hunk headers in accent, file headers dim, context in the normal foreground.
+@(private = "file")
+git_diff_color :: proc(kind: DiffLineKind, th: ^Theme) -> [3]f32 {
+    switch kind {
+    case .Add:
+        return th.code_return_type
+    case .Del:
+        return th.urgent
+    case .Hunk:
+        return th.accent
+    case .Header:
+        return th.muted
+    case .Context:
+        return th.fg
+    case:
+        return th.fg
+    }
+}
+
+// The diff viewer / commit editor (the aux pane's right column). A title naming what is
+// shown, then the parsed diff tinted by line kind and scrolled by g.diff_scroll, then a
+// commit-editor strip reserved at the bottom (a placeholder until the message Doc lands).
 @(private = "file")
 git_draw_diff :: proc(t: ^Text, area: Rect, a: ^App) {
     g := &a.git
+    if !g.is_repo {
+        return // nothing to diff/commit; the sidebar already says "not a git repository"
+    }
     th := &a.theme
     lh := t.font.line_height
     cw := t.font.cell_w
@@ -766,17 +879,33 @@ git_draw_diff :: proc(t: ^Text, area: Rect, a: ^App) {
     x0 := f32(area.x) + cw
     focused := a.focus == .Aux && a.aux_mode == .Git
 
-    // Diff viewer — the live working tree by default, or the sidebar's selection.
+    // Title: what the diff shows (a path, a commit, or the working tree).
     diff_head := focused && g.region == .Diff ? th.accent : th.muted
-    git_row(t, "diff", x0, area.y, row_h, lh, diff_head)
-    git_row(t, "live working tree", x0 + cw, area.y + row_h, row_h, lh, th.muted)
+    title := g.diff_title == "" ? "working tree" : g.diff_title
+    git_row(t, title, x0, area.y, row_h, lh, diff_head)
 
-    // Commit editor — a bottom strip (rule + header + the message line). The message
-    // becomes a live Doc in Phase 2; the placeholder marks where it sits.
+    // Reserve a commit strip at the bottom; the diff fills the space above. If the pane
+    // is too short for both, the diff takes the whole height and the strip is dropped.
+    list_top := area.y + row_h
     strip_h := row_h * 3
     sy := area.y + area.h - strip_h
-    if sy <= area.y + row_h * 2 {
-        return // pane too short for the commit strip
+    has_strip := sy > list_top + row_h
+    diff_bottom := has_strip ? sy : area.y + area.h
+
+    if len(g.diff) == 0 {
+        git_row(t, "(no changes)", x0 + cw, list_top, row_h, lh, th.muted)
+    } else {
+        max_rows := int(max(i32(0), (diff_bottom - list_top) / row_h))
+        first := clamp(g.diff_scroll, 0, max(0, len(g.diff) - max_rows))
+        visible := min(len(g.diff) - first, max_rows)
+        for k in 0 ..< visible {
+            l := g.diff[first + k]
+            git_row(t, l.text, x0, list_top + i32(k) * row_h, row_h, lh, git_diff_color(l.kind, th))
+        }
+    }
+
+    if !has_strip {
+        return
     }
     fill(t, Rect{area.x, sy, area.w, max(i32(1), i32(a.scale))}, th.border_light)
     commit_head := focused && g.region == .Commit ? th.accent : th.muted

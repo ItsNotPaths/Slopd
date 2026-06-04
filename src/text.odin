@@ -193,12 +193,14 @@ glyph_push :: proc(t: ^Text, r: rune, xpos, ypos: ^f32, c: [3]f32) {
         return
     }
     q: stbtt.aligned_quad
-    // GetPackedQuad would step the pen by the glyph's own (fractional) advance; we
-    // ignore that and step by the fixed cell below so the grid stays exactly
-    // monospace. The pen we feed in is already integral, so align_to_integer snaps
-    // every cell the same way instead of drifting against a fractional accumulator.
+    // GetPackedQuad would step the pen by the glyph's own (fractional) advance; we ignore
+    // that and step by the fixed cell below so the grid stays exactly monospace. The pen
+    // we feed in is already integral, so there is no accumulator to drift — and with the
+    // cell origin pinned, align_to_integer is left OFF: it would re-round each glyph's
+    // sub-pixel offset (fighting the 2x atlas oversampling) and make spacing look jittery,
+    // worst at small sizes. Off, the oversampled ink lands at its true offset in the cell.
     pen := xpos^
-    stbtt.GetPackedQuad(&pc, FONT_ATLAS, FONT_ATLAS, 0, &pen, ypos, &q, true)
+    stbtt.GetPackedQuad(&pc, FONT_ATLAS, FONT_ATLAS, 0, &pen, ypos, &q, false)
     xpos^ += t.font.cell_w
     append(
         &t.glyphs,

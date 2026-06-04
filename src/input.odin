@@ -217,6 +217,8 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         case glfw.KEY_Q:
             if a.aux_mode == .Terminal {
                 term_close_active(a)
+            } else if a.aux_mode == .Git {
+                git_load_live(&a.git) // revert a loaded (historical) diff to the live working tree
             }
         case glfw.KEY_L: // lock/unlock the active terminal's cwd (tu skips locked)
             if a.aux_mode == .Terminal {
@@ -306,13 +308,26 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     }
 }
 
-// Git aux mode keys (SCAFFOLD): Tab / Shift+Tab cycle the focused sub-region. Arrow
-// keys are reserved for the focused region's navigation, and Alt+Q (revert a loaded
-// diff to live) lands in Phase 1 with the status/log/diff model.
+// Git aux mode keys. Arrows drive navigation: Up/Down move the selection in the focused
+// list, Left/Right switch between the sidebar and the right (diff / commit) column. Tab
+// swaps the focused column's two sub-modes — Status/Log in the sidebar, diff browsing vs.
+// commit message in the right column. (Enter to load a diff, and Alt+Q to revert it,
+// land with the diff model.)
 git_key :: proc(a: ^App, key, mods: i32) {
+    g := &a.git
     switch key {
     case glfw.KEY_TAB:
-        git_cycle_region(&a.git, mods & glfw.MOD_SHIFT != 0 ? -1 : 1)
+        git_tab(g)
+    case glfw.KEY_UP:
+        git_move_sel(g, -1)
+    case glfw.KEY_DOWN:
+        git_move_sel(g, 1)
+    case glfw.KEY_LEFT:
+        git_move_region(g, -1)
+    case glfw.KEY_RIGHT:
+        git_move_region(g, 1)
+    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
+        git_activate(a)
     }
 }
 
@@ -717,7 +732,9 @@ is_modifier_key :: proc(key: i32) -> bool {
     return false
 }
 
-// Jumping to an aux mode focuses the aux pane (like the command-line goto does).
+// Jumping to an aux mode focuses the aux pane (like the command-line goto does). When
+// the target is git, set_focus's focus-gain hook refreshes the repo state — no extra
+// call needed here.
 set_aux :: proc(a: ^App, mode: AuxMode) {
     a.aux_mode = mode
     set_focus(a, .Aux)

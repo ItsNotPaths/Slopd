@@ -185,6 +185,13 @@ set_focus :: proc(a: ^App, who: Focus) {
         now := glfw.GetTime()
         anim_start(&a.zen_anim, now, anim_value(&a.zen_anim, now), a.focus == .Aux ? 1 : 0, ZEN_DUR)
     }
+    // The git pane reloads whenever it gains focus, so its optics never go stale behind
+    // edits made elsewhere (a save in the editor, a commit in a terminal). git status /
+    // log are fast and this only fires on a real focus change. Covers both the goto
+    // (set_aux -> here) and Alt+Right into an already-git aux pane.
+    if a.focus == .Aux && a.aux_mode == .Git {
+        git_refresh(a)
+    }
 }
 
 // Toggle zen on/off (the `zen` / `zm` command line builtin). No-op under Util,
