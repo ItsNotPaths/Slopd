@@ -211,57 +211,180 @@ git_move_region :: proc(g: ^GitPane, dir: int) {
     }
 }
 
-// Tab swaps the focused column's two sub-modes: in the sidebar, Status <-> Log
-// (Prawk-style); in the right column, diff browsing <-> the commit message editor.
+// Tab cycles the focused column's sub-modes: in the sidebar, Status -> Log -> Branch (the
+// branch swap strip) -> Status; in the right column, Grep -> Select (the select-all toggle)
+// -> Diff -> Commit -> Grep.
 git_tab :: proc(g: ^GitPane) {
     switch g.region {
     case .Sidebar:
-        g.section = g.section == .Status ? .Log : .Status
+        switch g.section {
+        case .Status: g.section = .Log
+        case .Log:    g.section = .Branch
+        case .Branch: g.section = .Status
+        }
+    case .Grep:
+        g.region = .Select
+    case .Select:
+        g.region = .Diff
     case .Diff:
         g.region = .Commit
     case .Commit:
-        g.region = .Diff
+        g.region = .Grep
     }
 }
 
-// Up/Down in the SIDEBAR move the active section's selection. (The diff region's Up/Down
-// is the held auto-scroll — git_scroll_*; the commit editor's caret arrives with its Doc.)
+// The grep query, lowercased and trimmed for case-insensitive substring matching.
+git_grep_query :: proc(g: ^GitPane, allocator := context.temp_allocator) -> string {
+    return strings.to_lower(strings.trim_space(doc_string(&g.grep, allocator)), allocator)
+}
+
+// Replace the grep query (Status Enter jumps the always-on diff to one file's hunks).
+git_set_grep :: proc(g: ^GitPane, text: string) {
+    doc_set_text(&g.grep, text)
+    doc_cursor_to_end(&g.grep)
+    git_filter_apply(g)
+}
+
+// Recompute per-hunk / per-file visibility against the current grep query. MULTISEARCH:
+// the query splits on '+' into trimmed terms, OR'd — a hunk shows when the query is empty,
+// or some term matches the file's path or one of its body lines. A file shows when any of
+// its hunks shows (or, for a header-only file, when its path matches). With an empty query
+// nothing is hidden, so layout/nav are unchanged. Re-aims the playhead at the first match
+// (recenter) so it never sits on a hidden hunk. NOTE: '+' is purely the term separator, so a
+// literal '+' can't be searched (e.g. "+foo" filters as "foo") — fine since body content is
+// matched substring-wise regardless of the diff's +/- column.
+git_filter_apply :: proc(g: ^GitPane) {
+    terms := make([dynamic]string, 0, 4, context.temp_allocator)
+    for part in strings.split(git_grep_query(g), "+", context.temp_allocator) {
+        if s := strings.trim_space(part); s != "" {
+            append(&terms, s)
+        }
+    }
+    for &f in g.diff_files {
+        path_lower := strings.to_lower(f.path, context.temp_allocator)
+        path_hit := len(terms) == 0 || git_any_term(path_lower, terms[:])
+        vis_any := false
+        for &h in f.hunks {
+            hit := path_hit
+            if !hit {
+                for l in h.lines {
+                    if git_any_term(strings.to_lower(l.text, context.temp_allocator), terms[:]) {
+                        hit = true
+                        break
+                    }
+                }
+            }
+            h.hidden = !hit
+            vis_any |= hit
+        }
+        f.hidden = len(f.hunks) == 0 ? !path_hit : !vis_any
+    }
+    g.hunk_cur = git_hunk_count(g) > 0 ? 0 : -1
+    g.diff_recenter = true // render re-centres the first visible hunk on the playhead
+}
+
+// Whether `text` (already lowercased) contains any of the OR terms.
+git_any_term :: proc(text: string, terms: []string) -> bool {
+    for term in terms {
+        if strings.contains(text, term) {
+            return true
+        }
+    }
+    return false
+}
+
+// Set every hunk that PASSES the current filter to `on`. Hidden hunks keep their checkbox —
+// you only ever act on what you can see.
+git_check_filtered :: proc(g: ^GitPane, on: bool) {
+    for &f in g.diff_files {
+        for &h in f.hunks {
+            if !h.hidden {
+                h.selected = on
+            }
+        }
+    }
+}
+
+// The Select button: deselect-all if ANY visible hunk is checked, else select-all. The
+// rule auto-cycles the single button between the two actions.
+git_toggle_all :: proc(g: ^GitPane) {
+    any := false
+    outer: for &f in g.diff_files {
+        for &h in f.hunks {
+            if !h.hidden && h.selected {
+                any = true
+                break outer
+            }
+        }
+    }
+    git_check_filtered(g, !any)
+}
+
+// Whether any visible (filtered-in) hunk is currently checked — drives the Select button's
+// label (select-all vs deselect-all) and its count.
+git_any_checked :: proc(g: ^GitPane) -> bool {
+    for f in g.diff_files {
+        for h in f.hunks {
+            if !h.hidden && h.selected {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+// Up/Down in the SIDEBAR move the active section's selection (Status / Log lists). The
+// Branch strip uses Left/Right (git_branch_cycle), so Up/Down do nothing there. (The diff
+// region's Up/Down is the held auto-scroll — git_scroll_*; the commit caret arrives with
+// its Doc.)
 git_move_sel :: proc(g: ^GitPane, dir: int) {
     if g.region != .Sidebar {
         return
     }
-    if g.section == .Status {
+    switch g.section {
+    case .Status:
         if n := len(g.status); n > 0 {
             g.sel_status = clamp(g.sel_status + dir, 0, n - 1)
         }
-    } else {
+    case .Log:
         if n := len(g.commits); n > 0 {
             g.sel_log = clamp(g.sel_log + dir, 0, n - 1)
         }
+    case .Branch:
     }
 }
 
-// Total hunks across all files (the space hunk_cur indexes).
+// Total VISIBLE hunks across all files — the space hunk_cur indexes (the playhead only
+// lands on hunks passing the grep filter).
 git_hunk_count :: proc(g: ^GitPane) -> int {
     n := 0
     for f in g.diff_files {
-        n += len(f.hunks)
+        for h in f.hunks {
+            if !h.hidden {
+                n += 1
+            }
+        }
     }
     return n
 }
 
-// The hunk at flattened index `idx`, or nil. The pointer is valid until the diff is
-// reloaded (used immediately by the caller).
+// The visible hunk at flattened index `idx` (hidden hunks skipped), or nil. The pointer is
+// valid until the diff is reloaded (used immediately by the caller).
 git_hunk_ptr :: proc(g: ^GitPane, idx: int) -> ^DiffHunk {
     if idx < 0 {
         return nil
     }
     i := idx
     for fi in 0 ..< len(g.diff_files) {
-        if i < len(g.diff_files[fi].hunks) {
-            return &g.diff_files[fi].hunks[i]
+        for hi in 0 ..< len(g.diff_files[fi].hunks) {
+            if g.diff_files[fi].hunks[hi].hidden {
+                continue
+            }
+            if i == 0 {
+                return &g.diff_files[fi].hunks[hi]
+            }
+            i -= 1
         }
-        i -= len(g.diff_files[fi].hunks)
     }
     return nil
 }
