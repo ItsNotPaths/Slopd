@@ -70,6 +70,7 @@ main :: proc() {
     app.folder_cd_run = cfg.folder_cd_run
     app.git_checkout_run = cfg.git_checkout_run
     app.git_commit_run = cfg.git_commit_run
+    app.git_merge_run = cfg.git_merge_run
     app.risky_mode = cfg.risky_mode
     app.font_px = cfg.font_px // persisted font zoom; text_init bakes the atlas at it
 

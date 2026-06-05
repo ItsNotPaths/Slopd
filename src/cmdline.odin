@@ -264,6 +264,8 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         set_aux(a, .FileTree)
     case "gs":
         set_aux(a, .Git)
+    case "gr":
+        git_refresh(a) // re-read repo state in place (after a git-pane action mutates it)
     case "cf":
         set_aux(a, .Config)
         config_pane_refresh(&a.config_pane)
@@ -417,7 +419,7 @@ is_term_token :: proc(s: string) -> bool {
 @(private = "file")
 cl_is_builtin :: proc(name: string) -> bool {
     switch name {
-    case "ls", "gs", "cf", "zen", "zm", "put", "j", "jump", "cd", "tu":
+    case "ls", "gs", "gr", "cf", "zen", "zm", "put", "j", "jump", "cd", "tu":
         return true
     }
     return false

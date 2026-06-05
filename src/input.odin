@@ -368,6 +368,8 @@ git_key :: proc(a: ^App, key, mods: i32) {
         if key == glfw.KEY_ENTER || key == glfw.KEY_KP_ENTER {
             if shift {
                 doc_newline(&g.commit_msg)
+            } else if g.op == .Merge {
+                git_merge_finish(a) // mid-merge the box becomes "finish": stage resolved + complete
             } else {
                 git_commit_inject(a)
             }
@@ -407,18 +409,22 @@ git_key :: proc(a: ^App, key, mods: i32) {
         }
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
         if g.region == .Select {
-            git_toggle_all(g) // the select-all / deselect-all button
+            git_select_action(a) // select-all / deselect-all, or abort during a merge
         } else {
             git_activate(a)
         }
     case glfw.KEY_SPACE:
         #partial switch g.region {
         case .Diff:
-            git_toggle_hunk(g) // check/uncheck the focused hunk
+            git_toggle_hunk(g) // check/uncheck the focused hunk (or cycle a conflict's resolution)
         case .Select:
-            git_toggle_all(g)
+            git_select_action(a)
         case .Sidebar:
-            git_stage_toggle(a) // check/uncheck the whole file's hunks
+            if g.section == .Branch {
+                git_merge_inject(a) // Space on the branch strip merges it into the current branch
+            } else {
+                git_stage_toggle(a) // check/uncheck the whole file's hunks
+            }
         }
     }
 }

@@ -140,6 +140,7 @@ App :: struct {
     // the CL for review.
     git_checkout_run: bool,
     git_commit_run:   bool,
+    git_merge_run:    bool,
 
     // The git pane's slot-machine gag (Ctrl+Shift+Alt+S): when risky_mode is on the
     // lucky-dip commit auto-sends (run, no review); otherwise it's staged in the CL.

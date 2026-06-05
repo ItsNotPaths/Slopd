@@ -39,6 +39,7 @@ Config :: struct {
     folder_cd_run:     bool, // filetree Alt+Enter: run the `cd` at once vs stage it in the CL
     git_checkout_run:  bool, // git branch Enter: run `git checkout` at once vs stage it
     git_commit_run:    bool, // git commit Enter: run the commit recipe at once vs stage it
+    git_merge_run:     bool, // git branch Space / merge finish: run vs stage it
     risky_mode:        bool, // git slot machine: auto-send the lucky-dip commit (no review)
 }
 
@@ -52,8 +53,9 @@ load_config :: proc() -> Config {
         show_guides     = true,
         folding         = true,
         folder_cd_run   = false, // stage the cd in the CL by default (reviewable)
-        git_checkout_run = false, // stage branch checkout / commit in the CL by default
+        git_checkout_run = false, // stage branch checkout / commit / merge in the CL by default
         git_commit_run  = false,
+        git_merge_run   = false,
         risky_mode      = false, // the lucky-dip commit is staged for review by default
     }
     path := find_config()
@@ -112,6 +114,8 @@ load_config :: proc() -> Config {
             if v, ok := parse_stage_run(val); ok {cfg.git_checkout_run = v}
         case "git_commit":
             if v, ok := parse_stage_run(val); ok {cfg.git_commit_run = v}
+        case "git_merge":
+            if v, ok := parse_stage_run(val); ok {cfg.git_merge_run = v}
         case "risky_mode":
             if v, ok := parse_on_off(val); ok {cfg.risky_mode = v}
         }
@@ -193,7 +197,7 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return theme_options(context.temp_allocator)
     case .Folding, .IndentGuides, .Whitespace, .RiskyMode:
         return ON_OFF_OPTS[:]
-    case .FolderCd, .GitCheckout, .GitCommit:
+    case .FolderCd, .GitCheckout, .GitCommit, .GitMerge:
         return STAGE_RUN_OPTS[:]
     }
     return nil
@@ -246,6 +250,7 @@ Setting :: enum {
     FolderCd,
     GitCheckout,
     GitCommit,
+    GitMerge,
     RiskyMode,
 }
 
@@ -260,6 +265,7 @@ setting_key :: proc(s: Setting) -> string {
     case .FolderCd:     return "folder_cd"
     case .GitCheckout:  return "git_checkout"
     case .GitCommit:    return "git_commit"
+    case .GitMerge:     return "git_merge"
     case .RiskyMode:    return "risky_mode"
     }
     return ""
@@ -279,6 +285,7 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .FolderCd:     return a.folder_cd_run ? "run" : "stage"
     case .GitCheckout:  return a.git_checkout_run ? "run" : "stage"
     case .GitCommit:    return a.git_commit_run ? "run" : "stage"
+    case .GitMerge:     return a.git_merge_run ? "run" : "stage"
     case .RiskyMode:    return on_off(a.risky_mode)
     }
     return ""
@@ -316,6 +323,8 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.git_checkout_run = parse_stage_run(val) or_return
     case .GitCommit:
         a.git_commit_run = parse_stage_run(val) or_return
+    case .GitMerge:
+        a.git_merge_run = parse_stage_run(val) or_return
     case .RiskyMode:
         a.risky_mode = parse_on_off(val) or_return
     }

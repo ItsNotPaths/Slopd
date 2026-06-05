@@ -67,26 +67,53 @@ DiffLine :: struct {
     text: string, // the raw line, owned
 }
 
+// Which side of a merge conflict a conflict hunk resolves to. Space cycles it
+// Unresolved -> Ours -> Theirs -> Both -> Unresolved; the displayed body (DiffHunk.lines)
+// is rebuilt to match (git_conflict_render), and Unresolved gates the merge from
+// completing (git_merge_finish). The checkbox idiom widened from a 2-state toggle to this.
+ConflictChoice :: enum {
+    Unresolved, // still showing both sides (the raw conflict) — not committable
+    Ours, // keep the HEAD side
+    Theirs, // keep the incoming side
+    Both, // ours then theirs, concatenated
+}
+
 // One @@ hunk: its header line, its body lines, and the staging checkbox. The raw text
 // (header + each line.text, verbatim) is what git_build_patch reassembles for git apply.
 // `hidden` is derived (git_filter_apply) from the grep query — a hidden hunk drops out of
 // layout, nav, and render so the playhead only ever lands on a visible one.
+//
+// A CONFLICT hunk (set during a merge — see git_parse_conflicts) reuses the same block, but
+// `lines` is a rebuilt VIEW of the chosen side rather than diff text: `ours`/`theirs` hold
+// the two raw sides, `choice` picks between them (Space cycles it), and `pre` is the
+// verbatim clean run between the previous region and this one, kept so the resolved file can
+// be reconstructed exactly (git_resolve_content). `selected` is unused for conflict hunks.
 DiffHunk :: struct {
-    header:   string, // the "@@ -a,b +c,d @@ ctx" line (owned)
-    lines:    [dynamic]DiffLine, // body lines (owned)
+    header:   string, // the "@@ -a,b +c,d @@ ctx" line (owned); "conflict" for a conflict hunk
+    lines:    [dynamic]DiffLine, // body lines (owned); for a conflict hunk, the rendered chosen side
     selected: bool, // the checkbox — included in the commit selection
     hidden:   bool, // filtered out by the grep query (derived)
+
+    conflict: bool, // a merge-conflict region: Space cycles `choice` instead of toggling `selected`
+    choice:   ConflictChoice, // which side wins (conflict hunks only)
+    ours:     [dynamic]string, // the HEAD side, raw lines (conflict only, owned)
+    theirs:   [dynamic]string, // the incoming side, raw lines (conflict only, owned)
+    pre:      [dynamic]string, // verbatim lines preceding this region (conflict only, owned) — for reconstruction
 }
 
 // One file section of a diff: its header block (diff --git / index / --- / +++ / mode
 // lines, owned verbatim so a patch can be rebuilt) and its hunks. `path` is the new-side
 // path, for the block title only. `hidden` (derived) drops a file whose every hunk was
-// filtered out, so its title row goes with them.
+// filtered out, so its title row goes with them. A CONFLICT file (`conflict`) holds conflict
+// hunks instead of diff hunks; `tail` is the verbatim clean run after the last region.
 DiffFile :: struct {
     header: [dynamic]string, // file-header lines in order (owned)
     path:   string, // display path (owned); "" falls back to header[0]
     hunks:  [dynamic]DiffHunk,
     hidden: bool, // no visible hunk passes the grep query (derived)
+
+    conflict: bool, // a merge-conflicted file (its hunks are conflict regions)
+    tail:     [dynamic]string, // verbatim lines after the last conflict region (owned)
 }
 
 // Which sub-region of the git pane owns the arrows. Left/Right switch between the
@@ -109,6 +136,16 @@ GitSection :: enum {
     Status,
     Log,
     Branch,
+}
+
+// An in-progress repo operation that owns the working tree until it's resolved or aborted —
+// detected from `.git` on every refresh (git_detect_op). While one is in flight the right
+// column becomes a RESOLUTION view (conflict hunks + finish/abort) and the normal staging
+// commit recipe is locked out (its `git reset` would wipe the unmerged index). Only Merge is
+// modelled for now; the enum leaves room for cherry-pick / rebase to share the same machinery.
+GitOp :: enum {
+    None,
+    Merge, // a `git merge` left conflicts to resolve (.git/MERGE_HEAD present)
 }
 
 // Why the git pane is waiting on the command line. Set when the pane HANDS the CL a
@@ -182,6 +219,13 @@ GitPane :: struct {
 
     cl_wait: GitCLKind, // why the pane is waiting on the command line (CL feedback)
     spin:    GitSpin, // the slot-machine gag, when one is running
+
+    // An in-progress merge, detected from `.git` on refresh (git_detect_op). When op is
+    // .Merge the diff column shows the conflicted files as conflict hunks (Space cycles each
+    // region's resolution) and the commit strip becomes finish/abort instead of the staging
+    // commit. merge_title is the pending merge's message (`.git/MERGE_MSG`, owned).
+    op:          GitOp,
+    merge_title: string, // owned; the in-progress merge's message line, for the diff title
 }
 
 git_init :: proc(g: ^GitPane) {
@@ -225,6 +269,9 @@ git_clear :: proc(g: ^GitPane) {
     }
     clear(&g.commits)
     git_clear_diff(g)
+    delete(g.merge_title)
+    g.merge_title = ""
+    g.op = .None
     g.is_repo = false
 }
 
@@ -265,8 +312,25 @@ git_free_files :: proc(files: [dynamic]DiffFile) {
                 delete(l.text)
             }
             delete(h.lines)
+            // Conflict-hunk extras (empty + harmless for a normal diff hunk).
+            for s in h.ours {
+                delete(s)
+            }
+            delete(h.ours)
+            for s in h.theirs {
+                delete(s)
+            }
+            delete(h.theirs)
+            for s in h.pre {
+                delete(s)
+            }
+            delete(h.pre)
         }
         delete(f.hunks)
+        for s in f.tail {
+            delete(s)
+        }
+        delete(f.tail)
     }
 }
 
@@ -462,10 +526,13 @@ git_hunk_ptr :: proc(g: ^GitPane, idx: int) -> ^DiffHunk {
 
 // Space in the diff toggles the focused hunk's checkbox (only when stageable).
 git_toggle_hunk :: proc(g: ^GitPane) {
-    if !g.diff_stageable {
+    h := git_hunk_ptr(g, g.hunk_cur)
+    if h == nil {
         return
     }
-    if h := git_hunk_ptr(g, g.hunk_cur); h != nil {
+    if h.conflict {
+        git_cycle_conflict(h) // a conflict region cycles its resolution instead of staging
+    } else if g.diff_stageable {
         h.selected = !h.selected
     }
 }
@@ -643,8 +710,8 @@ git_is_staged :: proc(code: string) -> bool {
 // file with no diff hunks (untracked / binary).
 git_stage_toggle :: proc(a: ^App) {
     g := &a.git
-    if !g.is_repo || g.region != .Sidebar || g.section != .Status {
-        return
+    if !g.is_repo || g.op == .Merge || g.region != .Sidebar || g.section != .Status {
+        return // checkbox staging is locked out while a merge is being resolved
     }
     if g.sel_status >= len(g.status) {
         return
@@ -716,7 +783,12 @@ git_refresh :: proc(a: ^App) {
     git_load_branches(g)
     git_load_status(g)
     git_load_log(g)
-    git_load_live(g) // default the diff to the whole working tree (the live view)
+    git_detect_op(g) // a merge in progress flips the right column to conflict resolution
+    if g.op == .Merge {
+        git_load_conflicts(g) // the conflicted files, as resolvable conflict hunks
+    } else {
+        git_load_live(g) // default the diff to the whole working tree (the live view)
+    }
     // Keep selections in range across a reload (lists may shrink). Re-finding by identity
     // is a later refinement; clamping preserves position when it still exists.
     g.sel_status = clamp(g.sel_status, 0, max(0, len(g.status) - 1))
@@ -835,6 +907,99 @@ git_checkout_inject :: proc(a: ^App) {
     cl_dispatch(a, fmt.tprintf("git checkout %s", target), a.git_checkout_run)
 }
 
+// Space on the branch strip (when no merge is already in flight): stage (or run, per
+// git_merge) `git merge <hovered>` to bring that branch's commits into the current one.
+// `--no-edit` keeps git from opening $EDITOR for the merge message (which would hang the
+// injected shell step). Trailing `|| true && gr` makes the pane refresh whatever the
+// outcome — a CONFLICTING merge exits non-zero, and we still need to surface the conflicts.
+// No-op on the current branch, an empty list, a detached HEAD, or mid-merge.
+git_merge_inject :: proc(a: ^App) {
+    g := &a.git
+    if g.op != .None || g.sel_branch < 0 || g.sel_branch >= len(g.branches) {
+        return
+    }
+    target := g.branches[g.sel_branch]
+    if target == g.branch || target == "" {
+        return
+    }
+    cmd := fmt.tprintf(`git -C "%s" merge --no-edit "%s" || true && gr`, g.root, target)
+    cl_dispatch(a, cmd, a.git_merge_run)
+}
+
+// The grep bar's right button (region .Select): the select-all / deselect-all toggle
+// normally, the merge ABORT button while a merge is being resolved.
+git_select_action :: proc(a: ^App) {
+    if a.git.op == .Merge {
+        git_merge_abort(a)
+    } else {
+        git_toggle_all(&a.git)
+    }
+}
+
+// The merge ABORT button (the grep bar's right slot during a merge): throw the merge away and
+// return the working tree to pre-merge HEAD.
+git_merge_abort :: proc(a: ^App) {
+    g := &a.git
+    if g.op != .Merge {
+        return
+    }
+    cl_dispatch(a, fmt.tprintf(`git -C "%s" merge --abort || true && gr`, g.root), a.git_merge_run)
+}
+
+// FINISH a merge: write every fully-resolved conflict file (no Unresolved hunk) back to the
+// working tree, then stage them; and when EVERY conflicted file is resolved, commit to
+// complete the merge (--no-edit reuses git's prepared MERGE_MSG). A partial pass just writes
+// + stages what's ready, so resolving can proceed file by file. No-op until at least one file
+// is fully resolved. `|| true && gr` refreshes the pane regardless of the commit's outcome.
+git_merge_finish :: proc(a: ^App) {
+    g := &a.git
+    if g.op != .Merge {
+        return
+    }
+    paths := make([dynamic]string, 0, len(g.diff_files), context.temp_allocator)
+    for &f in g.diff_files {
+        if !f.conflict {
+            continue
+        }
+        resolved := true
+        for h in f.hunks {
+            if h.choice == .Unresolved {
+                resolved = false
+                break
+            }
+        }
+        if !resolved {
+            continue
+        }
+        full := filepath.join({g.root, f.path}, context.temp_allocator) or_else ""
+        content := git_resolve_content(&f, context.temp_allocator)
+        if full == "" || os.write_entire_file(full, transmute([]byte)content) != nil {
+            continue
+        }
+        append(&paths, f.path)
+    }
+    if len(paths) == 0 {
+        return // nothing fully resolved yet
+    }
+    // Every conflicted path in the working tree (some may have no inline markers and thus no
+    // diff file) — we can only commit once all of them are accounted for.
+    total := 0
+    for e in g.status {
+        if git_is_conflict(e.code) {
+            total += 1
+        }
+    }
+    b := strings.builder_make(context.temp_allocator)
+    fmt.sbprintf(&b, `git -C "%s" add --`, g.root)
+    for p in paths {
+        fmt.sbprintf(&b, ` "%s"`, p)
+    }
+    if len(paths) == total {
+        fmt.sbprintf(&b, ` && git -C "%s" commit --no-edit`, g.root)
+    }
+    cl_dispatch(a, fmt.tprintf("%s || true && gr", strings.to_string(b)), a.git_merge_run)
+}
+
 // The working tree, from `git status --porcelain -z`. The -z form is NUL-separated and
 // leaves paths LITERAL (no quoting/escaping), so they can be passed straight to
 // `git diff -- <path>`. Each record is "XY <space> path"; a rename/copy (X is R/C) adds a
@@ -891,6 +1056,197 @@ git_load_live :: proc(g: ^GitPane) {
         out, _ = git_run(g, "diff") // unborn branch: no HEAD to diff against
     }
     git_set_diff(g, out, "working tree", true)
+}
+
+// The absolute path of the repo's git directory (`.git`, or elsewhere for a worktree /
+// submodule), via rev-parse so worktrees resolve correctly. Trimmed, temp-allocated; "" on
+// failure. Used to probe for in-progress-operation sentinels (MERGE_HEAD, MERGE_MSG).
+git_gitdir :: proc(g: ^GitPane) -> string {
+    if out, ok := git_run(g, "rev-parse", "--absolute-git-dir"); ok {
+        return strings.trim_space(out)
+    }
+    return ""
+}
+
+// Detect an in-progress operation from `.git`. A conflicted `git merge` leaves MERGE_HEAD
+// until it's committed or aborted; while present the pane resolves conflicts instead of
+// staging. merge_title is read from MERGE_MSG (the pending merge's message) for the diff
+// title. Called on every refresh AFTER git_clear, so a finished/aborted merge clears itself.
+git_detect_op :: proc(g: ^GitPane) {
+    g.op = .None
+    gitdir := git_gitdir(g)
+    if gitdir == "" {
+        return
+    }
+    if !os.exists(filepath.join({gitdir, "MERGE_HEAD"}, context.temp_allocator) or_else "") {
+        return
+    }
+    g.op = .Merge
+    msg_path := filepath.join({gitdir, "MERGE_MSG"}, context.temp_allocator) or_else ""
+    if data, derr := os.read_entire_file_from_path(msg_path, context.temp_allocator); derr == nil {
+        text := string(data)
+        if first, _ := strings.split_lines_iterator(&text); strings.trim_space(first) != "" {
+            g.merge_title = strings.clone(strings.trim_space(first))
+        }
+    }
+}
+
+// Whether a porcelain status code marks an unmerged (conflicted) path: either side staged as
+// unmerged ('U'), or the both-added / both-deleted cases git reports as AA / DD.
+git_is_conflict :: proc(code: string) -> bool {
+    return strings.contains(code, "U") || code == "AA" || code == "DD"
+}
+
+// Load the conflicted files as resolvable conflict hunks (the right column during a merge).
+// Each conflicted working-tree file is read and split on its conflict markers
+// (git_parse_conflicts); files with no inline markers (binary / add-delete) are listed in the
+// sidebar status but contribute no hunks (resolve those in the editor / a terminal). Not
+// stageable — the staging commit recipe is locked out while a merge is in flight.
+git_load_conflicts :: proc(g: ^GitPane) {
+    git_clear_diff(g)
+    g.diff_title = strings.clone(g.merge_title == "" ? "resolve merge" : g.merge_title)
+    g.diff_stageable = false
+    for e in g.status {
+        if !git_is_conflict(e.code) {
+            continue
+        }
+        full := filepath.join({g.root, e.path}, context.temp_allocator) or_else ""
+        data, derr := os.read_entire_file_from_path(full, context.temp_allocator)
+        if derr != nil {
+            continue
+        }
+        hunks, tail := git_parse_conflicts(string(data))
+        if len(hunks) == 0 {
+            delete(hunks)
+            for s in tail {
+                delete(s)
+            }
+            delete(tail)
+            continue
+        }
+        append(&g.diff_files, DiffFile{path = strings.clone(e.path), hunks = hunks, conflict = true, tail = tail})
+    }
+    git_filter_apply(g) // initialise hidden flags (empty query -> all visible) + focus the first hunk
+}
+
+// Split a conflicted file's content into conflict hunks. Lines between `<<<<<<<` and
+// `=======` are OURS (HEAD), lines after to `>>>>>>>` are THEIRS (incoming); a diff3 base
+// section (`|||||||` to `=======`) is skipped. The clean run before each region is kept on
+// the hunk (`pre`), and the clean run after the last region is returned as `tail`, so
+// git_resolve_content can rebuild the file verbatim once a side is chosen. Each hunk starts
+// Unresolved with its body rendered as the raw both-sides view (git_conflict_render). Owned
+// by the caller (freed via git_free_files). Splitting on "\n" keeps every line — including a
+// trailing empty one — so a join with "\n" round-trips the original bytes.
+git_parse_conflicts :: proc(content: string) -> (hunks: [dynamic]DiffHunk, tail: [dynamic]string) {
+    hunks = make([dynamic]DiffHunk)
+    pre := make([dynamic]string) // clean run accumulating for the NEXT region (becomes its `pre`)
+    h: DiffHunk
+    mode := 0 // 0 clean, 1 ours, 2 base (skip), 3 theirs
+    for line in strings.split(content, "\n", context.temp_allocator) {
+        switch {
+        case strings.has_prefix(line, "<<<<<<<"):
+            h = DiffHunk{header = strings.clone("conflict"), conflict = true, pre = pre}
+            h.ours = make([dynamic]string)
+            h.theirs = make([dynamic]string)
+            pre = make([dynamic]string)
+            mode = 1
+        case strings.has_prefix(line, "|||||||") && mode == 1:
+            mode = 2 // entering the diff3 base section — drop it
+        case strings.has_prefix(line, "=======") && (mode == 1 || mode == 2):
+            mode = 3
+        case strings.has_prefix(line, ">>>>>>>") && mode == 3:
+            git_conflict_render(&h)
+            append(&hunks, h)
+            mode = 0
+        case:
+            switch mode {
+            case 0: append(&pre, strings.clone(line))
+            case 1: append(&h.ours, strings.clone(line))
+            case 3: append(&h.theirs, strings.clone(line))
+            // mode 2 (base) is intentionally dropped
+            }
+        }
+    }
+    // An unterminated region (malformed markers): salvage it as plain clean text in `pre`.
+    if mode != 0 {
+        for s in h.pre {
+            append(&pre, s)
+        }
+        delete(h.pre)
+        for s in h.ours {
+            append(&pre, s)
+        }
+        delete(h.ours)
+        for s in h.theirs {
+            append(&pre, s)
+        }
+        delete(h.theirs)
+        delete(h.header)
+    }
+    tail = pre
+    return
+}
+
+// (Re)build a conflict hunk's displayed body from its current `choice`: Unresolved shows
+// both raw sides (ours tinted as deletions, theirs as additions — the raw conflict); a
+// resolved choice shows just the kept line(s) as plain context. Frees the prior body first.
+git_conflict_render :: proc(h: ^DiffHunk) {
+    for l in h.lines {
+        delete(l.text)
+    }
+    clear(&h.lines)
+    switch h.choice {
+    case .Unresolved:
+        git_conflict_emit(h, h.ours[:], .Del)
+        git_conflict_emit(h, h.theirs[:], .Add)
+    case .Ours:
+        git_conflict_emit(h, h.ours[:], .Context)
+    case .Theirs:
+        git_conflict_emit(h, h.theirs[:], .Context)
+    case .Both:
+        git_conflict_emit(h, h.ours[:], .Context)
+        git_conflict_emit(h, h.theirs[:], .Context)
+    }
+}
+
+// Append cloned `src` lines to a conflict hunk's display body with the given colour kind.
+git_conflict_emit :: proc(h: ^DiffHunk, src: []string, kind: DiffLineKind) {
+    for s in src {
+        append(&h.lines, DiffLine{kind = kind, text = strings.clone(s)})
+    }
+}
+
+// Space on a conflict hunk: advance the resolution Unresolved -> Ours -> Theirs -> Both ->
+// Unresolved and rebuild its body to match.
+git_cycle_conflict :: proc(h: ^DiffHunk) {
+    h.choice = ConflictChoice((int(h.choice) + 1) % len(ConflictChoice))
+    git_conflict_render(h)
+}
+
+// Reconstruct a conflict file's resolved bytes from each hunk's chosen side: the clean run
+// before each region (`pre`), then the kept side, repeated in order, then the trailing run
+// (`tail`). Joined with "\n" to mirror git_parse_conflicts' split — round-tripping the
+// original file save for the resolved regions. Callers gate on no hunk being Unresolved.
+git_resolve_content :: proc(f: ^DiffFile, allocator := context.allocator) -> string {
+    out := make([dynamic]string, 0, 64, context.temp_allocator)
+    for &h in f.hunks {
+        for s in h.pre {
+            append(&out, s)
+        }
+        #partial switch h.choice {
+        case .Ours:
+            for s in h.ours {append(&out, s)}
+        case .Theirs:
+            for s in h.theirs {append(&out, s)}
+        case .Both:
+            for s in h.ours {append(&out, s)}
+            for s in h.theirs {append(&out, s)}
+        }
+    }
+    for s in f.tail {
+        append(&out, s)
+    }
+    return strings.join(out[:], "\n", allocator)
 }
 
 // A commit's full diff (Log -> Enter), via `git show`. Read-only: not stageable.

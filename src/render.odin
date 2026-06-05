@@ -826,6 +826,8 @@ git_dir_of :: proc(path: string) -> string {
 @(private = "file")
 git_status_color :: proc(code: string, th: ^Theme) -> [3]f32 {
     switch {
+    case git_is_conflict(code):
+        return th.urgent // unmerged path — needs resolving
     case git_is_staged(code):
         return th.code_return_type
     case strings.contains(code, "?"):
@@ -943,6 +945,20 @@ git_diff_color :: proc(kind: DiffLineKind, th: ^Theme) -> [3]f32 {
     }
 }
 
+// The checkbox-slot label for a conflict hunk's header: the current resolution, or "[ ? ]"
+// while unresolved. Fixed-ish width so the body text after it stays roughly aligned.
+@(private = "file")
+git_choice_label :: proc(c: ConflictChoice) -> string {
+    switch c {
+    case .Ours:   return "[ours]"
+    case .Theirs: return "[theirs]"
+    case .Both:   return "[both]"
+    case .Unresolved:
+        return "[ ? ]"
+    }
+    return "[ ? ]"
+}
+
 // One display row of the diff column, flattened for scrolling. hunk = -1 for preamble /
 // file-title rows; header marks the @@ line (carries the checkbox).
 @(private = "file")
@@ -951,7 +967,9 @@ DiffRow :: struct {
     color:    [3]f32,
     hunk:     int,
     header:   bool,
-    selected: bool,
+    selected: bool, // checked (normal) / resolved (conflict) — drives the diagonal hatch
+    conflict: bool, // a conflict hunk's rows: the header shows the resolution label, not a checkbox
+    label:    string, // the conflict header's resolution label ("[ours]" / "[ ? ]" …)
 }
 
 // A faint hatch shade derived from the block background: brighten a dark bg / darken a
@@ -1051,9 +1069,12 @@ git_draw_diff :: proc(t: ^Text, area: Rect, a: ^App, win_w, win_h: i32, now: f64
             if h.hidden {
                 continue
             }
-            append(&rows, DiffRow{text = h.header, hunk = hk, header = true, selected = h.selected})
+            // A conflict hunk's "selected" (the hatch) reads off its resolution: marked once a
+            // side is chosen. Its header carries a label instead of a checkbox.
+            mark := h.conflict ? h.choice != .Unresolved : h.selected
+            append(&rows, DiffRow{text = h.header, hunk = hk, header = true, selected = mark, conflict = h.conflict, label = git_choice_label(h.choice)})
             for l in h.lines {
-                append(&rows, DiffRow{text = l.text, color = git_diff_color(l.kind, th), hunk = hk, selected = h.selected})
+                append(&rows, DiffRow{text = l.text, color = git_diff_color(l.kind, th), hunk = hk, selected = mark, conflict = h.conflict})
             }
             append(&rows, DiffRow{text = "", hunk = -1}) // spacer between blocks
             hk += 1
@@ -1115,7 +1136,12 @@ git_draw_diff :: proc(t: ^Text, area: Rect, a: ^App, win_w, win_h: i32, now: f64
         }
         ty := f32(y) + (f32(row_h) - lh) / 2
         tx := x0
-        if r.header && g.diff_stageable {
+        if r.header && r.conflict {
+            // The resolution label stands in for the checkbox; green once a side is chosen,
+            // urgent while still unresolved.
+            text_draw(t, r.label, tx, ty, r.selected ? th.code_return_type : th.urgent)
+            tx += cw * f32(len(r.label) + 1)
+        } else if r.header && g.diff_stageable {
             text_draw(t, r.selected ? "[x]" : "[ ]", tx, ty, r.selected ? th.code_return_type : th.muted)
             tx += cw * 4 // box + a gap
         }
@@ -1166,16 +1192,17 @@ git_draw_grepbar :: proc(t: ^Text, area: Rect, a: ^App, now: f64) {
         git_draw_field(t, &g.grep, 0, lx, top, a, grep_focused, now)
     }
 
-    // Right half: the select-all / deselect-all toggle (region .Select). Its label follows
-    // state — "select all" when nothing in the filtered set is checked, else "deselect all".
-    if g.diff_stageable {
+    // Right half (region .Select): the select-all / deselect-all toggle for a stageable diff,
+    // or the merge ABORT button while a merge is being resolved (that slot's only action then).
+    if g.diff_stageable || g.op == .Merge {
         sel_focused := focused && g.region == .Select
         right := Rect{mid + buf, gy, area.x + area.w - (mid + buf), row_h}
         if sel_focused {
             fill(t, right, th.line_highlight)
         }
-        label := git_any_checked(g) ? "deselect all" : "select all"
-        text_draw(t, label, f32(right.x) + cw, top, sel_focused ? th.accent : th.muted)
+        label := g.op == .Merge ? "abort merge" : (git_any_checked(g) ? "deselect all" : "select all")
+        col := g.op == .Merge ? th.urgent : (sel_focused ? th.accent : th.muted)
+        text_draw(t, label, f32(right.x) + cw, top, col)
     }
 }
 
@@ -1194,13 +1221,14 @@ git_draw_commit :: proc(t: ^Text, strip: Rect, a: ^App, msg_rows: int, now: f64)
     focused := a.focus == .Aux && a.aux_mode == .Git
     commit_focused := focused && g.region == .Commit
 
+    merging := g.op == .Merge
     fill(t, Rect{strip.x, strip.y, strip.w, max(i32(1), i32(a.scale))}, th.border_light)
-    git_row(t, "commit", x0, strip.y, row_h, lh, commit_focused ? th.accent : th.muted)
+    git_row(t, merging ? "finish merge" : "commit", x0, strip.y, row_h, lh, commit_focused ? th.accent : th.muted)
 
     msg_top := strip.y + row_h
     empty := len(g.commit_msg.lines) == 1 && line_len(&g.commit_msg.lines[0]) == 0
     if empty && !commit_focused {
-        git_row(t, "commit message…", x0 + cw, msg_top, row_h, lh, th.muted)
+        git_row(t, merging ? "Enter: stage resolved files / complete the merge" : "commit message…", x0 + cw, msg_top, row_h, lh, th.muted)
         return
     }
     // Show a window of msg_rows lines anchored at the tail, scrolled up if the caret sits

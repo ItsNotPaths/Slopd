@@ -513,3 +513,100 @@ test_cl_settle :: proc(t: ^testing.T) {
     testing.expect(t, !a.git.spin.active)
     testing.expect_value(t, len(a.git.diff_files), 2)
 }
+
+// --- merge conflict resolution (Part 1: the KB merge editor) ---
+
+// git_is_conflict recognises the unmerged porcelain codes and nothing else.
+@(test)
+test_is_conflict :: proc(t: ^testing.T) {
+    testing.expect(t, app.git_is_conflict("UU")) // both modified
+    testing.expect(t, app.git_is_conflict("AA")) // both added
+    testing.expect(t, app.git_is_conflict("DD")) // both deleted
+    testing.expect(t, app.git_is_conflict("UD")) // modified / deleted
+    testing.expect(t, app.git_is_conflict("AU")) // added by us
+    testing.expect(t, !app.git_is_conflict("M ")) // a plain staged modification
+    testing.expect(t, !app.git_is_conflict(" M"))
+    testing.expect(t, !app.git_is_conflict("??"))
+}
+
+// A conflicted file with one region splits into a single conflict hunk: the clean run before
+// it lands on `pre`, the two sides on `ours`/`theirs`, the clean run after on the file tail.
+// The default (Unresolved) body shows both sides. Reconstruction then round-trips each choice.
+@(test)
+test_parse_conflicts :: proc(t: ^testing.T) {
+    content := "a\nb\n<<<<<<< HEAD\nours1\nours2\n=======\ntheirs1\n>>>>>>> branch\nc\n"
+    hunks, tail := app.git_parse_conflicts(content)
+    files := make([dynamic]app.DiffFile)
+    append(&files, app.DiffFile{hunks = hunks, tail = tail, conflict = true})
+    defer {
+        app.git_free_files(files)
+        delete(files)
+    }
+
+    testing.expect_value(t, len(hunks), 1)
+    h := &hunks[0]
+    testing.expect(t, h.conflict)
+    testing.expect_value(t, h.choice, app.ConflictChoice.Unresolved)
+    testing.expect_value(t, len(h.pre), 2) // "a", "b"
+    testing.expect_value(t, len(h.ours), 2) // "ours1", "ours2"
+    testing.expect_value(t, len(h.theirs), 1) // "theirs1"
+    testing.expect_value(t, len(tail), 2) // "c", "" (trailing newline)
+    testing.expect_value(t, len(h.lines), 3) // Unresolved shows ours + theirs
+
+    f := &files[0]
+    f.hunks[0].choice = .Ours
+    ours := app.git_resolve_content(f, context.temp_allocator)
+    testing.expect_value(t, ours, "a\nb\nours1\nours2\nc\n")
+
+    f.hunks[0].choice = .Theirs
+    theirs := app.git_resolve_content(f, context.temp_allocator)
+    testing.expect_value(t, theirs, "a\nb\ntheirs1\nc\n")
+
+    f.hunks[0].choice = .Both
+    both := app.git_resolve_content(f, context.temp_allocator)
+    testing.expect_value(t, both, "a\nb\nours1\nours2\ntheirs1\nc\n")
+}
+
+// A diff3-style base section (||||||| .. =======) is dropped, leaving the same ours/theirs.
+@(test)
+test_parse_conflicts_diff3 :: proc(t: ^testing.T) {
+    content := "<<<<<<< HEAD\nmine\n||||||| base\norig\n=======\nyours\n>>>>>>> b\n"
+    hunks, tail := app.git_parse_conflicts(content)
+    files := make([dynamic]app.DiffFile)
+    append(&files, app.DiffFile{hunks = hunks, tail = tail, conflict = true})
+    defer {
+        app.git_free_files(files)
+        delete(files)
+    }
+    testing.expect_value(t, len(hunks), 1)
+    testing.expect_value(t, len(hunks[0].ours), 1) // "mine"
+    testing.expect_value(t, len(hunks[0].theirs), 1) // "yours" (base "orig" dropped)
+}
+
+// Space cycles a conflict hunk Unresolved -> Ours -> Theirs -> Both -> Unresolved, rebuilding
+// the displayed body each step.
+@(test)
+test_cycle_conflict :: proc(t: ^testing.T) {
+    content := "<<<<<<< HEAD\nx\ny\n=======\nz\n>>>>>>> b\n"
+    hunks, tail := app.git_parse_conflicts(content)
+    files := make([dynamic]app.DiffFile)
+    append(&files, app.DiffFile{hunks = hunks, tail = tail, conflict = true})
+    defer {
+        app.git_free_files(files)
+        delete(files)
+    }
+    h := &hunks[0]
+
+    testing.expect_value(t, h.choice, app.ConflictChoice.Unresolved)
+    app.git_cycle_conflict(h)
+    testing.expect_value(t, h.choice, app.ConflictChoice.Ours)
+    testing.expect_value(t, len(h.lines), 2) // just ours: "x", "y"
+    app.git_cycle_conflict(h)
+    testing.expect_value(t, h.choice, app.ConflictChoice.Theirs)
+    testing.expect_value(t, len(h.lines), 1) // just theirs: "z"
+    app.git_cycle_conflict(h)
+    testing.expect_value(t, h.choice, app.ConflictChoice.Both)
+    testing.expect_value(t, len(h.lines), 3) // ours + theirs
+    app.git_cycle_conflict(h)
+    testing.expect_value(t, h.choice, app.ConflictChoice.Unresolved) // wraps
+}
