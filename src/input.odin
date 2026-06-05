@@ -51,7 +51,8 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     if a == nil || a.alt_held {
         return
     }
-    a.blink_base = glfw.GetTime() // typing: caret solid, then resumes blinking
+    a.last_input_at = glfw.GetTime()
+    a.blink_base = a.last_input_at // typing: caret solid, then resumes blinking
     a.move_all_armed = false // typing isn't a motion; cancel a pending move-all
     if a.cl_active {
         doc_insert_rune(&a.cl.doc, codepoint)
@@ -90,7 +91,9 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
 
 handle_key :: proc(a: ^App, key, action, mods: i32) {
     if action == glfw.PRESS || action == glfw.REPEAT {
-        a.blink_base = glfw.GetTime() // any keypress holds the caret solid, then blinks
+        now := glfw.GetTime()
+        a.blink_base = now // any keypress holds the caret solid, then blinks
+        a.last_input_at = now // perf log: timestamp for keystroke->present latency
     }
 
     // Track Alt held — drives the terminal-session overlay (fading it in on press).

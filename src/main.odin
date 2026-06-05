@@ -50,10 +50,15 @@ main :: proc() {
 
     // --util: launch with no editor, the aux pane filling the window (the mode an
     // xdg-portal file picker would start in). Focus is pinned to the aux pane.
+    // --perflog: append a per-second frame-timing line to perf.log (off otherwise).
+    perflog := false
     for arg in os.args[1:] {
         if arg == "--util" {
             app.view = .Util
             app.focus = .Aux
+        }
+        if arg == "--perflog" {
+            perflog = true
         }
     }
 
@@ -98,6 +103,12 @@ main :: proc() {
         return
     }
 
+    // Frame-timing log (no-op unless --perflog was passed). Needs the GL context for its
+    // timer queries, so it's set up after text_init.
+    perf: Perf
+    perf_init(&perf, perflog)
+    defer perf_destroy(&perf)
+
     // The window owns the App so the "c" key callback can reach it.
     app.window = window
     glfw.SetWindowUserPointer(window, &app)
@@ -129,8 +140,20 @@ main :: proc() {
             app.scale = sx
         }
         text_apply(&text, app.font_px, app.scale)
+
+        // Frame timing: cpu = render's vertex assembly, gpu = a timer query around its
+        // draws, swap = the SwapBuffers (vsync) block. perf_frame reads back the previous
+        // frame's gpu timer and logs a window once a second. All no-ops unless --perflog.
+        build_start := glfw.GetTime()
+        perf_gpu_begin(&perf)
         render(&app, &text, w, h, now)
+        perf_gpu_end(&perf)
+        cpu_ms := f32((glfw.GetTime() - build_start) * 1000)
+
+        swap_start := glfw.GetTime()
         glfw.SwapBuffers(window)
+        swap_ms := f32((glfw.GetTime() - swap_start) * 1000)
+        perf_frame(&perf, glfw.GetTime(), cpu_ms, swap_ms, w, h, text.frame_verts, app.last_input_at)
 
         // Debounced font-zoom save: once the size has sat unchanged for FONT_SAVE_DELAY
         // (the deadline app_next_wake also wakes us for), write it to config and disarm.

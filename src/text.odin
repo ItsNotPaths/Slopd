@@ -32,6 +32,7 @@ Text :: struct {
     ttf:        []u8, // retained so the atlas can re-bake on DPI change
     logical_px: f32, // atlas is baked at logical_px * scale physical pixels
     scale:      f32, // DPI scale the atlas is currently baked for
+    frame_verts: int, // vertices submitted this frame (reset in render; read by the perf log)
 }
 
 @(private = "file")
@@ -250,6 +251,7 @@ quad_flush :: proc(t: ^Text, buf: ^[dynamic]f32, win_w, win_h: i32) {
     gl.BindBuffer(gl.ARRAY_BUFFER, t.quad_vbo)
     gl.BufferData(gl.ARRAY_BUFFER, len(buf) * size_of(f32), raw_data(buf^), gl.DYNAMIC_DRAW)
     gl.DrawArrays(gl.TRIANGLES, 0, i32(len(buf) / 5))
+    t.frame_verts += len(buf) / 5
 }
 
 @(private = "file")
@@ -266,4 +268,5 @@ glyph_flush :: proc(t: ^Text, win_w, win_h: i32) {
     gl.BindBuffer(gl.ARRAY_BUFFER, t.glyph_vbo)
     gl.BufferData(gl.ARRAY_BUFFER, len(t.glyphs) * size_of(f32), raw_data(t.glyphs), gl.DYNAMIC_DRAW)
     gl.DrawArrays(gl.TRIANGLES, 0, i32(len(t.glyphs) / 7))
+    t.frame_verts += len(t.glyphs) / 7
 }

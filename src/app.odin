@@ -112,6 +112,7 @@ App :: struct {
     // last-input time the caret blink is measured from; the two Anims tween the Zen
     // aux-pane reveal and the terminal switcher fade.
     blink_base:    f64,
+    last_input_at: f64, // glfw time of the most recent keystroke; the perf log measures keystroke->present from it
     zen_anim:      Anim, // aux-pane reveal in Zen: 0 hidden .. 1 docked
     switcher_anim: Anim, // terminal switcher fade-in while Alt is held
     split_anim:    Anim, // editor/aux split widen while git is the aux mode (carries the editor fraction)

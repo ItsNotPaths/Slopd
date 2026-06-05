@@ -41,6 +41,17 @@ Highlighter :: struct {
     tree: ts.Tree,
     tree_buf: rawptr, // the Buffer it was parsed from (identity)
     tree_ver: u64, // doc.version at parse time
+    // Painted-row cache: highlight_visible repaints the same window every frame (idle
+    // caret blink, a non-editor animation), redoing the query + sort + per-rune fill
+    // for an identical result. Memoize the last painted rows keyed by what they depend
+    // on — buffer, content version, window, and theme (colours bake in) — and reuse on a
+    // match. Heap-owned so it survives the per-frame temp free_all; rebuilt on any change.
+    cache_rows: []Row_Colors,
+    cache_buf: rawptr,
+    cache_ver: u64,
+    cache_first: int,
+    cache_count: int,
+    cache_theme: Theme,
 }
 
 highlighter_init :: proc(h: ^Highlighter) {
@@ -59,6 +70,7 @@ highlighter_destroy :: proc(h: ^Highlighter) {
         }
     }
     delete(h.loaded)
+    hl_cache_free(h)
     if h.tree != nil {
         ts.tree_delete(h.tree)
     }
@@ -109,6 +121,18 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
     th := &a.theme
     h := &a.hl
 
+    // Cache hit: same buffer, content version, window, and theme as the last paint — the
+    // rows are identical, so skip the query + sort + fill entirely (a settled view, an
+    // idle blink, or any animation that doesn't move this viewport lands here).
+    if h.cache_rows != nil &&
+       h.cache_buf == rawptr(b) &&
+       h.cache_ver == b.version &&
+       h.cache_first == first_line &&
+       h.cache_count == count &&
+       h.cache_theme == th^ {
+        return h.cache_rows
+    }
+
     // The whole-buffer parse is cached (tree-sitter needs the full text); we only
     // query the visible rows, so the per-frame work is bounded by the viewport and a
     // settled view (blinking caret, smooth scroll) reuses the tree without reparsing.
@@ -157,14 +181,15 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
         return x.start.col < y.start.col
     })
 
-    // A colour row per visible line, defaulting to the foreground.
-    rows := make([]Row_Colors, count, context.temp_allocator)
+    // A colour row per visible line, defaulting to the foreground. Heap-allocated (not
+    // temp) so it can be cached across frames — freed when the cache is next replaced.
+    rows := make([]Row_Colors, count)
     for k in 0 ..< count {
         line := first_line + k
         if line >= len(b.lines) {
             continue
         }
-        rc := make(Row_Colors, len(b.lines[line].text), context.temp_allocator)
+        rc := make(Row_Colors, len(b.lines[line].text))
         slice.fill(rc, th.fg)
         rows[k] = rc
     }
@@ -188,7 +213,26 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
             }
         }
     }
+
+    // Replace the cache with this paint so the next identical frame reuses it.
+    hl_cache_free(h)
+    h.cache_rows = rows
+    h.cache_buf = rawptr(b)
+    h.cache_ver = b.version
+    h.cache_first = first_line
+    h.cache_count = count
+    h.cache_theme = th^
     return rows
+}
+
+// Frees the heap-owned painted-row cache (each row slice, then the row array).
+@(private = "file")
+hl_cache_free :: proc(h: ^Highlighter) {
+    for rc in h.cache_rows {
+        delete(rc)
+    }
+    delete(h.cache_rows)
+    h.cache_rows = nil
 }
 
 // The fold range for a block opening on `line`, from the buffer's parse tree:

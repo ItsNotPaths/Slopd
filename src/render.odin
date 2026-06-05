@@ -52,6 +52,7 @@ panel :: proc(t: ^Text, r: Rect, bg, focus: [3]f32, focused: bool, scale: f32) {
 
 render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
     th := &a.theme
+    t.frame_verts = 0 // the perf log tallies this frame's submitted vertices
     // Viewport must track the framebuffer or the shaders (NDC -> viewport) distort
     // on resize.
     gl.Viewport(0, 0, win_w, win_h)

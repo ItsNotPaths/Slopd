@@ -13,9 +13,13 @@ package main
 // Mechanism only for now: nothing starts an Anim yet, so app_next_wake always says
 // "block" and the editor idles exactly as before. Smooth scroll is the first consumer.
 
-// Upper bound between redraws while animating. SwapBuffers at SwapInterval(1) is the
-// real pacer (vsync); this only caps the wait so a missed event can't stall a frame.
-FRAME_BUDGET :: 1.0 / 120.0
+// The wait an animating frame asks for: 0 means "don't sleep, redraw now" so SwapBuffers
+// at SwapInterval(1) is the sole pacer and animations run at the full refresh rate (e.g.
+// 240fps on a 240Hz panel). A non-zero budget here would floor the wait and cap animation
+// fps below vsync — at 1/120 the loop missed every other 240Hz edge, halving smooth-scroll
+// to ~120fps. (If a compositor ever leaves SwapBuffers non-blocking, this becomes a busy
+// spin while animating — acceptable, since an animating frame wants to redraw regardless.)
+VSYNC_PACED :: 0.0
 
 // Animation timings (seconds) — short by design, in keeping with the spartan ethos.
 BLINK_HALF :: 0.5 // caret on for this long, then off for this long
@@ -53,25 +57,25 @@ anim_value :: proc(an: ^Anim, now: f64) -> f32 {
 app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     wake := f64(-1)
     if anim_active(&editor_current(&a.editor).scroll_anim, now) { // smooth scroll
-        wake = sched_min(wake, FRAME_BUDGET)
+        wake = sched_min(wake, VSYNC_PACED)
     }
     if a.view == .Zen && anim_active(&a.zen_anim, now) { // aux-pane slide
-        wake = sched_min(wake, FRAME_BUDGET)
+        wake = sched_min(wake, VSYNC_PACED)
     }
     if a.view == .Split && anim_active(&a.split_anim, now) { // git pane widen/narrow
-        wake = sched_min(wake, FRAME_BUDGET)
+        wake = sched_min(wake, VSYNC_PACED)
     }
     if a.aux_mode == .Git && anim_active(&a.git.diff_scroll_anim, now) { // diff smooth scroll
-        wake = sched_min(wake, FRAME_BUDGET)
+        wake = sched_min(wake, VSYNC_PACED)
     }
     if a.aux_mode == .Git && a.git.scroll_dir != 0 { // diff auto-scroll: wake for the next tick
         wake = sched_min(wake, max(0, a.git.scroll_next - now))
     }
     if a.aux_mode == .Git && a.git.spin.active && !a.git.spin.landed { // spinning: tick to the payout
-        wake = sched_min(wake, FRAME_BUDGET)
+        wake = sched_min(wake, VSYNC_PACED)
     }
     if a.alt_held && a.aux_mode == .Terminal && anim_active(&a.switcher_anim, now) { // switcher fade
-        wake = sched_min(wake, FRAME_BUDGET)
+        wake = sched_min(wake, VSYNC_PACED)
     }
     if caret_shown(a) { // a blinking caret must wake at its next on/off edge
         wake = sched_min(wake, blink_next_edge(a, now))
