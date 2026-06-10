@@ -395,3 +395,221 @@ byte_to_rune_col :: proc(runes: []rune, byte_col: int) -> int {
     }
     return len(runes)
 }
+
+// --- definition filtering (link jumping) ---
+//
+// Given grep hits for a symbol (grep.odin) — every line that mentions it, uses included —
+// keep only the lines that DEFINE it, decided by tree-sitter. For each hit we parse its
+// file (once per file; grep groups its output by file) and inspect every whole-word
+// occurrence of the symbol on the hit's line: an occurrence is a definition when its
+// identifier node is its construct's `name:` or `declarator:` field. That is the cross-
+// grammar shape of a declaration's name (function / method / class / type / variable),
+// while a call's callee sits under `function:`/`callee:` and a bare reference under no
+// field — so invocations and uses fall away. Files whose language has no installed grammar
+// are dropped (we can't verify a definition there).
+
+// Node types that NAME-bearing definitions live in, matched as substrings so one list
+// spans many grammars: function_definition / function_declaration / function_item,
+// method_definition, class_declaration, struct_specifier, type_alias, variable_declarator,
+// init_declarator, *_spec (Go), etc.
+@(private = "file")
+DEF_TYPE_SUBSTR :: [?]string {
+    "function",
+    "method",
+    "constructor",
+    "class",
+    "struct",
+    "enum",
+    "union",
+    "interface",
+    "trait",
+    "namespace",
+    "module",
+    "macro",
+    "declaration",
+    "declarator",
+    "definition",
+    "_item",
+    "_spec",
+    "binding",
+}
+
+// Filter grep `hits` for `query` down to the subset that are DEFINITIONS, with each kept
+// hit's column moved onto the defining name. Temp-allocated, deduped by (path, line).
+ts_filter_definitions :: proc(a: ^App, query: string, hits: []GrepHit) -> []GrepHit {
+    h := &a.hl
+    out := make([dynamic]GrepHit, 0, len(hits), context.temp_allocator)
+
+    // Cache the currently-parsed file across consecutive same-file hits (grep emits its
+    // results grouped by file, so this parses each candidate file at most once).
+    cur_path := ""
+    cur_src := ""
+    cur_starts: []int
+    cur_tree: ts.Tree
+    defer if cur_tree != nil {ts.tree_delete(cur_tree)}
+
+    for hit in hits {
+        if hit.path != cur_path {
+            if cur_tree != nil {
+                ts.tree_delete(cur_tree)
+                cur_tree = nil
+            }
+            cur_path, cur_src = hit.path, ""
+            g, ok := highlighter_grammar(a, hit.path)
+            if !ok {
+                continue // no installed grammar for this file — can't verify a def
+            }
+            src, rerr := os.read_entire_file_from_path(hit.path, context.temp_allocator)
+            if rerr != nil || !ts.parser_set_language(h.parser, g.lang) {
+                continue
+            }
+            cur_src = string(src)
+            cur_starts = line_byte_starts(cur_src)
+            cur_tree = ts.parser_parse_string(h.parser, cur_src)
+        }
+        if cur_tree == nil {
+            continue
+        }
+        if col, ok := ts_def_col_on_line(cur_tree, cur_src, cur_starts, hit.line - 1, query); ok {
+            append(&out, GrepHit{path = hit.path, line = hit.line, col = col, text = hit.text})
+        }
+    }
+    return dedup_hits(out[:])
+}
+
+// The rune column of the first DEFINING occurrence of `ident` on row `row`, or ok=false if
+// none on that line defines it. Walks each whole-word occurrence, point-queries the node
+// there, and tests it with ts_point_is_def.
+@(private = "file")
+ts_def_col_on_line :: proc(tree: ts.Tree, source: string, starts: []int, row: int, ident: string) -> (int, bool) {
+    if row < 0 || row >= len(starts) {
+        return 0, false
+    }
+    lo := starts[row]
+    hi := row + 1 < len(starts) ? starts[row + 1] : len(source)
+    line := source[lo:hi]
+    root := ts.tree_root_node(tree)
+    off := 0
+    for {
+        idx := strings.index(line[off:], ident)
+        if idx < 0 {
+            break
+        }
+        at := off + idx
+        before_ok := at == 0 || !is_ident_byte(line[at - 1])
+        after := at + len(ident)
+        after_ok := after >= len(line) || !is_ident_byte(line[after])
+        if before_ok && after_ok {
+            pt := ts.Point{u32(row), u32(at)}
+            node := ts.node_named_descendant_for_point_range(root, pt, pt)
+            if ts_point_is_def(node, source, ident) {
+                return utf8.rune_count_in_string(line[:at]), true
+            }
+        }
+        off = at + len(ident)
+        if off >= len(line) {
+            break
+        }
+    }
+    return 0, false
+}
+
+// Is `node` (the identifier at a match) the NAME of a definition rather than a use? True
+// when its construct exposes it via `name:` or a `declarator:` chain. Checks the parent,
+// then the grandparent (the name can nest one level, e.g. C's function_declarator under
+// function_definition).
+@(private = "file")
+ts_point_is_def :: proc(node: ts.Node, source, ident: string) -> bool {
+    if ts.node_is_null(node) || ts.node_text(node, source) != ident {
+        return false
+    }
+    p := ts.node_parent(node)
+    if ts.node_is_null(p) {
+        return false
+    }
+    if ts_is_def_construct(p) && ts_field_names_node(p, node, source) {
+        return true
+    }
+    gp := ts.node_parent(p)
+    return !ts.node_is_null(gp) && ts_is_def_construct(gp) && ts_field_names_node(gp, node, source)
+}
+
+// Does construct `c` point at `node` as its definition name — directly via `name:` or down
+// its `declarator:` chain (the C-family shape: function_declarator -> identifier)?
+@(private = "file")
+ts_field_names_node :: proc(c, node: ts.Node, source: string) -> bool {
+    name := ts.node_child_by_field_name(c, "name")
+    if !ts.node_is_null(name) && ts.node_eq(name, node) {
+        return true
+    }
+    leaf := ts_declarator_leaf(ts.node_child_by_field_name(c, "declarator"))
+    return !ts.node_is_null(leaf) && ts.node_eq(leaf, node)
+}
+
+// Follow a `declarator:` field down to its leaf identifier (C declares a function name as
+// function_definition -> function_declarator -> identifier). Bounded so a cyclic/odd tree
+// can't loop.
+@(private = "file")
+ts_declarator_leaf :: proc(node: ts.Node) -> ts.Node {
+    cur := node
+    for _ in 0 ..< 8 {
+        if ts.node_is_null(cur) {
+            return cur
+        }
+        switch string(ts.node_type(cur)) {
+        case "identifier", "type_identifier", "field_identifier":
+            return cur
+        }
+        cur = ts.node_child_by_field_name(cur, "declarator")
+    }
+    return ts.Node{}
+}
+
+@(private = "file")
+ts_is_def_construct :: proc(node: ts.Node) -> bool {
+    t := string(ts.node_type(node))
+    for s in DEF_TYPE_SUBSTR {
+        if strings.contains(t, s) {
+            return true
+        }
+    }
+    return false
+}
+
+// Byte offset of each line's start in `source` (so a tree-sitter point row maps to bytes).
+@(private = "file")
+line_byte_starts :: proc(source: string) -> []int {
+    starts := make([dynamic]int, 0, 256, context.temp_allocator)
+    append(&starts, 0)
+    for i in 0 ..< len(source) {
+        if source[i] == '\n' {
+            append(&starts, i + 1)
+        }
+    }
+    return starts[:]
+}
+
+@(private = "file")
+is_ident_byte :: proc(b: u8) -> bool {
+    return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// Drop hits that repeat a (path, line) — one definition can be reached by more than one
+// occurrence on its line, or by both a construct and its nested declarator.
+@(private = "file")
+dedup_hits :: proc(hits: []GrepHit) -> []GrepHit {
+    out := make([dynamic]GrepHit, 0, len(hits), context.temp_allocator)
+    for h in hits {
+        dup := false
+        for e in out {
+            if e.line == h.line && e.path == h.path {
+                dup = true
+                break
+            }
+        }
+        if !dup {
+            append(&out, h)
+        }
+    }
+    return out[:]
+}

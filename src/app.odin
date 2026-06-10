@@ -30,6 +30,7 @@ AuxMode :: enum {
     Procmon,
     Git,
     Config,
+    Grep,
 }
 
 Focus :: enum {
@@ -94,6 +95,18 @@ App :: struct {
     config_pane: ConfigPane, // config / syntax aux mode (initialised in main, needs IO)
     git:         GitPane, // git aux mode (Sublime-Merge-lite; initialised in main)
     editor:      Editor, // the text buffers (left pane)
+
+    // Alt+Enter link jumping (link.odin). grep holds a multi-result jump-to-definition for
+    // a future results pane to render (single results jump straight in the editor); color
+    // holds the colour the caret was on for the stubbed colour editor. Both are state-only
+    // seams — neither pane is wired/drawn yet.
+    grep:  GrepPane,
+    color: ColorPane,
+
+    // CL `grep` behaviour (config: grep_pane). When set, a search ALWAYS opens the results
+    // pane — even a lone hit lists in it rather than jumping straight into the editor. Off
+    // restores the shortcut: a single hit jumps, 2+ open the pane. Default on.
+    grep_pane_always: bool,
 
     grammars: []Grammar, // language registry (owned; loaded in main), shared by the
     // config pane (lang list) and the highlighter (ext -> grammar)
@@ -284,6 +297,7 @@ app_destroy :: proc(a: ^App) {
     term_destroy_all(a) // kill child shells + join reader threads before GLFW shuts down
     cl_chain_clear(a) // frees any pending chain (incl. its backing array)
     cl_destroy(a)
+    grep_destroy(&a.grep) // frees any stashed jump-to-definition results
     delete(a.project_root)
     delete(a.theme_path)
     delete(a.clip_joined)

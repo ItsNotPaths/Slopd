@@ -32,6 +32,8 @@ aux_mode_name :: proc(m: AuxMode) -> string {
         return "git"
     case .Config:
         return "config"
+    case .Grep:
+        return "grep"
     }
     return ""
 }
@@ -86,6 +88,8 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
         draw_terminal(t, lay.aux, win_w, win_h, a)
     } else if a.aux_mode == .Git {
         draw_git(t, lay.aux, win_w, win_h, a, now)
+    } else if a.aux_mode == .Grep {
+        draw_grep(t, lay.aux, win_w, win_h, a)
     } else {
         label(t, aux_mode_name(a.aux_mode), lay.aux, pad, focus_fg(a, .Aux))
         flush_pane(t, lay.aux, win_w, win_h)
@@ -513,6 +517,131 @@ draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     }
 
     flush_pane(t, area, win_w, win_h)
+}
+
+// Lines of extra vertical padding per grep row — a touch airier than the editor / filetree
+// (i32(2)) so the stacked context blocks don't read as one packed wall of text.
+GREP_ROW_PAD :: 5
+
+// One flattened display row of the grep pane: a block's "path:line" title (header), one of
+// its context lines (with a line-number gutter; `match` marks the hit line), or a blank
+// spacer between blocks. `sel` tags every row of the selected block.
+@(private = "file")
+GrepRow :: struct {
+    gutter: string, // the context line's number; "" for a header / spacer
+    text:   string,
+    color:  [3]f32,
+    sel:    bool, // part of the selected block (faint background)
+    match:  bool, // the matched line (accent rail when its block is selected)
+    header: bool, // the block's "path:line" title row (drawn flush-left)
+}
+
+// The grep results pane (the FIND aux mode): a header naming the query + hit count, then each
+// hit as a `grep -rn`-style CONTEXT BLOCK — a project-relative "path:line" title over the
+// lines around the match (line-number gutter, the hit line lit), blocks parted by a blank
+// row. The selected block carries a faint bar + an accent rail on its hit line, and the list
+// centre-scrolls to keep it visible (like the filetree). Up/Down move the selection and Enter
+// jumps to it (grep_key -> grep_open_selected). Results come from the CL `grep` builtin or
+// Alt+Enter's multi-definition goto; an empty set shows a placeholder.
+draw_grep :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
+    g := &a.grep
+    th := &a.theme
+    area := inset(pane, i32(2 * a.scale))
+    if area.w <= 0 || area.h <= 0 {
+        return
+    }
+    cw := t.font.cell_w
+    lh := t.font.line_height
+    row_h := i32(lh) + i32(GREP_ROW_PAD * a.scale)
+    x0 := f32(area.x) + cw // one-cell left margin
+
+    header := g.query == "" ? "grep" : fmt.tprintf("grep: %s   (%d)", g.query, len(g.hits))
+    text_draw(t, header, x0, f32(area.y) + (f32(row_h) - lh) / 2, focus_fg(a, .Aux))
+
+    list_top := area.y + row_h
+    if len(g.hits) == 0 {
+        text_draw(t, "(no matches)", x0 + cw, f32(list_top) + (f32(row_h) - lh) / 2, th.muted)
+        flush_pane(t, area, win_w, win_h)
+        return
+    }
+
+    // The line-number gutter is as wide as the largest line number any block prints.
+    maxln := 1
+    for h in g.hits {
+        maxln = max(maxln, h.line + GREP_CONTEXT)
+    }
+    gutw := num_digits(maxln)
+
+    // Flatten the hits into display rows (title + context block + spacer), noting the row the
+    // selected block opens at so the scroll can centre on it.
+    rows := make([dynamic]GrepRow, 0, len(g.hits) * (2 * GREP_CONTEXT + 3), context.temp_allocator)
+    sel_anchor := 0
+    for h, hi in g.hits {
+        selected := hi == g.selected
+        if selected {
+            sel_anchor = len(rows)
+        }
+        loc := fmt.tprintf("%s:%d", grep_relpath(h.path, a.project_root), h.line)
+        append(&rows, GrepRow{text = loc, color = selected ? th.fg : th.muted, sel = selected, header = true})
+        if len(h.ctx) == 0 {
+            append(&rows, GrepRow{text = h.text, color = th.fg, sel = selected, match = true})
+        } else {
+            for c, k in h.ctx {
+                ln := h.ctx_first + k
+                is_match := ln == h.line
+                append(
+                    &rows,
+                    GrepRow {
+                        gutter = fmt.tprintf("%d", ln),
+                        text = c,
+                        color = is_match ? th.fg : th.muted,
+                        sel = selected,
+                        match = is_match,
+                    },
+                )
+            }
+        }
+        append(&rows, GrepRow{}) // blank spacer between blocks
+    }
+
+    max_rows := max(1, int((area.y + area.h - list_top) / row_h))
+    first := clamp(sel_anchor - max_rows / 2, 0, max(0, len(rows) - max_rows))
+    visible := min(len(rows) - first, max_rows)
+    text_x := x0 + cw * f32(gutw + 1) // gutter then a one-cell gap
+
+    for k in 0 ..< visible {
+        r := rows[first + k]
+        y := list_top + i32(k) * row_h
+        if r.sel {
+            fill(t, Rect{area.x, y, area.w, row_h}, th.line_highlight) // selected block band
+            if r.match {
+                fill(t, Rect{area.x, y, i32(2 * a.scale), row_h}, th.accent) // rail on the hit line
+            }
+        }
+        ty := f32(y) + (f32(row_h) - lh) / 2
+        if r.header {
+            text_draw(t, r.text, x0, ty, r.color) // block title, flush-left
+            continue
+        }
+        if r.gutter != "" { // right-align the line number in the gutter
+            gx := x0 + cw * f32(gutw - len(r.gutter))
+            text_draw(t, r.gutter, gx, ty, th.muted)
+        }
+        text_draw(t, r.text, text_x, ty, r.color)
+    }
+
+    flush_pane(t, area, win_w, win_h)
+}
+
+// A hit's path made project-relative for display ("/root/proj/src/x.odin" -> "src/x.odin"),
+// falling back to the full path when it isn't under the root. Borrows `path`'s storage.
+@(private = "file")
+grep_relpath :: proc(path, root: string) -> string {
+    if root != "" && strings.has_prefix(path, root) {
+        rel := path[len(root):]
+        return strings.has_prefix(rel, "/") ? rel[1:] : rel
+    }
+    return path
 }
 
 // The config / syntax pane: a "settings" block (editable key: value rows) then a

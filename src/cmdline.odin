@@ -275,6 +275,8 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         cl_put(a, args)
     case "j", "jump":
         cl_jump(a, args)
+    case "grep":
+        cl_grep(a, args)
     case "cd":
         cl_cd(a, args)
     case "tu":
@@ -355,6 +357,33 @@ cl_jump :: proc(a: ^App, args: string) {
     set_focus(a, .Editor)
 }
 
+// `grep [flags] <pattern>` (builtin): hijack the user's grep into a PROJECT-WIDE search
+// whose results land in the Grep aux pane. Any leading `-flags` are discarded — grep_run
+// forces its own info-rich set (see grep.odin) so the output is always uniform — and the
+// rest of the line is the pattern (kept whole, so multi-word patterns work). The pattern is
+// a regex (GNU grep default): no -w/-F here, unlike the symbol-lookup goto. With grep_pane
+// off, a lone hit jumps straight into the editor (no picker) while 0 or 2+ open the pane; on
+// (the default) every search opens the pane, a lone hit included. A pattern that itself
+// begins with '-' can't be expressed (the flag-strip eats it) — a rare limit we accept for
+// the "force our flags" contract.
+@(private = "file")
+cl_grep :: proc(a: ^App, args: string) {
+    query := strings.trim_space(args)
+    for query != "" && query[0] == '-' { // drop a leading flag field, then re-trim
+        query = strings.trim_space(query[len(first_field(query)):])
+    }
+    if query == "" {
+        return
+    }
+    hits := grep_run(a.project_root, query)
+    grep_set(&a.grep, query, hits)
+    if len(hits) == 1 && !a.grep_pane_always {
+        grep_open_hit(a, hits[0]) // sole match, shortcut enabled: jump straight, no pane
+    } else {
+        set_aux(a, .Grep) // list them (an empty set shows "(no matches)")
+    }
+}
+
 // `put [text]`: type the literal text then the editor's current selection into the
 // target terminal, with NO trailing newline (composes a command at the prompt).
 @(private = "file")
@@ -419,7 +448,7 @@ is_term_token :: proc(s: string) -> bool {
 @(private = "file")
 cl_is_builtin :: proc(name: string) -> bool {
     switch name {
-    case "ls", "gs", "gr", "cf", "zen", "zm", "put", "j", "jump", "cd", "tu":
+    case "ls", "gs", "gr", "cf", "zen", "zm", "put", "j", "jump", "grep", "cd", "tu":
         return true
     }
     return false

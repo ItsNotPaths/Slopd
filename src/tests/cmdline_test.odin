@@ -309,6 +309,17 @@ test_cl_parse_put_keeps_args :: proc(t: ^testing.T) {
     testing.expect_value(t, steps[0].text, "put cat -n")
 }
 
+@(test)
+test_cl_parse_grep_is_builtin :: proc(t: ^testing.T) {
+    a: app.App
+    defer app.cl_chain_clear(&a)
+    app.cl_parse(&a, "grep foo") // hijacked into the project search, never the shell
+    steps := a.cl_chain.steps[:]
+    testing.expect_value(t, len(steps), 1)
+    testing.expect(t, !steps[0].shell, "grep is a builtin")
+    testing.expect_value(t, steps[0].text, "grep foo")
+}
+
 // --- multi-step chain runner (&& across several steps; exit codes simulated) ---
 
 @(private = "file")

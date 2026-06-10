@@ -14,8 +14,9 @@ import "vendor:glfw"
 //   Alt+Left/Right            focus editor / aux pane
 //   Alt+C                     open the command line
 //   Alt+W                     open the command line pre-filled for a line jump ("j ")
-//   Alt+Enter                 filetree: cd to the selected folder (stage in CL, or run; config)
-//   Alt+F/T/G/P               aux mode: FileTree / Terminal / Git / Procmon
+//   Alt+Enter                 editor: follow the token under the caret (def / URL / [[file]] / colour);
+//                             filetree: cd to the selected folder (stage in CL, or run; config)
+//   Alt+F/T/G/P/R             aux mode: FileTree / Terminal / Git / Procmon / gRep results
 //   Alt+1..9                  jump to terminal session N (i3-style)
 //   Alt+N / Alt+Q             terminal: new / close session (max 99)
 //   Alt+L                     terminal: lock/unlock its cwd (tu skips it; number greyed)
@@ -216,9 +217,11 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         case glfw.KEY_W: // open the command line pre-filled for a line jump
             cl_inject(a, "j ")
 
-        case glfw.KEY_ENTER, glfw.KEY_KP_ENTER: // filetree: cd to the selected folder
+        case glfw.KEY_ENTER, glfw.KEY_KP_ENTER: // editor: follow the token under the caret; filetree: cd
             if a.aux_mode == .FileTree && a.focus == .Aux {
                 filetree_cd_selected(a)
+            } else if a.focus == .Editor {
+                link_follow(a) // jump to def / open URL / open [[file]].md / stash a colour
             }
 
         case glfw.KEY_1 ..= glfw.KEY_9: // i3-style quick-jump to terminal N
@@ -233,6 +236,8 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             set_aux(a, .Git)
         case glfw.KEY_P:
             set_aux(a, .Procmon)
+        case glfw.KEY_R:
+            set_aux(a, .Grep) // re-focus the grep results pane (last search)
 
         case glfw.KEY_N:
             if a.aux_mode == .Terminal {
@@ -340,6 +345,22 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         config_key(a, key, mods)
     } else if a.focus == .Aux && a.aux_mode == .Git {
         git_key(a, key, mods)
+    } else if a.focus == .Aux && a.aux_mode == .Grep {
+        grep_key(a, key, mods)
+    }
+}
+
+// Grep aux mode keys (arrows only). Up/Down move the highlighted result; Enter opens it in
+// the editor (focusing the editor). The results themselves are produced by the CL `grep`
+// builtin (cl_grep) or Alt+Enter's multi-definition goto (link.odin).
+grep_key :: proc(a: ^App, key, mods: i32) {
+    switch key {
+    case glfw.KEY_UP:
+        grep_move(&a.grep, -1)
+    case glfw.KEY_DOWN:
+        grep_move(&a.grep, 1)
+    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
+        grep_open_selected(a)
     }
 }
 
