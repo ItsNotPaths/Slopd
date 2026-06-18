@@ -23,10 +23,33 @@ FileEntry :: struct {
     display: string, // owned "<mode>  <name>  <size>  <mtime>"; host adds the ring prefix
 }
 
+// What a paste does with the marked set: duplicate the files (Copy) or move them
+// (Cut, which also empties the set afterwards). Set by the copy/cut chords; Copy is
+// the default so paste works even if you never pressed one.
+YankMode :: enum {
+    Copy,
+    Cut,
+}
+
+// A destructive op staged behind a one-key confirm (the host draws the prompt and
+// routes Enter/y -> do it, Esc -> back out). None means no prompt is up.
+FtConfirm :: enum {
+    None,
+    DeleteSel, // delete the highlighted entry
+    DeleteYanked, // delete every marked entry
+}
+
 FileTree :: struct {
     dir:      string, // current directory, absolute (owned)
     entries:  [dynamic]FileEntry,
     selected: int,
+
+    // The yank set: paths marked for a pending copy/cut, OWNED and kept across dir
+    // navigation (yank here, walk elsewhere, paste there). yank_mode says what paste
+    // does with them; confirm gates the destructive chords.
+    yanked:    [dynamic]string,
+    yank_mode: YankMode,
+    confirm:   FtConfirm,
 }
 
 filetree_init :: proc(ft: ^FileTree) {
@@ -41,6 +64,8 @@ filetree_init :: proc(ft: ^FileTree) {
 filetree_destroy :: proc(ft: ^FileTree) {
     filetree_clear(ft)
     delete(ft.entries)
+    filetree_yank_reset(ft)
+    delete(ft.yanked)
 }
 
 // (Re)reads dir. ".." is always the first entry (except at the filesystem root);
@@ -123,7 +148,200 @@ filetree_activate :: proc(ft: ^FileTree) -> (path: string, is_file: bool) {
     return e.path, true
 }
 
+// --- yank set + file operations ---
+//
+// The yank set is a list of marked absolute paths plus a mode (copy/cut). Marking is
+// toggle-on-toggle-off; paste applies the mode into the current dir; the two deletes
+// remove the highlighted entry or the whole set. All paths are owned by ft.yanked and
+// survive dir navigation, so you can mark in one directory and paste in another. Every
+// op reloads the listing afterwards (preserving the cursor row where it can).
+
+// Toggle the highlighted entry in/out of the yank set. ".." is never marked.
+filetree_yank_toggle :: proc(ft: ^FileTree) {
+    e := filetree_selected(ft)
+    if e == nil || e.name == ".." {
+        return
+    }
+    for p, i in ft.yanked {
+        if p == e.path {
+            delete(ft.yanked[i])
+            ordered_remove(&ft.yanked, i)
+            return
+        }
+    }
+    append(&ft.yanked, strings.clone(e.path))
+}
+
+// Add the highlighted entry to the yank set if absent (idempotent — unlike the toggle).
+// ".." is never marked. Used by the sweep so re-crossing a row never un-marks it.
+filetree_yank_add :: proc(ft: ^FileTree) {
+    e := filetree_selected(ft)
+    if e == nil || e.name == ".." || filetree_yanked_contains(ft, e.path) {
+        return
+    }
+    append(&ft.yanked, strings.clone(e.path))
+}
+
+// Sweep-mark: mark the current row, step the cursor, mark the row it lands on. Holding
+// Shift while pressing Up/Down thus paints a contiguous marked run as the cursor moves.
+filetree_yank_sweep :: proc(ft: ^FileTree, delta: int) {
+    filetree_yank_add(ft)
+    filetree_move(ft, delta)
+    filetree_yank_add(ft)
+}
+
+// Clear the whole yank set (the "reset" chord).
+filetree_yank_reset :: proc(ft: ^FileTree) {
+    for p in ft.yanked {
+        delete(p)
+    }
+    clear(&ft.yanked)
+}
+
+filetree_yanked_contains :: proc(ft: ^FileTree, path: string) -> bool {
+    for p in ft.yanked {
+        if p == path {
+            return true
+        }
+    }
+    return false
+}
+
+// Apply the yank set to the current dir: Copy duplicates, Cut moves (then empties the
+// set). Each destination name is made unique so an existing file is never clobbered.
+filetree_paste :: proc(ft: ^FileTree) {
+    if len(ft.yanked) == 0 {
+        return
+    }
+    for src in ft.yanked {
+        dst := fs_unique_dest(ft.dir, filepath.base(src)) // base slices src; used at once
+        if ft.yank_mode == .Cut {
+            // rename is an atomic move on one filesystem; fall back to copy+remove
+            // across devices (EXDEV), where rename can't relink the inode.
+            if os.rename(src, dst) != nil && fs_copy_path(src, dst) {
+                fs_remove_path(src)
+            }
+        } else {
+            fs_copy_path(src, dst)
+        }
+    }
+    if ft.yank_mode == .Cut {
+        filetree_yank_reset(ft) // the sources are gone; the marks would dangle
+    }
+    filetree_reload(ft)
+}
+
+// Delete the highlighted entry (".." excluded). Staged behind a confirm by the host.
+filetree_delete_selected :: proc(ft: ^FileTree) {
+    e := filetree_selected(ft)
+    if e == nil || e.name == ".." {
+        return
+    }
+    target := strings.clone(e.path, context.temp_allocator) // reload frees e.path
+    fs_remove_path(target)
+    filetree_yank_drop(ft, target) // a marked-then-deleted path must not dangle
+    filetree_reload(ft)
+}
+
+// Delete every marked entry, then clear the (now-dangling) set.
+filetree_delete_yanked :: proc(ft: ^FileTree) {
+    for p in ft.yanked {
+        fs_remove_path(p)
+    }
+    filetree_yank_reset(ft)
+    filetree_reload(ft)
+}
+
+// Re-read the current dir, keeping the cursor near where it was (filetree_load resets
+// it to 0). ft.dir is freed by the load, so clone before handing it back in.
+filetree_reload :: proc(ft: ^FileTree) {
+    idx := ft.selected
+    dir := strings.clone(ft.dir, context.temp_allocator)
+    filetree_load(ft, dir)
+    ft.selected = clamp(idx, 0, max(0, len(ft.entries) - 1))
+}
+
 // --- internals ---
+
+// Drop a single path from the yank set if present (used when it's deleted out from
+// under the marks).
+@(private = "file")
+filetree_yank_drop :: proc(ft: ^FileTree, path: string) {
+    for p, i in ft.yanked {
+        if p == path {
+            delete(ft.yanked[i])
+            ordered_remove(&ft.yanked, i)
+            return
+        }
+    }
+}
+
+// A destination path under `dir` for base name `name` that does not already exist:
+// the bare name if it's free, else "<stem>_copy<ext>", "<stem>_copy2<ext>", ... So a
+// paste never overwrites (and pasting into the source dir yields a duplicate).
+@(private = "file")
+fs_unique_dest :: proc(dir, name: string) -> string {
+    base := filepath.join({dir, name}, context.temp_allocator) or_else ""
+    if !os.exists(base) {
+        return base
+    }
+    ext := filepath.ext(name) // includes the dot, or "" if none
+    stem := name[:len(name) - len(ext)]
+    for i in 1 ..< 10000 {
+        suffix := i == 1 ? "_copy" : fmt.tprintf("_copy%d", i)
+        cand := filepath.join({dir, fmt.tprintf("%s%s%s", stem, suffix, ext)}, context.temp_allocator) or_else ""
+        if !os.exists(cand) {
+            return cand
+        }
+    }
+    return base
+}
+
+// Recursively copy a file or directory tree src -> dst. Returns false if any leaf
+// failed (best-effort: a partial tree may remain).
+@(private = "file")
+fs_copy_path :: proc(src, dst: string) -> bool {
+    if os.is_dir(src) {
+        os.make_directory(dst) // ignore "already exists" — fs_unique_dest kept it fresh
+        ok := true
+        if f, oerr := os.open(src); oerr == nil {
+            defer os.close(f)
+            it := os.read_directory_iterator_create(f)
+            defer os.read_directory_iterator_destroy(&it)
+            for fi in os.read_directory_iterator(&it) {
+                cs := filepath.join({src, fi.name}, context.temp_allocator) or_else ""
+                cd := filepath.join({dst, fi.name}, context.temp_allocator) or_else ""
+                if !fs_copy_path(cs, cd) {
+                    ok = false
+                }
+            }
+        }
+        return ok
+    }
+    data, rerr := os.read_entire_file(src, context.allocator)
+    if rerr != nil {
+        return false
+    }
+    defer delete(data)
+    return os.write_entire_file(dst, data) == nil
+}
+
+// Recursively remove a file or directory tree. A directory is emptied first (os.remove
+// is rmdir on a dir, which needs it empty), with its handle closed before the rmdir.
+@(private = "file")
+fs_remove_path :: proc(path: string) -> bool {
+    if os.is_dir(path) {
+        if f, oerr := os.open(path); oerr == nil {
+            it := os.read_directory_iterator_create(f)
+            for fi in os.read_directory_iterator(&it) {
+                fs_remove_path(filepath.join({path, fi.name}, context.temp_allocator) or_else "")
+            }
+            os.read_directory_iterator_destroy(&it)
+            os.close(f)
+        }
+    }
+    return os.remove(path) == nil
+}
 
 @(private = "file")
 filetree_clear :: proc(ft: ^FileTree) {

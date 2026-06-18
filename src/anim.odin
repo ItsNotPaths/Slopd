@@ -77,6 +77,9 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     if a.alt_held && a.aux_mode == .Terminal && anim_active(&a.switcher_anim, now) { // switcher fade
         wake = sched_min(wake, VSYNC_PACED)
     }
+    if a.ctrl_held && a.focus == .Aux && a.aux_mode == .FileTree && anim_active(&a.chord_anim, now) { // chord bar fade
+        wake = sched_min(wake, VSYNC_PACED)
+    }
     if a.aux_mode == .Procmon && anim_active(&a.procmon.scroll_anim, now) { // list smooth scroll
         wake = sched_min(wake, VSYNC_PACED)
     }

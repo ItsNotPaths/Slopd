@@ -103,8 +103,16 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
         draw_term_overlay(t, lay.aux, win_w, win_h, a, now)
     }
 
+    // Filetree bottom overlay: the Ctrl-held chord cheat-sheet, or a pending delete
+    // confirm (which stays up until answered). Both sit inside the filetree pane so the
+    // command-line strip is never co-opted.
+    if a.aux_mode == .FileTree && (a.tree.confirm != .None || (a.ctrl_held && a.focus == .Aux)) {
+        draw_filetree_overlay(t, lay.aux, win_w, win_h, a, now)
+    }
+
     // Bottom status / command strip: the command line while active, else an
-    // emacs-style modeline for the editor buffer.
+    // emacs-style modeline for the editor buffer. (The filetree chord bar / delete
+    // confirm are NOT here — they overlay the filetree pane itself, see above.)
     if a.cl_active {
         draw_command_line(t, lay.strip, a, now)
     } else {
@@ -441,6 +449,104 @@ draw_status :: proc(t: ^Text, strip: Rect, a: ^App) {
     }
 }
 
+// The filetree's bottom overlay, sitting INSIDE the filetree pane (never the command
+// strip): either the Ctrl-held chord cheat-sheet or a pending delete confirm. A filled
+// bar anchored to the pane bottom; the chord list left-flows and wraps to as many rows
+// as the (possibly narrow) pane needs. Colours fade up from the pane bg via chord_anim,
+// the Ctrl-hold analogue of the terminal switcher fade; the confirm shows fully opaque.
+@(private = "file")
+draw_filetree_overlay :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) {
+    th := &a.theme
+    area := inset(pane, i32(2 * a.scale)) // sit inside the focus outline
+    if area.w <= 0 || area.h <= 0 {
+        return
+    }
+    cw := t.font.cell_w
+    lh := t.font.line_height
+    row_h := i32(lh) + i32(6 * a.scale)
+    pad := i32(8 * a.scale)
+
+    // A pending delete owns the overlay: a single urgent row, drawn opaque.
+    if a.tree.confirm != .None {
+        what: string
+        if a.tree.confirm == .DeleteYanked {
+            what = fmt.tprintf("%d marked", len(a.tree.yanked))
+        } else if e := filetree_selected(&a.tree); e != nil {
+            what = filepath.base(e.path)
+        } else {
+            what = "entry"
+        }
+        msg := fmt.tprintf("delete %s?   enter/y = confirm    esc = cancel", what)
+        by := area.y + area.h - row_h
+        fill(t, Rect{area.x, by, area.w, row_h}, th.border_dark)
+        text_draw(t, msg, f32(area.x + pad), f32(by) + (f32(row_h) - lh) / 2, th.urgent)
+        flush_pane(t, area, win_w, win_h)
+        return
+    }
+
+    // Opaque lerp out of the pane bg (so no alpha is needed) as Ctrl is held.
+    f := clamp(anim_value(&a.chord_anim, now), 0, 1)
+    bar_bg := lerp3(th.bg, th.border_dark, f)
+    key_col := lerp3(th.bg, th.accent, f)
+    lbl_col := lerp3(th.bg, th.muted, f)
+
+    // Keys carry a "^" so the bar reads as the Ctrl menu; the state readout (paste mode +
+    // marked count) is the final flow item, so it wraps with everything else.
+    hints := [?][2]string {
+        {"^y", "yank"},
+        {"^u", "reset"},
+        {"^c", "copy"},
+        {"^x", "cut"},
+        {"^p", "paste"},
+        {"^d", "del"},
+        {"^D", "del-set"},
+        {"^w", "path"},
+        {"^W", "dir"},
+    }
+    mode := a.tree.yank_mode == .Cut ? "cut" : "copy"
+    state := fmt.tprintf("[%s · %d marked]", mode, len(a.tree.yanked))
+
+    // Pack items (each "key label", plus the state) into rows of the available width,
+    // recording each item's row + start column. cur_x in cells; GAP cells between items.
+    GAP :: 2
+    maxw := max(1, int(f32(area.w - 2 * pad) / cw))
+    item_w: [len(hints) + 1]int
+    for h, i in hints {
+        item_w[i] = len(h[0]) + 1 + len(h[1]) // key + space + label (ASCII: bytes == cells)
+    }
+    item_w[len(hints)] = len(state) // "·" is multi-byte but renders one cell — close enough for layout
+    row_of: [len(hints) + 1]int
+    x_of: [len(hints) + 1]int
+    cur_row, cur_x := 0, 0
+    for w, i in item_w {
+        if cur_x > 0 && cur_x + w > maxw {
+            cur_row += 1
+            cur_x = 0
+        }
+        row_of[i] = cur_row
+        x_of[i] = cur_x
+        cur_x += w + GAP
+    }
+    nrows := cur_row + 1
+
+    bar_h := i32(nrows) * row_h
+    by := area.y + area.h - bar_h
+    fill(t, Rect{area.x, by, area.w, bar_h}, bar_bg)
+
+    item_xy :: proc(area: Rect, by, row_h, pad: i32, cw, lh: f32, col, row: int) -> (x, y: f32) {
+        return f32(area.x + pad) + cw * f32(col), f32(by + i32(row) * row_h) + (f32(row_h) - lh) / 2
+    }
+    for h, i in hints {
+        x, y := item_xy(area, by, row_h, pad, cw, lh, x_of[i], row_of[i])
+        text_draw(t, h[0], x, y, key_col)
+        text_draw(t, h[1], x + cw * f32(len(h[0]) + 1), y, lbl_col)
+    }
+    sx, sy := item_xy(area, by, row_h, pad, cw, lh, x_of[len(hints)], row_of[len(hints)])
+    text_draw(t, state, sx, sy, lbl_col)
+
+    flush_pane(t, area, win_w, win_h)
+}
+
 // Abbreviate a leading $HOME to ~ for display (e.g. /home/me/src -> ~/src). Returns a
 // borrowed slice of `path` when nothing changes, else a fresh string in `alloc`.
 @(private = "file")
@@ -508,13 +614,20 @@ draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
         i := first + k
         e := &ft.entries[i]
         y := list_top + i32(k) * row_h
+        // Marked rows get a faint bg bar; the cursor row's separator draws over it.
+        marked := filetree_yanked_contains(ft, e.path)
+        if marked {
+            fill(t, Rect{area.x, y, area.w, row_h}, th.line_highlight)
+        }
         if i == ft.selected {
             fill(t, Rect{area.x, y, area.w, row_h}, th.separator)
         }
         ty := f32(y) + (f32(row_h) - lh) / 2
+        // Marked-for-yank takes the prefix slot (accent '+'); else the ring star / dash.
         ringed := ring_contains(a, e.path)
-        prefix := ringed ? "*" : "-"
-        text_draw(t, prefix, x0, ty, ringed ? th.urgent : th.muted)
+        prefix := marked ? "+" : ringed ? "*" : "-"
+        pcol := marked ? th.accent : ringed ? th.urgent : th.muted
+        text_draw(t, prefix, x0, ty, pcol)
         text_draw(t, e.display, x0 + cw * 2, ty, e.is_dir ? th.code_return_type : th.fg)
     }
 

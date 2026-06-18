@@ -1,6 +1,8 @@
 package tests
 
 import app ".."
+import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
@@ -29,4 +31,175 @@ test_filetree_nav :: proc(t: ^testing.T) {
 
     app.filetree_parent(&ft)
     testing.expect(t, strings.has_suffix(ft.dir, "Slopd"))
+}
+
+// --- file-op fixtures ---------------------------------------------------------
+
+@(private = "file")
+join :: proc(parts: ..string) -> string {
+    return filepath.join(parts, context.temp_allocator) or_else ""
+}
+
+@(private = "file")
+rmrf :: proc(path: string) {
+    if os.is_dir(path) {
+        if f, err := os.open(path); err == nil {
+            it := os.read_directory_iterator_create(f)
+            for fi in os.read_directory_iterator(&it) {
+                rmrf(join(path, fi.name))
+            }
+            os.read_directory_iterator_destroy(&it)
+            os.close(f)
+        }
+    }
+    os.remove(path)
+}
+
+@(private = "file")
+write_file :: proc(path, content: string) {
+    _ = os.write_entire_file(path, transmute([]u8)content)
+}
+
+@(private = "file")
+sel_by_name :: proc(ft: ^app.FileTree, name: string) -> int {
+    for e, i in ft.entries {
+        if e.name == name {
+            return i
+        }
+    }
+    return -1
+}
+
+// Yank a file, paste it (Copy) into the same dir -> a "_copy" duplicate with the same
+// bytes, leaving the original; then delete the duplicate via the selected-entry op.
+@(test)
+test_filetree_copy_paste_delete :: proc(t: ^testing.T) {
+    base := os.get_env("TMPDIR", context.temp_allocator)
+    if base == "" {
+        base = "/tmp"
+    }
+    dir := join(base, "slopd_ft_copy")
+    rmrf(dir)
+    os.make_directory(dir)
+    defer rmrf(dir)
+    write_file(join(dir, "a.txt"), "hello")
+
+    ft: app.FileTree
+    app.filetree_load(&ft, dir)
+    defer app.filetree_destroy(&ft)
+
+    i := sel_by_name(&ft, "a.txt")
+    testing.expect(t, i >= 0)
+    ft.selected = i
+    app.filetree_yank_toggle(&ft)
+    testing.expect(t, app.filetree_yanked_contains(&ft, join(dir, "a.txt")))
+
+    ft.yank_mode = .Copy
+    app.filetree_paste(&ft)
+    testing.expect(t, os.exists(join(dir, "a.txt"))) // original survives a copy
+    dup := join(dir, "a_copy.txt")
+    testing.expect(t, os.exists(dup))
+    data, _ := os.read_entire_file(dup, context.temp_allocator)
+    testing.expect(t, string(data) == "hello")
+
+    ft.selected = sel_by_name(&ft, "a_copy.txt")
+    app.filetree_delete_selected(&ft)
+    testing.expect(t, !os.exists(dup))
+}
+
+// Cut a file, navigate into a subdir, paste -> the file MOVES there and the marked set
+// empties (its sources are gone).
+@(test)
+test_filetree_cut_move :: proc(t: ^testing.T) {
+    base := os.get_env("TMPDIR", context.temp_allocator)
+    if base == "" {
+        base = "/tmp"
+    }
+    dir := join(base, "slopd_ft_cut")
+    sub := join(dir, "sub")
+    rmrf(dir)
+    os.make_directory(dir)
+    os.make_directory(sub)
+    defer rmrf(dir)
+    write_file(join(dir, "f.txt"), "data")
+
+    ft: app.FileTree
+    app.filetree_load(&ft, dir)
+    defer app.filetree_destroy(&ft)
+
+    ft.selected = sel_by_name(&ft, "f.txt")
+    app.filetree_yank_toggle(&ft)
+    ft.yank_mode = .Cut
+
+    ft.selected = sel_by_name(&ft, "sub")
+    app.filetree_enter(&ft) // descend into sub
+    app.filetree_paste(&ft)
+
+    testing.expect(t, os.exists(join(sub, "f.txt"))) // moved in
+    testing.expect(t, !os.exists(join(dir, "f.txt"))) // gone from source
+    testing.expect(t, len(ft.yanked) == 0) // cut clears the set
+}
+
+// Shift+Up/Down sweep marks a contiguous run as the cursor moves, idempotently (a row
+// re-crossed stays marked, not toggled off).
+@(test)
+test_filetree_sweep :: proc(t: ^testing.T) {
+    base := os.get_env("TMPDIR", context.temp_allocator)
+    if base == "" {
+        base = "/tmp"
+    }
+    dir := join(base, "slopd_ft_sweep")
+    rmrf(dir)
+    os.make_directory(dir)
+    defer rmrf(dir)
+    write_file(join(dir, "a.txt"), "")
+    write_file(join(dir, "b.txt"), "")
+    write_file(join(dir, "c.txt"), "")
+
+    ft: app.FileTree
+    app.filetree_load(&ft, dir)
+    defer app.filetree_destroy(&ft)
+
+    ft.selected = sel_by_name(&ft, "a.txt")
+    app.filetree_yank_sweep(&ft, 1) // marks a + b, lands on b
+    app.filetree_yank_sweep(&ft, 1) // marks b + c, lands on c
+    testing.expect(t, len(ft.yanked) == 3) // a, b, c all marked
+    testing.expect(t, app.filetree_yanked_contains(&ft, join(dir, "b.txt")))
+
+    app.filetree_yank_sweep(&ft, -1) // re-cross b: idempotent, no un-mark
+    testing.expect(t, len(ft.yanked) == 3)
+}
+
+// Reset clears marks without touching files; delete-yanked removes the whole set.
+@(test)
+test_filetree_reset_and_delete_yanked :: proc(t: ^testing.T) {
+    base := os.get_env("TMPDIR", context.temp_allocator)
+    if base == "" {
+        base = "/tmp"
+    }
+    dir := join(base, "slopd_ft_del")
+    rmrf(dir)
+    os.make_directory(dir)
+    defer rmrf(dir)
+    write_file(join(dir, "x.txt"), "x")
+    write_file(join(dir, "y.txt"), "y")
+
+    ft: app.FileTree
+    app.filetree_load(&ft, dir)
+    defer app.filetree_destroy(&ft)
+
+    ft.selected = sel_by_name(&ft, "x.txt");app.filetree_yank_toggle(&ft)
+    ft.selected = sel_by_name(&ft, "y.txt");app.filetree_yank_toggle(&ft)
+    testing.expect(t, len(ft.yanked) == 2)
+
+    app.filetree_yank_reset(&ft)
+    testing.expect(t, len(ft.yanked) == 0)
+    testing.expect(t, os.exists(join(dir, "x.txt"))) // reset is non-destructive
+
+    ft.selected = sel_by_name(&ft, "x.txt");app.filetree_yank_toggle(&ft)
+    ft.selected = sel_by_name(&ft, "y.txt");app.filetree_yank_toggle(&ft)
+    app.filetree_delete_yanked(&ft)
+    testing.expect(t, !os.exists(join(dir, "x.txt")))
+    testing.expect(t, !os.exists(join(dir, "y.txt")))
+    testing.expect(t, len(ft.yanked) == 0)
 }

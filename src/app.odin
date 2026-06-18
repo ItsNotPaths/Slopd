@@ -129,6 +129,7 @@ App :: struct {
     last_input_at: f64, // glfw time of the most recent keystroke; the perf log measures keystroke->present from it
     zen_anim:      Anim, // aux-pane reveal in Zen: 0 hidden .. 1 docked
     switcher_anim: Anim, // terminal switcher fade-in while Alt is held
+    chord_anim:    Anim, // filetree chord cheat-sheet fade-in while Ctrl is held
     split_anim:    Anim, // editor/aux split widen while git is the aux mode (carries the editor fraction)
 
     theme:        Theme, // colour palette (loaded from config in main)
