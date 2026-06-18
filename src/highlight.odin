@@ -6,6 +6,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:slice"
 import "core:strings"
+import "core:text/regex"
 import "core:unicode/utf8"
 import ts "../vendor/odin-tree-sitter"
 
@@ -25,11 +26,40 @@ Row_Colors :: [][3]f32
 // A loaded grammar: the dlopen handle, its tree-sitter language, and the compiled
 // highlights query (nil if the grammar shipped none). `ok` is false when loading or
 // the ABI check failed — cached so a broken grammar isn't retried every draw.
+// `preds` holds each query pattern's predicates, parsed (and any regexes compiled)
+// once at load so the per-frame paint can filter captures without re-parsing.
 Loaded_Grammar :: struct {
     lib:   dynlib.Library,
     lang:  ts.Language,
     query: ts.Query,
+    preds: [][]Predicate, // indexed by pattern index; owned
     ok:    bool,
+}
+
+// A parsed query predicate, e.g. (#lua-match? @type "^[A-Z]..."), (#any-of? @x "a" "b"),
+// (#not-has-parent? @t parameter call_expression). tree-sitter returns captures WITHOUT
+// evaluating these, so the highlighter must — otherwise a gated capture (capitalised ->
+// @type, ALL_CAPS -> @constant, context/self -> @variable.builtin) fires on every
+// identifier and the real colour is lost. Filters whose op we don't model fail OPEN (the
+// capture is kept), so an unsupported predicate never blanks a token.
+@(private = "file")
+Predicate :: struct {
+    op:     Pred_Op,
+    negate: bool, // a "not-" prefix
+    cap:    u32, // the capture id this predicate constrains
+    cap2:   i32, // a second capture id (e.g. (#eq? @a @b)); -1 when the arg is a string
+    strs:   []string, // string args (owned)
+    re:     regex.Regular_Expression, // compiled for Match; valid iff has_re
+    has_re: bool,
+}
+
+@(private = "file")
+Pred_Op :: enum {
+    Unknown, // directive (#set! …) or an op we don't model -> not a filter
+    Eq, // #eq?       capture text equals a string / another capture's text
+    AnyOf, // #any-of?   capture text is one of the strings
+    Match, // #match? / #lua-match?  capture text matches the (regex) pattern
+    HasParent, // #has-parent?  capture has an ancestor of one of the named node types
 }
 
 Highlighter :: struct {
@@ -41,6 +71,8 @@ Highlighter :: struct {
     tree: ts.Tree,
     tree_buf: rawptr, // the Buffer it was parsed from (identity)
     tree_ver: u64, // doc.version at parse time
+    tree_src: string, // the exact text the tree was parsed from; node byte offsets index
+    // it (predicate evaluation reads through it). Heap-owned, replaced on reparse.
     // Painted-row cache: highlight_visible repaints the same window every frame (idle
     // caret blink, a non-editor animation), redoing the query + sort + per-rune fill
     // for an identical result. Memoize the last painted rows keyed by what they depend
@@ -62,6 +94,19 @@ highlighter_init :: proc(h: ^Highlighter) {
 
 highlighter_destroy :: proc(h: ^Highlighter) {
     for _, g in h.loaded {
+        for preds in g.preds {
+            for p in preds {
+                for s in p.strs {
+                    delete(s)
+                }
+                delete(p.strs)
+                if p.has_re {
+                    regex.destroy(p.re)
+                }
+            }
+            delete(preds)
+        }
+        delete(g.preds)
         if g.query != nil {
             ts.query_delete(g.query)
         }
@@ -73,9 +118,21 @@ highlighter_destroy :: proc(h: ^Highlighter) {
     hl_cache_free(h)
     if h.tree != nil {
         ts.tree_delete(h.tree)
+        delete(h.tree_src)
     }
     ts.query_cursor_delete(h.cursor)
     ts.parser_delete(h.parser)
+}
+
+// Loads grammar `name` from an explicit `dir` and seeds it into the highlighter's
+// grammar cache under `name` — the same slot highlighter_grammar fills lazily from
+// the exe-relative grammars dir. Lets a caller resolve a grammar from a non-standard
+// location (a test fixture, a preview) so a later highlight_visible finds it cached
+// and skips the disk/registry lookup. ok mirrors the load.
+highlighter_preload :: proc(h: ^Highlighter, dir, name: string) -> bool {
+    g := load_grammar(dir, name)
+    h.loaded[name] = g
+    return g.ok
 }
 
 // Parses b once and caches the tree, returning it unchanged on later frames until
@@ -89,15 +146,19 @@ highlighter_tree :: proc(h: ^Highlighter, b: ^Buffer, lang: ts.Language) -> ts.T
     if !ts.parser_set_language(h.parser, lang) {
         return nil
     }
-    text := doc_string(&b.doc, context.temp_allocator)
+    // Heap-owned (not temp): kept past this frame so predicate evaluation can read node
+    // text without rebuilding the whole-buffer string each cache-miss frame (a scroll).
+    text := doc_string(&b.doc, context.allocator)
     tree := ts.parser_parse_string(h.parser, text)
     if tree == nil {
+        delete(text)
         return nil
     }
     if h.tree != nil {
         ts.tree_delete(h.tree)
+        delete(h.tree_src)
     }
-    h.tree, h.tree_buf, h.tree_ver = tree, rawptr(b), b.version
+    h.tree, h.tree_buf, h.tree_ver, h.tree_src = tree, rawptr(b), b.version, text
     return tree
 }
 
@@ -107,6 +168,7 @@ highlighter_tree :: proc(h: ^Highlighter, b: ^Buffer, lang: ts.Language) -> ts.T
 Capture_Span :: struct {
     start, end: ts.Point, // tree-sitter points: row = line, col = BYTE offset in line
     size:       u32, // byte length, for "most specific (smallest) wins" ordering
+    pattern:    u16, // query pattern index; lowest wins on an identical-span tie
     color:      [3]f32,
 }
 
@@ -141,12 +203,18 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
         return nil
     }
 
+    // The exact text the tree was parsed from (cached alongside it) — node byte offsets
+    // index into it, so predicate evaluation (capture text, #lua-match?, …) reads it.
+    source := h.tree_src
+
     last := min(first_line + count, len(b.lines))
     ts.query_cursor_set_point_range(h.cursor, {u32(first_line), 0}, {u32(last), 0})
     ts.query_cursor_exec(h.cursor, g.query, ts.tree_root_node(tree))
 
     // Collect the visible captures, then paint largest-span-first so a more specific
-    // (smaller) capture overrides the broader one it nests inside.
+    // (smaller) capture overrides the broader one it nests inside. Captures whose
+    // pattern has predicates that don't hold are dropped (tree-sitter doesn't filter
+    // them); otherwise gated rules like capitalised->@type fire on every identifier.
     spans := make([dynamic]Capture_Span, 0, 256, context.temp_allocator)
     for {
         match, ci, more := ts.query_cursor_next_capture(h.cursor)
@@ -158,19 +226,30 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
         if !mapped {
             continue
         }
+        if !predicates_ok(g, u32(match.pattern_index), match, source) {
+            continue
+        }
         append(
             &spans,
             Capture_Span {
                 start = ts.node_start_point(qc.node),
                 end = ts.node_end_point(qc.node),
                 size = ts.node_end_byte(qc.node) - ts.node_start_byte(qc.node),
+                pattern = match.pattern_index,
                 color = color,
             },
         )
     }
     // Largest span first so a smaller (more specific) capture paints over it. Ties
-    // break by start position for a stable order — equal-size captures never swap
-    // precedence frame to frame (which would flicker their colour).
+    // break by start position, then by query pattern index, giving a TOTAL order so
+    // the painted result never depends on the (unstable) sort's input order. The
+    // missing pattern tiebreak was a flicker bug: when one node is captured by two
+    // patterns of different colours (same span — equal size, start row & col), the
+    // pair sorted arbitrarily, and the last-painted winner flipped each frame as the
+    // capture emission order shifted with the scrolling point range. highlights.scm
+    // follows the later-pattern-overrides-earlier convention (general rules first,
+    // specific ones last), so the HIGHEST pattern index wins — it must sort last to
+    // paint last.
     slice.sort_by(spans[:], proc(x, y: Capture_Span) -> bool {
         if x.size != y.size {
             return x.size > y.size
@@ -178,7 +257,10 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
         if x.start.row != y.start.row {
             return x.start.row < y.start.row
         }
-        return x.start.col < y.start.col
+        if x.start.col != y.start.col {
+            return x.start.col < y.start.col
+        }
+        return x.pattern < y.pattern
     })
 
     // A colour row per visible line, defaulting to the foreground. Heap-allocated (not
@@ -223,6 +305,50 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
     h.cache_count = count
     h.cache_theme = th^
     return rows
+}
+
+// Debug: print every capture the query emits over [first_line, first_line+count),
+// with its query pattern index, name, span, the theme slot it maps to, and whether
+// its pattern's predicates hold. Lets a test see which patterns compete for a node and
+// how precedence/filtering resolves them. Not part of the draw path.
+highlight_dump_captures :: proc(a: ^App, b: ^Buffer, first_line, count: int) {
+    g, ok := highlighter_grammar(a, b.path)
+    if !ok || g.query == nil {
+        fmt.println("no grammar/query")
+        return
+    }
+    h := &a.hl
+    tree := highlighter_tree(h, b, g.lang)
+    if tree == nil {
+        fmt.println("no tree")
+        return
+    }
+    source := h.tree_src
+    last := min(first_line + count, len(b.lines))
+    ts.query_cursor_set_point_range(h.cursor, {u32(first_line), 0}, {u32(last), 0})
+    ts.query_cursor_exec(h.cursor, g.query, ts.tree_root_node(tree))
+    for {
+        match, ci, more := ts.query_cursor_next_capture(h.cursor)
+        if !more {
+            break
+        }
+        qc := match.captures[ci]
+        name := ts.query_capture_name_for_id(g.query, qc.index)
+        sp := ts.node_start_point(qc.node)
+        ep := ts.node_end_point(qc.node)
+        _, mapped := capture_color(&a.theme, name)
+        fmt.printfln(
+            "pat=%-3d %-22s [%d:%d-%d:%d] %s pred=%v",
+            match.pattern_index,
+            name,
+            sp.row,
+            sp.col,
+            ep.row,
+            ep.col,
+            mapped ? "MAPPED  " : "unmapped",
+            predicates_ok(g, u32(match.pattern_index), match, source),
+        )
+    }
 }
 
 // Frees the heap-owned painted-row cache (each row slice, then the row array).
@@ -379,9 +505,161 @@ load_grammar :: proc(dir, name: string) -> Loaded_Grammar {
     if src := os.read_entire_file_from_path(scm, context.temp_allocator) or_else nil; src != nil {
         if q, _, err := ts.query_new(lang, string(src)); err == .None {
             g.query = q
+            g.preds = build_predicates(q)
         }
     }
     return g
+}
+
+// Parses every pattern's predicates from the compiled query once, compiling Match
+// patterns to regexes up front. Owned by the grammar; freed in highlighter_destroy.
+@(private = "file")
+build_predicates :: proc(query: ts.Query) -> [][]Predicate {
+    n := ts.query_pattern_count(query)
+    out := make([][]Predicate, n)
+    for p in 0 ..< n {
+        steps := ts.query_predicates_for_pattern(query, p)
+        preds := make([dynamic]Predicate, 0, 2)
+        lo := 0
+        for hi in 0 ..< len(steps) {
+            if steps[hi].type != .Done {
+                continue
+            }
+            if pred, ok := parse_predicate(query, steps[lo:hi]); ok {
+                append(&preds, pred)
+            }
+            lo = hi + 1
+        }
+        out[p] = preds[:]
+    }
+    return out
+}
+
+// Builds one Predicate from its step slice (the op name, then capture/string args).
+@(private = "file")
+parse_predicate :: proc(query: ts.Query, steps: []ts.Query_Predicate_Step) -> (Predicate, bool) {
+    if len(steps) == 0 || steps[0].type != .String {
+        return {}, false
+    }
+    name := ts.query_string_value_for_id(query, steps[0].value_id)
+    pred := Predicate {
+        cap  = max(u32),
+        cap2 = -1,
+    }
+    // Trailing '?' marks a filter predicate; '!' (or neither) is a directive we ignore.
+    // A "not-" prefix negates the test.
+    if !strings.has_suffix(name, "?") {
+        return {}, false
+    }
+    base := name[:len(name) - 1]
+    if strings.has_prefix(base, "not-") {
+        pred.negate = true
+        base = base[4:]
+    }
+    switch base {
+    case "eq":
+        pred.op = .Eq
+    case "any-of":
+        pred.op = .AnyOf
+    case "match", "lua-match":
+        pred.op = .Match
+    case "has-parent":
+        pred.op = .HasParent
+    case:
+        pred.op = .Unknown
+    }
+    strs := make([dynamic]string, 0, 2)
+    for s in steps[1:] {
+        #partial switch s.type {
+        case .Capture:
+            if pred.cap == max(u32) {
+                pred.cap = s.value_id
+            } else {
+                pred.cap2 = i32(s.value_id)
+            }
+        case .String:
+            append(&strs, strings.clone(ts.query_string_value_for_id(query, s.value_id)))
+        }
+    }
+    pred.strs = strs[:]
+    if pred.op == .Match && len(pred.strs) > 0 {
+        // Lua patterns and regex share the anchored char-class subset highlights use;
+        // a pattern the engine can't compile fails open (has_re stays false).
+        if re, err := regex.create(pred.strs[0]); err == nil {
+            pred.re, pred.has_re = re, true
+        }
+    }
+    return pred, true
+}
+
+// Do pattern `pi`'s predicates all pass for `match` (so its captures should paint)?
+// Unmodelled ops and uncompilable regexes count as passing — we never hide a token on
+// a predicate we can't evaluate.
+@(private = "file")
+predicates_ok :: proc(g: Loaded_Grammar, pi: u32, match: ts.Query_Match, source: string) -> bool {
+    if int(pi) >= len(g.preds) {
+        return true
+    }
+    for p in g.preds[pi] {
+        node, found := capture_node(match, p.cap)
+        if !found {
+            continue
+        }
+        txt := ts.node_text(node, source)
+        res: bool
+        switch p.op {
+        case .Unknown:
+            continue
+        case .Eq:
+            if p.cap2 >= 0 {
+                other := capture_node(match, u32(p.cap2)) or_continue
+                res = txt == ts.node_text(other, source)
+            } else if len(p.strs) > 0 {
+                res = txt == p.strs[0]
+            }
+        case .AnyOf:
+            res = slice.contains(p.strs, txt)
+        case .Match:
+            if !p.has_re {
+                continue // couldn't compile -> don't filter
+            }
+            _, matched := regex.match(p.re, txt)
+            res = matched
+        case .HasParent:
+            res = node_has_parent_type(node, p.strs)
+        }
+        if p.negate {
+            res = !res
+        }
+        if !res {
+            return false
+        }
+    }
+    return true
+}
+
+// The node captured under id `cap` within a match, if any.
+@(private = "file")
+capture_node :: proc(match: ts.Query_Match, cap: u32) -> (ts.Node, bool) {
+    for i in 0 ..< int(match.capture_count) {
+        if match.captures[i].index == cap {
+            return match.captures[i].node, true
+        }
+    }
+    return {}, false
+}
+
+// Does `node` have an ancestor whose type is one of `types`? (#has-parent? semantics.)
+@(private = "file")
+node_has_parent_type :: proc(node: ts.Node, types: []string) -> bool {
+    p := ts.node_parent(node)
+    for !ts.node_is_null(p) {
+        if slice.contains(types, string(ts.node_type(p))) {
+            return true
+        }
+        p = ts.node_parent(p)
+    }
+    return false
 }
 
 // Maps a tree-sitter capture name to a theme colour slot, leniently: only the base
