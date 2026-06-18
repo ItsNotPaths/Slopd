@@ -67,6 +67,10 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
             doc_insert_rune(&cp.search, codepoint)
             config_pane_filter(cp) // live filter as you type
         }
+    } else if a.focus == .Aux && a.aux_mode == .Procmon && a.procmon.filtering && codepoint >= 32 {
+        // Only the filter bar takes text; the list and graph band navigate with arrows.
+        doc_insert_rune(&a.procmon.filter, codepoint)
+        procmon_view_rebuild(&a.procmon) // live filter as you type
     } else if a.focus == .Aux && a.aux_mode == .Git && codepoint >= 32 {
         // The grep filter and commit message take text; elsewhere a bare '/' jumps to the
         // filter bar (consumed here so it leaves no stray slash behind).
@@ -236,6 +240,7 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             set_aux(a, .Git)
         case glfw.KEY_P:
             set_aux(a, .Procmon)
+            procmon_resort(&a.procmon) // (re)opening refreshes the sort; the live list never reorders itself
         case glfw.KEY_R:
             set_aux(a, .Grep) // re-focus the grep results pane (last search)
 
@@ -347,6 +352,8 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         git_key(a, key, mods)
     } else if a.focus == .Aux && a.aux_mode == .Grep {
         grep_key(a, key, mods)
+    } else if a.focus == .Aux && a.aux_mode == .Procmon {
+        procmon_key(a, key, mods)
     }
 }
 
@@ -471,8 +478,8 @@ git_field_key :: proc(d: ^Doc, key, mods: i32) -> bool {
 // Editing keys shared by the command line and the buffer (the CL is a one-line
 // buffer): horizontal motion (Ctrl = word), Home/End, and readline Ctrl+A/Ctrl+E,
 // with Shift extending the selection and `all` (the Alt+M prefix) moving every
-// cursor. Returns true if the key was a motion it handled.
-@(private = "file")
+// cursor. Returns true if the key was a motion it handled. (Package-level: the
+// procmon filter bar reuses it too.)
 edit_motion :: proc(d: ^Doc, key, mods: i32, all: bool) -> bool {
     shift := mods & glfw.MOD_SHIFT != 0
     ctrl := mods & glfw.MOD_CONTROL != 0

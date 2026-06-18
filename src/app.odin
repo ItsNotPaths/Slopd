@@ -94,6 +94,7 @@ App :: struct {
     tree:        FileTree, // filetree aux mode (initialised in main, needs IO)
     config_pane: ConfigPane, // config / syntax aux mode (initialised in main, needs IO)
     git:         GitPane, // git aux mode (Sublime-Merge-lite; initialised in main)
+    procmon:     ProcmonPane, // procmon aux mode (btop-lite; sampler thread, initialised in main)
     editor:      Editor, // the text buffers (left pane)
 
     // Alt+Enter link jumping (link.odin). grep holds a multi-result jump-to-definition for
@@ -160,6 +161,10 @@ App :: struct {
     // The git pane's slot-machine gag (Ctrl+Shift+Alt+S): when risky_mode is on the
     // lucky-dip commit auto-sends (run, no review); otherwise it's staged in the CL.
     risky_mode: bool,
+
+    // Procmon `k`: when on (default) a kill arms a one-key confirm row first; off kills
+    // (SIGKILL) immediately.
+    kill_confirm: bool,
     scale:        f32, // DPI content scale: logical px * scale = physical px
     font_px:      f32, // logical text size in points (font zoom); base is FONT_BASE_PX
     font_save_at: f64, // glfw time to persist font_px at (debounce); 0 = nothing pending
@@ -219,6 +224,10 @@ set_focus :: proc(a: ^App, who: Focus) {
     if a.focus == .Aux && a.aux_mode == .Git {
         git_refresh(a)
     }
+    // Procmon only samples /proc while its pane is on screen, so the loop returns to
+    // 0% idle otherwise. In Split both panes are always visible (so it keeps updating
+    // even when the editor holds focus); in Zen it shows only while focused.
+    a.procmon.wanted = a.aux_mode == .Procmon && panes_visible(a).aux
 }
 
 // Toggle zen on/off (the `zen` / `zm` command line builtin). No-op under Util,

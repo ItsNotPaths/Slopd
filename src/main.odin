@@ -79,6 +79,7 @@ main :: proc() {
     app.git_remote_run = cfg.git_remote_run
     app.risky_mode = cfg.risky_mode
     app.grep_pane_always = cfg.grep_pane_always
+    app.kill_confirm = cfg.kill_confirm
     app.font_px = cfg.font_px // persisted font zoom; text_init bakes the atlas at it
 
     editor_init(&app.editor)
@@ -91,6 +92,8 @@ main :: proc() {
     defer config_pane_destroy(&app.config_pane)
     git_init(&app.git)
     defer git_destroy(&app.git)
+    procmon_init(&app.procmon)
+    defer procmon_destroy(&app.procmon)
     highlighter_init(&app.hl)
     defer highlighter_destroy(&app.hl)
     if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {
@@ -130,6 +133,7 @@ main :: proc() {
         for term in app.terminals {
             terminal_drain(term)
         }
+        procmon_drain(&app) // install a freshly sampled process snapshot (procmon.odin)
         cl_chain_pump(&app) // advance a pending && chain once its exit code arrives
 
         now := glfw.GetTime()

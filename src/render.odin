@@ -90,6 +90,8 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
         draw_git(t, lay.aux, win_w, win_h, a, now)
     } else if a.aux_mode == .Grep {
         draw_grep(t, lay.aux, win_w, win_h, a)
+    } else if a.aux_mode == .Procmon {
+        draw_procmon(t, lay.aux, win_w, win_h, a, now)
     } else {
         label(t, aux_mode_name(a.aux_mode), lay.aux, pad, focus_fg(a, .Aux))
         flush_pane(t, lay.aux, win_w, win_h)
@@ -642,6 +644,200 @@ grep_relpath :: proc(path, root: string) -> string {
         return strings.has_prefix(rel, "/") ? rel[1:] : rel
     }
     return path
+}
+
+// The procmon (process monitor) aux mode: a GRAPH BAND up top (a tab-enum of CPU /
+// Memory / Disk / GPU history graphs, or the signal selector when armed) over a
+// btop-style PROCESS LIST (cpu% / mem / pid / user / name / command). Data is the
+// lock-free snapshot drained from the sampler thread (procmon.odin); this only reads
+// pm.cur + pm.view. Up/Down move the selection, crossing into the band at the top
+// (procmon_key); Space opens the bottom filter bar.
+draw_procmon :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) {
+    pm := &a.procmon
+    th := &a.theme
+    area := inset(pane, i32(2 * a.scale))
+    if area.w <= 0 || area.h <= 0 {
+        return
+    }
+    cw := t.font.cell_w
+    lh := t.font.line_height
+    row_h := i32(lh) + i32(2 * a.scale)
+    x0 := f32(area.x) + cw
+
+    // Top band: graph(s) or the signal selector. Tall enough for the 1..31 grid while
+    // arming a signal, but always leaving a couple of list rows below.
+    band_rows := pm.sig_open ? i32(9) : i32(7)
+    band_h := min(row_h * band_rows, max(row_h * 2, area.h - row_h * 3))
+    band := Rect{area.x, area.y, area.w, band_h}
+    if pm.sig_open {
+        procmon_draw_signals(t, band, a, row_h)
+    } else {
+        procmon_draw_graph(t, band, a, row_h)
+    }
+
+    // Column header. Offsets are in cells, so they track the font zoom.
+    cpu_x := x0
+    mem_x := x0 + cw * 7
+    pid_x := x0 + cw * 16
+    user_x := x0 + cw * 24
+    name_x := x0 + cw * 34
+    cmd_x := x0 + cw * 52
+    hdr_y := area.y + band_h
+    hty := f32(hdr_y) + (f32(row_h) - lh) / 2
+    text_draw(t, "CPU%", cpu_x, hty, th.muted)
+    text_draw(t, "MEM", mem_x, hty, th.muted)
+    text_draw(t, "PID", pid_x, hty, th.muted)
+    text_draw(t, "USER", user_x, hty, th.muted)
+    text_draw(t, "NAME", name_x, hty, th.muted)
+    text_draw(t, "COMMAND", cmd_x, hty, th.muted)
+
+    // The scrollable process list, centre-scrolled on the selection (smooth, like the
+    // editor / diff). The filter bar, when open, claims the bottom row.
+    list_top := hdr_y + row_h
+    filter_h := pm.filtering ? row_h : 0
+    bottom := area.y + area.h - filter_h
+    max_rows := max(1, int((bottom - list_top) / row_h))
+    n := len(pm.view)
+    target_top := clamp(pm.sel - max_rows / 2, 0, max(0, n - max_rows))
+    top, off := smooth_scroll(&pm.scroll_anim, target_top, now, row_h)
+
+    list_focus := pm.focus == .List && a.focus == .Aux
+    for k in 0 ..< max_rows + 1 {
+        i := top + k
+        if i < 0 || i >= n {
+            continue
+        }
+        y := list_top + i32(k) * row_h - off
+        if y + row_h <= list_top || y >= bottom {
+            continue // partial row scrolled out of the list band
+        }
+        r := &pm.cur.procs[pm.view[i]]
+        ty := f32(y) + (f32(row_h) - lh) / 2
+        // The kill confirm replaces its row with a one-key prompt (urgent band).
+        if pm.kill_armed && r.pid == pm.kill_pid {
+            fill(t, Rect{area.x, y, area.w, row_h}, th.urgent)
+            text_draw(t, fmt.tprintf("kill %s (%d)?   enter/y = confirm    esc = cancel", proc_trunc(r.name, 24), r.pid), cpu_x, ty, th.bg)
+            continue
+        }
+        if i == pm.sel {
+            fill(t, Rect{area.x, y, area.w, row_h}, list_focus ? th.selection : th.line_highlight)
+        }
+        // Tint hot processes: green past 10% of a core, red past 50%.
+        cpu_col := r.cpu_pct >= 50 ? th.urgent : (r.cpu_pct >= 10 ? th.code_return_type : th.fg)
+        text_draw(t, fmt.tprintf("%5.1f", r.cpu_pct), cpu_x, ty, cpu_col)
+        text_draw(t, proc_human_kb(r.rss_kb), mem_x, ty, th.fg)
+        text_draw(t, fmt.tprintf("%d", r.pid), pid_x, ty, th.muted)
+        text_draw(t, proc_trunc(r.user, 9), user_x, ty, th.muted)
+        text_draw(t, proc_trunc(r.name, 17), name_x, ty, th.fg)
+        text_draw(t, r.cmd, cmd_x, ty, th.muted) // long commands clip on the pane scissor
+    }
+
+    if pm.filtering {
+        fy := area.y + area.h - row_h
+        fill(t, Rect{area.x, fy, area.w, row_h}, th.line_highlight)
+        fty := f32(fy) + (f32(row_h) - lh) / 2
+        text_draw(t, "filter ", x0, fty, th.accent)
+        ftext_x := x0 + cw * 7
+        text_draw_runes(t, pm.filter.lines[0].text[:], ftext_x, fty, th.fg)
+        if caret_blink_on(a, now) {
+            col := pm.filter.cursors[pm.filter.primary].head.col
+            caret(t, Rect{i32(ftext_x + cw * f32(col)), fy + i32(2 * a.scale), max(i32(2 * a.scale), 1), row_h - i32(4 * a.scale)}, th.fg)
+        }
+    }
+
+    flush_pane(t, area, win_w, win_h)
+}
+
+// The active graph for the selected category.
+@(private = "file")
+procmon_graphview :: proc(pm: ^ProcmonPane) -> ^GraphView {
+    switch pm.cat {
+    case .CPU:    return &pm.cur.cpu
+    case .Memory: return &pm.cur.mem
+    case .Disk:   return &pm.cur.disk
+    case .GPU:    return &pm.cur.gpu
+    }
+    return &pm.cur.cpu
+}
+
+// The graph band: a category-tab row (active lit, the current readout in accent at
+// the right) over the selected metric's history, drawn as columns rising from the
+// baseline (newest at the right edge). A faint bg-derived tint marks it focused.
+@(private = "file")
+procmon_draw_graph :: proc(t: ^Text, band: Rect, a: ^App, row_h: i32) {
+    pm := &a.procmon
+    th := &a.theme
+    cw := t.font.cell_w
+    lh := t.font.line_height
+    x0 := f32(band.x) + cw
+
+    if pm.focus == .Graphs && a.focus == .Aux {
+        fill(t, band, lerp3(th.bg, th.accent, 0.08))
+    }
+
+    cats := [4]string{"cpu", "mem", "disk", "gpu"}
+    gv := procmon_graphview(pm)
+    tty := f32(band.y) + (f32(row_h) - lh) / 2
+    cx := x0
+    for name, i in cats {
+        text_draw(t, name, cx, tty, GraphCat(i) == pm.cat ? th.fg : th.muted)
+        cx += cw * f32(len(name) + 2)
+    }
+    if gv.label != "" {
+        text_draw(t, gv.label, f32(band.x + band.w) - cw - cw * f32(len(gv.label)), tty, th.accent)
+    }
+
+    gtop := band.y + row_h
+    gh := band.y + band.h - gtop
+    if gh <= 0 {
+        return
+    }
+    if !gv.avail {
+        text_draw(t, "unavailable", x0, f32(gtop) + (f32(gh) - lh) / 2, th.muted)
+        return
+    }
+    bar_col := lerp3(th.bg, th.accent, 0.55)
+    colw := f32(band.w) / f32(PROC_HIST)
+    right := band.x + band.w
+    floor := gtop + gh
+    for age in 0 ..< gv.hist.n {
+        v := gv.hist.vals[(gv.hist.head - age + PROC_HIST) % PROC_HIST]
+        bh := i32(v * f32(gh))
+        x := right - i32(f32(age + 1) * colw)
+        fill(t, Rect{x, floor - bh, max(i32(colw) + 1, 1), bh}, bar_col)
+    }
+}
+
+// The signal selector, replacing the graph band (btop-style). A header names the
+// target, then signals 1..31 in a grid with the armed one highlighted.
+@(private = "file")
+procmon_draw_signals :: proc(t: ^Text, band: Rect, a: ^App, row_h: i32) {
+    pm := &a.procmon
+    th := &a.theme
+    cw := t.font.cell_w
+    lh := t.font.line_height
+    x0 := f32(band.x) + cw
+
+    fill(t, band, lerp3(th.bg, th.urgent, 0.10)) // arming a kill: a danger tint
+    name := ""
+    if pm.sel >= 0 && pm.sel < len(pm.view) {
+        name = pm.cur.procs[pm.view[pm.sel]].name
+    }
+    tty := f32(band.y) + (f32(row_h) - lh) / 2
+    text_draw(t, fmt.tprintf("signal -> %s (%d)   enter=send  q=cancel", name, procmon_sel_pid(pm)), x0, tty, th.fg)
+
+    gtop := band.y + row_h
+    cellw := cw * 13
+    for s in 1 ..= 31 {
+        col := (s - 1) % SIG_COLS
+        rowi := (s - 1) / SIG_COLS
+        cellx := x0 + f32(col) * cellw
+        celly := gtop + i32(rowi) * row_h
+        if s == pm.sig_sel {
+            fill(t, Rect{i32(cellx) - i32(cw / 2), celly, i32(cellw), row_h}, th.accent)
+        }
+        text_draw(t, fmt.tprintf("%2d %s", s, SIG_NAMES[s]), cellx, f32(celly) + (f32(row_h) - lh) / 2, s == pm.sig_sel ? th.bg : th.fg)
+    }
 }
 
 // The config / syntax pane: a "settings" block (editable key: value rows) then a

@@ -43,6 +43,7 @@ Config :: struct {
     git_remote_run:    bool, // git Remote page push/pull/fetch: run at once vs stage it
     risky_mode:        bool, // git slot machine: auto-send the lucky-dip commit (no review)
     grep_pane_always:  bool, // CL grep: always open the results pane vs jump straight on a lone hit
+    kill_confirm:      bool, // procmon `k`: arm a confirm row vs SIGKILL immediately
 }
 
 load_config :: proc() -> Config {
@@ -61,6 +62,7 @@ load_config :: proc() -> Config {
         git_remote_run  = false,
         risky_mode      = false, // the lucky-dip commit is staged for review by default
         grep_pane_always = true, // always show the results pane (no auto-jump on a lone hit)
+        kill_confirm    = true, // confirm a procmon kill before it fires
     }
     path := find_config()
     if path == "" {
@@ -126,6 +128,8 @@ load_config :: proc() -> Config {
             if v, ok := parse_on_off(val); ok {cfg.risky_mode = v}
         case "grep_pane":
             if v, ok := parse_on_off(val); ok {cfg.grep_pane_always = v}
+        case "kill_confirm":
+            if v, ok := parse_on_off(val); ok {cfg.kill_confirm = v}
         }
     }
     return cfg
@@ -203,7 +207,7 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return INDENT_OPTS[:]
     case .Theme:
         return theme_options(context.temp_allocator)
-    case .Folding, .IndentGuides, .Whitespace, .RiskyMode, .GrepPane:
+    case .Folding, .IndentGuides, .Whitespace, .RiskyMode, .GrepPane, .KillConfirm:
         return ON_OFF_OPTS[:]
     case .FolderCd, .GitCheckout, .GitCommit, .GitMerge, .GitRemote:
         return STAGE_RUN_OPTS[:]
@@ -262,6 +266,7 @@ Setting :: enum {
     GitRemote,
     RiskyMode,
     GrepPane,
+    KillConfirm,
 }
 
 setting_key :: proc(s: Setting) -> string {
@@ -279,6 +284,7 @@ setting_key :: proc(s: Setting) -> string {
     case .GitRemote:    return "git_remote"
     case .RiskyMode:    return "risky_mode"
     case .GrepPane:     return "grep_pane"
+    case .KillConfirm:  return "kill_confirm"
     }
     return ""
 }
@@ -301,6 +307,7 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .GitRemote:    return a.git_remote_run ? "run" : "stage"
     case .RiskyMode:    return on_off(a.risky_mode)
     case .GrepPane:     return on_off(a.grep_pane_always)
+    case .KillConfirm:  return on_off(a.kill_confirm)
     }
     return ""
 }
@@ -345,6 +352,8 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.risky_mode = parse_on_off(val) or_return
     case .GrepPane:
         a.grep_pane_always = parse_on_off(val) or_return
+    case .KillConfirm:
+        a.kill_confirm = parse_on_off(val) or_return
     }
     config_set(setting_key(s), val)
     return true
