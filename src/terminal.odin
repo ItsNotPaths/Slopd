@@ -7,7 +7,7 @@ import "core:strings"
 import "core:sync"
 import "core:sys/posix"
 import "core:thread"
-import vt "../vendor/libvterm"
+import vt "../bindings/libvterm"
 import "vendor:glfw"
 
 // A terminal session: the libvterm VT state machine (the pure parser — fed bytes,
