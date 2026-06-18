@@ -76,6 +76,7 @@ main :: proc() {
     app.git_checkout_run = cfg.git_checkout_run
     app.git_commit_run = cfg.git_commit_run
     app.git_merge_run = cfg.git_merge_run
+    app.git_remote_run = cfg.git_remote_run
     app.risky_mode = cfg.risky_mode
     app.grep_pane_always = cfg.grep_pane_always
     app.font_px = cfg.font_px // persisted font zoom; text_init bakes the atlas at it

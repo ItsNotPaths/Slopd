@@ -5,6 +5,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
+import "vendor:glfw"
 
 // The master command line: a one-line Doc (the shared multi-cursor editing core,
 // so every motion/edit op is reused from the buffer — Enter just submits instead
@@ -281,8 +282,70 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         cl_cd(a, args)
     case "tu":
         cl_tu(a)
+    case "w", "wa", "q", "q!", "wq", "wqa", "waq":
+        cl_quit(a, name)
     }
     return true
+}
+
+// Quit/write builtins — the ONLY way to close Slopd (Esc never quits). Guarded by the
+// unsaved RING so typed-by-mistake quits can't throw away work: `q` refuses while any
+// buffer is dirty, `wq` saves the current one first, `wqa`/`waq` save them all. `q!`
+// force-quits, discarding everything. buffer_save can't write an unnamed buffer yet, so
+// a write that leaves work dirty refuses rather than quitting. A refusal ECHOES into t1
+// (the master CL terminal) — consistent with "output always lands in a real terminal,
+// never the status strip". Messages stay apostrophe-free so the single-quoted echo holds.
+@(private = "file")
+cl_quit :: proc(a: ^App, cmd: string) {
+    switch cmd {
+    case "w":
+        if !buffer_save(editor_current(&a.editor)) {
+            cl_echo_t1(a, "w: no filename (save-as not yet supported)")
+        }
+    case "wa":
+        cl_write_all(a)
+    case "q!":
+        glfw.SetWindowShouldClose(a.window, true)
+    case "q":
+        if n := ring_dirty_count(&a.editor); n > 0 {
+            cl_echo_t1(a, fmt.tprintf("q: %d unsaved buffer(s) — wqa to save+quit, q! to discard", n))
+        } else {
+            glfw.SetWindowShouldClose(a.window, true)
+        }
+    case "wq":
+        buffer_save(editor_current(&a.editor))
+        if n := ring_dirty_count(&a.editor); n > 0 {
+            cl_echo_t1(a, fmt.tprintf("wq: %d other unsaved buffer(s) — wqa or q!", n))
+        } else {
+            glfw.SetWindowShouldClose(a.window, true)
+        }
+    case "wqa", "waq":
+        cl_write_all(a)
+        if n := ring_dirty_count(&a.editor); n > 0 {
+            cl_echo_t1(a, fmt.tprintf("wqa: %d buffer(s) could not be saved — q! to discard", n))
+        } else {
+            glfw.SetWindowShouldClose(a.window, true)
+        }
+    }
+}
+
+// Save every dirty buffer in the ring; returns how many remain dirty (an unnamed buffer
+// can't be written yet, so it stays).
+@(private = "file")
+cl_write_all :: proc(a: ^App) -> int {
+    for &b in a.editor.buffers {
+        if b.dirty {
+            buffer_save(&b)
+        }
+    }
+    return ring_dirty_count(&a.editor)
+}
+
+// Surface a Slopd message in t1 by running a single-quoted `echo` — the same run_in_t1
+// seam the Config buttons use, so feedback lands in a real terminal (lazily spawning t1).
+@(private = "file")
+cl_echo_t1 :: proc(a: ^App, msg: string) {
+    run_in_t1(a, fmt.tprintf("echo '%s'", msg))
 }
 
 // `cd [dir]` (builtin): set the PROJECT ROOT — captured by Slopd, never sent to a
@@ -335,26 +398,42 @@ cl_tu :: proc(a: ^App) {
     }
 }
 
-// `j N` / `jump N`: move the editor's cursor to a line and reveal it (the render
-// loop scrolls to follow). A bare number is an absolute 1-based line (matching the
-// gutter); a signed `+N`/`-N` is relative to the current line. Out-of-range clamps
-// to the first/last line. The cursor column is kept where it can fit.
+// `j [file] [line]` / `jump ...`: reveal a location through the shared jump_to primitive.
+// Forms:
+//   j N            move to a line in the current buffer (1-based absolute, matching the gutter)
+//   j +N / j -N    move relative to the current line
+//   j <file>       open <file> (name-first under the project root, or a system-wide /abs path)
+//   j <file> N     open <file> and go to line N (a +N/-N here is relative to the file's top)
+// A bare-number first field is always a line in the current buffer; otherwise the first field
+// is a file and an optional second field is the line. Out-of-range lines clamp.
 @(private = "file")
 cl_jump :: proc(a: ^App, args: string) {
     s := strings.trim_space(args)
     if s == "" {
         return
     }
-    n, ok := strconv.parse_int(s, 10) // parses a leading +/-; rejects trailing junk
-    if !ok {
-        return
-    }
     b := editor_current(&a.editor)
     cur := b.cursors[b.primary].head
-    target := s[0] == '+' || s[0] == '-' ? cur.line + n : n - 1 // relative vs 1-based absolute
-    target = clamp(target, 0, len(b.lines) - 1)
-    doc_reset_cursor(&b.doc, Pos{target, min(cur.col, line_len(&b.lines[target]))})
-    set_focus(a, .Editor)
+
+    first := first_field(s)
+    rest := strings.trim_space(s[len(first):])
+
+    // `j <line>`: the first field is a line number, no file. Keep the column where it fits.
+    if line, ok := parse_line_spec(first, cur.line); ok && rest == "" {
+        line = clamp(line, 0, len(b.lines) - 1)
+        jump_to(a, "", line, min(cur.col, line_len(&b.lines[line])))
+        return
+    }
+    // Otherwise the first field is a file; an optional second field is its line.
+    path, found := jump_resolve_path(a, first)
+    if !found {
+        return
+    }
+    line := 0
+    if rest != "" {
+        line, _ = parse_line_spec(rest, 0) // +/- here is relative to the file's top
+    }
+    jump_to(a, path, max(line, 0), 0)
 }
 
 // `grep [flags] <pattern>` (builtin): hijack the user's grep into a PROJECT-WIDE search
@@ -448,7 +527,8 @@ is_term_token :: proc(s: string) -> bool {
 @(private = "file")
 cl_is_builtin :: proc(name: string) -> bool {
     switch name {
-    case "ls", "gs", "gr", "cf", "zen", "zm", "put", "j", "jump", "grep", "cd", "tu":
+    case "ls", "gs", "gr", "cf", "zen", "zm", "put", "j", "jump", "grep", "cd", "tu",
+         "w", "wa", "q", "q!", "wq", "wqa", "waq":
         return true
     }
     return false

@@ -138,7 +138,8 @@ surround_runes :: proc(d: ^Doc, open, close: rune, lo, hi: Pos) -> []rune {
     return out[:]
 }
 
-@(private = "file")
+// One indentation unit as runes (a tab, or N spaces) — used by Tab and by Enter's
+// auto-indent. Temp-allocated.
 indent_runes :: proc(indent: Indent) -> []rune {
     n := indent.kind == .Tab ? 1 : indent.width
     rs := make([]rune, n, context.temp_allocator)

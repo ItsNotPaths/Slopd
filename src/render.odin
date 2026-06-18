@@ -910,9 +910,13 @@ git_draw_zone :: proc(
 ) {
     cw := t.font.cell_w
     x0 := f32(zone.x) + cw // header at one cell; rows indent one more
-    git_row(t, title, x0, zone.y, row_h, lh, head)
-
-    list_top := zone.y + row_h
+    // An empty title means the caller draws its own heading (the modal sidebar's breadcrumb):
+    // skip the title row so the list fills the whole zone.
+    list_top := zone.y
+    if title != "" {
+        git_row(t, title, x0, zone.y, row_h, lh, head)
+        list_top += row_h
+    }
     max_rows := int(max(i32(0), (zone.y + zone.h - list_top) / row_h))
     if max_rows == 0 || len(rows) == 0 {
         return
@@ -969,18 +973,91 @@ git_status_color :: proc(code: string, th: ^Theme) -> [3]f32 {
     }
 }
 
-// The sidebar: Prawk's stacked zones — a branch strip, the working-tree Status, and the
-// Log — populated from git (git_refresh). The ACTIVE section's header lights (accent)
-// and its selection shows when the sidebar is focused (Tab toggles which section is
-// active). Status takes the top half of the body, the Log the rest. When the project
-// root resolves to no repo, the strip says so.
+// Status-page rows: working-tree changes grouped by parent directory — a dim folder header
+// per directory, then its files indented under it (basename only). Entries are pre-sorted by
+// path (git_load_status) so one pass clusters them; each file row keeps its g.status index
+// for selection. Empty -> a "(clean)" placeholder.
+@(private = "file")
+git_status_rows :: proc(g: ^GitPane, th: ^Theme) -> []ZoneRow {
+    rows := make([dynamic]ZoneRow, 0, max(1, len(g.status)), context.temp_allocator)
+    if len(g.status) == 0 {
+        append(&rows, ZoneRow{text = "(clean)", color = th.muted, item = -1})
+        return rows[:]
+    }
+    prev_dir := "\x00" // sentinel: unequal to any real dir, so the first row emits one
+    for e, i in g.status {
+        dir := git_dir_of(e.path)
+        if dir != prev_dir && dir != "" {
+            append(&rows, ZoneRow{text = fmt.tprintf("%s/", dir), color = th.muted, item = -1})
+        }
+        prev_dir = dir
+        name := dir == "" ? e.path : e.path[len(dir) + 1:] // basename under the header
+        append(&rows, ZoneRow {
+            text = fmt.tprintf("%s %s", e.code, name),
+            color = git_status_color(e.code, th),
+            item = i,
+            indent = dir == "" ? 0 : 1,
+        })
+    }
+    return rows[:]
+}
+
+// Log-page rows: the recent commits, flat — hash + subject, each tagged with its index.
+@(private = "file")
+git_log_rows :: proc(g: ^GitPane, th: ^Theme) -> []ZoneRow {
+    rows := make([dynamic]ZoneRow, 0, len(g.commits), context.temp_allocator)
+    for c, i in g.commits {
+        append(&rows, ZoneRow{text = fmt.tprintf("%s %s", c.hash, c.subject), color = th.fg, item = i})
+    }
+    return rows[:]
+}
+
+// Branch-page rows: every local branch (the checked-out one marked "*" in accent), then a
+// trailing "new branch" row (item == len(branches)) that Enter turns into a `checkout -b`
+// prefill. Selection (g.sel_branch) indexes this whole list.
+@(private = "file")
+git_branch_rows :: proc(g: ^GitPane, th: ^Theme) -> []ZoneRow {
+    rows := make([dynamic]ZoneRow, 0, len(g.branches) + 1, context.temp_allocator)
+    for b, i in g.branches {
+        cur := b == g.branch
+        append(&rows, ZoneRow {
+            text = fmt.tprintf("%s %s", cur ? "*" : " ", b),
+            color = cur ? th.accent : th.fg,
+            item = i,
+        })
+    }
+    append(&rows, ZoneRow{text = "+ new branch", color = th.muted, item = len(g.branches)})
+    return rows[:]
+}
+
+// Remote-page rows: a non-selectable upstream detail line, then the push / pull / fetch
+// actions (a GitRemoteRow each), push/pull annotated with the ahead/behind they'd move.
+@(private = "file")
+git_remote_rows :: proc(g: ^GitPane, th: ^Theme) -> []ZoneRow {
+    rows := make([dynamic]ZoneRow, 0, len(GitRemoteRow) + 1, context.temp_allocator)
+    detail := g.has_upstream ? fmt.tprintf("→ %s", g.upstream) : "(no upstream)"
+    append(&rows, ZoneRow{text = detail, color = th.muted, item = -1})
+    push := g.ahead > 0 ? fmt.tprintf("push   ↑%d", g.ahead) : "push"
+    pull := g.behind > 0 ? fmt.tprintf("pull   ↓%d", g.behind) : "pull"
+    append(&rows, ZoneRow{text = push, color = th.fg, item = int(GitRemoteRow.Push)})
+    append(&rows, ZoneRow{text = pull, color = th.fg, item = int(GitRemoteRow.Pull)})
+    append(&rows, ZoneRow{text = "fetch", color = th.fg, item = int(GitRemoteRow.Fetch)})
+    return rows[:]
+}
+
+// The sidebar is MODAL (see GitSection): a persistent two-line header — the checked-out
+// branch with its ahead/behind, then a page breadcrumb with the active page lit — sits above
+// one full-height page (Status / Log / Branch / Remote), drawn by the shared git_draw_zone.
+// Tab swaps the page; the selection bar shows on the active page when the sidebar is focused.
+// When the project root resolves to no repo, the sidebar says so.
 @(private = "file")
 git_draw_sidebar :: proc(t: ^Text, area: Rect, a: ^App) {
     g := &a.git
     th := &a.theme
     lh := t.font.line_height
+    cw := t.font.cell_w
     row_h := i32(lh) + i32(2 * a.scale)
-    x0 := f32(area.x) + t.font.cell_w // one-cell left margin
+    x0 := f32(area.x) + cw // one-cell left margin
 
     if !g.is_repo {
         git_row(t, "not a git repository", x0, area.y, row_h, lh, th.muted)
@@ -988,71 +1065,41 @@ git_draw_sidebar :: proc(t: ^Text, area: Rect, a: ^App) {
     }
 
     side_focused := a.focus == .Aux && a.aux_mode == .Git && g.region == .Sidebar
-    branch_focused := side_focused && g.section == .Branch
 
-    // Branch strip: the branch name. The checked-out branch is the main highlight (accent);
-    // while the strip is focused, Left/Right cycle the hover, and a hovered OTHER branch
-    // shows grey (Enter to switch to it).
-    if branch_focused {
-        fill(t, Rect{area.x, area.y, area.w, row_h}, th.separator) // focus bar
-    }
-    name: string
-    name_col: [3]f32
-    if branch_focused && len(g.branches) > 0 && g.branches[g.sel_branch] != g.branch {
-        name, name_col = g.branches[g.sel_branch], th.muted // hovering a different branch
-    } else {
-        name = g.branch == "" ? "(detached)" : g.branch
-        name_col = th.accent // the checked-out branch — main highlight
-    }
-    git_row(t, name, x0, area.y, row_h, lh, name_col)
-    body_top := area.y + row_h + row_h / 2
-
-    // Build the two zones' rows in temp memory. Status groups by parent directory: a dim
-    // folder header per directory, then its files indented under it (basename only). The
-    // entries are pre-sorted by path (git_load_status) so one pass clusters them; each file
-    // row keeps its g.status index for selection. Empty -> a "(clean)" placeholder. The Log
-    // is a flat foreground list, each row tagged with its commit index.
-    srows := make([dynamic]ZoneRow, 0, max(1, len(g.status)), context.temp_allocator)
-    if len(g.status) == 0 {
-        append(&srows, ZoneRow{text = "(clean)", color = th.muted, item = -1})
-    } else {
-        prev_dir := "\x00" // sentinel: unequal to any real dir, so the first row emits one
-        for e, i in g.status {
-            dir := git_dir_of(e.path)
-            if dir != prev_dir && dir != "" {
-                append(&srows, ZoneRow{text = fmt.tprintf("%s/", dir), color = th.muted, item = -1})
-            }
-            prev_dir = dir
-            name := dir == "" ? e.path : e.path[len(dir) + 1:] // basename under the header
-            append(
-                &srows,
-                ZoneRow {
-                    text = fmt.tprintf("%s %s", e.code, name),
-                    color = git_status_color(e.code, th),
-                    item = i,
-                    indent = dir == "" ? 0 : 1,
-                },
-            )
-        }
-    }
-    lrows := make([dynamic]ZoneRow, 0, len(g.commits), context.temp_allocator)
-    for c, i in g.commits {
-        append(&lrows, ZoneRow{text = fmt.tprintf("%s %s", c.hash, c.subject), color = th.fg, item = i})
+    // Header line: the checked-out branch (accent), then ahead/behind vs upstream (faint) —
+    // always visible so "you are here" never scrolls away with a page swap.
+    bname := g.branch == "" ? "(detached)" : g.branch
+    git_row(t, bname, x0, area.y, row_h, lh, th.accent)
+    if g.has_upstream && (g.ahead > 0 || g.behind > 0) {
+        ab := fmt.tprintf("↑%d ↓%d", g.ahead, g.behind)
+        git_row(t, ab, x0 + f32(len(bname) + 1) * cw, area.y, row_h, lh, th.muted)
     }
 
-    // Split the body: Status on top, Log below.
-    body_h := max(i32(0), area.y + area.h - body_top)
-    half := body_h / 2
-    status_rect := Rect{area.x, body_top, area.w, half}
-    log_rect := Rect{area.x, body_top + half, area.w, body_h - half}
+    // Breadcrumb line (the modal tab strip): the four page names, the active one lit. Drawn
+    // segment by segment so each carries its own colour; advance assumes the monospace cell.
+    crumbs := [?]struct {
+        sec:   GitSection,
+        label: string,
+    }{{.Status, "status"}, {.Log, "log"}, {.Branch, "branches"}, {.Remote, "remote"}}
+    cx := x0
+    crumb_y := area.y + row_h
+    for c in crumbs {
+        git_row(t, c.label, cx, crumb_y, row_h, lh, g.section == c.sec ? th.accent : th.muted)
+        cx += f32(len(c.label) + 2) * cw // two-cell gap between crumbs
+    }
 
-    status_active := side_focused && g.section == .Status
-    log_active := side_focused && g.section == .Log
-    status_sel := len(g.status) > 0 ? g.sel_status : -1 // skip the "(clean)" placeholder
-    log_sel := len(g.commits) > 0 ? g.sel_log : -1
-
-    git_draw_zone(t, "status", srows[:], status_rect, row_h, lh, status_active ? th.accent : th.muted, th, status_sel, status_active)
-    git_draw_zone(t, "log", lrows[:], log_rect, row_h, lh, log_active ? th.accent : th.muted, th, log_sel, log_active)
+    // The active page fills the rest of the sidebar (title "" — the breadcrumb is the head).
+    body_top := crumb_y + row_h + row_h / 2
+    body := Rect{area.x, body_top, area.w, max(i32(0), area.y + area.h - body_top)}
+    rows: []ZoneRow
+    sel: int
+    switch g.section {
+    case .Status: rows, sel = git_status_rows(g, th), len(g.status) > 0 ? g.sel_status : -1
+    case .Log:    rows, sel = git_log_rows(g, th), len(g.commits) > 0 ? g.sel_log : -1
+    case .Branch: rows, sel = git_branch_rows(g, th), g.sel_branch
+    case .Remote: rows, sel = git_remote_rows(g, th), g.sel_remote
+    }
+    git_draw_zone(t, "", rows, body, row_h, lh, th.muted, th, sel, side_focused)
 }
 
 // Colour a diff line by kind: additions green (the directory slot), deletions urgent,

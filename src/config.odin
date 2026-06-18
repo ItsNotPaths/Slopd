@@ -40,6 +40,7 @@ Config :: struct {
     git_checkout_run:  bool, // git branch Enter: run `git checkout` at once vs stage it
     git_commit_run:    bool, // git commit Enter: run the commit recipe at once vs stage it
     git_merge_run:     bool, // git branch Space / merge finish: run vs stage it
+    git_remote_run:    bool, // git Remote page push/pull/fetch: run at once vs stage it
     risky_mode:        bool, // git slot machine: auto-send the lucky-dip commit (no review)
     grep_pane_always:  bool, // CL grep: always open the results pane vs jump straight on a lone hit
 }
@@ -54,9 +55,10 @@ load_config :: proc() -> Config {
         show_guides     = true,
         folding         = true,
         folder_cd_run   = false, // stage the cd in the CL by default (reviewable)
-        git_checkout_run = false, // stage branch checkout / commit / merge in the CL by default
+        git_checkout_run = false, // stage branch checkout / commit / merge / remote in the CL by default
         git_commit_run  = false,
         git_merge_run   = false,
+        git_remote_run  = false,
         risky_mode      = false, // the lucky-dip commit is staged for review by default
         grep_pane_always = true, // always show the results pane (no auto-jump on a lone hit)
     }
@@ -118,6 +120,8 @@ load_config :: proc() -> Config {
             if v, ok := parse_stage_run(val); ok {cfg.git_commit_run = v}
         case "git_merge":
             if v, ok := parse_stage_run(val); ok {cfg.git_merge_run = v}
+        case "git_remote":
+            if v, ok := parse_stage_run(val); ok {cfg.git_remote_run = v}
         case "risky_mode":
             if v, ok := parse_on_off(val); ok {cfg.risky_mode = v}
         case "grep_pane":
@@ -201,7 +205,7 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return theme_options(context.temp_allocator)
     case .Folding, .IndentGuides, .Whitespace, .RiskyMode, .GrepPane:
         return ON_OFF_OPTS[:]
-    case .FolderCd, .GitCheckout, .GitCommit, .GitMerge:
+    case .FolderCd, .GitCheckout, .GitCommit, .GitMerge, .GitRemote:
         return STAGE_RUN_OPTS[:]
     }
     return nil
@@ -255,6 +259,7 @@ Setting :: enum {
     GitCheckout,
     GitCommit,
     GitMerge,
+    GitRemote,
     RiskyMode,
     GrepPane,
 }
@@ -271,6 +276,7 @@ setting_key :: proc(s: Setting) -> string {
     case .GitCheckout:  return "git_checkout"
     case .GitCommit:    return "git_commit"
     case .GitMerge:     return "git_merge"
+    case .GitRemote:    return "git_remote"
     case .RiskyMode:    return "risky_mode"
     case .GrepPane:     return "grep_pane"
     }
@@ -292,6 +298,7 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .GitCheckout:  return a.git_checkout_run ? "run" : "stage"
     case .GitCommit:    return a.git_commit_run ? "run" : "stage"
     case .GitMerge:     return a.git_merge_run ? "run" : "stage"
+    case .GitRemote:    return a.git_remote_run ? "run" : "stage"
     case .RiskyMode:    return on_off(a.risky_mode)
     case .GrepPane:     return on_off(a.grep_pane_always)
     }
@@ -332,6 +339,8 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.git_commit_run = parse_stage_run(val) or_return
     case .GitMerge:
         a.git_merge_run = parse_stage_run(val) or_return
+    case .GitRemote:
+        a.git_remote_run = parse_stage_run(val) or_return
     case .RiskyMode:
         a.risky_mode = parse_on_off(val) or_return
     case .GrepPane:

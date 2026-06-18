@@ -48,15 +48,11 @@ grep_move :: proc(g: ^GrepPane, dir: int) {
     }
 }
 
-// Open a hit's file and place the caret on the match (reusing open_file + doc_reset_cursor,
-// the `j` builtin's cursor reset). open_file focuses the editor. The single canonical jump,
-// shared by the pane's Enter (grep_open_selected) and link.odin's single-definition goto.
+// Open a hit's file and place the caret on the match, through the shared jump_to primitive
+// (the same one the `j` builtin and Alt+Enter follows use). The single canonical jump, shared
+// by the pane's Enter (grep_open_selected) and link.odin's single-definition goto.
 grep_open_hit :: proc(a: ^App, h: GrepHit) {
-    open_file(a, h.path)
-    b := editor_current(&a.editor)
-    target := clamp(h.line - 1, 0, len(b.lines) - 1)
-    col := clamp(h.col, 0, line_len(&b.lines[target]))
-    doc_reset_cursor(&b.doc, Pos{target, col})
+    jump_to(a, h.path, h.line - 1, h.col) // GrepHit.line is 1-based; jump_to wants 0-based
 }
 
 // Enter in the pane: jump to the selected hit (no-op on an empty / out-of-range list).

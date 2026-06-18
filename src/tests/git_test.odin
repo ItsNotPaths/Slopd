@@ -103,13 +103,14 @@ test_git_nav :: proc(t: ^testing.T) {
     app.git_move_region(&g, -1)
     testing.expect_value(t, g.region, app.GitRegion.Sidebar) // back to the sidebar
 
-    // Tab cycles the focused column's sub-mode: Status -> Log -> Branch -> Status in the
-    // sidebar...
+    // Tab swaps the sidebar's modal page: Status -> Log -> Branch -> Remote -> Status...
     testing.expect_value(t, g.section, app.GitSection.Status)
     app.git_tab(&g)
     testing.expect_value(t, g.section, app.GitSection.Log)
     app.git_tab(&g)
     testing.expect_value(t, g.section, app.GitSection.Branch)
+    app.git_tab(&g)
+    testing.expect_value(t, g.section, app.GitSection.Remote)
     app.git_tab(&g)
     testing.expect_value(t, g.section, app.GitSection.Status)
     // ...and Grep -> Select -> Diff -> Commit -> Grep in the right column.
@@ -432,7 +433,8 @@ test_toggle_all :: proc(t: ^testing.T) {
     testing.expect(t, !app.git_any_checked(&g))
 }
 
-// The branch strip: cycling clamps, and the hover defaults to the checked-out branch.
+// The Branch page: Up/Down selection clamps to the branch rows plus the trailing "new
+// branch" row (index len(branches)), and the selection defaults to the checked-out branch.
 @(test)
 test_branch_nav :: proc(t: ^testing.T) {
     g: app.GitPane
@@ -442,15 +444,17 @@ test_branch_nav :: proc(t: ^testing.T) {
     append(&g.branches, strings.clone("feature"))
     append(&g.branches, strings.clone("fix"))
     g.branch = strings.clone("feature")
+    g.region = .Sidebar
+    g.section = .Branch
 
     app.git_sel_branch_to_current(&g)
-    testing.expect_value(t, g.sel_branch, 1) // hovers the checked-out branch
+    testing.expect_value(t, g.sel_branch, 1) // selects the checked-out branch
 
-    app.git_branch_cycle(&g, 1)
+    app.git_move_sel(&g, 1)
     testing.expect_value(t, g.sel_branch, 2)
-    app.git_branch_cycle(&g, 5)
-    testing.expect_value(t, g.sel_branch, 2) // clamped at the last
-    app.git_branch_cycle(&g, -9)
+    app.git_move_sel(&g, 5)
+    testing.expect_value(t, g.sel_branch, 3) // clamped at the "new branch" row (len == 3)
+    app.git_move_sel(&g, -9)
     testing.expect_value(t, g.sel_branch, 0) // clamped at the first
 }
 

@@ -5,6 +5,7 @@ import "core:math/rand"
 import "core:os"
 import "core:path/filepath"
 import "core:slice"
+import "core:strconv"
 import "core:strings"
 import "core:time"
 
@@ -128,14 +129,26 @@ GitRegion :: enum {
     Commit,
 }
 
-// The sidebar's selectable sections (Prawk's GitSection): the branch strip (where
-// Left/Right swap branches), the working-tree Status (whose files filter the diff), and the
-// commit Log. Tab cycles between them while the sidebar is focused; Up/Down then move the
-// selection within Status/Log (Branch uses Left/Right).
+// The sidebar's pages. The sidebar is MODAL: Tab swaps which one fills the body (a
+// persistent branch + ahead/behind header and a page breadcrumb sit above it, always
+// visible). Every page is a plain vertical list driven by the SAME grammar — Up/Down move
+// the selection, Enter activates the focused row, Space is its secondary verb — so no page
+// needs Left/Right (those stay reserved for the column switch). Status filters the diff to a
+// file, Log loads a commit, Branch checks out / merges / creates branches, Remote pushes /
+// pulls / fetches.
 GitSection :: enum {
     Status,
     Log,
     Branch,
+    Remote,
+}
+
+// The Remote page's action rows, in display (and Up/Down) order. The selection index
+// (g.sel_remote) is one of these; git_activate maps it to the push / pull / fetch inject.
+GitRemoteRow :: enum {
+    Push,
+    Pull,
+    Fetch,
 }
 
 // An in-progress repo operation that owns the working tree until it's resolved or aborted —
@@ -181,16 +194,25 @@ GitSpin :: struct {
 
 GitPane :: struct {
     region:     GitRegion, // the focused sub-region (Left/Right move between them)
-    section:    GitSection, // the active sidebar section (Tab toggles it)
+    section:    GitSection, // the active sidebar page (Tab swaps it)
     sel_status: int, // selected row in the Status list
     sel_log:    int, // selected row in the Log list
-    sel_branch: int, // hovered row in the branch strip (Left/Right cycle it)
+    sel_branch: int, // selected row on the Branch page (0..len(branches): the last is "new branch")
+    sel_remote: int, // selected row on the Remote page (a GitRemoteRow)
     root:       string, // the discovered repo working-tree root (owned); "" when none
     is_repo:    bool, // whether `root` names a real repo (set by git_refresh)
     branch:     string, // the checked-out branch (owned); "" when detached / none
-    branches:   [dynamic]string, // all local branch names (owned), for the swap strip
+    branches:   [dynamic]string, // all local branch names (owned), for the Branch page
     status:     [dynamic]StatusEntry, // working-tree changes (owned)
     commits:    [dynamic]Commit, // recent log on the current branch (owned)
+
+    // The current branch's upstream tracking, for the Remote page (git_load_upstream). When
+    // has_upstream is false the branch isn't tracking a remote and the first push uses
+    // `-u origin <branch>` to set one. ahead/behind count the commits to push / to pull.
+    upstream:     string, // the upstream ref ("origin/main"), owned; "" when untracked / detached
+    has_upstream: bool,
+    ahead:        int, // commits HEAD is ahead of upstream (to push)
+    behind:       int, // commits HEAD is behind upstream (to pull)
 
     // The diff shown in the right column, parsed into files -> hunks so each hunk renders
     // as a block with a checkbox. diff_preamble holds any lines before the first file (a
@@ -254,6 +276,11 @@ git_clear :: proc(g: ^GitPane) {
     g.root = ""
     delete(g.branch)
     g.branch = ""
+    delete(g.upstream)
+    g.upstream = ""
+    g.has_upstream = false
+    g.ahead = 0
+    g.behind = 0
     for b in g.branches {
         delete(b)
     }
@@ -346,16 +373,17 @@ git_move_region :: proc(g: ^GitPane, dir: int) {
     }
 }
 
-// Tab cycles the focused column's sub-modes: in the sidebar, Status -> Log -> Branch (the
-// branch swap strip) -> Status; in the right column, Grep -> Select (the select-all toggle)
-// -> Diff -> Commit -> Grep.
+// Tab cycles the focused column's sub-modes: in the sidebar it swaps the modal page
+// Status -> Log -> Branch -> Remote -> Status; in the right column it moves Grep -> Select
+// (the select-all toggle) -> Diff -> Commit -> Grep.
 git_tab :: proc(g: ^GitPane) {
     switch g.region {
     case .Sidebar:
         switch g.section {
         case .Status: g.section = .Log
         case .Log:    g.section = .Branch
-        case .Branch: g.section = .Status
+        case .Branch: g.section = .Remote
+        case .Remote: g.section = .Status
         }
     case .Grep:
         g.region = .Select
@@ -486,6 +514,10 @@ git_move_sel :: proc(g: ^GitPane, dir: int) {
             g.sel_log = clamp(g.sel_log + dir, 0, n - 1)
         }
     case .Branch:
+        // The branch rows plus a trailing "new branch" row at index len(branches).
+        g.sel_branch = clamp(g.sel_branch + dir, 0, len(g.branches))
+    case .Remote:
+        g.sel_remote = clamp(g.sel_remote + dir, 0, len(GitRemoteRow) - 1)
     }
 }
 
@@ -752,7 +784,17 @@ git_activate :: proc(a: ^App) {
     }
     switch g.section {
     case .Branch:
-        git_checkout_inject(a)
+        if g.sel_branch >= len(g.branches) {
+            git_branch_create(a) // the trailing "new branch" row
+        } else {
+            git_checkout_inject(a)
+        }
+    case .Remote:
+        switch GitRemoteRow(g.sel_remote) {
+        case .Push:  git_push_inject(a)
+        case .Pull:  git_pull_inject(a)
+        case .Fetch: git_fetch_inject(a)
+        }
     case .Status:
         if g.sel_status < len(g.status) {
             git_set_grep(g, g.status[g.sel_status].path)
@@ -781,6 +823,7 @@ git_refresh :: proc(a: ^App) {
     g.is_repo = true
     git_load_branch(g)
     git_load_branches(g)
+    git_load_upstream(g) // upstream ref + ahead/behind for the Remote page
     git_load_status(g)
     git_load_log(g)
     git_detect_op(g) // a merge in progress flips the right column to conflict resolution
@@ -793,7 +836,8 @@ git_refresh :: proc(a: ^App) {
     // is a later refinement; clamping preserves position when it still exists.
     g.sel_status = clamp(g.sel_status, 0, max(0, len(g.status) - 1))
     g.sel_log = clamp(g.sel_log, 0, max(0, len(g.commits) - 1))
-    git_sel_branch_to_current(g) // hover the checked-out branch by default
+    g.sel_remote = clamp(g.sel_remote, 0, len(GitRemoteRow) - 1)
+    git_sel_branch_to_current(g) // select the checked-out branch by default
 }
 
 // Walk up from `start` until a git repo is found — a directory holding `.git` (a
@@ -873,7 +917,27 @@ git_load_branches :: proc(g: ^GitPane) {
     }
 }
 
-// Park the branch-strip hover on the checked-out branch (so it opens pointing at "you are
+// Load the current branch's upstream tracking for the Remote page: the upstream ref name
+// (e.g. "origin/main") and how far HEAD is ahead/behind it. Both git calls exit non-zero when
+// there's no upstream, which we leave as has_upstream = false (the first push then sets one
+// with `-u`). `rev-list --count --left-right @{u}...HEAD` prints "<behind>\t<ahead>".
+git_load_upstream :: proc(g: ^GitPane) {
+    up, ok := git_run(g, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    if !ok {
+        return // no upstream configured for this branch
+    }
+    g.upstream = strings.clone(strings.trim_space(up))
+    g.has_upstream = true
+    if counts, cok := git_run(g, "rev-list", "--count", "--left-right", "@{upstream}...HEAD"); cok {
+        parts := strings.split(strings.trim_space(counts), "\t", context.temp_allocator)
+        if len(parts) == 2 {
+            g.behind = strconv.parse_int(strings.trim_space(parts[0]), 10) or_else 0
+            g.ahead = strconv.parse_int(strings.trim_space(parts[1]), 10) or_else 0
+        }
+    }
+}
+
+// Park the Branch-page selection on the checked-out branch (so it opens pointing at "you are
 // here"). Falls back to 0 when the current branch isn't in the list (detached HEAD).
 git_sel_branch_to_current :: proc(g: ^GitPane) {
     g.sel_branch = 0
@@ -885,16 +949,9 @@ git_sel_branch_to_current :: proc(g: ^GitPane) {
     }
 }
 
-// Left/Right on the branch strip move the hover; clamped to the list.
-git_branch_cycle :: proc(g: ^GitPane, dir: int) {
-    if n := len(g.branches); n > 0 {
-        g.sel_branch = clamp(g.sel_branch + dir, 0, n - 1)
-    }
-}
-
-// Enter on the branch strip: stage (or run, per git_checkout) `git checkout <hovered>` in
-// the command line. No-op when the hover is already the checked-out branch or the list is
-// empty.
+// Enter on a Branch-page branch row: stage (or run, per git_checkout) `git checkout
+// <selected>` in the command line. No-op when the selection is already the checked-out
+// branch or the list is empty.
 git_checkout_inject :: proc(a: ^App) {
     g := &a.git
     if g.sel_branch < 0 || g.sel_branch >= len(g.branches) {
@@ -907,8 +964,20 @@ git_checkout_inject :: proc(a: ^App) {
     cl_dispatch(a, fmt.tprintf("git checkout %s", target), a.git_checkout_run)
 }
 
-// Space on the branch strip (when no merge is already in flight): stage (or run, per
-// git_merge) `git merge <hovered>` to bring that branch's commits into the current one.
+// Enter on the Branch page's trailing "new branch" row: stage the INCOMPLETE
+// `git -C <root> checkout -b ` in the command line so the user types the name onto it and
+// submits — always cl_inject (not cl_dispatch), since the command isn't runnable until
+// finished, like Alt+W's line-jump prefill.
+git_branch_create :: proc(a: ^App) {
+    g := &a.git
+    if !g.is_repo {
+        return
+    }
+    cl_inject(a, fmt.tprintf(`git -C "%s" checkout -b `, g.root))
+}
+
+// Space on a Branch-page branch row (when no merge is already in flight): stage (or run, per
+// git_merge) `git merge <selected>` to bring that branch's commits into the current one.
 // `--no-edit` keeps git from opening $EDITOR for the merge message (which would hang the
 // injected shell step). Trailing `|| true && gr` makes the pane refresh whatever the
 // outcome — a CONFLICTING merge exits non-zero, and we still need to surface the conflicts.
@@ -924,6 +993,43 @@ git_merge_inject :: proc(a: ^App) {
     }
     cmd := fmt.tprintf(`git -C "%s" merge --no-edit "%s" || true && gr`, g.root, target)
     cl_dispatch(a, cmd, a.git_merge_run)
+}
+
+// The Remote page's `push` row: with an upstream set, a bare `git push`; on the FIRST push
+// of an untracked branch (no upstream) `push -u origin <branch>`, which sets the upstream so
+// later pushes are bare. Staged or run per git_remote; `|| true && gr` refreshes the pane
+// (and the ahead/behind counts) whatever the outcome. No-op when detached / no branch.
+git_push_inject :: proc(a: ^App) {
+    g := &a.git
+    if g.branch == "" {
+        return
+    }
+    cmd: string
+    if g.has_upstream {
+        cmd = fmt.tprintf(`git -C "%s" push || true && gr`, g.root)
+    } else {
+        cmd = fmt.tprintf(`git -C "%s" push -u origin "%s" || true && gr`, g.root, g.branch)
+    }
+    cl_dispatch(a, cmd, a.git_remote_run)
+}
+
+// The Remote page's `pull` row: `git pull --no-edit` (--no-edit so a merge pull never opens
+// $EDITOR and hangs the injected shell step). A pull that CONFLICTS leaves MERGE_HEAD, which
+// the gr-triggered refresh detects (git_detect_op) and flips the right column into the
+// existing conflict editor — pull conflicts resolve in-pane with no extra machinery. No-op
+// while an operation is already being resolved.
+git_pull_inject :: proc(a: ^App) {
+    g := &a.git
+    if g.op != .None {
+        return
+    }
+    cl_dispatch(a, fmt.tprintf(`git -C "%s" pull --no-edit || true && gr`, g.root), a.git_remote_run)
+}
+
+// The Remote page's `fetch` row: `git fetch` — refresh the remote-tracking refs (and thus the
+// ahead/behind counts) without touching the working tree. The safest of the three.
+git_fetch_inject :: proc(a: ^App) {
+    cl_dispatch(a, fmt.tprintf(`git -C "%s" fetch || true && gr`, a.git.root), a.git_remote_run)
 }
 
 // The grep bar's right button (region .Select): the select-all / deselect-all toggle

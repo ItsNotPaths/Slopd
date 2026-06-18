@@ -283,6 +283,42 @@ highlight_fold_range :: proc(a: ^App, b: ^Buffer, line: int) -> (start, end: int
     return 0, 0, false
 }
 
+// Is the rune at (line, col) inside a string, character or comment node? Auto-indent
+// (buffer.odin) consults this so an opener bracket sitting inside a string or comment —
+// `x := "{"`, `// open {` — doesn't trigger an extra indent level. Returns false when no
+// grammar is loaded for the buffer, so the caller falls back to the pure bracket heuristic.
+ts_in_string_or_comment :: proc(a: ^App, b: ^Buffer, line, col: int) -> bool {
+    g, found := highlighter_grammar(a, b.path)
+    if !found {
+        return false
+    }
+    tree := highlighter_tree(&a.hl, b, g.lang)
+    if tree == nil {
+        return false
+    }
+    bcol := rune_col_to_byte(b.lines[line].text[:], col)
+    pt := ts.Point{u32(line), u32(bcol)}
+    node := ts.node_descendant_for_range(ts.tree_root_node(tree), pt, pt)
+    for !ts.node_is_null(node) {
+        t := string(ts.node_type(node))
+        if strings.contains(t, "string") || strings.contains(t, "comment") || strings.contains(t, "char") {
+            return true
+        }
+        node = ts.node_parent(node)
+    }
+    return false
+}
+
+// Byte offset of rune column `col` within a line's runes (the inverse of byte_to_rune_col).
+@(private = "file")
+rune_col_to_byte :: proc(runes: []rune, col: int) -> int {
+    b := 0
+    for i in 0 ..< min(col, len(runes)) {
+        b += utf8.rune_size(runes[i])
+    }
+    return b
+}
+
 // The loaded grammar for a buffer path's extension, loading on first use and caching.
 // ok=false means no registry match. A not-yet-installed grammar is NOT cached (so a
 // later install is picked up on a subsequent draw); a present-but-broken one IS cached

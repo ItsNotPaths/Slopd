@@ -78,6 +78,18 @@ open_file :: proc(a: ^App, path: string) {
     }
 }
 
+// How many open buffers hold unsaved changes (the ring's size). The quit/write
+// builtins guard on this so a stray `q` can't discard work.
+ring_dirty_count :: proc(e: ^Editor) -> int {
+    n := 0
+    for &b in e.buffers {
+        if b.dirty {
+            n += 1
+        }
+    }
+    return n
+}
+
 // Is path open with unsaved changes? (Lights up its '*' in the filetree.)
 ring_contains :: proc(a: ^App, path: string) -> bool {
     for &b in a.editor.buffers {
@@ -141,8 +153,133 @@ buffer_insert_rune :: proc(b: ^Buffer, r: rune) {
     b.dirty |= doc_insert_rune(&b.doc, r)
 }
 
+// A plain newline at every cursor, no auto-indent (the editor uses buffer_enter; this is the
+// dumb primitive for programmatic splits + tests).
 buffer_newline :: proc(b: ^Buffer) {
     b.dirty |= doc_newline(&b.doc)
+}
+
+// Enter in the editor: a newline that keeps the code indented (the auto-indent + brace
+// expansion standard editors have). The new line copies the current line's leading
+// whitespace, plus one indent unit when the line opens a block at the caret (its last
+// non-blank char is an opener `([{`). With a grammar loaded, tree-sitter suppresses an opener
+// that actually sits inside a string or comment. Special case: a single caret between a
+// freshly-typed bracket pair (`{|}`, `[|]`, `(|)`) expands across three lines, caret on an
+// indented middle line. Heuristic-first (works with no grammar installed); tree-sitter refines.
+buffer_enter :: proc(a: ^App, b: ^Buffer) {
+    d := &b.doc
+
+    // Brace-pair expansion: a lone caret between an opener and its matching closer.
+    if len(d.cursors) == 1 && !cursor_has_selection(d.cursors[0]) {
+        c := d.cursors[0]
+        line := &d.lines[c.head.line]
+        prev := c.head.col > 0 ? line.text[c.head.col - 1] : 0
+        if enter_expands_pair(prev, char_at(line, c.head.col)) &&
+           !ts_in_string_or_comment(a, b, c.head.line, c.head.col - 1) {
+            base := line_lead(line)
+            inner := grow_indent(base, a.indent)
+            if doc_insert_runes(d, expand_runes(inner, base)) {
+                b.dirty = true
+            }
+            doc_reset_cursor(d, Pos{c.head.line + 1, len(inner)}) // onto the indented middle line
+            return
+        }
+    }
+
+    // General case (incl. multi-cursor): each cursor gets a newline + its own computed indent.
+    edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
+    for c in d.cursors {
+        lo, hi := cursor_range(c)
+        append(&edits, Edit{lo, hi, newline_indent(enter_indent(a, b, lo)), 0})
+    }
+    if doc_commit(d, edits[:]) {
+        b.dirty = true
+    }
+}
+
+// The indentation the line after Enter should start with: the current line's leading
+// whitespace, plus one unit when the line opens a block at the caret.
+@(private = "file")
+enter_indent :: proc(a: ^App, b: ^Buffer, pos: Pos) -> []rune {
+    lead := line_lead(&b.lines[pos.line])
+    if enter_opens_block(a, b, pos) {
+        return grow_indent(lead, a.indent)
+    }
+    return lead
+}
+
+// Opens a block at the caret = its last non-blank char before the caret is an opener `([{`
+// that's real code (tree-sitter rules out one inside a string/comment when a grammar exists).
+@(private = "file")
+enter_opens_block :: proc(a: ^App, b: ^Buffer, pos: Pos) -> bool {
+    line := &b.lines[pos.line]
+    at := -1
+    for i := pos.col - 1; i >= 0; i -= 1 {
+        if line.text[i] != ' ' && line.text[i] != '\t' {
+            at = i
+            break
+        }
+    }
+    if at < 0 {
+        return false
+    }
+    switch line.text[at] {
+    case '(', '[', '{':
+        return !ts_in_string_or_comment(a, b, pos.line, at)
+    }
+    return false
+}
+
+// True when Enter between `prev` and `next` should expand a bracket pair (quotes excluded —
+// splitting a string across lines isn't wanted).
+@(private = "file")
+enter_expands_pair :: proc(prev, next: rune) -> bool {
+    switch prev {
+    case '(':
+        return next == ')'
+    case '[':
+        return next == ']'
+    case '{':
+        return next == '}'
+    }
+    return false
+}
+
+// A line's leading whitespace, as a sub-slice of its runes (read before any edit mutates it).
+@(private = "file")
+line_lead :: proc(l: ^Line) -> []rune {
+    return l.text[:line_indent_cols(l)]
+}
+
+// `lead` plus one indentation unit.
+@(private = "file")
+grow_indent :: proc(lead: []rune, ind: Indent) -> []rune {
+    unit := indent_runes(ind)
+    out := make([]rune, len(lead) + len(unit), context.temp_allocator)
+    copy(out, lead)
+    copy(out[len(lead):], unit)
+    return out
+}
+
+// "\n" followed by the given indentation.
+@(private = "file")
+newline_indent :: proc(indent: []rune) -> []rune {
+    out := make([]rune, 1 + len(indent), context.temp_allocator)
+    out[0] = '\n'
+    copy(out[1:], indent)
+    return out
+}
+
+// "\n" + inner + "\n" + base — the three-line body for brace-pair expansion (the caret lands
+// at the end of the `inner` line).
+@(private = "file")
+expand_runes :: proc(inner, base: []rune) -> []rune {
+    out := make([]rune, 2 + len(inner) + len(base), context.temp_allocator)
+    out[0] = '\n'
+    copy(out[1:], inner)
+    out[1 + len(inner)] = '\n'
+    copy(out[2 + len(inner):], base)
+    return out
 }
 
 buffer_backspace :: proc(b: ^Buffer) {

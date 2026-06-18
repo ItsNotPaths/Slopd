@@ -1,6 +1,8 @@
 package tests
 
 import app ".."
+import "core:os"
+import "core:strings"
 import "core:testing"
 
 @(private = "file")
@@ -24,6 +26,32 @@ free_sessions :: proc(a: ^app.App) {
         free(term)
     }
     delete(a.terminals)
+}
+
+// The quit/write builtins guard on the unsaved ring (ring_dirty_count): an unnamed
+// buffer can't be written yet, so `wa` leaves it dirty; giving it a path lets `wa`
+// save it and clear the ring. The window-closing paths (clean `q` / `q!`) and the
+// t1-echo refusal need a live GLFW window / terminal, so they aren't exercised here.
+@(test)
+test_cl_write_ring :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    defer app.editor_destroy(&a.editor)
+
+    b := app.editor_current(&a.editor)
+
+    // Unnamed: `wa` can't save it, so it stays in the ring.
+    b.dirty = true
+    app.cl_exec(&a, "wa")
+    testing.expect_value(t, app.ring_dirty_count(&a.editor), 1)
+
+    // Named: `wa` writes it and the ring clears.
+    path := "/tmp/slopd_quit_test.txt"
+    b.path = strings.clone(path)
+    b.dirty = true
+    app.cl_exec(&a, "wa")
+    testing.expect_value(t, app.ring_dirty_count(&a.editor), 0)
+    os.remove(path)
 }
 
 @(test)
@@ -192,6 +220,7 @@ test_cl_cd_project_root :: proc(t: ^testing.T) {
 test_cl_dispatch_stage_vs_run :: proc(t: ^testing.T) {
     a: app.App
     defer delete(a.project_root)
+    defer app.cl_destroy(&a) // staging opens the CL doc; free it (else it leaks)
 
     app.cl_dispatch(&a, "cd /tmp", false) // stage
     testing.expect(t, a.cl_active, "stage opens the command line")

@@ -364,11 +364,13 @@ grep_key :: proc(a: ^App, key, mods: i32) {
     }
 }
 
-// Git aux mode keys (arrows only). Tab cycles the focused column's sub-modes; Left/Right
-// switch column, EXCEPT on the branch strip where they're captured to swap branches. Enter
-// activates the focus (checkout / filter-to-file / load commit / toggle-all / inject commit);
-// Space checks hunks. The grep + commit fields edit in place. Alt+Q (handled in handle_key)
-// clears the filter back to the full working tree.
+// Git aux mode keys (arrows only). Tab cycles the focused column's sub-modes (the sidebar
+// swaps its modal page Status/Log/Branch/Remote; the right column moves Grep/Select/Diff/
+// Commit); Left/Right switch column. Up/Down move within the focus; Enter activates the
+// focused row (checkout / new branch / push-pull-fetch / filter-to-file / load commit /
+// toggle-all / inject commit); Space is the row's secondary (merge a branch / check a file's
+// hunks / toggle a hunk). The grep + commit fields edit in place. Alt+Q (handled in
+// handle_key) clears the filter back to the full working tree.
 git_key :: proc(a: ^App, key, mods: i32) {
     g := &a.git
     if g.spin.active {
@@ -420,17 +422,9 @@ git_key :: proc(a: ^App, key, mods: i32) {
             git_move_sel(g, 1)
         }
     case glfw.KEY_LEFT:
-        if g.region == .Sidebar && g.section == .Branch {
-            git_branch_cycle(g, -1) // captured: swap branches, don't leave the strip
-        } else {
-            git_move_region(g, -1)
-        }
+        git_move_region(g, -1) // column switch; pages never capture Left/Right
     case glfw.KEY_RIGHT:
-        if g.region == .Sidebar && g.section == .Branch {
-            git_branch_cycle(g, 1)
-        } else {
-            git_move_region(g, 1)
-        }
+        git_move_region(g, 1)
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
         if g.region == .Select {
             git_select_action(a) // select-all / deselect-all, or abort during a merge
@@ -444,9 +438,10 @@ git_key :: proc(a: ^App, key, mods: i32) {
         case .Select:
             git_select_action(a)
         case .Sidebar:
-            if g.section == .Branch {
-                git_merge_inject(a) // Space on the branch strip merges it into the current branch
-            } else {
+            #partial switch g.section {
+            case .Branch:
+                git_merge_inject(a) // merge the selected branch into the current one
+            case .Status:
                 git_stage_toggle(a) // check/uncheck the whole file's hunks
             }
         }
@@ -555,7 +550,7 @@ buffer_key :: proc(a: ^App, key, mods: i32, all: bool) {
         if ctrl && a.folding {
             buffer_fold_toggle(a, b) // collapse/expand the block opening on this line
         } else {
-            buffer_newline(b)
+            buffer_enter(a, b) // newline with auto-indent / brace expansion
         }
     case glfw.KEY_TAB:
         buffer_tab(b, a.indent)

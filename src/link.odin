@@ -34,11 +34,68 @@ link_follow :: proc(a: ^App) {
         link_open_wiki(a, name)
     } else if url, ok := link_url_at(line, col); ok {
         link_open_url(url)
+    } else if path, lno, lcol, ok := link_path_at(a, line, col); ok {
+        jump_to(a, path, lno, lcol) // a file path (optionally `path:line:col`) under the caret
     } else if rgba, ok := link_color_at(line, col); ok {
         color_open(a, rgba)
     } else if ident, ok := link_ident_at(line, col); ok {
         link_jump_definition(a, ident)
     }
+}
+
+// --- the shared jump primitive ---
+
+// jump_to is the ONE "reveal a location" entry point behind the `j`/`jump` builtin, the grep
+// pane, and every Alt+Enter follow. A non-empty `path` is opened first (open_file reuses an
+// already-open buffer + focuses the editor); then the caret lands on `line` (0-based, clamped
+// to the file) at `col` (0-based, clamped to the line). Callers compute the absolute target —
+// jump_to does no relative arithmetic of its own.
+jump_to :: proc(a: ^App, path: string, line: int, col: int) {
+    if path != "" {
+        open_file(a, path)
+    }
+    b := editor_current(&a.editor)
+    target := clamp(line, 0, len(b.lines) - 1)
+    c := clamp(col, 0, line_len(&b.lines[target]))
+    doc_reset_cursor(&b.doc, Pos{target, c})
+    set_focus(a, .Editor)
+}
+
+// Resolve a `j`/Alt+Enter file argument to an openable absolute path. Per the user's rule:
+// a bare `name.ext` (no separator) is looked up project-first — nearest match under the
+// project root (find_nearest_file); a `/abs/path` or `~/path` is taken system-wide; a
+// relative path WITH a separator joins onto the project root. ok=false when nothing exists,
+// so a non-path token falls through to the next Alt+Enter classifier. Temp-allocated.
+jump_resolve_path :: proc(a: ^App, arg: string) -> (string, bool) {
+    if arg == "" {
+        return "", false
+    }
+    switch {
+    case arg[0] == '/': // system-wide absolute path
+        return arg, os.is_file(arg)
+    case strings.has_prefix(arg, "~/"): // home-relative, also system-wide
+        home := os.get_env("HOME", context.temp_allocator)
+        p := filepath.join({home, arg[2:]}, context.temp_allocator) or_else arg
+        return p, os.is_file(p)
+    case strings.contains(arg, "/"): // project-root-relative path
+        p := filepath.join({a.project_root, arg}, context.temp_allocator) or_else arg
+        return p, os.is_file(p)
+    case:
+        return find_nearest_file(a.project_root, arg) // bare name: nearest under the root
+    }
+}
+
+// Parse a `j` line field: a bare `N` is an absolute 1-based line (-> 0-based); a signed
+// `+N`/`-N` is relative to `base` (a 0-based line). ok=false on non-numeric input.
+parse_line_spec :: proc(s: string, base: int) -> (int, bool) {
+    n, ok := strconv.parse_int(s, 10) // parses a leading +/-, rejects trailing junk
+    if !ok {
+        return 0, false
+    }
+    if s[0] == '+' || s[0] == '-' {
+        return base + n, true
+    }
+    return n - 1, true
 }
 
 // --- jump to definition ---
@@ -78,7 +135,7 @@ link_open_wiki :: proc(a: ^App, name: string) {
     }
     filename := strings.contains(target, ".") ? target : strings.concatenate({target, ".md"}, context.temp_allocator)
     if path, ok := find_nearest_file(a.project_root, filename); ok {
-        open_file(a, path)
+        jump_to(a, path, 0, 0) // open at the top, via the shared jump primitive
     }
 }
 
@@ -192,6 +249,72 @@ is_trailing_punct :: proc(r: rune) -> bool {
         return true
     }
     return false
+}
+
+// --- file paths ---
+
+// A file path under the caret, optionally with a `:line` or `:line:col` suffix (the grep /
+// compiler convention, e.g. `src/main.odin:42`). Expands over the run of path-ish characters,
+// splits off any trailing line/col, then accepts ONLY when the path actually resolves to an
+// existing file (jump_resolve_path) — so a plain identifier or `foo.bar` field access that
+// isn't a real file falls through to the definition jump. A bare word with neither a '/' nor a
+// file extension is skipped outright (it's an identifier, not a path — and skipping avoids a
+// project-tree walk on every Alt+Enter). Returns 0-based line/col for jump_to.
+@(private = "file")
+link_path_at :: proc(a: ^App, line: []rune, col: int) -> (path: string, lno, lcol: int, ok: bool) {
+    n := len(line)
+    c := clamp(col, 0, n)
+    if c >= n || !is_path_rune(line[c]) {
+        if c > 0 && is_path_rune(line[c - 1]) {
+            c -= 1
+        } else {
+            return
+        }
+    }
+    lo := c
+    for lo > 0 && is_path_rune(line[lo - 1]) {
+        lo -= 1
+    }
+    hi := c + 1
+    for hi < n && is_path_rune(line[hi]) {
+        hi += 1
+    }
+    token := utf8.runes_to_string(line[lo:hi], context.temp_allocator)
+    // Split off a trailing `:line` / `:line:col`. The path itself is the first field.
+    parts := strings.split(token, ":", context.temp_allocator)
+    arg := parts[0]
+    if len(parts) >= 2 {
+        if v, vok := strconv.parse_int(parts[1], 10); vok {
+            lno = max(0, v - 1)
+        }
+    }
+    if len(parts) >= 3 {
+        if v, vok := strconv.parse_int(parts[2], 10); vok {
+            lcol = max(0, v - 1)
+        }
+    }
+    if !strings.contains(arg, "/") && filepath.ext(arg) == "" {
+        return "", 0, 0, false // a bare word, not a path — leave it to the identifier jump
+    }
+    if p, found := jump_resolve_path(a, arg); found {
+        return p, lno, lcol, true
+    }
+    return "", 0, 0, false
+}
+
+// Path-token characters: anything that isn't whitespace or a quoting/bracketing delimiter.
+// ':' IS included so the trailing `:line:col` suffix rides along in the token (split off
+// afterwards); a stray `a:b` is harmless since the path still has to resolve to a real file.
+@(private = "file")
+is_path_rune :: proc(r: rune) -> bool {
+    if unicode.is_space(r) {
+        return false
+    }
+    switch r {
+    case '"', '\'', '`', '<', '>', '|', '(', ')', '[', ']', '{', '}', ',', ';':
+        return false
+    }
+    return true
 }
 
 // --- identifiers ---
