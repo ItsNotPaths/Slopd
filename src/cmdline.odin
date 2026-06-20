@@ -272,6 +272,8 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         config_pane_refresh(&a.config_pane)
     case "zen", "zm":
         view_toggle_zen(a)
+    case "full", "fm":
+        view_toggle_full(a)
     case "put":
         cl_put(a, args)
     case "j", "jump":
@@ -527,7 +529,7 @@ is_term_token :: proc(s: string) -> bool {
 @(private = "file")
 cl_is_builtin :: proc(name: string) -> bool {
     switch name {
-    case "ls", "gs", "gr", "cf", "zen", "zm", "put", "j", "jump", "grep", "cd", "tu",
+    case "ls", "gs", "gr", "cf", "zen", "zm", "full", "fm", "put", "j", "jump", "grep", "cd", "tu",
          "w", "wa", "q", "q!", "wq", "wqa", "waq":
         return true
     }

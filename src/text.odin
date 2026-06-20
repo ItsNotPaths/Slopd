@@ -26,9 +26,14 @@ Text :: struct {
     quad_vao:   u32,
     quad_vbo:   u32,
     quad_us:    i32, // u_screen
+    image_prog: u32, // textured RGBA quad (the media viewer): the glyph shader is R8/alpha
+    image_vao:  u32, // -only and the quad shader is untextured, so neither can blit an image
+    image_vbo:  u32,
+    image_us:   i32, // u_screen
     glyphs:     [dynamic]f32, // scratch, 7 floats/vertex: x y u v r g b
     under:      [dynamic]f32, // scratch, 5 floats/vertex: x y r g b
     over:       [dynamic]f32, // scratch, same layout as `under`
+    images:     [dynamic]ImageQuad, // queued image blits, drawn per-pane between under-quads and glyphs
     ttf:        []u8, // retained so the atlas can re-bake on DPI change
     logical_px: f32, // atlas is baked at logical_px * scale physical pixels
     scale:      f32, // DPI scale the atlas is currently baked for
@@ -80,6 +85,37 @@ void main() {
     o_color = vec4(v_color, 1.0);
 }`
 
+// Textured RGBA quad: a decoded image sampled straight through (no per-vertex colour).
+// Same pos->NDC transform as the other two shaders; uv maps the dst rect onto the texture.
+@(private = "file")
+IMAGE_VERT := `#version 330 core
+layout(location=0) in vec2 a_pos;
+layout(location=1) in vec2 a_uv;
+uniform vec2 u_screen;
+out vec2 v_uv;
+void main() {
+    gl_Position = vec4(a_pos.x / u_screen.x * 2.0 - 1.0,
+                       1.0 - a_pos.y / u_screen.y * 2.0, 0.0, 1.0);
+    v_uv = a_uv;
+}`
+
+@(private = "file")
+IMAGE_FRAG := `#version 330 core
+in vec2 v_uv;
+uniform sampler2D u_img;
+out vec4 o_color;
+void main() {
+    o_color = texture(u_img, v_uv);
+}`
+
+// One queued image blit: a texture and the destination rect (top-left px) it fills. The
+// source covers the whole texture (uv 0..1), so only the rect varies. Each carries its own
+// texture, so they can't batch into one draw — but at most one image is ever on screen.
+ImageQuad :: struct {
+    tex: u32,
+    dst: Rect,
+}
+
 text_init :: proc(t: ^Text, ttf: []u8, logical_px, scale: f32) -> bool {
     t.ttf = ttf
     t.logical_px = logical_px
@@ -104,6 +140,15 @@ text_init :: proc(t: ^Text, ttf: []u8, logical_px, scale: f32) -> bool {
     t.quad_prog = qp
     t.quad_us = gl.GetUniformLocation(qp, "u_screen")
 
+    ip, iok := gl.load_shaders_source(IMAGE_VERT, IMAGE_FRAG)
+    if !iok {
+        return false
+    }
+    t.image_prog = ip
+    t.image_us = gl.GetUniformLocation(ip, "u_screen")
+    gl.UseProgram(ip)
+    gl.Uniform1i(gl.GetUniformLocation(ip, "u_img"), 0) // sampler -> unit 0
+
     // Glyph layout: x y u v r g b (stride 28).
     gl.GenVertexArrays(1, &t.glyph_vao)
     gl.GenBuffers(1, &t.glyph_vbo)
@@ -120,6 +165,14 @@ text_init :: proc(t: ^Text, ttf: []u8, logical_px, scale: f32) -> bool {
     gl.BindBuffer(gl.ARRAY_BUFFER, t.quad_vbo)
     gl.EnableVertexAttribArray(0);gl.VertexAttribPointer(0, 2, gl.FLOAT, false, 20, 0)
     gl.EnableVertexAttribArray(1);gl.VertexAttribPointer(1, 3, gl.FLOAT, false, 20, 8)
+
+    // Image layout: x y u v (stride 16).
+    gl.GenVertexArrays(1, &t.image_vao)
+    gl.GenBuffers(1, &t.image_vbo)
+    gl.BindVertexArray(t.image_vao)
+    gl.BindBuffer(gl.ARRAY_BUFFER, t.image_vbo)
+    gl.EnableVertexAttribArray(0);gl.VertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0)
+    gl.EnableVertexAttribArray(1);gl.VertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8)
 
     gl.BindVertexArray(0)
     return true
@@ -177,6 +230,14 @@ push_quad :: proc(buf: ^[dynamic]f32, r: Rect, c: [3]f32) {
     )
 }
 
+// Queues an image blit filling `dst` (top-left px) with the whole texture. Drawn in
+// flush_pane between the under-quads (backdrop) and the glyphs (labels over the image).
+image_push :: proc(t: ^Text, tex: u32, dst: Rect) {
+    if tex != 0 && dst.w > 0 && dst.h > 0 {
+        append(&t.images, ImageQuad{tex, dst})
+    }
+}
+
 // Queues s with its top-left at (x, y) in the given colour. Unknown glyphs advance
 // by one cell (monospace) and draw nothing.
 text_draw :: proc(t: ^Text, s: string, x, y: f32, color: [3]f32) {
@@ -232,12 +293,41 @@ flush_pane :: proc(t: ^Text, clip: Rect, win_w, win_h: i32) {
     gl.Scissor(clip.x, win_h - (clip.y + clip.h), clip.w, clip.h)
 
     quad_flush(t, &t.under, win_w, win_h)
+    image_flush(t, win_w, win_h) // images sit over the backdrop, under the text labels
     glyph_flush(t, win_w, win_h)
     quad_flush(t, &t.over, win_w, win_h)
 
     clear(&t.under)
+    clear(&t.images)
     clear(&t.glyphs)
     clear(&t.over)
+}
+
+// Draws each queued image — one DrawArrays per image (they carry distinct textures, and
+// at most one shows at a time, so no batching). The dst rect maps onto the whole texture;
+// uv top-left (0,0) is the texture's first row = the image top (stb loads top-down).
+@(private = "file")
+image_flush :: proc(t: ^Text, win_w, win_h: i32) {
+    if len(t.images) == 0 {
+        return
+    }
+    gl.UseProgram(t.image_prog)
+    gl.Uniform2f(t.image_us, f32(win_w), f32(win_h))
+    gl.ActiveTexture(gl.TEXTURE0)
+    gl.BindVertexArray(t.image_vao)
+    gl.BindBuffer(gl.ARRAY_BUFFER, t.image_vbo)
+    for im in t.images {
+        x0, y0 := f32(im.dst.x), f32(im.dst.y)
+        x1, y1 := f32(im.dst.x + im.dst.w), f32(im.dst.y + im.dst.h)
+        verts := [?]f32 {
+            x0, y0, 0, 0,  x1, y0, 1, 0,  x1, y1, 1, 1,
+            x0, y0, 0, 0,  x1, y1, 1, 1,  x0, y1, 0, 1,
+        }
+        gl.BindTexture(gl.TEXTURE_2D, im.tex)
+        gl.BufferData(gl.ARRAY_BUFFER, size_of(verts), &verts[0], gl.DYNAMIC_DRAW)
+        gl.DrawArrays(gl.TRIANGLES, 0, 6)
+        t.frame_verts += 6
+    }
 }
 
 @(private = "file")

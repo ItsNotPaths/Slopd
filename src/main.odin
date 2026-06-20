@@ -48,13 +48,14 @@ main :: proc() {
     app_init(&app)
     defer app_destroy(&app)
 
-    // --util: launch with no editor, the aux pane filling the window (the mode an
-    // xdg-portal file picker would start in). Focus is pinned to the aux pane.
+    // --util: launch into Full (full-window swap) mode on the aux pane — the mode an
+    // xdg-portal file picker would start in (the filetree fills the window). The editor
+    // is still reachable from here via Alt+E, unlike the old locked aux-only launch.
     // --perflog: append a per-second frame-timing line to perf.log (off otherwise).
     perflog := false
     for arg in os.args[1:] {
         if arg == "--util" {
-            app.view = .Util
+            app.view = .Full
             app.focus = .Aux
         }
         if arg == "--perflog" {

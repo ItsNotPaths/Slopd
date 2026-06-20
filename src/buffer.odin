@@ -52,12 +52,25 @@ editor_clear_folds :: proc(e: ^Editor) {
 
 // --- cross-part seams (called by the filetree / command line) ---
 
-// Loads path into the editor: reactivates an existing buffer for it, reuses the
-// scratch buffer if it's untouched, otherwise opens a new buffer. Focuses editor.
+// Loads path into the main pane: an image routes to the media viewer (Image surface);
+// any other file is text — reactivates an existing buffer for it, reuses the scratch
+// buffer if it's untouched, otherwise opens a new buffer. Focuses the main pane either way.
 open_file :: proc(a: ^App, path: string) {
-    e := &a.editor
     defer set_focus(a, .Editor)
 
+    // Image (and future media): decode into the viewer instead of the text ring, and flip
+    // the main pane to .Image. A failed decode leaves the current surface untouched.
+    if is_media_path(path) {
+        if m, ok := media_load(path); ok {
+            media_destroy(&a.media)
+            a.media = m
+            a.main = .Image
+        }
+        return
+    }
+
+    a.main = .Text // a text file flips the main pane back to the editor
+    e := &a.editor
     for &b, i in e.buffers {
         if b.path == path {
             e.active = i

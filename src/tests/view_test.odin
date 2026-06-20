@@ -31,26 +31,26 @@ test_view_zen_aux_follows_focus :: proc(t: ^testing.T) {
     testing.expect(t, v.editor && v.aux) // aux slides back in
 }
 
-// Util: no editor ever, the aux pane fills the window, and focus is pinned to it
-// even when something asks to focus the (absent) editor.
+// Full: exactly one surface fills the window, chosen by focus — focusing the editor
+// shows the editor, focusing the aux shows the aux pane (Alt+E / Alt+T etc. swap).
 @(test)
-test_view_util_pins_aux :: proc(t: ^testing.T) {
+test_view_full_swaps_surface :: proc(t: ^testing.T) {
     a: app.App
-    a.view = .Util
-    a.focus = .Aux
+    a.view = .Full
 
+    app.set_focus(&a, .Editor) // Alt+E: editor fills the window
     v := app.panes_visible(&a)
-    testing.expect(t, !v.editor && v.aux)
+    testing.expect(t, v.editor && !v.aux)
 
-    app.set_focus(&a, .Editor) // open_file etc. must not reveal a missing editor
-    testing.expect_value(t, a.focus, app.Focus.Aux)
+    app.set_focus(&a, .Aux) // Alt+T/G/…: the aux surface fills the window instead
     v = app.panes_visible(&a)
     testing.expect(t, !v.editor && v.aux)
 }
 
-// `zen` / `zm` toggles in and out of Split; it is a no-op under the Util launch mode.
+// `zen` / `zm` toggles in and out of Split, and switches into Zen from any view
+// (including Full). `full` / `fm` toggles Full, keeping whichever surface is current.
 @(test)
-test_view_toggle_zen :: proc(t: ^testing.T) {
+test_view_toggles :: proc(t: ^testing.T) {
     a: app.App // .Split
     a.focus = .Aux // browsing the aux pane when zen is invoked
     app.view_toggle_zen(&a)
@@ -59,7 +59,12 @@ test_view_toggle_zen :: proc(t: ^testing.T) {
     app.view_toggle_zen(&a)
     testing.expect_value(t, a.view, app.View.Split)
 
-    a.view = .Util
-    app.view_toggle_zen(&a) // launch mode, not a runtime toggle
-    testing.expect_value(t, a.view, app.View.Util)
+    app.view_toggle_full(&a)
+    testing.expect_value(t, a.view, app.View.Full)
+    app.view_toggle_zen(&a) // from Full -> Zen
+    testing.expect_value(t, a.view, app.View.Zen)
+    app.view_toggle_full(&a) // from Zen -> Full
+    testing.expect_value(t, a.view, app.View.Full)
+    app.view_toggle_full(&a) // Full -> Split
+    testing.expect_value(t, a.view, app.View.Split)
 }

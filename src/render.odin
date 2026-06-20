@@ -68,7 +68,7 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
     pad := i32(8 * a.scale)
 
     // The focus ring only disambiguates which of two panes is active; with a single
-    // pane on screen (Zen-editor / Util) it is just a full-window border, so drop
+    // pane on screen (Zen-editor / Full) it is just a full-window border, so drop
     // it. Hidden panes carry a zero rect and the draw guards skip them.
     show_ring := lay.vis.editor && lay.vis.aux
 
@@ -78,7 +78,13 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
     fill(t, lay.strip, th.border_light)
     flush_pane(t, Rect{0, 0, win_w, win_h}, win_w, win_h)
 
-    draw_editor(t, lay.editor, win_w, win_h, a, now)
+    // The main pane is the document: a text editor or, for an image, the media viewer.
+    // Both guard on a zero rect internally (hidden under Full on the aux surface).
+    if a.main == .Image {
+        draw_media(t, lay.editor, win_w, win_h, a)
+    } else {
+        draw_editor(t, lay.editor, win_w, win_h, a, now)
+    }
 
     if a.aux_mode == .FileTree {
         draw_filetree(t, lay.aux, win_w, win_h, a)
@@ -403,6 +409,28 @@ draw_command_line :: proc(t: ^Text, strip: Rect, a: ^App, now: f64) {
     }
 }
 
+// The media viewer: the decoded image fit into the pane (contain letterbox), zoomable
+// and pannable. The pane bg + focus ring are already laid down by render's chrome pass,
+// so this just blits the texture over it, clipped to the inset content area so a zoomed
+// image never paints over the focus ring. The filename/dims/zoom show in the modeline.
+@(private = "file")
+draw_media :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
+    m := &a.media
+    th := &a.theme
+    area := inset(pane, i32(2 * a.scale))
+    if area.w <= 0 || area.h <= 0 {
+        return
+    }
+    if m.tex != 0 {
+        image_push(t, m.tex, media_fit_rect(area, m.w, m.h, m.zoom, m.pan))
+    } else {
+        pad := i32(8 * a.scale)
+        y := f32(area.y) + (f32(area.h) - t.font.line_height) / 2
+        text_draw(t, "(no image)", f32(area.x + pad), y, th.muted)
+    }
+    flush_pane(t, area, win_w, win_h)
+}
+
 // The idle strip: an emacs-style modeline for the editor buffer. File name + a
 // modified marker on the left (brighter when dirty); language, caret line:col, line
 // count, any multi-cursor count, and a scroll indicator right-aligned. Monospace
@@ -414,9 +442,26 @@ draw_status :: proc(t: ^Text, strip: Rect, a: ^App) {
     pad := i32(8 * a.scale)
     y := f32(strip.y) + (f32(strip.h) - t.font.line_height) / 2
 
-    // Util has no editor on screen; just name the aux pane there.
-    if a.view == .Util {
+    // No editor on screen (Full on the aux surface); just name the aux pane there.
+    if !panes_visible(a).editor {
         text_draw(t, aux_mode_name(a.aux_mode), f32(strip.x + pad), y, th.muted)
+        return
+    }
+
+    // Image surface: the main pane shows media, not a buffer — so the modeline reports
+    // the image (name, pixel dimensions, zoom%) instead of line:col / language.
+    if a.main == .Image {
+        m := &a.media
+        name := m.path == "" ? "(no image)" : filepath.base(m.path)
+        text_draw(t, fmt.tprintf("  %s", name), f32(strip.x + pad), y, th.muted)
+        right := fmt.tprintf("image   %dx%d   %d%%", m.w, m.h, int(m.zoom * 100 + 0.5))
+        rx := f32(strip.x + strip.w - pad) - cw * f32(len(right))
+        text_draw(t, right, rx, y, th.muted)
+        root := home_abbrev(a.project_root, context.temp_allocator)
+        if root != "" {
+            rootx := f32(strip.x) + (f32(strip.w) - cw * f32(len(root))) / 2
+            text_draw(t, root, rootx, y, th.muted)
+        }
         return
     }
 

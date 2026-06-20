@@ -8,7 +8,7 @@ package main
 // vertically, with the status strip along the bottom.
 
 Layout :: struct {
-    editor: Rect, // the text editor pane (zero rect when hidden: Util)
+    editor: Rect, // the text editor pane (zero rect when hidden: Full on the aux surface)
     aux:    Rect, // the aux pane (zero rect when hidden: Zen while editing)
     strip:  Rect, // bottom status / command strip
     gutter: i32,

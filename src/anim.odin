@@ -127,7 +127,7 @@ caret_shown :: proc(a: ^App) -> bool {
     if a.focus == .Aux && a.aux_mode == .Procmon {
         return a.procmon.filtering // only the filter bar carries a caret
     }
-    return a.view != .Util // the editor and its caret are on screen
+    return panes_visible(a).editor // the editor and its caret are on screen
 }
 
 // Component-wise colour lerp, for fading UI in from the background colour.

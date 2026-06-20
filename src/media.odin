@@ -1,0 +1,144 @@
+package main
+
+import "core:c"
+import "core:math"
+import "core:path/filepath"
+import "core:strings"
+import gl "vendor:OpenGL"
+import "vendor:glfw"
+import stbi "vendor:stb/image"
+
+// The media viewer — the main (document) pane showing an image instead of a text
+// buffer. Slopd's left pane is "the document you opened"; MainSurface (app.odin) says
+// which KIND, and Text/Image are peers there, both distinct from the tool/aux pane.
+// Audio/Video are future MainSurface variants that slot in beside this with their own
+// load/draw/key (the decode deps differ wildly — images are a single stb_image call).
+//
+// Self-contained on purpose (cf. filetree.odin / grammar.odin): the pure geometry
+// (media_fit_rect) and the extension table (is_media_path) are GL-free and unit-tested;
+// only media_load / media_destroy touch GL. One image is held at a time on App.media.
+
+Media :: struct {
+    path: string, // owned; "" = nothing loaded
+    tex:  u32, // GL RGBA texture (0 = none)
+    w, h: i32, // image pixel dimensions
+    zoom: f32, // 1 = fit-to-pane (contain); >1 zooms in
+    pan:  [2]f32, // view offset in physical pixels, applied after centering
+}
+
+// The file extensions stb_image decodes that we route to the viewer. Lowercase;
+// is_media_path matches case-insensitively. (Animated GIF shows the first frame for
+// now — stb decodes one; multi-frame playback is deferred, see plan.txt.)
+@(rodata)
+MEDIA_EXTS := []string{"png", "jpg", "jpeg", "gif", "bmp", "tga", "psd", "hdr", "ppm", "pgm", "pic"}
+
+// Does this path name an image the viewer handles? Mirrors grammar_for_ext's role for
+// the highlighter: the extension decides the surface. GL-free + allocation-free.
+is_media_path :: proc(path: string) -> bool {
+    ext := strings.trim_prefix(filepath.ext(path), ".")
+    if ext == "" {
+        return false
+    }
+    for e in MEDIA_EXTS {
+        if strings.equal_fold(e, ext) {
+            return true
+        }
+    }
+    return false
+}
+
+// Where the image draws inside `pane` (the inset content area). "Contain" letterbox at
+// zoom 1 — the largest size that fits whole, centred — then scaled by zoom and shifted
+// by pan. Pure: no GL, no App; the unit test pins the aspect-fit + zoom + pan math.
+media_fit_rect :: proc(pane: Rect, iw, ih: i32, zoom: f32, pan: [2]f32) -> Rect {
+    if iw <= 0 || ih <= 0 || pane.w <= 0 || pane.h <= 0 || zoom <= 0 {
+        return Rect{pane.x, pane.y, 0, 0}
+    }
+    base := min(f32(pane.w) / f32(iw), f32(pane.h) / f32(ih)) // contain at zoom 1
+    s := base * zoom
+    dw := i32(math.round(f32(iw) * s))
+    dh := i32(math.round(f32(ih) * s))
+    dx := pane.x + (pane.w - dw) / 2 + i32(math.round(pan.x))
+    dy := pane.y + (pane.h - dh) / 2 + i32(math.round(pan.y))
+    return Rect{dx, dy, dw, dh}
+}
+
+// View ops — clamped zoom about the centre, free pan, and reset-to-fit. Bound by
+// MEDIA_ZOOM_* so a stray key can't shrink the image to a dot or blow it up forever.
+MEDIA_ZOOM_MIN :: f32(0.05)
+MEDIA_ZOOM_MAX :: f32(32)
+
+media_zoom :: proc(m: ^Media, factor: f32) {
+    m.zoom = clampf(m.zoom * factor, MEDIA_ZOOM_MIN, MEDIA_ZOOM_MAX)
+}
+
+media_pan :: proc(m: ^Media, dx, dy: f32) {
+    m.pan.x += dx
+    m.pan.y += dy
+}
+
+// Reset to fit-to-pane, centred (the open-state and the `0`/`f` key).
+media_fit :: proc(m: ^Media) {
+    m.zoom = 1
+    m.pan = {0, 0}
+}
+
+// Decode `path` via stb_image (forced to RGBA) and upload it to a GL texture, returning
+// a fit-to-pane Media. CPU pixels are freed once uploaded; only the texture is retained.
+// Must run on the GL (main) thread — called synchronously from open_file like the other
+// file IO. ok=false on a decode failure (the caller leaves the surface unchanged).
+media_load :: proc(path: string) -> (Media, bool) {
+    cpath := strings.clone_to_cstring(path, context.temp_allocator)
+    w, h, comp: c.int
+    pixels := stbi.load(cpath, &w, &h, &comp, 4) // 4 = force RGBA
+    if pixels == nil {
+        return {}, false
+    }
+    defer stbi.image_free(pixels)
+
+    tex: u32
+    gl.GenTextures(1, &tex)
+    gl.BindTexture(gl.TEXTURE_2D, tex)
+    gl.PixelStorei(gl.UNPACK_ALIGNMENT, 1)
+    gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, rawptr(pixels))
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.BindTexture(gl.TEXTURE_2D, 0)
+
+    return Media{path = strings.clone(path), tex = tex, w = i32(w), h = i32(h), zoom = 1}, true
+}
+
+// Frees the texture + owned path and zeroes the slot. Safe on an empty Media (tex 0).
+media_destroy :: proc(m: ^Media) {
+    if m.tex != 0 {
+        gl.DeleteTextures(1, &m.tex)
+    }
+    delete(m.path)
+    m^ = {}
+}
+
+// Bare keys while the image pane is focused (the pane owns them, per the one input rule —
+// there's nothing to type into an image). Arrows pan, =/- zoom, 0/f reset to fit. Alt
+// chords stay global (pane nav etc.), handled before this in handle_key.
+media_key :: proc(a: ^App, key, mods: i32) {
+    m := &a.media
+    step := 40 * a.scale
+    switch key {
+    case glfw.KEY_EQUAL, glfw.KEY_KP_ADD:
+        media_zoom(m, 1.25)
+    case glfw.KEY_MINUS, glfw.KEY_KP_SUBTRACT:
+        media_zoom(m, 1.0 / 1.25)
+    case glfw.KEY_0, glfw.KEY_KP_0, glfw.KEY_F:
+        media_fit(m)
+    case glfw.KEY_LEFT:
+        media_pan(m, step, 0) // reveal the left edge: content slides right
+    case glfw.KEY_RIGHT:
+        media_pan(m, -step, 0)
+    case glfw.KEY_UP:
+        media_pan(m, 0, step)
+    case glfw.KEY_DOWN:
+        media_pan(m, 0, -step)
+    }
+}

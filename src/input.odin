@@ -12,6 +12,7 @@ import "vendor:glfw"
 //
 // Binds:
 //   Alt+Left/Right            focus editor / aux pane
+//   Alt+E                     focus the editor (in Full: swap the full-window surface to it)
 //   Alt+C                     open the command line
 //   Alt+W                     open the command line pre-filled for a line jump ("j ")
 //   Alt+Enter                 editor: follow the token under the caret (def / URL / [[file]] / colour);
@@ -86,7 +87,7 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
                 g.region = .Grep
             }
         }
-    } else if a.focus == .Editor && codepoint >= 32 {
+    } else if a.focus == .Editor && a.main == .Text && codepoint >= 32 {
         b := editor_current(&a.editor)
         if !buffer_autopair(b, codepoint) {
             buffer_insert_rune(b, codepoint)
@@ -150,7 +151,9 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     }
 
     d := active_doc(a)
-    editing := a.cl_active || a.focus == .Editor // an editable owns the keys
+    // An editable owns the keys: the command line, or the editor when the main pane is
+    // showing text. An image surface has no doc, so caret/drop/move-all chords no-op there.
+    editing := a.cl_active || (a.focus == .Editor && a.main == .Text)
 
     // Escape: a focused live terminal gets it first (so vim etc. see it) — Esc is
     // carved out of the Zen toggle there. Otherwise cancel the command line, clear a
@@ -169,7 +172,7 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             a.move_all_armed = false
         } else if a.aux_mode == .FileTree && a.tree.confirm != .None {
             a.tree.confirm = .None // back out of a staged delete
-        } else if a.focus == .Editor && len(d.cursors) > 1 {
+        } else if a.focus == .Editor && a.main == .Text && len(d.cursors) > 1 {
             doc_collapse_to_primary(d)
         } else {
             zen_escape(a)
@@ -229,13 +232,15 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         case glfw.KEY_ENTER, glfw.KEY_KP_ENTER: // editor: follow the token under the caret; filetree: cd
             if a.aux_mode == .FileTree && a.focus == .Aux {
                 filetree_cd_selected(a)
-            } else if a.focus == .Editor {
+            } else if a.focus == .Editor && a.main == .Text {
                 link_follow(a) // jump to def / open URL / open [[file]].md / stash a colour
             }
 
         case glfw.KEY_1 ..= glfw.KEY_9: // i3-style quick-jump to terminal N
             term_focus(a, int(key - glfw.KEY_1) + 1)
 
+        case glfw.KEY_E:
+            set_focus(a, .Editor) // swap the full-window surface to the editor (mirror of Alt+T/G/F)
         case glfw.KEY_F:
             set_aux(a, .FileTree)
         case glfw.KEY_T:
@@ -348,7 +353,11 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     if a.cl_active {
         cl_handle_key(a, key, mods, all)
     } else if a.focus == .Editor {
-        buffer_key(a, key, mods, all)
+        if a.main == .Text {
+            buffer_key(a, key, mods, all)
+        } else {
+            media_key(a, key, mods) // image surface: arrows pan, =/- zoom, 0/f fit
+        }
     } else if a.focus == .Aux && a.aux_mode == .FileTree {
         filetree_key(a, key, mods)
     } else if a.focus == .Aux && a.aux_mode == .Config {

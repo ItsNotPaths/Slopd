@@ -38,17 +38,28 @@ Focus :: enum {
     Aux,
 }
 
+// What the MAIN (left / "document") pane shows. The left pane holds the document you
+// opened — text by default, or a media viewer for an image — while the aux pane (right)
+// holds a TOOL acting on documents (filetree/git/terminal/…). That document-vs-tool line
+// is why media surfaces are peers of the text editor here, not aux modes. Text/Image are
+// the v1 set; Audio/Video are future variants (each adds a draw_* / *_key branch + decode).
+MainSurface :: enum {
+    Text,
+    Image,
+}
+
 // How the two panes are arranged — the single stored bit the layout derives from.
 // Split (default): both panes always on screen. Zen: the editor gets the full
 // width and the aux pane slides in only while it is focused (any goto / Alt+Right
-// reveals it; focusing the editor retracts it). Util: no editor at all, the aux
-// pane fills the window — launched with --util for an xdg-portal file picker etc.
-// Visibility is recomputed every frame from this + focus, so there is no separate
-// hidden/popped state to keep in sync.
+// reveals it; focusing the editor retracts it). Full: one surface — the editor or
+// the aux pane — fills the whole window, chosen by focus; Alt+E / Alt+T / Alt+G /
+// … (or the `full`/`fm` builtin) swap which surface is up. `--util` launches into
+// Full on the filetree. Visibility is recomputed every frame from this + focus, so
+// there is no separate hidden/popped state to keep in sync.
 View :: enum {
     Split,
     Zen,
-    Util,
+    Full,
 }
 
 Pane_Vis :: struct {
@@ -56,7 +67,7 @@ Pane_Vis :: struct {
 }
 
 App :: struct {
-    view:     View, // pane arrangement (Split / Zen / Util)
+    view:     View, // pane arrangement (Split / Zen / Full)
     aux_mode: AuxMode,
     focus:    Focus,
     split:    f32, // editor width as a fraction of the window (0..1)
@@ -95,7 +106,13 @@ App :: struct {
     config_pane: ConfigPane, // config / syntax aux mode (initialised in main, needs IO)
     git:         GitPane, // git aux mode (Sublime-Merge-lite; initialised in main)
     procmon:     ProcmonPane, // procmon aux mode (btop-lite; sampler thread, initialised in main)
-    editor:      Editor, // the text buffers (left pane)
+
+    // The main (document) pane. `main` selects the surface; `editor` holds the text
+    // buffers, `media` the one image currently viewed (Image surface). Opening an image
+    // file flips main to .Image; opening a text file flips it back (see open_file).
+    main:        MainSurface,
+    editor:      Editor, // the text buffers (main pane, Text surface)
+    media:       Media, // the viewed image (main pane, Image surface); see media.odin
 
     // Alt+Enter link jumping (link.odin). grep holds a multi-result jump-to-definition for
     // a future results pane to render (single results jump straight in the editor); color
@@ -203,17 +220,18 @@ panes_visible :: proc(a: ^App) -> Pane_Vis {
         return {editor = true, aux = true}
     case .Zen:
         return {editor = true, aux = a.focus == .Aux}
-    case .Util:
-        return {editor = false, aux = true}
+    case .Full:
+        return {editor = a.focus == .Editor, aux = a.focus == .Aux}
     }
     return {true, true}
 }
 
-// The one place focus changes — honours each view's invariants. Util has no editor
-// to focus, so focus is pinned to the aux pane there. In Zen, focus drives the aux
-// pane's slide (revealed while it holds focus), so re-aim the reveal animation here.
+// The one place focus changes — honours each view's invariants. In Full, focus picks
+// the lone full-window surface (editor or aux), so revealing the editor is a normal
+// focus change. In Zen, focus drives the aux pane's slide (revealed while it holds
+// focus), so re-aim the reveal animation here.
 set_focus :: proc(a: ^App, who: Focus) {
-    a.focus = a.view == .Util ? .Aux : who
+    a.focus = who
     if a.view == .Zen {
         now := glfw.GetTime()
         anim_start(&a.zen_anim, now, anim_value(&a.zen_anim, now), a.focus == .Aux ? 1 : 0, ZEN_DUR)
@@ -231,22 +249,26 @@ set_focus :: proc(a: ^App, who: Focus) {
     a.procmon.wanted = a.aux_mode == .Procmon && panes_visible(a).aux
 }
 
-// Toggle zen on/off (the `zen` / `zm` command line builtin). No-op under Util,
-// which is a launch mode, not a runtime toggle.
+// Toggle zen on/off (the `zen` / `zm` command line builtin). Works from any view —
+// from Full it lands back in the Split-derived Zen arrangement.
 view_toggle_zen :: proc(a: ^App) {
-    if a.view == .Util {
-        return
-    }
     a.view = a.view == .Zen ? .Split : .Zen
     set_focus(a, .Editor) // land in the editor so zen collapses to full-width at once
+}
+
+// Toggle full-window swap mode on/off (the `full` / `fm` command line builtin),
+// keeping whichever surface is current so the toggle never loses your place.
+view_toggle_full :: proc(a: ^App) {
+    a.view = a.view == .Full ? .Split : .Full
+    set_focus(a, a.focus)
 }
 
 // Escape's view action: turn Zen ON (never off), then once in Zen flip which side is
 // shown. Focusing the editor hides the aux pane (full-width editor); focusing the aux
 // pane slides it back in on whatever mode was last there (a.aux_mode persists). No-op
-// under Util, which is a launch mode rather than a runtime view.
+// under Full, where surface swapping is driven by Alt+E/T/G (and the CL), not Esc.
 zen_escape :: proc(a: ^App) {
-    if a.view == .Util {
+    if a.view == .Full {
         return
     }
     if a.view != .Zen {
@@ -306,6 +328,7 @@ font_zoom_ratio :: proc(a: ^App) -> f32 {
 // torn down by their own defers.
 app_destroy :: proc(a: ^App) {
     term_destroy_all(a) // kill child shells + join reader threads before GLFW shuts down
+    media_destroy(&a.media) // free the viewed image's texture + path
     cl_chain_clear(a) // frees any pending chain (incl. its backing array)
     cl_destroy(a)
     grep_destroy(&a.grep) // frees any stashed jump-to-definition results
