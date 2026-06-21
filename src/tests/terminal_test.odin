@@ -185,6 +185,35 @@ test_terminal_altscreen_isolates_scrollback :: proc(t: ^testing.T) {
     testing.expect_value(t, term.sb_total, 2)
 }
 
+// A resize that lands while a non-default SGR pen is active (e.g. a streaming TUI mid
+// diff-line, when draw_terminal resizes the grid every frame) must NOT paint the newly
+// exposed cells with that pen's background. libvterm's clearcell is patched to clear to
+// the default colours instead (patches/libvterm-resize-default-bg.patch); without it the
+// diff's green/red smears across the blank grid and persists. Regression guard.
+@(test)
+test_terminal_resize_under_active_pen_stays_default :: proc(t: ^testing.T) {
+    term := mkterm(6, 20)
+    defer app.terminal_vt_destroy(&term)
+
+    // Activate a green background, write one short cell, then DON'T reset — exactly the
+    // state a frame-boundary resize catches a TUI in mid-line.
+    feed(&term, "\x1b[48;2;0;255;0mX")
+    // Grow then shrink the grid while that green pen is still active.
+    app.terminal_resize(&term, 10, 24)
+    app.terminal_resize(&term, 6, 20)
+
+    // Every cell except the one explicit 'X' must read default bg — the resize must not
+    // have back-filled the new rows/cols with green.
+    for row in 0 ..< 6 {
+        for col in 0 ..< 20 {
+            if row == 0 && col == 0 do continue // the written 'X' legitimately carries green
+            c, _ := app.terminal_cell(&term, row, col)
+            _, def := app.terminal_color(&term, c.bg)
+            testing.expectf(t, def, "cell (%d,%d) exposed by resize must be default bg, not the active pen", row, col)
+        }
+    }
+}
+
 // On the alt screen the line-selector stays within the live grid: it must NOT descend
 // into the pre-TUI primary scrollback (that content is behind the TUI, not part of it).
 // The cursor pins at the top live row; driving the TUI's own scroll happens via the PTY
@@ -206,4 +235,96 @@ test_terminal_altscreen_selector_pins_to_live_grid :: proc(t: ^testing.T) {
         app.terminal_sel_move(&term, -1, true)
     }
     testing.expect_value(t, term.sel_head, term.sb_total) // == 2, not 0
+}
+
+// A diff line's coloured background (Claude Code's red/green) must stay confined to the
+// cells it was painted on as the line crosses from the live grid into scrollback — no
+// bleeding into the trailing default-bg cells, no leaking onto neighbouring lines.
+@(test)
+test_terminal_bg_color_confined_across_scrollback :: proc(t: ^testing.T) {
+    term := mkterm(2, 20)
+    defer app.terminal_vt_destroy(&term)
+    app.terminal_enable_scrollback(&term)
+
+    // RGB-green bg behind "GG", reset, then two more lines so the green one scrolls off.
+    feed(&term, "\x1b[48;2;0;255;0mGG\x1b[0m\r\nplain\r\nlast")
+    testing.expect_value(t, term.sb_total, 1) // only the green line scrolled off
+
+    // Absolute line 0 = the green line, now captured in scrollback.
+    g0, _ := app.terminal_view_cell(&term, 0, 0)
+    bg0, def0 := app.terminal_color(&term, g0.bg)
+    testing.expect(t, !def0, "painted cell bg should not be default")
+    testing.expectf(t, bg0.g > 0.5 && bg0.r < 0.2 && bg0.b < 0.2, "expected green bg, got %v", bg0)
+
+    // The cell just past "GG" was never painted: it must read default bg, not green.
+    g2, _ := app.terminal_view_cell(&term, 0, 2)
+    _, def2 := app.terminal_color(&term, g2.bg)
+    testing.expect(t, def2, "trailing cells of the diff line must stay default bg (no spill)")
+
+    // And the next line ("plain", absolute 1) must be entirely default bg.
+    p0, _ := app.terminal_view_cell(&term, 1, 0)
+    _, defp := app.terminal_color(&term, p0.bg)
+    testing.expect(t, defp, "the following line must not inherit the diff's bg")
+}
+
+// The real Claude Code diff: a coloured bg made active, then ERASE-TO-EOL (\e[K) so
+// background-colour-erase paints the rest of the row, then a reset and newline. The
+// green must NOT leak onto the freshly scrolled-in blank line below it — that's the
+// "spaces stay green at the prompt" spill.
+@(test)
+test_terminal_bce_does_not_leak_to_next_line :: proc(t: ^testing.T) {
+    term := mkterm(3, 20)
+    defer app.terminal_vt_destroy(&term)
+    app.terminal_enable_scrollback(&term)
+
+    // Green bg + "+ add", erase-to-EOL (fills the row green via BCE), reset, newline.
+    // Then a couple of plain newlines to bring fresh blank lines onto the grid.
+    feed(&term, "\x1b[48;2;0;255;0m+ add\x1b[K\x1b[0m\r\n")
+    feed(&term, "\r\n")
+
+    // The erased part of the diff row (col 10, past "+ add") must read green.
+    d, _ := app.terminal_cell(&term, 0, 10)
+    _, defd := app.terminal_color(&term, d.bg)
+    testing.expect(t, !defd, "BCE should have painted the erased diff cells green")
+
+    // The blank lines that came after the reset must be DEFAULT bg, every column.
+    for row in 1 ..< 3 {
+        for col in 0 ..< 20 {
+            c, _ := app.terminal_cell(&term, row, col)
+            _, def := app.terminal_color(&term, c.bg)
+            testing.expectf(t, def, "cell (%d,%d) after reset must be default bg, not green", row, col)
+        }
+    }
+}
+
+// Background resets we depend on for diff-bg confinement: SGR 0 (full reset) and SGR
+// 49 (reset background only) must both drop the pen back to default bg, including on
+// the alt screen where Claude Code renders. (Note: a scroll/erase under a still-active
+// non-default pen legitimately inherits that pen's bg — that is xterm bce behaviour, so
+// it is the app's job to reset before scrolling, not ours to suppress.)
+@(test)
+test_terminal_bg_reset_paths :: proc(t: ^testing.T) {
+    check_default :: proc(t: ^testing.T, term: ^app.Terminal, row, col: int, what: string) {
+        c, _ := app.terminal_cell(term, row, col)
+        _, def := app.terminal_color(term, c.bg)
+        testing.expectf(t, def, "%s: cell (%d,%d) must be default bg, not a leaked colour", what, row, col)
+    }
+
+    { // SGR 49 (reset background only) must drop the pen back to default bg.
+        term := mkterm(3, 20)
+        defer app.terminal_vt_destroy(&term)
+        feed(&term, "\x1b[42mX\x1b[49m\x1b[K\r\nplain")
+        check_default(t, &term, 0, 5, "sgr-49 reset")
+        check_default(t, &term, 1, 0, "sgr-49 reset next line")
+    }
+    { // On the alt screen: green + erase-to-EOL, reset, newline — next line default.
+        term := mkterm(3, 20)
+        defer app.terminal_vt_destroy(&term)
+        app.terminal_enable_scrollback(&term)
+        feed(&term, "\x1b[?1049h")
+        testing.expect(t, term.on_altscreen, "entered alt screen")
+        feed(&term, "\x1b[48;2;0;255;0m+ add\x1b[K\x1b[0m\r\n\r\n")
+        check_default(t, &term, 1, 0, "alt-screen after reset")
+        check_default(t, &term, 2, 7, "alt-screen after reset")
+    }
 }

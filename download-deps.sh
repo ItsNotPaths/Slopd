@@ -41,6 +41,14 @@ else
         echo "  cloning libvterm..."
         git clone --depth=1 "https://github.com/neovim/libvterm.git" "$VTERM_SRC"
     fi
+    # Apply Slopd's local patches (vendor/ is gitignored, so the fix lives in patches/
+    # and is re-applied on every fresh fetch). --forward skips already-applied hunks so
+    # re-running this script is idempotent. See each patch's header for the why.
+    for p in "$VENDOR"/../patches/libvterm-*.patch; do
+        [ -e "$p" ] || continue
+        echo "  applying $(basename "$p")..."
+        patch -p1 --forward -r - -d "$VTERM_SRC" < "$p" || true
+    done
     echo "  building static libvterm.a..."
     (
         cd "$VTERM_SRC"

@@ -58,6 +58,13 @@ exe_dir :: proc(allocator := context.allocator) -> string {
     return strings.clone(filepath.dir(path), allocator) // filepath.dir slices path; clone to own
 }
 
+// The full path to the running executable (Linux: the /proc/self/exe link),
+// falling back to argv[0]. Used to re-invoke ourselves (e.g. `<exe> --grammar
+// install <lang>`) without relying on slopd being on PATH. The caller owns the result.
+exe_path :: proc(allocator := context.allocator) -> string {
+    return strings.clone(os.read_link("/proc/self/exe", context.temp_allocator) or_else os.args[0], allocator)
+}
+
 // grammars/<lang>.so for a given grammars dir. The caller owns the result.
 grammar_lib_path :: proc(dir, lang: string, allocator := context.allocator) -> string {
     lib := fmt.tprintf("%s.so", lang)

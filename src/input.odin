@@ -946,16 +946,19 @@ config_lang_dropdown_key :: proc(a: ^App, key: i32) {
 // these light up when libvterm injection lands. The CLI flags themselves work today.
 @(private = "file")
 config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
+    // Re-invoke ourselves by absolute path (single-quoted for the shell) so these
+    // work in the self-contained release where slopd isn't on PATH.
+    self := exe_path(context.temp_allocator)
     cmd: string
     switch opt {
     case .Health:
-        cmd = fmt.tprintf("slopd --health %s", lang)
+        cmd = fmt.tprintf("'%s' --health %s", self, lang)
     case .Install:
-        cmd = fmt.tprintf("slopd --grammar install %s", lang)
+        cmd = fmt.tprintf("'%s' --grammar install %s", self, lang)
     case .Update:
-        cmd = fmt.tprintf("slopd --grammar update %s", lang)
+        cmd = fmt.tprintf("'%s' --grammar update %s", self, lang)
     case .Uninstall:
-        cmd = fmt.tprintf("slopd --grammar uninstall %s", lang)
+        cmd = fmt.tprintf("'%s' --grammar uninstall %s", self, lang)
     }
     run_in_t1(a, cmd)
 }
