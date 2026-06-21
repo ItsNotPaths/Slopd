@@ -145,19 +145,28 @@ StateFallbacks :: struct {
 // history. sb_pushline fires when a line scrolls off the top (its cells handed to
 // us to stash); sb_popline lets us feed a stashed line back when the screen grows
 // taller (we fill `cells`, return 1, or return 0 to decline). cells is a [^] of
-// exactly `cols` entries. Slopd implements only these two — the rest of the
-// VTermScreenCallbacks slots stay nil (rawptr matches the ABI for an unset func ptr).
+// exactly `cols` entries. Slopd implements these two plus settermprop — the rest of
+// the VTermScreenCallbacks slots stay nil (rawptr matches the ABI for an unset func ptr).
 SB_Pushline_Callback :: #type proc "c" (cols: c.int, cells: [^]ScreenCell, user: rawptr) -> c.int
 SB_Popline_Callback  :: #type proc "c" (cols: c.int, cells: [^]ScreenCell, user: rawptr) -> c.int
 
+// settermprop reports terminal property changes (cursor visibility, title, ...). Slopd
+// reads only PROP_ALTSCREEN, to know when a full-screen TUI is on its own alt buffer
+// (then it owns scrolling — PageUp passes through to it, not Slopd's scrollback). `val`
+// points at a VTermValue union; for the bool props its first int is the boolean.
+Settermprop_Callback :: #type proc "c" (prop: c.int, val: rawptr, user: rawptr) -> c.int
+
+PROP_ALTSCREEN :: 3 // VTERM_PROP_ALTSCREEN (CURSORVISIBLE=1, CURSORBLINK=2, ALTSCREEN=3)
+PROP_MOUSE     :: 8 // VTERM_PROP_MOUSE: 0 = off, else the active mouse tracking mode
+
 // VTermScreenCallbacks, field order ABI-fixed to the header. All entries are
-// function pointers; the ones Slopd ignores (damage/moverect/movecursor/settermprop/
-// bell/resize/sb_clear) stay rawptr-nil.
+// function pointers; the ones Slopd ignores (damage/moverect/movecursor/bell/resize/
+// sb_clear) stay rawptr-nil.
 ScreenCallbacks :: struct {
     damage:      rawptr,
     moverect:    rawptr,
     movecursor:  rawptr,
-    settermprop: rawptr,
+    settermprop: Settermprop_Callback,
     bell:        rawptr,
     resize:      rawptr,
     sb_pushline: SB_Pushline_Callback,
@@ -177,8 +186,14 @@ foreign vt {
     output_set_callback :: proc(term: VTerm, func: Output_Callback, user: rawptr) ---
     keyboard_unichar    :: proc(term: VTerm, cp: u32, mod: Modifier) ---
     keyboard_key        :: proc(term: VTerm, key: Key, mod: Modifier) ---
+    // Mouse input -> the app via the output callback, encoded to the TUI's active mouse
+    // protocol. Wheel is button 4 (up) / 5 (down); Slopd uses only the wheel, to scroll
+    // a focused full-screen TUI (its scrollback is its own — see the terminal selector).
+    mouse_move          :: proc(term: VTerm, row, col: c.int, mod: Modifier) ---
+    mouse_button        :: proc(term: VTerm, button: c.int, pressed: bool, mod: Modifier) ---
 
     screen_reset                :: proc(screen: Screen, hard: c.int) ---
+    screen_enable_altscreen     :: proc(screen: Screen, altscreen: c.int) ---
     screen_get_cell             :: proc(screen: Screen, pos: Pos, cell: ^ScreenCell) -> c.int ---
     screen_flush_damage         :: proc(screen: Screen) ---
     screen_convert_color_to_rgb :: proc(screen: Screen, col: ^Color) ---

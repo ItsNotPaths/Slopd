@@ -14,9 +14,15 @@ import "vendor:glfw"
 // here — builtins mutate app state, shell commands route to a terminal (stubbed
 // until libvterm).
 CommandLine :: struct {
-    using doc: Doc,
-    history:   [dynamic]string,
-    hist_idx:  int, // index into history; == len(history) means the live edit
+    using doc:  Doc,
+    history:    [dynamic]string,
+    hist_idx:   int, // index into history; == len(history) means the live edit
+    // Injection alert: a UI gesture (git/filetree, Alt+W) just pre-filled the line
+    // rather than the user typing it. The text renders in the alert colour until the
+    // user touches it — tracked by version so any edit (which bumps doc.version) clears
+    // the alert with no per-edit hook. injected gates it; inject_ver is the pristine mark.
+    injected:   bool,
+    inject_ver: u64,
 }
 
 cl_init :: proc(cl: ^CommandLine) {
@@ -35,6 +41,7 @@ cl_open :: proc(a: ^App) {
     a.cl_active = true
     doc_clear(&a.cl.doc)
     a.cl.hist_idx = len(a.cl.history)
+    a.cl.injected = false // a fresh open is the user's own line, not an injection
 }
 
 // Pre-fill the command line with text and open it (a UI gesture staging a command
@@ -42,6 +49,10 @@ cl_open :: proc(a: ^App) {
 cl_inject :: proc(a: ^App, text: string) {
     cl_open(a)
     cl_recall(a, text)
+    // Flag the pristine injected text for the alert colour; any edit bumps doc.version
+    // past this mark and the alert clears itself (see draw_command_line).
+    a.cl.injected = true
+    a.cl.inject_ver = a.cl.doc.version
 }
 
 // A UI gesture that produces a full command line either STAGES it (cl_inject: pre-fill

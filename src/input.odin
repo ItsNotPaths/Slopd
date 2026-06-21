@@ -22,7 +22,12 @@ import "vendor:glfw"
 //   Alt+N / Alt+Q             terminal: new / close session (max 99)
 //   Alt+L                     terminal: lock/unlock its cwd (tu skips it; number greyed)
 //   Alt+Up/Down               terminal: switch session (switcher shows while Alt held)
-//   Ctrl+Alt+Up/Down          terminal: move the row-only copy cursor (scrolls history)
+//   Ctrl+Alt+Up/Down          terminal: move the row-only copy cursor (scrolls our
+//                             scrollback); on an alt-screen TUI it drives the TUI's own
+//                             scroll at the grid edge (wheel if it tracks the mouse, else
+//                             PageUp/Down) so you can reveal + select its content
+//   PageUp/PageDown           terminal: same copy-cursor move on a normal shell; on the
+//                             alt screen it passes through so the TUI pages its own buffer
 //   Shift+Alt+Up/Down         terminal: extend a line selection from the copy cursor
 //   Ctrl+Shift+C              terminal: copy the selected lines (Esc / typing exits)
 //   Ctrl+Up/Down              editor: jump app.jump_lines lines (Shift extends selection)
@@ -332,6 +337,20 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     if ts := term_sel_target(a);
        ts != nil && key == glfw.KEY_C && mods & glfw.MOD_CONTROL != 0 && mods & glfw.MOD_SHIFT != 0 {
         term_copy(a, ts)
+        return
+    }
+
+    // PageUp/PageDown alias the scrollback copy-cursor (the Ctrl+Alt+Up/Down move): one
+    // line into history at a time, Shift extends the selection for copy (like Shift+Alt+
+    // Up/Down). GLFW REPEAT keeps firing while held, so a held key scrolls continuously.
+    // BUT a full-screen TUI on the alt screen owns its own scrollback — there PageUp must
+    // reach the app (claude/less page through their buffer), so we only intercept on the
+    // normal screen and otherwise fall through to libvterm below. term_sel_target (not
+    // term_focused) so this matches the Ctrl+Alt+Up selector it aliases — a dead shell's
+    // scrollback is still scrollable; on the alt screen it falls through to the TUI.
+    if ts := term_sel_target(a);
+       ts != nil && !ts.on_altscreen && (key == glfw.KEY_PAGE_UP || key == glfw.KEY_PAGE_DOWN) {
+        terminal_sel_move(ts, key == glfw.KEY_PAGE_UP ? -1 : 1, mods & glfw.MOD_SHIFT != 0)
         return
     }
 

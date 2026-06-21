@@ -67,10 +67,16 @@ Terminal :: struct {
     sb_ctx:     runtime.Context, // context the sb_* "c" callbacks allocate under
     scrollback: [dynamic]ScrollLine,
     sb_total:   int,
-    sel_active: bool, // line-select / scroll mode on (cursor shown)
-    sel_head:   int,  // absolute line of the copy cursor (the moving edge)
-    sel_anchor: int,  // absolute line the selection is pinned at (== head: no span)
-    view_top:   int,  // absolute line drawn at the top row while scrolled
+    sel_active:   bool, // line-select / scroll mode on (cursor shown)
+    sel_head:     int,  // absolute line of the copy cursor (the moving edge)
+    sel_anchor:   int,  // absolute line the selection is pinned at (== head: no span)
+    view_top:     int,  // absolute line drawn at the top row while scrolled
+    // A focused full-screen TUI (vim/less/claude) on the alt buffer owns its own
+    // scrolling and scrollback. We track its mode bits via settermprop to route scroll
+    // input there instead of to our scrollback — see term_settermprop_cb, the input.odin
+    // PageUp routing, and terminal_scroll_tui (which wheels it, or pages it if mouse-off).
+    on_altscreen: bool, // the TUI switched to the alternate screen
+    mouse_on:     bool, // the TUI enabled mouse tracking (so we can wheel-scroll it)
 }
 
 // One captured scrollback row: a clone of the cells libvterm handed us as the line
@@ -97,6 +103,13 @@ terminal_vt_init :: proc(t: ^Terminal, rows, cols: int) {
     vt.set_utf8(t.term, 1)
     t.screen = vt.obtain_screen(t.term)
     t.state = vt.obtain_state(t.term)
+    // Give full-screen TUIs (claude code, vim, less) their own alternate buffer.
+    // Without it libvterm has no alt screen, so DECSET 1049 is a no-op and the TUI
+    // paints over the PRIMARY grid — every redraw/scroll then spills transient lines
+    // into our real scrollback (sb_pushline fires only for the primary buffer),
+    // mangling the history you scroll back to. Enabled, the TUI is isolated and the
+    // scrolled-up primary history stays intact.
+    vt.screen_enable_altscreen(t.screen, 1)
     vt.screen_reset(t.screen, 1)
 }
 
@@ -256,7 +269,20 @@ terminal_sel_move :: proc(t: ^Terminal, delta: int, extend: bool) {
         t.sel_anchor = t.sel_head
         t.view_top = t.sb_total
     }
-    t.sel_head = clamp(t.sel_head + delta, terminal_oldest(t), terminal_bottom(t))
+    // On the alt screen the off-screen history is the TUI's, not ours, so the selection
+    // stays within the live grid (floor = the top live row, not into the pre-TUI primary
+    // scrollback). Pushing past an edge tells the TUI to scroll instead of stopping dead,
+    // revealing earlier/later content under the pinned cursor (the user's "drive the TUI").
+    floor := terminal_oldest(t)
+    if t.on_altscreen {
+        floor = t.sb_total
+        if t.sel_head + delta < t.sb_total {
+            terminal_scroll_tui(t, -1)
+        } else if t.sel_head + delta > terminal_bottom(t) {
+            terminal_scroll_tui(t, 1)
+        }
+    }
+    t.sel_head = clamp(t.sel_head + delta, floor, terminal_bottom(t))
     if !extend {
         t.sel_anchor = t.sel_head
     }
@@ -272,7 +298,7 @@ terminal_sel_move :: proc(t: ^Terminal, delta: int, extend: bool) {
     } else if t.sel_head > t.view_top + t.rows - 1 {
         t.view_top = t.sel_head - t.rows + 1
     }
-    t.view_top = clamp(t.view_top, terminal_oldest(t), t.sb_total)
+    t.view_top = clamp(t.view_top, floor, t.sb_total)
 }
 
 // Leave select/scroll mode: hide the cursor and snap the view back to the live
@@ -518,8 +544,42 @@ terminal_enable_scrollback :: proc(t: ^Terminal) {
     t.callbacks = vt.ScreenCallbacks {
         sb_pushline = term_sb_pushline_cb,
         sb_popline  = term_sb_popline_cb,
+        settermprop = term_settermprop_cb,
     }
     vt.screen_set_callbacks(t.screen, &t.callbacks, t)
+}
+
+// Property change from libvterm. Slopd tracks only ALTSCREEN: a full-screen TUI just
+// switched to (or off) its own alt buffer. While it's up the TUI owns scrolling, so
+// PageUp routes to it rather than our scrollback (see input.odin). "c" callback fired
+// on the main thread inside terminal_feed — just a flag write, no context needed.
+@(private = "file")
+term_settermprop_cb :: proc "c" (prop: c.int, val: rawptr, user: rawptr) -> c.int {
+    t := (^Terminal)(user)
+    switch prop {
+    case vt.PROP_ALTSCREEN:
+        t.on_altscreen = (^c.int)(val)^ != 0
+    case vt.PROP_MOUSE:
+        t.mouse_on = (^c.int)(val)^ != 0
+    }
+    return 1
+}
+
+// Scroll a focused full-screen TUI by one notch (dir<0 up, >0 down) — its own
+// scrollback is unreachable to us, so the line-selector drives it at the grid edge
+// instead of stopping. A mouse wheel tick (button 4/5) when the TUI tracks the mouse
+// (line-granular), else the page key it does grok (claude pages on PageUp/Down). No-op
+// on the headless test core (no PTY to write to).
+terminal_scroll_tui :: proc(t: ^Terminal, dir: int) {
+    if t.pty < 0 {
+        return
+    }
+    if t.mouse_on {
+        vt.mouse_move(t.term, c.int(dir < 0 ? 0 : t.rows - 1), 0, vt.MOD_NONE)
+        vt.mouse_button(t.term, dir < 0 ? 4 : 5, true, vt.MOD_NONE)
+    } else {
+        vt.keyboard_key(t.term, dir < 0 ? .PageUp : .PageDown, vt.MOD_NONE)
+    }
 }
 
 // A line just scrolled off the top: clone its cells into scrollback (oldest first)

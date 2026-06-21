@@ -20,7 +20,9 @@ code_number:   #d3869b
 code_operator: #e78a4e
 code_type:        #a9b665
 code_return_type: #89b482
-cl_inject:        #ff0000
+# Command-line injection alert: a staged (auto-filled, not typed) line. Gruvbox bright
+# red — louder than `urgent` so a pre-filled command reads as "review me before Enter".
+cl_inject:        #fb4934
 
 # Slopd extensions (for tree-sitter), same Gruvbox Material source. Prawk ignores
 # these; Slopd uses them when syntax highlighting lands.

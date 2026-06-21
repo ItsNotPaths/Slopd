@@ -157,3 +157,53 @@ test_terminal_scrollback_capture_and_select :: proc(t: ^testing.T) {
     defer delete(text)
     testing.expect_value(t, text, "L1\nL2\nL3")
 }
+
+// A full-screen TUI on the alt screen (DECSET 1049) must NOT spill its redraws into our
+// scrollback — that was the "mangled history" bug. The settermprop callback tracks the
+// switch (so PageUp can route to the TUI), and the alt buffer keeps its own grid, so
+// sb_total is frozen while it's up and the primary history survives intact.
+@(test)
+test_terminal_altscreen_isolates_scrollback :: proc(t: ^testing.T) {
+    term := mkterm(2, 20)
+    defer app.terminal_vt_destroy(&term)
+    app.terminal_enable_scrollback(&term) // also wires settermprop
+
+    // Primary screen: P0,P1 scroll off into our scrollback.
+    feed(&term, "P0\r\nP1\r\nP2\r\nP3")
+    testing.expect_value(t, term.sb_total, 2)
+    testing.expect(t, !term.on_altscreen, "starts on the primary screen")
+
+    // A TUI takes over the alt screen, then floods it with output.
+    feed(&term, "\x1b[?1049h")
+    testing.expect(t, term.on_altscreen, "1049h switches to the alt screen")
+    feed(&term, "A0\r\nA1\r\nA2\r\nA3\r\nA4\r\nA5")
+    testing.expect_value(t, term.sb_total, 2) // unchanged: the alt screen has no scrollback of ours
+
+    // Back to the primary: the flag clears and the captured history is still there.
+    feed(&term, "\x1b[?1049l")
+    testing.expect(t, !term.on_altscreen, "1049l returns to the primary screen")
+    testing.expect_value(t, term.sb_total, 2)
+}
+
+// On the alt screen the line-selector stays within the live grid: it must NOT descend
+// into the pre-TUI primary scrollback (that content is behind the TUI, not part of it).
+// The cursor pins at the top live row; driving the TUI's own scroll happens via the PTY
+// (a no-op on this headless core, so we only assert the clamp here).
+@(test)
+test_terminal_altscreen_selector_pins_to_live_grid :: proc(t: ^testing.T) {
+    term := mkterm(2, 20)
+    defer app.terminal_vt_destroy(&term)
+    app.terminal_enable_scrollback(&term)
+
+    feed(&term, "P0\r\nP1\r\nP2\r\nP3") // two lines into the primary scrollback
+    testing.expect_value(t, term.sb_total, 2)
+    feed(&term, "\x1b[?1049h") // a TUI takes over
+    testing.expect(t, term.on_altscreen, "on the alt screen")
+
+    // Push the copy cursor well past the top of the live grid; it must stop at sb_total
+    // (the top live row), never reaching terminal_oldest (absolute 0, in primary history).
+    for _ in 0 ..< 10 {
+        app.terminal_sel_move(&term, -1, true)
+    }
+    testing.expect_value(t, term.sel_head, term.sb_total) // == 2, not 0
+}

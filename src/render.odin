@@ -42,6 +42,15 @@ inset :: proc(r: Rect, by: i32) -> Rect {
     return Rect{r.x + by, r.y + by, r.w - 2 * by, r.h - 2 * by}
 }
 
+// A hollow rectangle: four edge bars of `w` thickness inset just inside `r`, leaving
+// whatever is already drawn there untouched (used for the command-line injection alert).
+outline :: proc(t: ^Text, r: Rect, color: [3]f32, w: i32) {
+    fill(t, Rect{r.x, r.y, r.w, w}, color)                 // top
+    fill(t, Rect{r.x, r.y + r.h - w, r.w, w}, color)       // bottom
+    fill(t, Rect{r.x, r.y, w, r.h}, color)                 // left
+    fill(t, Rect{r.x + r.w - w, r.y, w, r.h}, color)       // right
+}
+
 // A pane: filled with bg, ringed with the focus colour when focused.
 panel :: proc(t: ^Text, r: Rect, bg, focus: [3]f32, focused: bool, scale: f32) {
     if focused {
@@ -388,6 +397,13 @@ draw_command_line :: proc(t: ^Text, strip: Rect, a: ^App, now: f64) {
     lh := t.font.line_height
     pad := i32(8 * a.scale)
     y := f32(strip.y) + (f32(strip.h) - lh) / 2
+
+    // A pristine injected (staged, not user-typed) line rings the strip in the alert
+    // colour — "review this before Enter". Any edit bumps doc.version past the mark and
+    // the ring clears itself, so no per-edit hook is needed.
+    if a.cl.injected && a.cl.doc.version == a.cl.inject_ver {
+        outline(t, strip, th.cl_inject, i32(2 * a.scale))
+    }
 
     text_draw(t, PROMPT, f32(strip.x + pad), y, th.muted)
     ox := f32(strip.x + pad) + cw * f32(len(PROMPT)) // text origin, after the prompt
