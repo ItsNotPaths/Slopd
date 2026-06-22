@@ -81,6 +81,7 @@ main :: proc() {
     app.risky_mode = cfg.risky_mode
     app.grep_pane_always = cfg.grep_pane_always
     app.kill_confirm = cfg.kill_confirm
+    app.conflict_prompt = cfg.conflict_prompt
     app.font_px = cfg.font_px // persisted font zoom; text_init bakes the atlas at it
 
     editor_init(&app.editor)
@@ -138,6 +139,7 @@ main :: proc() {
         cl_chain_pump(&app) // advance a pending && chain once its exit code arrives
 
         now := glfw.GetTime()
+        view_poll_disk(&app, now) // re-read an externally-changed file into the focused view pane
         git_scroll_pump(&app, now) // advance a held diff auto-scroll at its (accelerating) tick
         git_spin_pump(&app, now) // pay out the slot-machine gag once its reels settle
         w, h := glfw.GetFramebufferSize(window)

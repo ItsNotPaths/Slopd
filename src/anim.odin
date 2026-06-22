@@ -89,6 +89,9 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     if a.font_save_at > 0 { // wake to flush the debounced font-zoom save when it's due
         wake = sched_min(wake, max(0, a.font_save_at - now))
     }
+    if a.focus == .Editor { // wake to re-stat the focused view pane for external edits
+        wake = sched_min(wake, max(0, a.disk_poll_at - now))
+    }
     // Bell flash reports here once libvterm gives us a bell to flash on.
     return wake
 }

@@ -44,6 +44,7 @@ Config :: struct {
     risky_mode:        bool, // git slot machine: auto-send the lucky-dip commit (no review)
     grep_pane_always:  bool, // CL grep: always open the results pane vs jump straight on a lone hit
     kill_confirm:      bool, // procmon `k`: arm a confirm row vs SIGKILL immediately
+    conflict_prompt:   bool, // disk changed under unsaved edits: prompt (y/n in the CL) vs silently keep my edits
 }
 
 load_config :: proc() -> Config {
@@ -63,6 +64,7 @@ load_config :: proc() -> Config {
         risky_mode      = false, // the lucky-dip commit is staged for review by default
         grep_pane_always = true, // always show the results pane (no auto-jump on a lone hit)
         kill_confirm    = true, // confirm a procmon kill before it fires
+        conflict_prompt = true, // ask before a disk change is reconciled against unsaved edits
     }
     path := find_config()
     if path == "" {
@@ -130,6 +132,8 @@ load_config :: proc() -> Config {
             if v, ok := parse_on_off(val); ok {cfg.grep_pane_always = v}
         case "kill_confirm":
             if v, ok := parse_on_off(val); ok {cfg.kill_confirm = v}
+        case "disk_conflict":
+            if v, ok := parse_prompt_keep(val); ok {cfg.conflict_prompt = v}
         }
     }
     return cfg
@@ -211,6 +215,8 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return ON_OFF_OPTS[:]
     case .FolderCd, .GitCheckout, .GitCommit, .GitMerge, .GitRemote:
         return STAGE_RUN_OPTS[:]
+    case .DiskConflict:
+        return PROMPT_KEEP_OPTS[:]
     }
     return nil
 }
@@ -219,6 +225,7 @@ INDENT_OPTS := [?]string{"tab", "spaces2", "spaces4", "spaces8"}
 LINE_NUMBER_OPTS := [?]string{"global", "relative"}
 ON_OFF_OPTS := [?]string{"on", "off"}
 STAGE_RUN_OPTS := [?]string{"stage", "run"}
+PROMPT_KEEP_OPTS := [?]string{"prompt", "keep"}
 
 // "default" + "global" first, then every themes/<name>.theme beside the binary,
 // sorted. Names are cloned into `allocator`; the returned slice is too.
@@ -267,6 +274,7 @@ Setting :: enum {
     RiskyMode,
     GrepPane,
     KillConfirm,
+    DiskConflict,
 }
 
 setting_key :: proc(s: Setting) -> string {
@@ -285,6 +293,7 @@ setting_key :: proc(s: Setting) -> string {
     case .RiskyMode:    return "risky_mode"
     case .GrepPane:     return "grep_pane"
     case .KillConfirm:  return "kill_confirm"
+    case .DiskConflict: return "disk_conflict"
     }
     return ""
 }
@@ -308,6 +317,7 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .RiskyMode:    return on_off(a.risky_mode)
     case .GrepPane:     return on_off(a.grep_pane_always)
     case .KillConfirm:  return on_off(a.kill_confirm)
+    case .DiskConflict: return a.conflict_prompt ? "prompt" : "keep"
     }
     return ""
 }
@@ -354,9 +364,22 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.grep_pane_always = parse_on_off(val) or_return
     case .KillConfirm:
         a.kill_confirm = parse_on_off(val) or_return
+    case .DiskConflict:
+        a.conflict_prompt = parse_prompt_keep(val) or_return
     }
     config_set(setting_key(s), val)
     return true
+}
+
+// Parses the disk-conflict setting: "prompt" asks (y/n in the command line) before a disk
+// change is reconciled against unsaved edits; "keep" silently keeps your edits (the relaxed
+// mode, fewer prompts). ok=false on anything else (an invalid edit keeps the old value).
+parse_prompt_keep :: proc(s: string) -> (prompt: bool, ok: bool) {
+    switch s {
+    case "prompt": return true, true
+    case "keep":   return false, true
+    }
+    return false, false
 }
 
 // Parses the folder-cd action's stage/run value; ok=false on anything else (an invalid

@@ -130,6 +130,8 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
     // confirm are NOT here — they overlay the filetree pane itself, see above.)
     if a.cl_active {
         draw_command_line(t, lay.strip, a, now)
+    } else if a.focus == .Editor && a.main == .Text && editor_current(&a.editor).conflict {
+        draw_conflict_prompt(t, lay.strip, a) // disk changed under unsaved edits: reload-vs-keep
     } else {
         draw_status(t, lay.strip, a)
     }
@@ -418,6 +420,12 @@ draw_command_line :: proc(t: ^Text, strip: Rect, a: ^App, now: f64) {
 
     text_draw_runes(t, l.text[:], ox, y, th.fg)
 
+    // Ghosted per-command argument hint (e.g. `reload` -> "(y/n)"), one cell past the typed
+    // text, until an argument is entered. cl_ghost_hint is the extensible registry.
+    if hint := cl_ghost_hint(line_string(l, context.temp_allocator)); hint != "" {
+        text_draw(t, hint, ox + cw * f32(len(l.text) + 1), y, th.muted)
+    }
+
     if caret_blink_on(a, now) {
         for c in a.cl.cursors {
             caret(t, Rect{i32(ox + cw * f32(c.head.col)), i32(y), i32(2 * a.scale), i32(lh)}, th.fg)
@@ -606,6 +614,29 @@ draw_filetree_overlay :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, 
     text_draw(t, state, sx, sy, lbl_col)
 
     flush_pane(t, area, win_w, win_h)
+}
+
+// The unsaved-edits-vs-disk-change hint, shown IN the command strip (taking the place of
+// the idle modeline) when the conflict is pending but the CL is closed — e.g. you cancelled
+// the auto-staged `reload ` line. Rung in the alert colour, it reminds you the answer is a
+// command: run `reload y` (re-read, losing edits) or `reload n` (keep + cache, stops asking
+// until the file changes again). It stays up until answered or the file is saved. The caller
+// flushes the strip region.
+@(private = "file")
+draw_conflict_prompt :: proc(t: ^Text, strip: Rect, a: ^App) {
+    th := &a.theme
+    cw := t.font.cell_w
+    lh := t.font.line_height
+    pad := i32(8 * a.scale)
+    y := f32(strip.y) + (f32(strip.h) - lh) / 2
+
+    outline(t, strip, th.cl_inject, i32(2 * a.scale)) // ring it like a staged line — needs a decision
+
+    name := filepath.base(editor_current(&a.editor).path)
+    msg := fmt.tprintf("%s changed on disk - ", name) // ASCII only: byte length == cell count for placement
+    keys := "run: reload y (lose edits) / reload n (keep mine)"
+    text_draw(t, msg, f32(strip.x + pad), y, th.urgent)
+    text_draw(t, keys, f32(strip.x + pad) + cw * f32(len(msg)), y, th.muted)
 }
 
 // Abbreviate a leading $HOME to ~ for display (e.g. /home/me/src -> ~/src). Returns a

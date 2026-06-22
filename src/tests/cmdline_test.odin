@@ -131,6 +131,55 @@ test_cl_history :: proc(t: ^testing.T) {
     app.cl_history_next(&a);testing.expect_value(t, val(&a), "") // back to live
 }
 
+// The command line's extensible ghost hint: a recognised command with no argument yet shows
+// its arg example; once an argument is typed (or the command is unknown) the hint drops.
+@(test)
+test_cl_ghost_hint :: proc(t: ^testing.T) {
+    testing.expect_value(t, app.cl_ghost_hint("reload"), "(y/n)")
+    testing.expect_value(t, app.cl_ghost_hint("reload "), "(y/n)") // trailing space, no arg yet
+    testing.expect_value(t, app.cl_ghost_hint("reload y"), "") // argument typed -> no hint
+    testing.expect_value(t, app.cl_ghost_hint("ls"), "") // recognised command, no hint defined
+    testing.expect_value(t, app.cl_ghost_hint(""), "") // empty line
+}
+
+// The `reload` builtin settles a pending disk-change conflict: `reload n` keeps the edits
+// (and caches), `reload y` re-reads from disk. With no conflict, `reload` is a manual refresh.
+@(test)
+test_cl_reload_conflict :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    defer app.editor_destroy(&a.editor)
+    defer app.cl_destroy(&a)
+
+    path := "/tmp/slopd_cl_conflict.txt"
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("disk\n")) == nil)
+    defer os.remove(path)
+
+    b := app.editor_current(&a.editor)
+    app.buffer_set_text(b, "mine")
+    b.path = strings.clone(path) // freed by editor_destroy
+    b.dirty = true
+    b.conflict = true
+
+    // `reload n` keeps my edits and clears the conflict.
+    app.cl_exec(&a, "reload n")
+    testing.expect(t, !b.conflict)
+    testing.expect_value(t, app.line_string(&b.lines[0], context.temp_allocator), "mine")
+
+    // Re-raise, then `reload y` takes the disk version (edits discarded, buffer clean).
+    b.conflict = true
+    app.cl_exec(&a, "reload y")
+    testing.expect(t, !b.conflict)
+    testing.expect(t, !b.dirty)
+    testing.expect_value(t, app.line_string(&b.lines[0], context.temp_allocator), "disk")
+
+    // With no conflict, a bare `reload` is a manual re-read from disk (discards edits).
+    app.buffer_set_text(b, "scratch")
+    b.dirty = true
+    app.cl_exec(&a, "reload")
+    testing.expect_value(t, app.line_string(&b.lines[0], context.temp_allocator), "disk")
+}
+
 // An open command line owns keys even when a live terminal is focused (it overlays
 // the terminal); otherwise specials like Enter leak to the shell. Regression.
 @(test)

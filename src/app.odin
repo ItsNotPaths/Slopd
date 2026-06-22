@@ -113,6 +113,8 @@ App :: struct {
     main:        MainSurface,
     editor:      Editor, // the text buffers (main pane, Text surface)
     media:       Media, // the viewed image (main pane, Image surface); see media.odin
+    disk_poll_at:    f64, // glfw time of the next view-pane staleness check (see view_poll_disk)
+    conflict_prompt: bool, // disk change under unsaved edits: prompt (y/n in the CL) vs silently keep (config)
 
     // Alt+Enter link jumping (link.odin). grep holds a multi-result jump-to-definition for
     // a future results pane to render (single results jump straight in the editor); color
@@ -226,6 +228,51 @@ panes_visible :: proc(a: ^App) -> Pane_Vis {
     return {true, true}
 }
 
+// Seconds between view-pane staleness checks while the pane is focused.
+DISK_POLL_INTERVAL :: 1.0
+
+// Re-read the focused document pane's file if it changed on disk: the active text buffer
+// reloads (buffer_reload_if_changed), an image re-decodes (media_reload_if_changed). Both
+// no-op when nothing changed (a clean stat) or the pane isn't focused. Shared by the
+// on-focus refresh (set_focus) and the periodic poll. The empty-ring guard keeps it safe
+// on a bare App (the view-arrangement tests never call editor_init).
+view_refresh :: proc(a: ^App) {
+    if a.focus != .Editor {
+        return
+    }
+    switch a.main {
+    case .Text:
+        if len(a.editor.buffers) > 0 {
+            b := editor_current(&a.editor)
+            was := b.conflict
+            buffer_reload_if_changed(b, a.conflict_prompt)
+            // On a freshly-raised conflict, stage the answer command in the command line
+            // for the user to finish (type y/n, Enter): `reload y` takes the disk version,
+            // `reload n` keeps + caches. Edge-triggered (only on the false->true transition)
+            // so it isn't re-injected every poll tick; skipped if the CL is already busy.
+            if !was && b.conflict && !a.cl_active {
+                cl_inject(a, "reload ")
+            }
+        }
+    case .Image:
+        media_reload_if_changed(&a.media)
+    }
+}
+
+// Periodically refresh the focused view pane so edits made by an external tool (an agent,
+// another editor) flow in instead of being overwritten by a later save. Only ticks while
+// the document pane holds focus (no stat traffic off in a terminal or the git pane);
+// switching INTO the pane refreshes it immediately via set_focus, this catches changes
+// that land while you sit in it. Called once per frame; app_next_wake schedules the wake
+// so the poll fires even at rest.
+view_poll_disk :: proc(a: ^App, now: f64) {
+    if a.focus != .Editor || now < a.disk_poll_at {
+        return
+    }
+    a.disk_poll_at = now + DISK_POLL_INTERVAL
+    view_refresh(a)
+}
+
 // The one place focus changes — honours each view's invariants. In Full, focus picks
 // the lone full-window surface (editor or aux), so revealing the editor is a normal
 // focus change. In Zen, focus drives the aux pane's slide (revealed while it holds
@@ -243,6 +290,10 @@ set_focus :: proc(a: ^App, who: Focus) {
     if a.focus == .Aux && a.aux_mode == .Git {
         git_refresh(a)
     }
+    // The view pane mirrors the git pane: it refreshes the instant it gains focus, so an
+    // external edit (an agent or another editor rewriting the open file) flows in at once
+    // rather than waiting for the poll — and can't be silently overwritten by a later save.
+    view_refresh(a)
     // Procmon only samples /proc while its pane is on screen, so the loop returns to
     // 0% idle otherwise. In Split both panes are always visible (so it keeps updating
     // even when the editor holds focus); in Zen it shows only while focused.

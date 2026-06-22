@@ -4,6 +4,7 @@ import "core:c"
 import "core:math"
 import "core:path/filepath"
 import "core:strings"
+import "core:time"
 import gl "vendor:OpenGL"
 import "vendor:glfw"
 import stbi "vendor:stb/image"
@@ -24,6 +25,7 @@ Media :: struct {
     w, h: i32, // image pixel dimensions
     zoom: f32, // 1 = fit-to-pane (contain); >1 zooms in
     pan:  [2]f32, // view offset in physical pixels, applied after centering
+    mtime: time.Time, // file mtime when decoded; re-decodes when it changes (see media_reload_if_changed)
 }
 
 // The file extensions stb_image decodes that we route to the viewer. Lowercase;
@@ -107,7 +109,30 @@ media_load :: proc(path: string) -> (Media, bool) {
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
     gl.BindTexture(gl.TEXTURE_2D, 0)
 
-    return Media{path = strings.clone(path), tex = tex, w = i32(w), h = i32(h), zoom = 1}, true
+    mtime := file_mtime(path) or_else time.Time{}
+    return Media{path = strings.clone(path), tex = tex, w = i32(w), h = i32(h), zoom = 1, mtime = mtime}, true
+}
+
+// Re-decode the open image if it changed on disk (an external tool rewrote it),
+// keeping the current zoom/pan so a background change doesn't reset the view. No-op
+// when nothing is loaded or the file is unchanged/unreadable. Returns true on reload.
+media_reload_if_changed :: proc(m: ^Media) -> bool {
+    if m.path == "" {
+        return false
+    }
+    mt := file_mtime(m.path) or_else m.mtime // unreadable: treat as unchanged
+    if mt == m.mtime {
+        return false
+    }
+    nm, ok := media_load(m.path) // fresh decode + texture upload (carries the new mtime)
+    if !ok {
+        m.mtime = mt // mid-write or corrupt: adopt the stamp so we don't re-decode it every tick
+        return false
+    }
+    nm.zoom, nm.pan = m.zoom, m.pan // keep the viewer where the user left it
+    media_destroy(m)
+    m^ = nm
+    return true
 }
 
 // Frees the texture + owned path and zeroes the slot. Safe on an empty Media (tex 0).

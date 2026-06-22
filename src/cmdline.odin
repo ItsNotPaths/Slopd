@@ -293,6 +293,8 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         cl_grep(a, args)
     case "cd":
         cl_cd(a, args)
+    case "reload":
+        cl_reload(a, args)
     case "tu":
         cl_tu(a)
     case "w", "wa", "q", "q!", "wq", "wqa", "waq":
@@ -408,6 +410,34 @@ cl_tu :: proc(a: ^App) {
         if t.alive && !t.locked {
             terminal_write(t, transmute([]u8)line)
         }
+    }
+}
+
+// `reload [y|n]` (builtin): settle a pending disk-change conflict, or force a re-read of
+// the current buffer from disk. When the file changed under unsaved edits the conflict is
+// raised and this command is auto-staged in the CL (cl_inject "reload ") for you to finish:
+//   reload y   re-reads the file, DISCARDING the unsaved edits
+//   reload n   keeps your edits and CACHES it, so it stops asking until the file changes again
+// A bare `reload` while conflicted is deliberately a NO-OP — an accidental Enter on the
+// staged line must not silently discard your edits; you have to answer y or n. With no
+// conflict pending, `reload` (or `reload y`) is a manual refresh — re-read from disk,
+// discarding any unsaved edits (vim's :e!).
+@(private = "file")
+cl_reload :: proc(a: ^App, args: string) {
+    if a.main != .Text || len(a.editor.buffers) == 0 {
+        return
+    }
+    b := editor_current(&a.editor)
+    arg := strings.to_lower(strings.trim_space(args), context.temp_allocator)
+    if b.conflict {
+        switch arg { // resolving a conflict needs an explicit answer; bare `reload` waits
+        case "y", "yes": buffer_conflict_resolve(b, true) // take the disk version
+        case "n", "no":  buffer_conflict_resolve(b, false) // keep my edits, cache the decision
+        }
+        return
+    }
+    switch arg { // no conflict: a manual refresh (re-read, discarding any unsaved edits)
+    case "", "y", "yes": buffer_reload_keep_view(b)
     }
 }
 
@@ -537,11 +567,27 @@ is_term_token :: proc(s: string) -> bool {
     return len(s) >= 2 && s[0] == 't' && all_digits(s[1:])
 }
 
+// The inline ghost hint for the command line: a faint argument example drawn just past the
+// typed text once a command is recognised, dropped as soon as you start typing the argument
+// (so it never overlaps real input). This is the extensible seam — give a command an arg
+// hint by adding a case here (e.g. a goto could hint "file [line]"). "" = no hint. The line
+// is taken from the start (leading whitespace yields no command, hence no hint).
+cl_ghost_hint :: proc(line: string) -> string {
+    name := first_field(line)
+    if name == "" || strings.trim_space(line[len(name):]) != "" {
+        return "" // no command yet, or an argument is already typed
+    }
+    switch name {
+    case "reload": return "(y/n)"
+    }
+    return ""
+}
+
 @(private = "file")
 cl_is_builtin :: proc(name: string) -> bool {
     switch name {
-    case "ls", "gs", "gr", "cf", "zen", "zm", "full", "fm", "put", "j", "jump", "grep", "cd", "tu",
-         "w", "wa", "q", "q!", "wq", "wqa", "waq":
+    case "ls", "gs", "gr", "cf", "zen", "zm", "full", "fm", "put", "j", "jump", "grep", "cd", "reload",
+         "tu", "w", "wa", "q", "q!", "wq", "wqa", "waq":
         return true
     }
     return false

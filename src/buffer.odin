@@ -2,6 +2,7 @@ package main
 
 import "core:os"
 import "core:strings"
+import "core:time"
 
 // The text editor: a list of open Buffers (the ring) with one active. Each Buffer
 // is a Doc (the shared multi-cursor editing core) plus file/view state, so every
@@ -17,6 +18,8 @@ Buffer :: struct {
     final_newline: bool, // did the file end in '\n'? preserved on save (POSIX round-trip)
     folds:         [dynamic]Fold, // collapsed blocks (Ctrl+Enter); see fold.odin
     fold_nlines:   int, // line count the folds were valid at (drop them when it changes)
+    disk_mtime:    time.Time, // file mtime at our last load/save; detects external rewrites (see buffer_reload_if_changed)
+    conflict:      bool, // the file changed on disk under unsaved edits: a decision is pending (the prompt; see buffer_conflict_resolve)
 }
 
 Editor :: struct {
@@ -135,11 +138,17 @@ buffer_load :: proc(b: ^Buffer, path: string) -> bool {
         return false
     }
     content := string(src)
+    // Capture everything derived from `path` BEFORE freeing the old b.path: a reload
+    // (buffer_reload_keep_view) passes b.path itself, so freeing first would leave `path`
+    // dangling and clone/stat it from freed memory.
+    new_path := strings.clone(path)
+    mtime := file_mtime(path) or_else time.Time{} // the stamp staleness is measured against
     buffer_set_text(b, content)
     delete(b.path)
-    b.path = strings.clone(path)
+    b.path = new_path
     b.dirty = false
     b.final_newline = strings.has_suffix(content, "\n") // remember it for save
+    b.disk_mtime = mtime
     return true
 }
 
@@ -157,7 +166,84 @@ buffer_save :: proc(b: ^Buffer) -> bool {
         return false
     }
     b.dirty = false
+    b.conflict = false // our write IS the disk now, so any pending conflict is resolved
+    b.disk_mtime = file_mtime(b.path) or_else {} // adopt our own write's stamp so it isn't read back as an external change
     return true
+}
+
+// The file's on-disk modification time, ok=false if it can't be stat'd (gone/unreadable).
+// The single source of the staleness stamp shared by the text buffer and the image viewer.
+file_mtime :: proc(path: string) -> (time.Time, bool) {
+    fi, err := os.stat(path, context.temp_allocator)
+    if err != nil {
+        return {}, false
+    }
+    return fi.modification_time, true
+}
+
+// Re-read the file if it changed on disk since we last loaded or saved it. A view pane
+// goes stale when an external tool (an agent, another editor) rewrites the open file
+// underneath us; without this a later save would clobber those edits with our stale
+// buffer. A CLEAN buffer reloads silently. A DIRTY buffer is a genuine conflict — both
+// sides changed. With `prompt_on_conflict` (config disk_conflict: prompt) we raise
+// `conflict` and leave the decision to the user (resolved via a y/n line in the command
+// line; buffer_conflict_resolve), deliberately NOT adopting the stamp so the conflict
+// keeps asserting until resolved. In the relaxed mode (disk_conflict: keep) we silently
+// keep the edits and adopt the stamp, so there is no prompt and no re-check churn.
+// Returns true if it actually reloaded.
+buffer_reload_if_changed :: proc(b: ^Buffer, prompt_on_conflict: bool) -> bool {
+    if b.path == "" {
+        return false
+    }
+    mt := file_mtime(b.path) or_else b.disk_mtime // unreadable: treat as unchanged
+    if mt == b.disk_mtime {
+        return false
+    }
+    if b.dirty {
+        if prompt_on_conflict {
+            b.conflict = true // disk changed under unsaved edits: ask, don't clobber
+        } else {
+            b.disk_mtime = mt // relaxed: keep my edits silently, accept the new disk stamp
+        }
+        return false
+    }
+    b.disk_mtime = mt
+    return buffer_reload_keep_view(b)
+}
+
+// Re-read the file from disk, holding the caret line/column and scroll across the swap
+// (clamped to the new length) so a background edit doesn't yank the view to the top. The
+// unconditional reload core, shared by the silent auto-reload and the conflict "reload"
+// choice. Returns true on success.
+buffer_reload_keep_view :: proc(b: ^Buffer) -> bool {
+    if b.path == "" {
+        return false
+    }
+    head := b.cursors[b.primary].head
+    scroll := b.scroll
+    if !buffer_load(b, b.path) {
+        return false
+    }
+    line := clamp(head.line, 0, len(b.lines) - 1)
+    col := clamp(head.col, 0, len(b.lines[line].text))
+    doc_reset_cursor(&b.doc, {line = line, col = col})
+    b.scroll = clamp(scroll, 0, max(0, len(b.lines) - 1))
+    return true
+}
+
+// Settle a pending disk-change conflict. reload=true takes the disk version (the edits
+// are discarded, the file re-read); reload=false KEEPS the edits and adopts the current
+// disk stamp — the cached decision, so the prompt stays down until the file changes
+// AGAIN (a fresh stamp re-raises it) or you switch to a different file. Either clears the
+// conflict.
+buffer_conflict_resolve :: proc(b: ^Buffer, reload: bool) {
+    b.conflict = false
+    if reload {
+        b.dirty = false // the reload re-reads from disk, so the buffer is clean again
+        buffer_reload_keep_view(b)
+    } else {
+        b.disk_mtime = file_mtime(b.path) or_else b.disk_mtime // cache "keep mine" against the current disk version
+    }
 }
 
 // --- editing (thin wrappers over the Doc core; mark the buffer dirty) ---
