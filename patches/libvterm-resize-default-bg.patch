@@ -1,0 +1,18 @@
+diff --git a/src/screen.c b/src/screen.c
+index 6747acb..a9d352b 100644
+--- a/src/screen.c
++++ b/src/screen.c
+@@ -77,7 +77,12 @@ struct VTermScreen
+ static inline void clearcell(const VTermScreen *screen, ScreenCell *cell)
+ {
+   cell->chars[0] = 0;
+-  cell->pen = screen->pen;
++  /* Slopd: clear to the DEFAULT colours, not the live SGR pen. clearcell only feeds
++   * the resize/alloc paths (bce erase fills its own pen in erase_internal), so a
++   * resize landing mid-escape-sequence must not paint exposed cells with a stray
++   * background — otherwise a streaming TUI's diff colours smear across the grid. */
++  cell->pen = (ScreenPen){ 0 };
++  vterm_state_get_default_colors(screen->state, &cell->pen.fg, &cell->pen.bg);
+ }
+ 
+ static inline ScreenCell *getcell(const VTermScreen *screen, int row, int col)
