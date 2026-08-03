@@ -71,9 +71,10 @@ sel_by_name :: proc(ft: ^app.FileTree, name: string) -> int {
 }
 
 // Yank a file, paste it (Copy) into the same dir -> a "_copy" duplicate with the same
-// bytes, leaving the original; then delete the duplicate via the selected-entry op.
+// bytes, leaving the original; then the duplicate is what a delete would target — the
+// pane no longer removes anything itself, it stages `rm -rf` in the command line.
 @(test)
-test_filetree_copy_paste_delete :: proc(t: ^testing.T) {
+test_filetree_copy_paste :: proc(t: ^testing.T) {
     base := os.get_env("TMPDIR", context.temp_allocator)
     if base == "" {
         base = "/tmp"
@@ -103,8 +104,10 @@ test_filetree_copy_paste_delete :: proc(t: ^testing.T) {
     testing.expect(t, string(data) == "hello")
 
     ft.selected = sel_by_name(&ft, "a_copy.txt")
-    app.filetree_delete_selected(&ft)
-    testing.expect(t, !os.exists(dup))
+    targets := app.filetree_targets(&ft, false, context.temp_allocator)
+    testing.expect_value(t, len(targets), 1)
+    testing.expect_value(t, targets[0], dup)
+    testing.expect(t, os.exists(dup)) // asking for the targets deletes nothing
 }
 
 // Cut a file, navigate into a subdir, paste -> the file MOVES there and the marked set
@@ -170,9 +173,10 @@ test_filetree_sweep :: proc(t: ^testing.T) {
     testing.expect(t, len(ft.yanked) == 3)
 }
 
-// Reset clears marks without touching files; delete-yanked removes the whole set.
+// Reset clears marks without touching files; with a marked set, the delete targets are
+// the whole set (which the host turns into one `rm -rf` command line).
 @(test)
-test_filetree_reset_and_delete_yanked :: proc(t: ^testing.T) {
+test_filetree_reset_and_targets :: proc(t: ^testing.T) {
     base := os.get_env("TMPDIR", context.temp_allocator)
     if base == "" {
         base = "/tmp"
@@ -198,8 +202,34 @@ test_filetree_reset_and_delete_yanked :: proc(t: ^testing.T) {
 
     ft.selected = sel_by_name(&ft, "x.txt");app.filetree_yank_toggle(&ft)
     ft.selected = sel_by_name(&ft, "y.txt");app.filetree_yank_toggle(&ft)
-    app.filetree_delete_yanked(&ft)
-    testing.expect(t, !os.exists(join(dir, "x.txt")))
-    testing.expect(t, !os.exists(join(dir, "y.txt")))
-    testing.expect(t, len(ft.yanked) == 0)
+    marked := app.filetree_targets(&ft, true, context.temp_allocator)
+    testing.expect_value(t, len(marked), 2)
+    cmd := app.rm_command(marked, context.temp_allocator)
+    testing.expect(t, strings.contains(cmd, app.sh_quote(join(dir, "x.txt"), context.temp_allocator)))
+    testing.expect(t, strings.contains(cmd, app.sh_quote(join(dir, "y.txt"), context.temp_allocator)))
+    testing.expect(t, os.exists(join(dir, "x.txt"))) // staging a command deletes nothing
+}
+
+// A non-".." row is executable-tagged from its own mode bits, so Shift+Enter knows a
+// script/binary from a document (the run-vs-open-in-the-desktop split).
+@(test)
+test_filetree_exec_bit :: proc(t: ^testing.T) {
+    base := os.get_env("TMPDIR", context.temp_allocator)
+    if base == "" {
+        base = "/tmp"
+    }
+    dir := join(base, "slopd_ft_exec")
+    rmrf(dir)
+    os.make_directory(dir)
+    defer rmrf(dir)
+    write_file(join(dir, "plain.txt"), "hi")
+    write_file(join(dir, "run.sh"), "#!/bin/sh\necho hi\n")
+    _ = os.chmod(join(dir, "run.sh"), os.Permissions{.Read_User, .Write_User, .Execute_User})
+
+    ft: app.FileTree
+    app.filetree_load(&ft, dir)
+    defer app.filetree_destroy(&ft)
+
+    testing.expect(t, !ft.entries[sel_by_name(&ft, "plain.txt")].exec)
+    testing.expect(t, ft.entries[sel_by_name(&ft, "run.sh")].exec)
 }

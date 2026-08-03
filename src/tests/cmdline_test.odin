@@ -468,3 +468,41 @@ test_cl_chain_first_failure_stops_all :: proc(t: ^testing.T) {
     testing.expect(t, a.aux_mode != app.AuxMode.FileTree, "ls skipped")
     testing.expect(t, len(a.cl_chain.steps) == 0, "chain cleared")
 }
+
+// --- staged shell commands (the filetree chords build these, see input.odin) ---
+
+// Quoting is the single-quote form, with an embedded quote closed/escaped/reopened, so a
+// path with spaces or shell metacharacters survives the round trip to the shell.
+@(test)
+test_sh_quote :: proc(t: ^testing.T) {
+    q :: proc(s: string) -> string {return app.sh_quote(s, context.temp_allocator)}
+    testing.expect_value(t, q("/tmp/a.txt"), "'/tmp/a.txt'")
+    testing.expect_value(t, q("/tmp/my file; rm -rf ~"), "'/tmp/my file; rm -rf ~'")
+    testing.expect_value(t, q("/tmp/it's"), `'/tmp/it'\''s'`)
+}
+
+// A delete stages one `rm -rf` over every target, tailed by the `ls` builtin so the
+// listing re-reads once it exits 0. No targets stages nothing at all.
+@(test)
+test_rm_command :: proc(t: ^testing.T) {
+    one := app.rm_command({"/tmp/a b.txt"}, context.temp_allocator)
+    testing.expect_value(t, one, "rm -rf '/tmp/a b.txt' && ls")
+
+    many := app.rm_command({"/tmp/x", "/tmp/y"}, context.temp_allocator)
+    testing.expect_value(t, many, "rm -rf '/tmp/x' '/tmp/y' && ls")
+
+    testing.expect_value(t, app.rm_command(nil, context.temp_allocator), "")
+}
+
+// Shift+Enter's run-vs-open split: an executable runs by its own path, a non-executable
+// shell script runs under bash, and anything else has no run command (it goes to the
+// desktop's default application instead).
+@(test)
+test_run_command :: proc(t: ^testing.T) {
+    testing.expect_value(t, app.run_command("/tmp/tool", true, context.temp_allocator), "'/tmp/tool' ")
+    testing.expect_value(t, app.run_command("/tmp/a.sh", true, context.temp_allocator), "'/tmp/a.sh' ")
+    bashed := app.run_command("/tmp/a.sh", false, context.temp_allocator)
+    testing.expect_value(t, bashed, "bash '/tmp/a.sh' ")
+    testing.expect_value(t, app.run_command("/tmp/notes.md", false, context.temp_allocator), "")
+    testing.expect_value(t, app.run_command("/tmp/clip.mp4", false, context.temp_allocator), "")
+}

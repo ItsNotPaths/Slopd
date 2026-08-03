@@ -274,6 +274,7 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
     switch name {
     case "ls":
         set_aux(a, .FileTree)
+        filetree_reload(&a.tree) // `ls` is also the REFRESH gesture — and the tail of a staged rm
     case "gs":
         set_aux(a, .Git)
     case "gr":
@@ -517,6 +518,66 @@ cl_put :: proc(a: ^App, args: string) {
     if t := term_current(a); t != nil {
         terminal_write(t, transmute([]u8)text)
     }
+}
+
+// --- shell command builders ---
+//
+// UI gestures that stage a REAL shell line in the CL (see cl_inject) rather than doing
+// the work behind a modal prompt: you read the command, edit it, press Enter, and it
+// lands in history like anything you typed. Pure string builders, so they unit-test
+// without an App; the callers live in input.odin (the filetree chords).
+
+// Wrap s in single quotes for the shell, so spaces and metacharacters in a path stay
+// literal. An embedded single quote closes, escapes, and reopens ('\'') — the one form
+// that is safe in every POSIX shell.
+sh_quote :: proc(s: string, alloc := context.allocator) -> string {
+    b := strings.builder_make(alloc)
+    strings.write_byte(&b, '\'')
+    for i in 0 ..< len(s) {
+        if s[i] == '\'' {
+            strings.write_string(&b, `'\''`)
+        } else {
+            strings.write_byte(&b, s[i])
+        }
+    }
+    strings.write_byte(&b, '\'')
+    return strings.to_string(b)
+}
+
+// The staged line for a filetree delete: `rm -rf '<path>' ... && ls`. The trailing `ls`
+// is our own builtin — once the rm exits 0 the chain runs it, re-reading the listing and
+// putting focus back on the filetree, so the pane shows the result. "" when there is
+// nothing selected to delete (the caller then stages nothing).
+rm_command :: proc(paths: []string, alloc := context.allocator) -> string {
+    if len(paths) == 0 {
+        return ""
+    }
+    b := strings.builder_make(alloc)
+    strings.write_string(&b, "rm -rf")
+    for p in paths {
+        strings.write_byte(&b, ' ')
+        strings.write_string(&b, sh_quote(p, context.temp_allocator))
+    }
+    strings.write_string(&b, " && ls")
+    return strings.to_string(b)
+}
+
+// The staged line that RUNS a file, or "" when the file isn't ours to run (the caller
+// hands those to the desktop instead — see desktop_open). An executable file (a binary,
+// or a script with a shebang) runs by its own quoted path; a NON-executable shell script
+// still runs, under `bash` — the one interpreter case worth carrying, since chmod +x is
+// the step people skip. Add a case here to teach it another interpreter. The trailing
+// space is so arguments type straight on.
+run_command :: proc(path: string, executable: bool, alloc := context.allocator) -> string {
+    quoted := sh_quote(path, context.temp_allocator)
+    if executable {
+        return strings.concatenate({quoted, " "}, alloc)
+    }
+    switch filepath.ext(path) {
+    case ".sh", ".bash":
+        return strings.concatenate({"bash ", quoted, " "}, alloc)
+    }
+    return ""
 }
 
 cl_chain_clear :: proc(a: ^App) {

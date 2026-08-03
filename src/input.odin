@@ -17,6 +17,8 @@ import "vendor:glfw"
 //   Alt+W                     open the command line pre-filled for a line jump ("j ")
 //   Alt+Enter                 editor: follow the token under the caret (def / URL / [[file]] / colour);
 //                             filetree: cd to the selected folder (stage in CL, or run; config)
+//   Shift+Enter               filetree: open the entry in the OS default app (xdg-open); a
+//                             binary/script instead stages its run command in the CL
 //   Alt+F/T/G/P/R             aux mode: FileTree / Terminal / Git / Procmon / gRep results
 //   Alt+1..9                  jump to terminal session N (i3-style)
 //   Alt+N / Alt+Q             terminal: new / close session (max 99)
@@ -175,8 +177,6 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             cl_cancel(a)
         } else if a.move_all_armed {
             a.move_all_armed = false
-        } else if a.aux_mode == .FileTree && a.tree.confirm != .None {
-            a.tree.confirm = .None // back out of a staged delete
         } else if a.focus == .Editor && a.main == .Text && len(d.cursors) > 1 {
             doc_collapse_to_primary(d)
         } else {
@@ -699,32 +699,14 @@ clipboard_set :: proc(a: ^App, joined: string, pieces: []string) {
 }
 
 // Filetree key handling (when the filetree aux pane is focused). Plain arrows + Enter
-// navigate; Shift+Up/Down sweep-marks a contiguous run; the dired-style file ops are
-// CTRL chords (Ctrl is global elsewhere but unused in this pane, so it owns them here),
-// discoverable via the Ctrl-held chord bar. The destructive ones stage a one-key
-// confirm (drawn in the strip) that owns the keys until answered.
+// navigate (Shift+Enter opens in the OS app instead of ours); Shift+Up/Down sweep-marks a
+// contiguous run; the dired-style file ops are CTRL chords (Ctrl is global elsewhere but
+// unused in this pane, so it owns them here), discoverable via the Ctrl-held chord bar.
+// The destructive one stages an `rm -rf` command line — the CL is the confirm.
 filetree_key :: proc(a: ^App, key, mods: i32) {
     ft := &a.tree
     ctrl := mods & glfw.MOD_CONTROL != 0
     shift := mods & glfw.MOD_SHIFT != 0
-
-    if ft.confirm != .None {
-        // Enter/y commits the staged delete, n/q backs out (Esc is caught globally).
-        switch key {
-        case glfw.KEY_ENTER, glfw.KEY_KP_ENTER, glfw.KEY_Y:
-            switch ft.confirm {
-            case .DeleteSel:
-                filetree_delete_selected(ft)
-            case .DeleteYanked:
-                filetree_delete_yanked(ft)
-            case .None:
-            }
-            ft.confirm = .None
-        case glfw.KEY_N, glfw.KEY_Q:
-            ft.confirm = .None
-        }
-        return
-    }
 
     // Ctrl chords: the dired-style file ops.
     if ctrl {
@@ -740,14 +722,9 @@ filetree_key :: proc(a: ^App, key, mods: i32) {
         case glfw.KEY_P:
             filetree_paste(ft) // apply the set to the current dir
         case glfw.KEY_D:
-            // Ctrl+D deletes the highlighted entry; Ctrl+Shift+D the whole marked set.
-            if shift {
-                if len(ft.yanked) > 0 {
-                    ft.confirm = .DeleteYanked
-                }
-            } else if e := filetree_selected(ft); e != nil && e.name != ".." {
-                ft.confirm = .DeleteSel
-            }
+            // Ctrl+D deletes the highlighted entry; Ctrl+Shift+D the whole marked set —
+            // both by staging the `rm -rf` in the command line (the CL is the confirm).
+            filetree_rm_selected(a, shift)
         case glfw.KEY_W:
             // Ctrl+W copies the selected entry's path; Ctrl+Shift+W the browsed dir's
             // path (where the listing IS, not whatever row is hovered). Owned clone —
@@ -779,7 +756,9 @@ filetree_key :: proc(a: ^App, key, mods: i32) {
     case glfw.KEY_LEFT:
         filetree_parent(ft) // up to the parent
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
-        if path, is_file := filetree_activate(ft); is_file {
+        if shift {
+            filetree_open_selected(a) // hand it to the desktop, or stage its run command
+        } else if path, is_file := filetree_activate(ft); is_file {
             open_file(a, path)
         }
     }
@@ -791,6 +770,37 @@ filetree_key :: proc(a: ^App, key, mods: i32) {
 filetree_cd_selected :: proc(a: ^App) {
     if e := filetree_selected(&a.tree); e != nil && e.is_dir {
         cl_dispatch(a, fmt.tprintf("cd %s", e.path), a.folder_cd_run)
+    }
+}
+
+// Shift+Enter in the filetree: open the entry the way the DESKTOP would — its default
+// application (Sublime for text, vlc for an mp4, the file manager for a directory), via
+// xdg-open. The exception is anything we could RUN: a binary or a script instead STAGES
+// its run command in the command line (run_command), because running is a decision and
+// usually wants arguments typed after it. Plain Enter is unchanged — that opens the file
+// HERE, in Slopd's own editor.
+filetree_open_selected :: proc(a: ^App) {
+    e := filetree_selected(&a.tree)
+    if e == nil || e.name == ".." {
+        return
+    }
+    if !e.is_dir {
+        if cmd := run_command(e.path, e.exec, context.temp_allocator); cmd != "" {
+            cl_inject(a, cmd)
+            return
+        }
+    }
+    desktop_open(e.path)
+}
+
+// Ctrl+D / Ctrl+Shift+D in the filetree: stage `rm -rf <paths> && ls` in the command line.
+// The delete is a real shell command you read (the full paths are right there), can edit,
+// and run with Enter — no modal confirm to answer, and it lands in CL history like anything
+// else. No-op with nothing selected / nothing marked.
+filetree_rm_selected :: proc(a: ^App, marked: bool) {
+    paths := filetree_targets(&a.tree, marked, context.temp_allocator)
+    if cmd := rm_command(paths, context.temp_allocator); cmd != "" {
+        cl_inject(a, cmd)
     }
 }
 

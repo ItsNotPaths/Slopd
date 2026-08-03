@@ -24,6 +24,14 @@ Line_Numbers :: enum {
     Relative,
 }
 
+// How the editor viewport tracks the cursors: Follow moves the view only when the caret
+// would leave it; Middle pins the topmost cursor to the pane's middle row, so Up/Down
+// always move the text instead. See buffer_scroll_target.
+Scroll_Mode :: enum {
+    Follow,
+    Middle,
+}
+
 // Config — Slopd's own simple `key: value` file. Points at a theme file and holds
 // a few editor settings. Search order: $SLOPD_CONFIG, ~/.config/slopd/slopd.config,
 // ./slopd.config. Anything missing keeps the defaults below.
@@ -31,6 +39,7 @@ Config :: struct {
     theme_path:        string, // absolute (owned), or "" for the baked-in default
     indent:            Indent,
     line_numbers:      Line_Numbers,
+    scroll_mode:       Scroll_Mode, // editor viewport: follow the caret, or keep it middled
     font_px:           f32, // logical text size in points (font zoom), persisted across runs
     jump_lines:        int, // how many lines Ctrl+Up/Down jumps in the editor
     show_whitespace:   bool, // ghost the leading-space dots / tab marks
@@ -51,6 +60,7 @@ load_config :: proc() -> Config {
     cfg := Config {
         indent          = {.Spaces, 4}, // matches the project's 4-space convention
         line_numbers    = .Global,
+        scroll_mode     = .Follow, // the view moves only when the caret would leave it
         font_px         = FONT_BASE_PX,
         jump_lines      = 10,
         show_whitespace = true, // the guides default on; the config toggles them off
@@ -101,6 +111,10 @@ load_config :: proc() -> Config {
                 cfg.line_numbers = .Global
             case "relative":
                 cfg.line_numbers = .Relative
+            }
+        case "scroll_mode":
+            if m, ok := parse_scroll_mode(val); ok {
+                cfg.scroll_mode = m
             }
         case "font_size":
             if n, ok := strconv.parse_int(val, 10); ok {
@@ -207,6 +221,8 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
     switch s {
     case .LineNumbers:
         return LINE_NUMBER_OPTS[:]
+    case .ScrollMode:
+        return SCROLL_MODE_OPTS[:]
     case .Indent:
         return INDENT_OPTS[:]
     case .Theme:
@@ -223,6 +239,7 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
 
 INDENT_OPTS := [?]string{"tab", "spaces2", "spaces4", "spaces8"}
 LINE_NUMBER_OPTS := [?]string{"global", "relative"}
+SCROLL_MODE_OPTS := [?]string{"follow", "middle"}
 ON_OFF_OPTS := [?]string{"on", "off"}
 STAGE_RUN_OPTS := [?]string{"stage", "run"}
 PROMPT_KEEP_OPTS := [?]string{"prompt", "keep"}
@@ -262,6 +279,7 @@ theme_options :: proc(allocator := context.allocator) -> []string {
 Setting :: enum {
     Theme,
     LineNumbers,
+    ScrollMode,
     Indent,
     Folding,
     IndentGuides,
@@ -281,6 +299,7 @@ setting_key :: proc(s: Setting) -> string {
     switch s {
     case .Theme:        return "theme"
     case .LineNumbers:  return "line_numbers"
+    case .ScrollMode:   return "scroll_mode"
     case .Indent:       return "indent"
     case .Folding:      return "folding"
     case .IndentGuides: return "indent_guides"
@@ -305,6 +324,7 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     switch s {
     case .Theme:        return a.theme_path
     case .LineNumbers:  return a.line_numbers == .Global ? "global" : "relative"
+    case .ScrollMode:   return a.scroll_mode == .Middle ? "middle" : "follow"
     case .Indent:       return a.indent.kind == .Tab ? "tab" : fmt.tprintf("spaces%d", a.indent.width)
     case .Folding:      return on_off(a.folding)
     case .IndentGuides: return on_off(a.show_guides)
@@ -337,6 +357,8 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         case "relative": a.line_numbers = .Relative
         case:            return false
         }
+    case .ScrollMode:
+        a.scroll_mode = parse_scroll_mode(val) or_return
     case .Indent:
         a.indent = parse_indent(val) or_return // invalid spec -> no change, return false
     case .Folding:
@@ -380,6 +402,17 @@ parse_prompt_keep :: proc(s: string) -> (prompt: bool, ok: bool) {
     case "keep":   return false, true
     }
     return false, false
+}
+
+// Parses the editor's scroll mode: "follow" moves the view only when the caret would leave
+// it; "middle" keeps the topmost cursor on the pane's middle row, so Up/Down always move the
+// text. ok=false on anything else (an invalid edit keeps the old value).
+parse_scroll_mode :: proc(s: string) -> (mode: Scroll_Mode, ok: bool) {
+    switch s {
+    case "follow": return .Follow, true
+    case "middle": return .Middle, true
+    }
+    return .Follow, false
 }
 
 // Parses the folder-cd action's stage/run value; ok=false on anything else (an invalid

@@ -181,3 +181,60 @@ test_ring_contains :: proc(t: ^testing.T) {
     testing.expect(t, app.ring_contains(&a, "/x/y.txt"))
     testing.expect(t, !app.ring_contains(&a, "/x/other.txt"))
 }
+
+// --- scroll policy (buffer_scroll_target; the renderer only consumes it) ---
+
+@(private = "file")
+numbered :: proc(n: int) -> app.Buffer {
+    b := strings.builder_make(context.temp_allocator)
+    for i in 0 ..< n {
+        strings.write_int(&b, i)
+        strings.write_byte(&b, '\n')
+    }
+    return mkbuf(strings.to_string(b))
+}
+
+// FOLLOW (the default): the view holds still while the caret is inside it, then moves the
+// minimum — up to the caret when it steps above, down to put it on the bottom row.
+@(test)
+test_scroll_follow :: proc(t: ^testing.T) {
+    b := numbered(100)
+    defer app.buffer_destroy(&b)
+    ROWS :: 10
+
+    testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, false), 0) // caret on line 0
+    app.doc_reset_cursor(&b.doc, app.Pos{5, 0})
+    testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, false), 0) // still on screen: no move
+    app.doc_reset_cursor(&b.doc, app.Pos{12, 0})
+    testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, false), 3) // caret onto the bottom row
+    b.scroll = 3
+    app.doc_reset_cursor(&b.doc, app.Pos{1, 0})
+    testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, false), 1) // stepped above: top = caret
+}
+
+// MIDDLE: the topmost cursor is pinned to the middle row, so every motion moves the text.
+// Clamped at the top of the file (nothing above line 0 to show); at the end it keeps
+// centring and lets the view run past the last line.
+@(test)
+test_scroll_middle :: proc(t: ^testing.T) {
+    b := numbered(100)
+    defer app.buffer_destroy(&b)
+    ROWS :: 10
+
+    testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, true), 0) // clamped at the top
+    app.doc_reset_cursor(&b.doc, app.Pos{40, 0})
+    testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, true), 35)
+    app.doc_reset_cursor(&b.doc, app.Pos{41, 0})
+    // one line down = one row of text:
+    testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, true), 36)
+    app.doc_reset_cursor(&b.doc, app.Pos{99, 0})
+    testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, true), 94) // past the end, still centred
+
+    // Multi-cursor: the FIRST (topmost) cursor frames the view, not the primary (which
+    // is the roaming caret at the bottom of a dropped trail).
+    app.doc_reset_cursor(&b.doc, app.Pos{50, 0})
+    app.doc_drop_anchor(&b.doc)
+    app.doc_move(&b.doc, .Down, false, 8) // primary now on line 58, first cursor on 50
+    testing.expect_value(t, app.doc_top_cursor_line(&b.doc), 50)
+    testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, true), 45)
+}

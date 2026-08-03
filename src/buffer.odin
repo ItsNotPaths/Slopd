@@ -409,6 +409,34 @@ buffer_redo :: proc(b: ^Buffer) {
     }
 }
 
+// --- view ---
+
+// The viewport's target top line for a `rows`-tall pane — the scroll policy, kept out of
+// the renderer so it is testable without GL. Two modes (the `scroll_mode` config):
+//   FOLLOW (default) — the view sits still until the caret would leave it, then moves the
+//     minimum: the caret roams the pane and only pushes the text at the edges.
+//   MIDDLE (center)  — the FIRST (topmost) cursor is pinned to the pane's middle row, so
+//     Up/Down move the TEXT under a caret that never leaves the middle. Multi-cursor
+//     first: with a trail down the file it's the top of the set that stays framed.
+// Both walk in VISIBLE rows, so a folded block doesn't take up viewport. Centring clamps
+// at the first line (there is nothing above line 0 to show); near the end of the file it
+// keeps centring and simply lets the view run past the last line.
+buffer_scroll_target :: proc(b: ^Buffer, rows: int, center: bool) -> int {
+    if center {
+        line := buffer_prev_visible(b, doc_top_cursor_line(&b.doc))
+        return buffer_back_visible(b, line, rows / 2)
+    }
+    top := buffer_prev_visible(b, clamp(b.scroll, 0, len(b.lines) - 1))
+    cur := b.cursors[b.primary].head.line
+    if cur < top {
+        return cur
+    }
+    if buffer_visible_count(b, top, cur) > rows {
+        return buffer_back_visible(b, cur, rows - 1) // caret on the bottom row
+    }
+    return top
+}
+
 // --- movement (no edits; the Doc ops wrap across line boundaries). select=true
 // (Shift) grows a selection; all=true (the Alt+M prefix) moves every cursor rather
 // than just the free caret. ---

@@ -118,16 +118,15 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
         draw_term_overlay(t, lay.aux, win_w, win_h, a, now)
     }
 
-    // Filetree bottom overlay: the Ctrl-held chord cheat-sheet, or a pending delete
-    // confirm (which stays up until answered). Both sit inside the filetree pane so the
-    // command-line strip is never co-opted.
-    if a.aux_mode == .FileTree && (a.tree.confirm != .None || (a.ctrl_held && a.focus == .Aux)) {
+    // Filetree bottom overlay: the Ctrl-held chord cheat-sheet, inside the filetree pane
+    // so the command-line strip is never co-opted.
+    if a.aux_mode == .FileTree && a.ctrl_held && a.focus == .Aux {
         draw_filetree_overlay(t, lay.aux, win_w, win_h, a, now)
     }
 
     // Bottom status / command strip: the command line while active, else an
-    // emacs-style modeline for the editor buffer. (The filetree chord bar / delete
-    // confirm are NOT here — they overlay the filetree pane itself, see above.)
+    // emacs-style modeline for the editor buffer. (The filetree chord bar is NOT
+    // here — it overlays the filetree pane itself, see above.)
     if a.cl_active {
         draw_command_line(t, lay.strip, a, now)
     } else if a.focus == .Editor && a.main == .Text && editor_current(&a.editor).conflict {
@@ -185,14 +184,9 @@ draw_editor :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) 
     cur_line := b.cursors[b.primary].head.line // primary cursor drives scroll + the gutter
     rows := max(1, int(area.h / row_h))
 
-    // Scroll-follow in VISIBLE rows (folded lines don't take a row): keep the cursor
-    // within the window, sliding the top down only as far as a real visible line.
-    b.scroll = buffer_prev_visible(b, clamp(b.scroll, 0, len(b.lines) - 1))
-    if cur_line < b.scroll {
-        b.scroll = cur_line
-    } else if buffer_visible_count(b, b.scroll, cur_line) > rows {
-        b.scroll = buffer_back_visible(b, cur_line, rows - 1)
-    }
+    // The scroll policy — follow the caret at the edges, or keep the topmost cursor on
+    // the middle row (config `scroll_mode`). Lives in buffer.odin, GL-free and tested.
+    b.scroll = buffer_scroll_target(b, rows, a.scroll_mode == .Middle)
 
     // Smooth scroll: b.scroll is the target top line; the visual top tweens toward
     // it. Re-arm only when the target moves, so a settled view never re-renders.
@@ -519,10 +513,10 @@ draw_status :: proc(t: ^Text, strip: Rect, a: ^App) {
 }
 
 // The filetree's bottom overlay, sitting INSIDE the filetree pane (never the command
-// strip): either the Ctrl-held chord cheat-sheet or a pending delete confirm. A filled
-// bar anchored to the pane bottom; the chord list left-flows and wraps to as many rows
-// as the (possibly narrow) pane needs. Colours fade up from the pane bg via chord_anim,
-// the Ctrl-hold analogue of the terminal switcher fade; the confirm shows fully opaque.
+// strip): the Ctrl-held chord cheat-sheet. A filled bar anchored to the pane bottom; the
+// chord list left-flows and wraps to as many rows as the (possibly narrow) pane needs.
+// Colours fade up from the pane bg via chord_anim, the Ctrl-hold analogue of the terminal
+// switcher fade.
 @(private = "file")
 draw_filetree_overlay :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) {
     th := &a.theme
@@ -534,24 +528,6 @@ draw_filetree_overlay :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, 
     lh := t.font.line_height
     row_h := i32(lh) + i32(6 * a.scale)
     pad := i32(8 * a.scale)
-
-    // A pending delete owns the overlay: a single urgent row, drawn opaque.
-    if a.tree.confirm != .None {
-        what: string
-        if a.tree.confirm == .DeleteYanked {
-            what = fmt.tprintf("%d marked", len(a.tree.yanked))
-        } else if e := filetree_selected(&a.tree); e != nil {
-            what = filepath.base(e.path)
-        } else {
-            what = "entry"
-        }
-        msg := fmt.tprintf("delete %s?   enter/y = confirm    esc = cancel", what)
-        by := area.y + area.h - row_h
-        fill(t, Rect{area.x, by, area.w, row_h}, th.border_dark)
-        text_draw(t, msg, f32(area.x + pad), f32(by) + (f32(row_h) - lh) / 2, th.urgent)
-        flush_pane(t, area, win_w, win_h)
-        return
-    }
 
     // Opaque lerp out of the pane bg (so no alpha is needed) as Ctrl is held.
     f := clamp(anim_value(&a.chord_anim, now), 0, 1)

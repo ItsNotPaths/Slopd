@@ -155,6 +155,7 @@ App :: struct {
     theme_path:   string, // active theme path (owned, resolved by load_config); "" = baked-in default
     indent:       Indent, // Tab-key indentation policy (from config)
     line_numbers: Line_Numbers, // gutter style (from config)
+    scroll_mode:  Scroll_Mode, // viewport policy: follow the caret / keep it middled (config)
     jump_lines:   int, // lines per Ctrl+Up/Down editor jump (from config)
 
     // Editor reading-aids, toggled from the Config pane (all default on). show_whitespace:

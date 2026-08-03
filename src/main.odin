@@ -69,6 +69,7 @@ main :: proc() {
     app.theme_path = strings.clone(cfg.theme_path) // the raw config value, for the settings pane
     app.indent = cfg.indent
     app.line_numbers = cfg.line_numbers
+    app.scroll_mode = cfg.scroll_mode
     app.jump_lines = cfg.jump_lines
     app.show_whitespace = cfg.show_whitespace
     app.show_guides = cfg.show_guides

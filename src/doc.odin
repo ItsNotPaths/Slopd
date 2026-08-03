@@ -120,6 +120,18 @@ cursor_has_selection :: proc(c: Cursor) -> bool {
     return c.anchor != c.head
 }
 
+// The line of the FIRST (topmost) cursor. The primary drives the gutter and the
+// current-line bar, but with a trail of cursors down the file the first one is what a
+// centred viewport should hold (we're multi-cursor first, so "the cursor" is a set, not
+// a point). Cursors aren't kept globally sorted, so scan.
+doc_top_cursor_line :: proc(d: ^Doc) -> int {
+    line := d.cursors[0].head.line
+    for c in d.cursors[1:] {
+        line = min(line, c.head.line)
+    }
+    return line
+}
+
 doc_has_any_selection :: proc(d: ^Doc) -> bool {
     for c in d.cursors {
         if cursor_has_selection(c) {

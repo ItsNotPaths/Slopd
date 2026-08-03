@@ -33,7 +33,7 @@ link_follow :: proc(a: ^App) {
     if name, ok := link_wikilink_at(line, col); ok {
         link_open_wiki(a, name)
     } else if url, ok := link_url_at(line, col); ok {
-        link_open_url(url)
+        desktop_open(url)
     } else if path, lno, lcol, ok := link_path_at(a, line, col); ok {
         jump_to(a, path, lno, lcol) // a file path (optionally `path:line:col`) under the caret
     } else if rgba, ok := link_color_at(line, col); ok {
@@ -182,16 +182,20 @@ find_nearest_file :: proc(root, filename: string) -> (string, bool) {
 @(private = "file")
 URL_SCHEMES :: [?]string{"https://", "http://", "ftp://", "file://", "mailto:", "www."}
 
-// Hand a URL to the desktop. xdg-open is the freedesktop entry point: on a portal-enabled
-// desktop (Flatpak / modern Wayland) it routes to org.freedesktop.portal.OpenURI, falling
-// back to the user's default handler elsewhere — so we reach the portal where it exists
-// without linking a dbus client. Spawned like git_run shells out to git (os.process_exec
-// reaps it, no zombie); xdg-open returns at once after launching the handler, so the brief
-// synchronous wait doesn't stall the UI. This proc is the single seam to swap in a direct
-// OpenURI dbus call later.
-@(private = "file")
-link_open_url :: proc(url: string) {
-    argv := []string{"xdg-open", url}
+// Hand a URL or a FILE PATH to the desktop, which opens it in its default application —
+// a browser for a link, an image viewer / vlc / Sublime for a file (the filetree's
+// Shift+Enter, see filetree_open_selected). xdg-open is the freedesktop entry point: on a
+// portal-enabled desktop (Flatpak / modern Wayland) it routes to org.freedesktop.portal.
+// OpenURI, falling back to the user's default handler elsewhere — so we reach the portal
+// where it exists without linking a dbus client. This proc is the single seam to swap in a
+// direct OpenURI dbus call later.
+//
+// Spawned through `sh -c '... &'` so the SHELL backgrounds the handler: we exec and reap the
+// shell, which exits immediately (no zombie), while the app it launched — which may live for
+// hours, e.g. a video player — is reparented to init and never blocks our loop. The target
+// travels as $1, so nothing in it is ever re-parsed as shell syntax.
+desktop_open :: proc(target: string) {
+    argv := []string{"sh", "-c", `xdg-open "$1" >/dev/null 2>&1 &`, "sh", target}
     _, _, _, _ = os.process_exec(os.Process_Desc{command = argv}, context.temp_allocator)
 }
 

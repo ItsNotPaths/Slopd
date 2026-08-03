@@ -20,6 +20,7 @@ FileEntry :: struct {
     name:    string, // base name (owned)
     path:    string, // absolute path (owned)
     is_dir:  bool,
+    exec:    bool, // the owner's execute bit — a binary or a script the host can offer to RUN
     display: string, // owned "<mode>  <name>  <size>  <mtime>"; host adds the ring prefix
 }
 
@@ -31,14 +32,6 @@ YankMode :: enum {
     Cut,
 }
 
-// A destructive op staged behind a one-key confirm (the host draws the prompt and
-// routes Enter/y -> do it, Esc -> back out). None means no prompt is up.
-FtConfirm :: enum {
-    None,
-    DeleteSel, // delete the highlighted entry
-    DeleteYanked, // delete every marked entry
-}
-
 FileTree :: struct {
     dir:      string, // current directory, absolute (owned)
     entries:  [dynamic]FileEntry,
@@ -46,10 +39,9 @@ FileTree :: struct {
 
     // The yank set: paths marked for a pending copy/cut, OWNED and kept across dir
     // navigation (yank here, walk elsewhere, paste there). yank_mode says what paste
-    // does with them; confirm gates the destructive chords.
+    // does with them.
     yanked:    [dynamic]string,
     yank_mode: YankMode,
-    confirm:   FtConfirm,
 }
 
 filetree_init :: proc(ft: ^FileTree) {
@@ -151,10 +143,11 @@ filetree_activate :: proc(ft: ^FileTree) -> (path: string, is_file: bool) {
 // --- yank set + file operations ---
 //
 // The yank set is a list of marked absolute paths plus a mode (copy/cut). Marking is
-// toggle-on-toggle-off; paste applies the mode into the current dir; the two deletes
-// remove the highlighted entry or the whole set. All paths are owned by ft.yanked and
-// survive dir navigation, so you can mark in one directory and paste in another. Every
-// op reloads the listing afterwards (preserving the cursor row where it can).
+// toggle-on-toggle-off; paste applies the mode into the current dir; filetree_targets
+// reports the highlighted entry or the whole set for the host to delete (as a staged
+// `rm -rf` command line). All paths are owned by ft.yanked and survive dir navigation,
+// so you can mark in one directory and paste in another. Every op reloads the listing
+// afterwards (preserving the cursor row where it can).
 
 // Toggle the highlighted entry in/out of the yank set. ".." is never marked.
 filetree_yank_toggle :: proc(ft: ^FileTree) {
@@ -231,30 +224,31 @@ filetree_paste :: proc(ft: ^FileTree) {
     filetree_reload(ft)
 }
 
-// Delete the highlighted entry (".." excluded). Staged behind a confirm by the host.
-filetree_delete_selected :: proc(ft: ^FileTree) {
+// The paths a file op acts on: the whole marked set, or just the highlighted entry
+// (".." excluded). The strings are BORROWED from the tree — use them before the next
+// reload frees them. Deleting is no longer done here: the host turns these into an
+// `rm -rf` command line (see rm_command), so the paths are read and confirmed as a
+// real command rather than behind a modal prompt.
+filetree_targets :: proc(ft: ^FileTree, marked: bool, alloc := context.allocator) -> []string {
+    if marked {
+        return slice.clone(ft.yanked[:], alloc)
+    }
     e := filetree_selected(ft)
     if e == nil || e.name == ".." {
-        return
+        return nil
     }
-    target := strings.clone(e.path, context.temp_allocator) // reload frees e.path
-    fs_remove_path(target)
-    filetree_yank_drop(ft, target) // a marked-then-deleted path must not dangle
-    filetree_reload(ft)
-}
-
-// Delete every marked entry, then clear the (now-dangling) set.
-filetree_delete_yanked :: proc(ft: ^FileTree) {
-    for p in ft.yanked {
-        fs_remove_path(p)
-    }
-    filetree_yank_reset(ft)
-    filetree_reload(ft)
+    out := make([]string, 1, alloc)
+    out[0] = e.path
+    return out
 }
 
 // Re-read the current dir, keeping the cursor near where it was (filetree_load resets
-// it to 0). ft.dir is freed by the load, so clone before handing it back in.
+// it to 0). ft.dir is freed by the load, so clone before handing it back in. A tree that
+// was never loaded (dir == "") has nothing to re-read.
 filetree_reload :: proc(ft: ^FileTree) {
+    if ft.dir == "" {
+        return
+    }
     idx := ft.selected
     dir := strings.clone(ft.dir, context.temp_allocator)
     filetree_load(ft, dir)
@@ -262,19 +256,6 @@ filetree_reload :: proc(ft: ^FileTree) {
 }
 
 // --- internals ---
-
-// Drop a single path from the yank set if present (used when it's deleted out from
-// under the marks).
-@(private = "file")
-filetree_yank_drop :: proc(ft: ^FileTree, path: string) {
-    for p, i in ft.yanked {
-        if p == path {
-            delete(ft.yanked[i])
-            ordered_remove(&ft.yanked, i)
-            return
-        }
-    }
-}
 
 // A destination path under `dir` for base name `name` that does not already exist:
 // the bare name if it's free, else "<stem>_copy<ext>", "<stem>_copy2<ext>", ... So a
@@ -327,7 +308,9 @@ fs_copy_path :: proc(src, dst: string) -> bool {
 }
 
 // Recursively remove a file or directory tree. A directory is emptied first (os.remove
-// is rmdir on a dir, which needs it empty), with its handle closed before the rmdir.
+// is rmdir on a dir, which needs it empty), with its handle closed before the rmdir. Only
+// the cross-device Cut path uses this — a user-facing delete is a staged `rm -rf` (see
+// filetree_targets), so nothing here removes files behind the user's back.
 @(private = "file")
 fs_remove_path :: proc(path: string) -> bool {
     if os.is_dir(path) {
@@ -368,11 +351,15 @@ entry_from :: proc(dir: string, fi: os.File_Info) -> FileEntry {
     path := filepath.join({dir, fi.name}) or_else strings.clone(fi.name)
     // A symlink to a directory should navigate and tint like one; stat follows the
     // link (broken/circular links fall back to non-dir). The mode column still
-    // shows 'l' so the listing stays honest about what it is.
+    // shows 'l' so the listing stays honest about what it is. The exec bit comes from
+    // the same stat — a symlink's own mode is always rwx, so only the TARGET's bit says
+    // whether Shift+Enter has something to run.
     is_dir := fi.type == .Directory
+    exec := .Execute_User in fi.mode
     if fi.type == .Symlink {
         if target, err := os.stat(path, context.temp_allocator); err == nil {
             is_dir = target.type == .Directory
+            exec = .Execute_User in target.mode
         }
     }
     mbuf: [10]u8
@@ -382,6 +369,7 @@ entry_from :: proc(dir: string, fi: os.File_Info) -> FileEntry {
         name = strings.clone(fi.name),
         path = path,
         is_dir = is_dir,
+        exec = exec,
         display = format_row(
             mode_string(mbuf[:], fi.type, fi.mode),
             fi.name,
