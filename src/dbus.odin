@@ -3,6 +3,7 @@ package main
 import "core:c"
 import "core:fmt"
 import "core:os"
+import "core:slice"
 import "core:strconv"
 import "core:strings"
 import "core:sys/posix"
@@ -608,6 +609,11 @@ dbus_unmarshal :: proc(
 // Builds a complete message. `body_sig`/`args` may be empty for a no-argument call. The
 // header fields are written in place (they start at offset 12, which is why marshalling
 // is offset-aware), then padded to 8 before the body is appended.
+//
+// `sender` is left empty for anything we actually send — the daemon stamps that field
+// itself and overwrites whatever a client puts there. It exists so a test (and the
+// scripted transport the panes are tested through) can synthesize a message exactly as it
+// would arrive off the bus, sender and all.
 dbus_msg_build :: proc(
     type: Dbus_Msg_Type,
     serial: u32,
@@ -616,6 +622,7 @@ dbus_msg_build :: proc(
     iface: string = "",
     member: string = "",
     destination: string = "",
+    sender: string = "",
     error_name: string = "",
     reply_serial: u32 = 0,
     body_sig: string = "",
@@ -666,6 +673,7 @@ dbus_msg_build :: proc(
         put_le(&w, u64(reply_serial), 4)
     }
     put_field_str(&w, .Destination, "s", destination)
+    put_field_str(&w, .Sender, "s", sender) // normally the daemon's to stamp; see the note above
     put_field_str(&w, .Signature, "g", body_sig)
     patch_u32(&w, len_at, u32(len(w.buf) - start))
 
@@ -986,6 +994,11 @@ Dbus_Conn :: struct {
     serial: u32, // last serial handed out; serials start at 1
     unique: string, // our unique name from Hello (":1.42"), owned
     inbox:  [dynamic]Dbus_Message, // messages read while awaiting a reply (signals, calls to us)
+
+    // Scripted transport, live only when fd < 0 (see dbus_conn_fake).
+    sent:     [dynamic][]u8, // what we would have written, in order; owned
+    script:   [dynamic][]u8, // what the fake bus hands back, oldest first; owned
+    awaiting: u32, // serial dbus_call is blocked on right now, 0 when none
 }
 
 // Opens, authenticates, and says Hello. Returns nil when the bus isn't reachable — every
@@ -1033,8 +1046,96 @@ dbus_close :: proc(c: ^Dbus_Conn) {
         dbus_msg_free(&m)
     }
     delete(c.inbox)
+    for buf in c.sent {
+        delete(buf)
+    }
+    delete(c.sent)
+    for buf in c.script {
+        delete(buf)
+    }
+    delete(c.script)
     delete(c.unique)
     free(c)
+}
+
+// --- scripted transport ---
+//
+// A connection with a negative fd speaks to nobody: writes are recorded in `sent` instead
+// of sent, and reads come out of `script` instead of the socket. It is terminal.odin's
+// pty = -1 fake session, one layer down — the thing that lets the sysbus worker and a
+// whole pane be driven end to end with no daemon, no root, and no timing (layer 2 of the
+// three-layer model in plan.txt).
+//
+// Serials are deterministic on a fresh fake connection: it never says Hello, so the first
+// call out is serial 1, the second 2, and so on. That is how a script knows which
+// reply_serial to stamp on the reply it hands back.
+dbus_conn_fake :: proc() -> ^Dbus_Conn {
+    c := new(Dbus_Conn)
+    c.fd = -1
+    c.unique = strings.clone(":1.0")
+    return c
+}
+
+// Queues a message for the fake bus to hand back, TAKING OWNERSHIP of `raw` (build it
+// with dbus_msg_build and the default allocator, not temp).
+dbus_script_push :: proc(c: ^Dbus_Conn, raw: []u8) {
+    append(&c.script, raw)
+}
+
+// The n-th message a fake connection was asked to write, decoded — how a test asserts
+// that a queued action produced the right call with the right signature. The result
+// BORROWS the recorded buffer, so don't free it.
+dbus_sent_msg :: proc(c: ^Dbus_Conn, n: int) -> (msg: Dbus_Message, ok: bool) {
+    if n < 0 || n >= len(c.sent) {
+        return {}, false
+    }
+    return dbus_msg_decode(c.sent[n])
+}
+
+// Would the scripted bus hand something over right now? A REPLY exists only because a call
+// asked for it, so one sitting at the head of the script stays there until dbus_call is
+// actually waiting on it. Without that rule a test's whole scripted conversation would be
+// swallowed by the first drain — something no real bus does, and the difference is exactly
+// the bug it would hide.
+@(private = "file")
+dbus_script_ready :: proc(c: ^Dbus_Conn) -> bool {
+    if len(c.script) == 0 {
+        return false
+    }
+    raw := c.script[0]
+    if len(raw) < 2 {
+        return true // malformed: hand it over and let the decoder reject it
+    }
+    switch Dbus_Msg_Type(raw[1]) { // byte 1 is the type in either byte order
+    case .Method_Return, .Error:
+        return c.awaiting != 0
+    case .Invalid, .Method_Call, .Signal:
+        return true
+    }
+    return true
+}
+
+// Is a message waiting? Lets a caller drain a connection without ever blocking on one
+// that has nothing to say — the sysbus worker's read loop is built on it.
+dbus_readable :: proc(conn: ^Dbus_Conn) -> bool {
+    if conn.fd < 0 {
+        return dbus_script_ready(conn)
+    }
+    pfd := posix.pollfd {
+        fd     = conn.fd,
+        events = {.IN},
+    }
+    return posix.poll(&pfd, 1, 0) > 0
+}
+
+// Writes a message, or records it when the connection is scripted.
+@(private = "file")
+dbus_send :: proc(c: ^Dbus_Conn, data: []u8) -> bool {
+    if c.fd < 0 {
+        append(&c.sent, slice.clone(data))
+        return true
+    }
+    return write_all(c.fd, data)
 }
 
 // Frees a message's backing buffer. Only messages produced by dbus_read_msg own theirs;
@@ -1159,6 +1260,19 @@ dbus_auth :: proc(c: ^Dbus_Conn) -> bool {
 // there is never a partial message left in a buffer between calls. The returned message
 // OWNS its bytes (dbus_msg_free).
 dbus_read_msg :: proc(c: ^Dbus_Conn, timeout_ms := DBUS_CALL_TIMEOUT) -> (msg: Dbus_Message, ok: bool) {
+    if c.fd < 0 {
+        if !dbus_script_ready(c) {
+            return {}, false
+        }
+        raw := c.script[0]
+        ordered_remove(&c.script, 0)
+        m, dok := dbus_msg_decode(raw)
+        if !dok {
+            delete(raw)
+            return {}, false
+        }
+        return m, true // the message owns `raw` now, exactly as it would off the socket
+    }
     head: [16]u8
     read_all(c.fd, head[:], timeout_ms) or_return
     total := dbus_msg_size(head[:])
@@ -1207,7 +1321,10 @@ dbus_call :: proc(
         args,
         context.temp_allocator,
     ) or_return
-    write_all(c.fd, out) or_return
+    dbus_send(c, out) or_return
+
+    c.awaiting = serial // only the scripted transport reads this; see dbus_script_ready
+    defer c.awaiting = 0
 
     // Bounded so a chatty bus can't spin here forever while our reply never comes.
     for _ in 0 ..< 1024 {
@@ -1254,6 +1371,30 @@ dbus_as_string :: proc(v: Dbus_Value) -> (s: string, ok: bool) {
         return string(t), true
     }
     return "", false
+}
+
+// Any integer-ish value widened to i64, whichever of the seven integer type codes it was
+// marshalled as. Callers care that BlueZ's RSSI is negative and iwd's frequency is large,
+// not that one is 'n' and the other 'u' — and a property's exact width is the daemon's
+// business, not something a pane should have to hard-code per field.
+dbus_as_int :: proc(v: Dbus_Value) -> (n: i64, ok: bool) {
+    #partial switch t in v {
+    case u8:
+        return i64(t), true
+    case i16:
+        return i64(t), true
+    case u16:
+        return i64(t), true
+    case i32:
+        return i64(t), true
+    case u32:
+        return i64(t), true
+    case i64:
+        return t, true
+    case u64:
+        return i64(t), true // > 2^63 wraps; no property we read is anywhere near it
+    }
+    return 0, false
 }
 
 // Unwraps a variant one level; any other value passes through unchanged. Property reads
