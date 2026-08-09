@@ -54,9 +54,12 @@ clay_arena_bytes :: proc() -> []u8 {
     return (cast([^]u8)&clay_arena_mem)[:CLAY_ARENA_BYTES]
 }
 
-// Whether the static arena still satisfies what this build of Clay asks for. Pure and
-// GL-free (MinMemorySize only reads Clay's configured limits, which is why it is legal
-// before Initialize), so a headless test can pin it — see tests/clay_test.odin.
+// Whether the static arena still satisfies what this build of Clay asks for. GL-free, so
+// a headless test can pin it — see tests/clay_test.odin. Legal before Initialize because
+// MinMemorySize falls back to Clay's compiled-in limits when no context exists; when one
+// DOES exist it dereferences it for its limits instead (clay.h), which is why a context
+// must never outlive the memory it was initialised over. Moot here (the arena is static
+// BSS) but not moot for tests that build their own — see clay_test_context_free.
 clay_arena_fits :: proc() -> bool {
     return int(clay.MinMemorySize()) <= CLAY_ARENA_BYTES
 }

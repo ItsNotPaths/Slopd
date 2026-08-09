@@ -181,16 +181,19 @@ text_init :: proc(t: ^Text, ttf: []u8, logical_px, scale: f32) -> bool {
 // Re-bakes the atlas when the logical font size (font zoom) or the DPI scale (the
 // window moved to another monitor) changes, so glyphs stay crisp at the new pixel
 // density and size. No-op when both are unchanged — cheap to call every frame.
-text_apply :: proc(t: ^Text, logical_px, scale: f32) {
+// Reports whether it actually re-baked: the cell advance changed with it, so callers
+// holding measurements taken against the old font (Clay's text cache) must drop them.
+text_apply :: proc(t: ^Text, logical_px, scale: f32) -> (rebaked: bool) {
     if logical_px <= 0 || scale <= 0 {
-        return
+        return false
     }
     if logical_px == t.logical_px && scale == t.scale {
-        return
+        return false
     }
     t.logical_px = logical_px
     t.scale = scale
     _ = font_load(&t.font, t.ttf, logical_px * scale)
+    return true
 }
 
 // Queues a solid rect into the under-quad layer (backgrounds, bars, selection).

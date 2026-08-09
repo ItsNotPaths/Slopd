@@ -95,7 +95,9 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
         draw_editor(t, lay.editor, win_w, win_h, a, now)
     }
 
-    if a.aux_mode == .FileTree {
+    if a.clay_probe {
+        clay_probe(t, lay.aux, win_w, win_h, a) // THROWAWAY (C1), see src/clay_probe.odin
+    } else if a.aux_mode == .FileTree {
         draw_filetree(t, lay.aux, win_w, win_h, a)
     } else if a.aux_mode == .Config {
         draw_config(t, lay.aux, win_w, win_h, a, now)

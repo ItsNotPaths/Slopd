@@ -61,6 +61,9 @@ main :: proc() {
         if arg == "--perflog" {
             perflog = true
         }
+        if arg == "--clay-probe" {
+            app.clay_probe = true // THROWAWAY (C1), see src/clay_probe.odin
+        }
     }
 
     cfg := load_config()
@@ -118,6 +121,9 @@ main :: proc() {
     if !clay_init(fb_w, fb_h) {
         return // clay_init reported why
     }
+    // Clay measures text through us (monospace: rune count * cell advance). The font is
+    // passed by pointer, so a re-baked atlas is picked up without re-registering.
+    clay_use_font(&text.font)
 
     // Frame-timing log (no-op unless --perflog was passed). Needs the GL context for its
     // timer queries, so it's set up after text_init.
@@ -157,7 +163,9 @@ main :: proc() {
         if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {
             app.scale = sx
         }
-        text_apply(&text, app.font_px, app.scale)
+        if text_apply(&text, app.font_px, app.scale) {
+            clay_font_changed() // every cached string width is stale at the new cell size
+        }
 
         // Frame timing: cpu = render's vertex assembly, gpu = a timer query around its
         // draws, swap = the SwapBuffers (vsync) block. perf_frame reads back the previous
