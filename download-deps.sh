@@ -101,6 +101,42 @@ else
 fi
 
 echo ""
+echo "==> clay (immediate-mode layout + hit-test engine; static lib)"
+# Clay is a single header (clay.h) that becomes a library only when one translation
+# unit defines CLAY_IMPLEMENTATION — so we clone the repo (pinned commit) and emit a
+# three-line clay.c that does exactly that, then compile it to libclay.a with cc + ar,
+# no Makefile/CMake. Same story as libvterm and the tree-sitter runtime: a static
+# archive under gitignored vendor/, reached by relative path from bindings/clay, so
+# `odin build src` links it transitively.
+#   -ffreestanding matches upstream's own build-clay-lib.sh: Clay allocates nothing and
+#   calls no libc beyond memcpy, so it must not pick up hosted-environment assumptions.
+# The ODIN BINDING is NOT downloaded — bindings/clay/clay.odin is a tracked verbatim
+# copy of upstream's, and the two are one ABI pair: bump CLAY_REV and re-copy the
+# binding together, never one alone (see that file's header).
+CLAY_REV="e6cc36941ab2af5d81107617039d6f527a1c660b"  # main @ 2026-05-20; v0.14 is a year behind it
+CLAY_SRC="$VENDOR/clay"
+CLAY_A="$CLAY_SRC/libclay.a"
+if [ -f "$CLAY_A" ]; then
+    echo "  already present: libclay.a"
+else
+    if [ ! -f "$CLAY_SRC/clay.h" ]; then
+        echo "  cloning clay (pinned $CLAY_REV)..."
+        rm -rf "$CLAY_SRC"
+        git clone -q "https://github.com/nicbarker/clay.git" "$CLAY_SRC"
+        git -C "$CLAY_SRC" checkout -q "$CLAY_REV"
+    fi
+    echo "  building static libclay.a..."
+    (
+        cd "$CLAY_SRC"
+        printf '#define CLAY_IMPLEMENTATION\n#include "clay.h"\n' > clay.c
+        cc -c -O2 -fPIC -ffreestanding clay.c -o clay.o
+        ar rcs libclay.a clay.o
+        rm -f clay.o clay.c
+    )
+    echo "  done."
+fi
+
+echo ""
 echo "==> glfw (static lib for release builds)"
 # Release builds link glfw statically (-define:GLFW_SHARED=false) so users don't
 # need libglfw installed. Void only ships the .so, so we build libglfw3.a from

@@ -91,7 +91,8 @@ ProcmonPane :: struct {
     scope:       ProcScope,
     sel:         int, // selected row, index into `view`
     sel_pid:     int, // the selected process's PID — selection identity across re-sorts
-    scroll_anim: Anim, // list smooth-scroll
+    scroll:      int, // first visible row — the viewport TARGET top (see list_scroll_target)
+    scroll_anim: Anim, // list smooth-scroll: the visual top tweening toward `scroll`
 
     // live name filter (Space opens; reuses the shared Doc editing core)
     filtering: bool,

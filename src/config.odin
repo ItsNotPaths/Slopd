@@ -24,9 +24,11 @@ Line_Numbers :: enum {
     Relative,
 }
 
-// How the editor viewport tracks the cursors: Follow moves the view only when the caret
-// would leave it; Middle pins the topmost cursor to the pane's middle row, so Up/Down
-// always move the text instead. See buffer_scroll_target.
+// How a viewport tracks what it is following: Follow moves the view only when the target
+// would leave it; Middle pins the target to the pane's middle row, so Up/Down always move
+// the content instead. One policy across every line-oriented view — the editor follows its
+// caret (buffer_scroll_target, which also walks folds), while the filetree / procmon / grep /
+// config / git sidebar lists follow their selection (list_scroll_target).
 Scroll_Mode :: enum {
     Follow,
     Middle,
@@ -39,7 +41,7 @@ Config :: struct {
     theme_path:        string, // absolute (owned), or "" for the baked-in default
     indent:            Indent,
     line_numbers:      Line_Numbers,
-    scroll_mode:       Scroll_Mode, // editor viewport: follow the caret, or keep it middled
+    scroll_mode:       Scroll_Mode, // every line view: follow the caret/selection, or keep it middled
     font_px:           f32, // logical text size in points (font zoom), persisted across runs
     jump_lines:        int, // how many lines Ctrl+Up/Down jumps in the editor
     show_whitespace:   bool, // ghost the leading-space dots / tab marks
@@ -404,9 +406,9 @@ parse_prompt_keep :: proc(s: string) -> (prompt: bool, ok: bool) {
     return false, false
 }
 
-// Parses the editor's scroll mode: "follow" moves the view only when the caret would leave
-// it; "middle" keeps the topmost cursor on the pane's middle row, so Up/Down always move the
-// text. ok=false on anything else (an invalid edit keeps the old value).
+// Parses the scroll mode shared by every line view: "follow" moves the view only when the
+// caret / selection would leave it; "middle" keeps it on the pane's middle row, so Up/Down
+// always move the content. ok=false on anything else (an invalid edit keeps the old value).
 parse_scroll_mode :: proc(s: string) -> (mode: Scroll_Mode, ok: bool) {
     switch s {
     case "follow": return .Follow, true

@@ -199,6 +199,9 @@ GitPane :: struct {
     sel_log:    int, // selected row in the Log list
     sel_branch: int, // selected row on the Branch page (0..len(branches): the last is "new branch")
     sel_remote: int, // selected row on the Remote page (a GitRemoteRow)
+    // The sidebar's viewport top, one per page: the sidebar is MODAL, so each page keeps
+    // its own scroll and Tab returns you to the row you left rather than to the top.
+    side_scroll: [GitSection]int,
     root:       string, // the discovered repo working-tree root (owned); "" when none
     is_repo:    bool, // whether `root` names a real repo (set by git_refresh)
     branch:     string, // the checked-out branch (owned); "" when detached / none

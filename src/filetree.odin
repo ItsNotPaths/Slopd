@@ -36,6 +36,7 @@ FileTree :: struct {
     dir:      string, // current directory, absolute (owned)
     entries:  [dynamic]FileEntry,
     selected: int,
+    scroll:   int, // first visible row — the viewport top (see list_scroll_target)
 
     // The yank set: paths marked for a pending copy/cut, OWNED and kept across dir
     // navigation (yank here, walk elsewhere, paste there). yank_mode says what paste
@@ -66,6 +67,7 @@ filetree_load :: proc(ft: ^FileTree, dir: string) {
     filetree_clear(ft)
     ft.dir = strings.clone(dir)
     ft.selected = 0
+    ft.scroll = 0 // a new listing starts at the top; don't carry the old dir's viewport
 
     if f, oerr := os.open(dir); oerr == nil {
         defer os.close(f)

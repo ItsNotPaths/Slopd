@@ -38,6 +38,7 @@ Open_Kind :: enum {
 ConfigPane :: struct {
     // Rows: [0, SETTING_COUNT) settings, then the search row, then the FILTERED langs.
     sel:      int, // selected row
+    scroll:   int, // first visible DISPLAY row — the viewport top (see list_scroll_target)
     open:     Open_Kind, // which row's dropdown is open (None when none)
     open_idx: int, // Setting(open_idx) when open==.Setting; langs[open_idx] when .Lang
     opt_sel:  int, // selection within an open dropdown: -1 = the language root, 0.. = options

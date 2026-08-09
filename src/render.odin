@@ -657,8 +657,9 @@ scroll_label :: proc(line, nlines: int) -> string {
 }
 
 // The filetree listing: a dired-style header (current dir) then rows, each
-// prefixed '*' (in the unsaved ring) or '-' (not). The selection is highlighted
-// and kept centered as the list scrolls; directories are tinted.
+// prefixed '*' (in the unsaved ring) or '-' (not). The selection is highlighted and the
+// list tracks it under the shared `scroll_mode` policy (list_scroll_target), the same
+// one the editor tracks its caret with; directories are tinted.
 draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     ft := &a.tree
     th := &a.theme
@@ -675,7 +676,8 @@ draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
 
     list_top := area.y + row_h
     max_rows := max(1, int((area.y + area.h - list_top) / row_h))
-    first := clamp(ft.selected - max_rows / 2, 0, max(0, len(ft.entries) - max_rows))
+    ft.scroll = list_scroll_target(ft.scroll, ft.selected, max_rows, len(ft.entries), a.scroll_mode == .Middle)
+    first := ft.scroll
     visible := min(len(ft.entries) - first, max_rows)
 
     for k in 0 ..< visible {
@@ -788,7 +790,10 @@ draw_grep :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     }
 
     max_rows := max(1, int((area.y + area.h - list_top) / row_h))
-    first := clamp(sel_anchor - max_rows / 2, 0, max(0, len(rows) - max_rows))
+    // Tracked in DISPLAY rows, not hits: a block spans several rows, so the policy frames
+    // the selected block's title (sel_anchor) the way the editor frames its caret line.
+    g.scroll = list_scroll_target(g.scroll, sel_anchor, max_rows, len(rows), a.scroll_mode == .Middle)
+    first := g.scroll
     visible := min(len(rows) - first, max_rows)
     text_x := x0 + cw * f32(gutw + 1) // gutter then a one-cell gap
 
@@ -872,15 +877,16 @@ draw_procmon :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64)
     text_draw(t, "NAME", name_x, hty, th.muted)
     text_draw(t, "COMMAND", cmd_x, hty, th.muted)
 
-    // The scrollable process list, centre-scrolled on the selection (smooth, like the
-    // editor / diff). The filter bar, when open, claims the bottom row.
+    // The scrollable process list. It tracks the selection under the shared `scroll_mode`
+    // policy (list_scroll_target) and tweens there via the smooth-scroll anim, like the
+    // editor / diff. The filter bar, when open, claims the bottom row.
     list_top := hdr_y + row_h
     filter_h := pm.filtering ? row_h : 0
     bottom := area.y + area.h - filter_h
     max_rows := max(1, int((bottom - list_top) / row_h))
     n := len(pm.view)
-    target_top := clamp(pm.sel - max_rows / 2, 0, max(0, n - max_rows))
-    top, off := smooth_scroll(&pm.scroll_anim, target_top, now, row_h)
+    pm.scroll = list_scroll_target(pm.scroll, pm.sel, max_rows, n, a.scroll_mode == .Middle)
+    top, off := smooth_scroll(&pm.scroll_anim, pm.scroll, now, row_h)
 
     list_focus := pm.focus == .List && a.focus == .Aux
     for k in 0 ..< max_rows + 1 {
@@ -1154,9 +1160,12 @@ draw_config :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) 
         }
     }
 
-    // Centre-scroll on the cursor, clamped at the ends (like the filetree).
+    // Track the cursor row under the shared `scroll_mode` policy (like the filetree). An
+    // open dropdown inserts its option rows, so the row space shifts under the stored top —
+    // Follow just re-frames from wherever it lands on the next frame.
     max_rows := max(1, int(area.h / row_h))
-    first := clamp(cursor_row - max_rows / 2, 0, max(0, len(rows) - max_rows))
+    cp.scroll = list_scroll_target(cp.scroll, cursor_row, max_rows, len(rows), a.scroll_mode == .Middle)
+    first := cp.scroll
     visible := min(len(rows) - first, max_rows)
 
     for k in 0 ..< visible {
@@ -1266,12 +1275,13 @@ ZoneRow :: struct {
     indent: i32,
 }
 
-// Draws a titled sidebar zone within `zone`: the title, then its rows centre-scrolled to
-// keep the selected ITEM visible (like the filetree). `sel` is an item index (a g.status /
-// g.commits row); the zone finds the display row standing for it, since folder headers sit
-// between file rows. When `active`, that row carries the selection bar. `sel` < 0 means no
-// selection (e.g. an empty list's placeholder). The title uses `head`; rows use their own
-// colours and per-row indent.
+// Draws a titled sidebar zone within `zone`: the title, then its rows tracking the selected
+// ITEM under the shared `scroll_mode` policy (like the filetree). `sel` is an item index (a
+// g.status / g.commits row); the zone finds the display row standing for it, since folder
+// headers sit between file rows. When `active`, that row carries the selection bar. `sel` < 0
+// means no selection (e.g. an empty list's placeholder). `scroll` is the caller's stored
+// viewport top, read and written here so each sidebar page keeps its own. The title uses
+// `head`; rows use their own colours and per-row indent.
 @(private = "file")
 git_draw_zone :: proc(
     t: ^Text,
@@ -1284,6 +1294,8 @@ git_draw_zone :: proc(
     th: ^Theme,
     sel: int,
     active: bool,
+    scroll: ^int,
+    center: bool,
 ) {
     cw := t.font.cell_w
     x0 := f32(zone.x) + cw // header at one cell; rows indent one more
@@ -1309,7 +1321,8 @@ git_draw_zone :: proc(
         }
     }
     anchor := max(0, sel_row)
-    first := clamp(anchor - max_rows / 2, 0, max(0, len(rows) - max_rows))
+    scroll^ = list_scroll_target(scroll^, anchor, max_rows, len(rows), center)
+    first := scroll^
     visible := min(len(rows) - first, max_rows)
     for k in 0 ..< visible {
         i := first + k
@@ -1476,7 +1489,10 @@ git_draw_sidebar :: proc(t: ^Text, area: Rect, a: ^App) {
     case .Branch: rows, sel = git_branch_rows(g, th), g.sel_branch
     case .Remote: rows, sel = git_remote_rows(g, th), g.sel_remote
     }
-    git_draw_zone(t, "", rows, body, row_h, lh, th.muted, th, sel, side_focused)
+    git_draw_zone(
+        t, "", rows, body, row_h, lh, th.muted, th, sel, side_focused,
+        &g.side_scroll[g.section], a.scroll_mode == .Middle,
+    )
 }
 
 // Colour a diff line by kind: additions green (the directory slot), deletions urgent,

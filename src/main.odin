@@ -111,6 +111,14 @@ main :: proc() {
         return
     }
 
+    // Layout engine (clay_ui.odin). Initialised at the real framebuffer size so its
+    // first frame is already correctly dimensioned. It allocates nothing beyond its
+    // static arena and touches no GL, so it only needs the window for that size.
+    fb_w, fb_h := glfw.GetFramebufferSize(window)
+    if !clay_init(fb_w, fb_h) {
+        return // clay_init reported why
+    }
+
     // Frame-timing log (no-op unless --perflog was passed). Needs the GL context for its
     // timer queries, so it's set up after text_init.
     perf: Perf
