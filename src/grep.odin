@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:os"
 import "core:strconv"
 import "core:strings"
@@ -212,4 +213,100 @@ grep_read_context :: proc(lines: []string, line: int) -> (ctx: []string, first: 
 grep_destroy :: proc(g: ^GrepPane) {
     grep_clear(g)
     delete(g.hits)
+}
+
+// --- display rows ---------------------------------------------------------------------
+//
+// The pane shows each hit as a `grep -rn`-style CONTEXT BLOCK — a "path:line" title over the
+// lines around the match, blocks parted by a blank row — so one hit is SEVERAL display rows
+// and the viewport, the scroll policy and the hit test all count rows, not hits. That
+// flattening used to live inside draw_grep as a local, which is why nothing could hit-test
+// it and why `g.scroll` could only move as a side effect of painting (C5a; see
+// docs/clay-refactor.md).
+//
+// GrepRow deliberately carries NEITHER a colour NOR a selected flag, though the version in
+// render.odin carried both:
+//
+//   - Colour is fully derived from `header` / `match` / selectedness, so storing it only
+//     created a second place for the palette to reach. The pane picks colours at
+//     declaration time (grep_ui.odin).
+//   - Selectedness would make the flattening depend on `g.selected`, and the selection
+//     CHANGES MID-FRAME when a click lands — the rows would have to be rebuilt right after
+//     being built. Leaving it out makes one flattening per frame valid for the whole frame:
+//     a row belongs to the selected block iff `hit == g.selected`.
+//
+// `hit` is the load-bearing addition: it maps a display row back to the hit it came from,
+// which is what lets a click on any row of a block select that block. Spacers carry -1.
+
+GrepRow :: struct {
+    hit:    int, // index into g.hits; -1 for the blank spacer between blocks
+    gutter: string, // the context line's number; "" for a header / spacer
+    text:   string,
+    match:  bool, // the matched line (accent rail when its block is selected)
+    header: bool, // the block's "path:line" title row (drawn flush-left)
+}
+
+// Flatten the hits into display rows: title, context block (or the trimmed match text when
+// the file could not be re-read), blank spacer. Allocated from `alloc` (the caller passes
+// the frame's temp allocator); the strings borrow the pane's own storage bar the titles and
+// line numbers, which are formatted into `alloc`.
+grep_rows :: proc(g: ^GrepPane, root: string, alloc := context.allocator) -> []GrepRow {
+    rows := make([dynamic]GrepRow, 0, len(g.hits) * (2 * GREP_CONTEXT + 3), alloc)
+    for h, hi in g.hits {
+        loc := fmt.aprintf("%s:%d", grep_relpath(h.path, root), h.line, allocator = alloc)
+        append(&rows, GrepRow{hit = hi, text = loc, header = true})
+        if len(h.ctx) == 0 {
+            append(&rows, GrepRow{hit = hi, text = h.text, match = true})
+        } else {
+            for c, k in h.ctx {
+                ln := h.ctx_first + k
+                append(
+                    &rows,
+                    GrepRow {
+                        hit = hi,
+                        gutter = fmt.aprintf("%d", ln, allocator = alloc),
+                        text = c,
+                        match = ln == h.line,
+                    },
+                )
+            }
+        }
+        append(&rows, GrepRow{hit = -1}) // blank spacer between blocks
+    }
+    return rows[:]
+}
+
+// The display row the selected block OPENS at — its title. The scroll policy frames this
+// the way the editor frames its caret line, so a block scrolls into view by its top rather
+// than by whichever of its rows happens to be nearest.
+grep_anchor :: proc(rows: []GrepRow, sel: int) -> int {
+    for r, i in rows {
+        if r.header && r.hit == sel {
+            return i
+        }
+    }
+    return 0
+}
+
+// How many cells wide the line-number gutter must be, measured from the rows that will
+// actually be drawn. draw_grep used to estimate it as `max(h.line) + GREP_CONTEXT` digits,
+// which over-reserves whenever a match sits within GREP_CONTEXT lines of end-of-file (the
+// context block is clamped there, so those digits are never printed). Measuring the rows is
+// both simpler and exact.
+grep_gutter_w :: proc(rows: []GrepRow) -> int {
+    w := 1
+    for r in rows {
+        w = max(w, len(r.gutter))
+    }
+    return w
+}
+
+// A hit's path made project-relative for display ("/root/proj/src/x.odin" -> "src/x.odin"),
+// falling back to the full path when it isn't under the root. Borrows `path`'s storage.
+grep_relpath :: proc(path, root: string) -> string {
+    if root != "" && strings.has_prefix(path, root) {
+        rel := path[len(root):]
+        return strings.has_prefix(rel, "/") ? rel[1:] : rel
+    }
+    return path
 }

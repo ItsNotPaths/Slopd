@@ -104,10 +104,8 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
         draw_editor(t, lay.editor, win_w, win_h, a, now)
     }
 
-    if a.clay_probe {
-        clay_probe(t, lay.aux, win_w, win_h, a) // THROWAWAY (C1), see src/clay_probe.odin
-    } else if a.aux_mode == .FileTree {
-        draw_filetree(t, lay.aux, win_w, win_h, a)
+    if a.aux_mode == .FileTree {
+        draw_filetree(t, lay.aux, win_w, win_h, a) // Clay-declared (C3), see filetree_ui.odin
     } else if a.aux_mode == .Config {
         draw_config(t, lay.aux, win_w, win_h, a, now)
     } else if a.aux_mode == .Terminal {
@@ -146,9 +144,17 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
         draw_status(t, lay.strip, a)
     }
     flush_pane(t, lay.strip, win_w, win_h)
+
+    // A press nobody claimed dies here. Clicks are offered to the panes as they draw
+    // (mouse_take_click), and one that hit nothing must not survive into the next frame,
+    // where the pointer may be over something else entirely — a click is an event at a
+    // place, not a mode.
+    a.mouse.click = false
 }
 
-@(private = "file")
+// Package-level, not file-private: the *_ui.odin panes declare their own chrome and need
+// the same focused/unfocused text rule the hand-drawn panes use (see the tests invariant in
+// docs/clay-refactor.md — anything a layout proc touches has to be reachable from tests).
 focus_fg :: proc(a: ^App, who: Focus) -> [3]f32 {
     return a.focus == who ? a.theme.fg : a.theme.muted
 }
@@ -669,181 +675,12 @@ scroll_label :: proc(line, nlines: int) -> string {
     return fmt.tprintf("%d%%", line * 100 / (nlines - 1))
 }
 
-// The filetree listing: a dired-style header (current dir) then rows, each
-// prefixed '*' (in the unsaved ring) or '-' (not). The selection is highlighted and the
-// list tracks it under the shared `scroll_mode` policy (list_scroll_target), the same
-// one the editor tracks its caret with; directories are tinted.
-draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
-    ft := &a.tree
-    th := &a.theme
-    area := inset(pane, i32(2 * a.scale))
-    if area.w <= 0 || area.h <= 0 {
-        return
-    }
-    cw := t.font.cell_w
-    lh := t.font.line_height
-    row_h := i32(lh) + i32(2 * a.scale)
-    x0 := f32(area.x) + cw // one-cell left margin
+// draw_filetree lives in filetree_ui.odin: the filetree is declared in Clay (C3), so its
+// geometry, its hit-testing and its paint are one tree rather than three copies of the
+// same arithmetic. Its Ctrl-chord overlay is still hand-drawn and stays here until C8.
 
-    text_draw(t, ft.dir, x0, f32(area.y) + (f32(row_h) - lh) / 2, th.muted)
-
-    list_top := area.y + row_h
-    max_rows := max(1, int((area.y + area.h - list_top) / row_h))
-    ft.scroll = list_scroll_target(ft.scroll, ft.selected, max_rows, len(ft.entries), a.scroll_mode == .Middle)
-    first := ft.scroll
-    visible := min(len(ft.entries) - first, max_rows)
-
-    for k in 0 ..< visible {
-        i := first + k
-        e := &ft.entries[i]
-        y := list_top + i32(k) * row_h
-        // Marked rows get a faint bg bar; the cursor row's separator draws over it.
-        marked := filetree_yanked_contains(ft, e.path)
-        if marked {
-            fill(t, Rect{area.x, y, area.w, row_h}, th.line_highlight)
-        }
-        if i == ft.selected {
-            fill(t, Rect{area.x, y, area.w, row_h}, th.separator)
-        }
-        ty := f32(y) + (f32(row_h) - lh) / 2
-        // Marked-for-yank takes the prefix slot (accent '+'); else the ring star / dash.
-        ringed := ring_contains(a, e.path)
-        prefix := marked ? "+" : ringed ? "*" : "-"
-        pcol := marked ? th.accent : ringed ? th.urgent : th.muted
-        text_draw(t, prefix, x0, ty, pcol)
-        text_draw(t, e.display, x0 + cw * 2, ty, e.is_dir ? th.code_return_type : th.fg)
-    }
-
-    flush_pane(t, area, win_w, win_h)
-}
-
-// Lines of extra vertical padding per grep row — a touch airier than the editor / filetree
-// (i32(2)) so the stacked context blocks don't read as one packed wall of text.
-GREP_ROW_PAD :: 5
-
-// One flattened display row of the grep pane: a block's "path:line" title (header), one of
-// its context lines (with a line-number gutter; `match` marks the hit line), or a blank
-// spacer between blocks. `sel` tags every row of the selected block.
-@(private = "file")
-GrepRow :: struct {
-    gutter: string, // the context line's number; "" for a header / spacer
-    text:   string,
-    color:  [3]f32,
-    sel:    bool, // part of the selected block (faint background)
-    match:  bool, // the matched line (accent rail when its block is selected)
-    header: bool, // the block's "path:line" title row (drawn flush-left)
-}
-
-// The grep results pane (the FIND aux mode): a header naming the query + hit count, then each
-// hit as a `grep -rn`-style CONTEXT BLOCK — a project-relative "path:line" title over the
-// lines around the match (line-number gutter, the hit line lit), blocks parted by a blank
-// row. The selected block carries a faint bar + an accent rail on its hit line, and the list
-// centre-scrolls to keep it visible (like the filetree). Up/Down move the selection and Enter
-// jumps to it (grep_key -> grep_open_selected). Results come from the CL `grep` builtin or
-// Alt+Enter's multi-definition goto; an empty set shows a placeholder.
-draw_grep :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
-    g := &a.grep
-    th := &a.theme
-    area := inset(pane, i32(2 * a.scale))
-    if area.w <= 0 || area.h <= 0 {
-        return
-    }
-    cw := t.font.cell_w
-    lh := t.font.line_height
-    row_h := i32(lh) + i32(GREP_ROW_PAD * a.scale)
-    x0 := f32(area.x) + cw // one-cell left margin
-
-    header := g.query == "" ? "grep" : fmt.tprintf("grep: %s   (%d)", g.query, len(g.hits))
-    text_draw(t, header, x0, f32(area.y) + (f32(row_h) - lh) / 2, focus_fg(a, .Aux))
-
-    list_top := area.y + row_h
-    if len(g.hits) == 0 {
-        text_draw(t, "(no matches)", x0 + cw, f32(list_top) + (f32(row_h) - lh) / 2, th.muted)
-        flush_pane(t, area, win_w, win_h)
-        return
-    }
-
-    // The line-number gutter is as wide as the largest line number any block prints.
-    maxln := 1
-    for h in g.hits {
-        maxln = max(maxln, h.line + GREP_CONTEXT)
-    }
-    gutw := num_digits(maxln)
-
-    // Flatten the hits into display rows (title + context block + spacer), noting the row the
-    // selected block opens at so the scroll can centre on it.
-    rows := make([dynamic]GrepRow, 0, len(g.hits) * (2 * GREP_CONTEXT + 3), context.temp_allocator)
-    sel_anchor := 0
-    for h, hi in g.hits {
-        selected := hi == g.selected
-        if selected {
-            sel_anchor = len(rows)
-        }
-        loc := fmt.tprintf("%s:%d", grep_relpath(h.path, a.project_root), h.line)
-        append(&rows, GrepRow{text = loc, color = selected ? th.fg : th.muted, sel = selected, header = true})
-        if len(h.ctx) == 0 {
-            append(&rows, GrepRow{text = h.text, color = th.fg, sel = selected, match = true})
-        } else {
-            for c, k in h.ctx {
-                ln := h.ctx_first + k
-                is_match := ln == h.line
-                append(
-                    &rows,
-                    GrepRow {
-                        gutter = fmt.tprintf("%d", ln),
-                        text = c,
-                        color = is_match ? th.fg : th.muted,
-                        sel = selected,
-                        match = is_match,
-                    },
-                )
-            }
-        }
-        append(&rows, GrepRow{}) // blank spacer between blocks
-    }
-
-    max_rows := max(1, int((area.y + area.h - list_top) / row_h))
-    // Tracked in DISPLAY rows, not hits: a block spans several rows, so the policy frames
-    // the selected block's title (sel_anchor) the way the editor frames its caret line.
-    g.scroll = list_scroll_target(g.scroll, sel_anchor, max_rows, len(rows), a.scroll_mode == .Middle)
-    first := g.scroll
-    visible := min(len(rows) - first, max_rows)
-    text_x := x0 + cw * f32(gutw + 1) // gutter then a one-cell gap
-
-    for k in 0 ..< visible {
-        r := rows[first + k]
-        y := list_top + i32(k) * row_h
-        if r.sel {
-            fill(t, Rect{area.x, y, area.w, row_h}, th.line_highlight) // selected block band
-            if r.match {
-                fill(t, Rect{area.x, y, i32(2 * a.scale), row_h}, th.accent) // rail on the hit line
-            }
-        }
-        ty := f32(y) + (f32(row_h) - lh) / 2
-        if r.header {
-            text_draw(t, r.text, x0, ty, r.color) // block title, flush-left
-            continue
-        }
-        if r.gutter != "" { // right-align the line number in the gutter
-            gx := x0 + cw * f32(gutw - len(r.gutter))
-            text_draw(t, r.gutter, gx, ty, th.muted)
-        }
-        text_draw(t, r.text, text_x, ty, r.color)
-    }
-
-    flush_pane(t, area, win_w, win_h)
-}
-
-// A hit's path made project-relative for display ("/root/proj/src/x.odin" -> "src/x.odin"),
-// falling back to the full path when it isn't under the root. Borrows `path`'s storage.
-@(private = "file")
-grep_relpath :: proc(path, root: string) -> string {
-    if root != "" && strings.has_prefix(path, root) {
-        rel := path[len(root):]
-        return strings.has_prefix(rel, "/") ? rel[1:] : rel
-    }
-    return path
-}
+// draw_grep lives in grep_ui.odin: the results pane is declared in Clay (C5a), and its
+// display-row flattening moved to grep.odin, where the model it flattens already lives.
 
 // The procmon (process monitor) aux mode: a GRAPH BAND up top (a tab-enum of CPU /
 // Memory / Disk / GPU history graphs, or the signal selector when armed) over a

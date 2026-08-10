@@ -169,12 +169,25 @@ clay_paint :: proc(
             // four bars rather than render.odin's uniform `outline`. The fifth width,
             // betweenChildren, never reaches here: Clay emits those separators as plain
             // Rectangle commands (clay.h:2852), which the case above already paints.
+            //
+            // Each edge is skipped when its width is zero. That is not just thrift: a
+            // single-edge border is a normal thing to want (grep's accent rail on the
+            // match line is a left border and nothing else), and four zero-area quads per
+            // such element would be four sixths of the vertex budget spent on nothing.
             b := cmd.renderData.border
             if col, ok := clay_color(b.color); ok {
-                fill(t, Rect{r.x, r.y, r.w, i32(b.width.top)}, col)
-                fill(t, Rect{r.x, r.y + r.h - i32(b.width.bottom), r.w, i32(b.width.bottom)}, col)
-                fill(t, Rect{r.x, r.y, i32(b.width.left), r.h}, col)
-                fill(t, Rect{r.x + r.w - i32(b.width.right), r.y, i32(b.width.right), r.h}, col)
+                if b.width.top > 0 {
+                    fill(t, Rect{r.x, r.y, r.w, i32(b.width.top)}, col)
+                }
+                if b.width.bottom > 0 {
+                    fill(t, Rect{r.x, r.y + r.h - i32(b.width.bottom), r.w, i32(b.width.bottom)}, col)
+                }
+                if b.width.left > 0 {
+                    fill(t, Rect{r.x, r.y, i32(b.width.left), r.h}, col)
+                }
+                if b.width.right > 0 {
+                    fill(t, Rect{r.x + r.w - i32(b.width.right), r.y, i32(b.width.right), r.h}, col)
+                }
             }
 
         case .Text:

@@ -61,9 +61,6 @@ main :: proc() {
         if arg == "--perflog" {
             perflog = true
         }
-        if arg == "--clay-probe" {
-            app.clay_probe = true // THROWAWAY (C1), see src/clay_probe.odin
-        }
     }
 
     cfg := load_config()

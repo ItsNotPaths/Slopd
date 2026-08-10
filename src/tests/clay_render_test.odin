@@ -2,8 +2,6 @@ package tests
 
 import app ".."
 import clay "../../bindings/clay"
-import "base:runtime"
-import "core:fmt"
 import "core:testing"
 
 // C1: the renderer bridge. Everything the bridge does that is not a GL call is pure and
@@ -13,7 +11,8 @@ import "core:testing"
 //
 // What is NOT tested here is the last hop (fill / text_draw / flush_pane), which needs a
 // GL context. That hop is deliberately kept to one line per command type for exactly this
-// reason; `--clay-probe` is how it gets looked at.
+// reason, and it is looked at by running the app: the throwaway `--clay-probe` that stood
+// in for a real pane during C1 was retired the moment the filetree took its place (C3).
 
 // Colours cross a 0..255 <-> 0..1 boundary, and the alpha rule is load-bearing: Clay's
 // default backgroundColor is fully transparent, so treating it as paintable would fill
@@ -90,46 +89,9 @@ test_clay_measure :: proc(t: ^testing.T) {
     testing.expect_value(t, h3, f32(0))
 }
 
-// Clay reports layout problems through a callback, and the zero ErrorHandler is a NULL
-// function pointer it will happily call — so a test that trips an error would crash with
-// no diagnosis. Route them somewhere visible.
-@(private = "file")
-clay_test_error :: proc "c" (e: clay.ErrorData) {
-    context = runtime.default_context()
-    text := e.errorText.length > 0 ? string(e.errorText.chars[:e.errorText.length]) : "(no detail)"
-    fmt.eprintfln("clay error in test [%v]: %s", e.errorType, text)
-}
-
-// A Clay context over test-owned memory, aligned the way clay_ui.odin aligns the real
-// arena (Clay bump-allocates at 64-byte offsets from the base, so the base's alignment is
-// the whole library's). The app's static arena is deliberately NOT used: `odin test` runs
-// every test in one process, and clobbering it would leave a live context behind for
-// whatever runs next.
-@(private = "file")
-clay_test_context :: proc(w, h: f32) -> []u8 {
-    need := int(clay.MinMemorySize())
-    raw := make([]u8, need + app.CLAY_ARENA_ALIGN)
-    base := uintptr(raw_data(raw))
-    pad := (app.CLAY_ARENA_ALIGN - int(base % app.CLAY_ARENA_ALIGN)) % app.CLAY_ARENA_ALIGN
-    mem := raw[pad:]
-    arena := clay.CreateArenaWithCapacityAndMemory(len(mem), raw_data(mem))
-    clay.Initialize(arena, {w, h}, {handler = clay_test_error})
-    return raw
-}
-
-// UNLATCH THE CONTEXT BEFORE FREEING — this is not tidiness. Clay keeps the current
-// context in a library global, and Clay_MinMemorySize *dereferences* it to inherit its
-// limits (clay.h: `if (currentContext) fakeContext.maxElementCount = currentContext->...`).
-// Freeing the arena while the global still points into it turns the next MinMemorySize
-// call — test_clay_arena_fits, or the next test setting up its own context — into a read
-// of freed memory. It segfaults, in a test that did nothing wrong, in whatever order the
-// runner happens to pick. The app never hits this only because its arena is static BSS
-// that lives as long as the process.
-@(private = "file")
-clay_test_context_free :: proc(raw: []u8) {
-    clay.SetCurrentContext(nil)
-    delete(raw)
-}
+// The context helpers (clay_test_context / clay_test_context_free) live in
+// clay_harness.odin — every test that declares a tree needs them, and the alignment and
+// unlatch-before-free traps they carry are shared.
 
 // The tree the command-list tests declare: a pane frame, a header row with a label, and a
 // clipped body of three rows where only two fit. Every number is a whole multiple of the

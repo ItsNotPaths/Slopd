@@ -35,6 +35,13 @@ import clay "../bindings/clay"
 // selection steps — so there is one constant rather than a per-pane table.
 WHEEL_LINES :: 3
 
+// What makes two presses a double-click: near enough in time AND in space. The slop is in
+// framebuffer pixels and deliberately small — a press that travelled is a drag gesture
+// (C7), not a second click — while 0.4s is the common desktop default, comfortably above a
+// deliberate double-tap and below the pause that means "two separate clicks".
+DOUBLE_CLICK_S :: 0.4
+DOUBLE_CLICK_PX :: 4
+
 // Pointer state, mirrored from the GLFW callbacks. Positions are framebuffer pixels (see
 // the header); `known` guards the window between startup and the first motion event, when
 // there is genuinely no position and (0, 0) would be a lie that hits the editor pane.
@@ -48,6 +55,30 @@ Mouse :: struct {
     // the remainder makes both correct without a device check: exact for ±1 events, and a
     // fraction of a line per event otherwise.
     accum: f64,
+
+    // A left press waiting for a noun. A wheel notch resolves to a PANE, which the callback
+    // can do on its own (wheel_target); a click resolves to a ROW, a field, a checkbox —
+    // and only the pane's own Clay declaration knows which element sits under the pointer.
+    // So the press is parked here and the next frame's draw claims it, hit-testing against
+    // the layout Clay is already holding. Nothing else in this file interprets it.
+    click:       bool, // a press is pending
+    click_count: int, // presses in the current run: 1 single, 2 double, 3+ keeps counting
+    click_at:    f64, // glfw time of the press, for the double-click window
+    click_x:     i32, // and where it landed, for the slop
+    click_y:     i32,
+}
+
+// Claim the pending click. Clearing it here is what makes a press have exactly ONE noun:
+// the first pane to hit-test something under the pointer owns it, and every later asker in
+// the same frame sees nothing. A pane must therefore ask only when it actually hit
+// something of its own — an unclaimed press is dropped at the end of the frame (render),
+// not carried into the next one, where the pointer may be somewhere else entirely.
+mouse_take_click :: proc(a: ^App) -> (count: int, ok: bool) {
+    if !a.mouse_on || !a.mouse.click {
+        return 0, false
+    }
+    a.mouse.click = false
+    return a.mouse.click_count, true
 }
 
 // Where a wheel notch lands. The aux modes are split out rather than lumped as "the aux
@@ -211,10 +242,13 @@ cursor_pos_callback :: proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
     a.mouse.known = true
 }
 
-// Button state only, for now. The verbs — focus-follows-click, row selection, caret
-// placement — arrive with the panes that own their geometry (C3 onward), and drag capture
-// is its own state machine (C7). Tracking `down` here is what both will build on, and it
-// is what Clay's pointer feed needs to report a press at all.
+// The left button: held state (fed to Clay, and from C7 to the drag machine) plus a
+// pending press for a pane to claim. The press is NOT routed here — see Mouse.click — but
+// the click RUN is counted here, because that is a property of the input stream (how close
+// two presses were in time and space) rather than of whatever they landed on.
+//
+// Release is deliberately not a verb: a click acts on press, the way every list does, so a
+// row is selected the moment the button goes down.
 mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mods: i32) {
     context = runtime.default_context()
     a := (^App)(glfw.GetWindowUserPointer(window))
@@ -222,6 +256,23 @@ mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mo
         return
     }
     a.mouse.down = action != glfw.RELEASE
+    if !a.mouse.down || !a.mouse_on {
+        return
+    }
+    // A press can be the first pointer event the window ever sees, exactly as a wheel notch
+    // can (a cursor already sitting over a freshly opened window reports no motion), so ask
+    // GLFW outright rather than resolving against a position we never received.
+    if !a.mouse.known {
+        x, y := glfw.GetCursorPos(window)
+        a.mouse.x, a.mouse.y = mouse_to_fb(window, x, y)
+        a.mouse.known = true
+    }
+    m := &a.mouse
+    now := glfw.GetTime()
+    near := abs(m.x - m.click_x) <= DOUBLE_CLICK_PX && abs(m.y - m.click_y) <= DOUBLE_CLICK_PX
+    m.click_count = near && now - m.click_at < DOUBLE_CLICK_S ? m.click_count + 1 : 1
+    m.click_at, m.click_x, m.click_y = now, m.x, m.y
+    m.click = true
 }
 
 // A wheel notch: resolve where it landed, then apply it. GLFW's yoffset is positive for a

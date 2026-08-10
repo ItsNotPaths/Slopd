@@ -204,9 +204,6 @@ App :: struct {
     mouse_on: bool,
     lay:      Layout,
 
-    // THROWAWAY (C1): --clay-probe swaps the aux pane for the Clay bridge probe.
-    // Deleted with src/clay_probe.odin at the end of C1.
-    clay_probe:   bool,
     scale:        f32, // DPI content scale: logical px * scale = physical px
     font_px:      f32, // logical text size in points (font zoom); base is FONT_BASE_PX
     font_save_at: f64, // glfw time to persist font_px at (debounce); 0 = nothing pending
