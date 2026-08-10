@@ -526,3 +526,45 @@ test_terminal_keyboard_selects_from_the_scrolled_view :: proc(t: ^testing.T) {
     testing.expect_value(t, text, "L0")
     testing.expect_value(t, app.terminal_view_top(&term), 0) // the view stayed put
 }
+
+// C9: ONE predicate for "does this pointer event belong to the child?", asked by the wheel
+// and by the click alike. It used to be two — the wheel asked `on_altscreen`, the click asked
+// `mouse_on` — and the four-way table below is where that mattered: the two flags are set by
+// different DEC private modes and all four combinations occur in the wild.
+//
+// The row that was broken is the last one: a mouse-tracking program that is NOT full-screen
+// (`fzf --height` drawing inline in a shell). Its click went to fzf while its wheel scrolled
+// our scrollback, moving the thing being clicked.
+//
+// No pty, no libvterm state, no App: the predicate is two bools and a modifier, which is what
+// makes the table assertable rather than something you confirm by running fzf.
+@(test)
+test_terminal_wheel_forwards_is_one_predicate :: proc(t: ^testing.T) {
+    plain := app.Terminal{} // a shell: no alt screen, no mouse tracking
+    testing.expect(t, !app.terminal_wheel_forwards(&plain, false), "a plain shell scrolls OUR view")
+
+    pager := app.Terminal{on_altscreen = true} // `less`, `man`
+    testing.expect(t, app.terminal_wheel_forwards(&pager, false), "a full-screen pager owns the notch")
+
+    tui := app.Terminal{on_altscreen = true, mouse_on = true} // vim mouse=a, htop, tmux
+    testing.expect(t, app.terminal_wheel_forwards(&tui, false), "a mouse-tracking TUI owns it too")
+
+    // THE CASE THE OLD PREDICATE GOT WRONG. Mouse tracking without the alt screen — an
+    // inline picker — and the click already went to it, so the wheel must as well.
+    inline_picker := app.Terminal{mouse_on = true}
+    testing.expect(
+        t,
+        app.terminal_wheel_forwards(&inline_picker, false),
+        "an inline mouse-tracking program was taking clicks but losing notches",
+    )
+
+    // Shift overrides every one of them, which is what the click has always done (C7d) and
+    // what alacritty and Zed both spell as `&& !shift` on each forwarding branch.
+    testing.expect(t, !app.terminal_wheel_forwards(&tui, true), "Shift keeps the notch local")
+    testing.expect(t, !app.terminal_wheel_forwards(&pager, true), "over a pager too")
+    testing.expect(t, !app.terminal_wheel_forwards(&inline_picker, true), "and over an inline one")
+
+    // No session at all: there is nothing to forward to, and the caller must not have to
+    // check separately (wheel_apply already refuses a nil terminal, so this is belt to that).
+    testing.expect(t, !app.terminal_wheel_forwards(nil, false), "no terminal forwards nothing")
+}

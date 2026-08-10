@@ -213,9 +213,11 @@ Dbus_Writer :: struct {
     buf: [dynamic]u8,
 }
 
-dbus_writer_destroy :: proc(w: ^Dbus_Writer) {
-    delete(w.buf)
-}
+// There is no `dbus_writer_destroy`, and its absence is deliberate rather than an oversight
+// (it existed until C9, uncalled). A writer HANDS ITS BUFFER OUT — `dbus_marshal_bytes` and
+// dbus_message_bytes both end in `return w.buf[:]` — so the bytes belong to the caller's
+// allocator from that moment on. A destructor here would free memory somebody else now owns,
+// which makes it worse than dead weight: it is a plausible-looking call that corrupts.
 
 // Pads to the next multiple of `align` with NULs. The spec requires the padding be zero.
 dbus_pad :: proc(w: ^Dbus_Writer, align: int) {

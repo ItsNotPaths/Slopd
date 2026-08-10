@@ -251,10 +251,16 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
         if t == nil {
             return
         }
-        if t.on_altscreen {
-            // A full-screen TUI owns its own scrollback; ours holds nothing useful for
-            // it. Forward the notches so the wheel drives ITS scroll — as a wheel if it
-            // tracks the mouse, else as the page key it groks (terminal_scroll_tui).
+        if terminal_wheel_forwards(t, a.shift_held) {
+            // The child asked for the pointer — mouse reports, the alt screen, or both — so
+            // the notches are its scroll, not ours. Which of those two it asked for decides
+            // only the ENCODING (buttons 4/5 or the page key), and that lives one level down
+            // in terminal_scroll_tui.
+            //
+            // **This used to ask `t.on_altscreen` alone**, which is the C9 item: the click
+            // asked `mouse_on` and the two disagreed over an inline mouse-tracking program
+            // like `fzf --height`, sending a click to it while the wheel scrolled our
+            // scrollback. One predicate, one question — see terminal_wheel_forwards.
             for _ in 0 ..< abs(notch) {
                 terminal_scroll_tui(t, notch < 0 ? -1 : 1)
             }

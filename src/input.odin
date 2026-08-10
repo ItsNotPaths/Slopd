@@ -45,19 +45,48 @@ import "vendor:glfw"
 //
 // Pointer input is the sibling file, mouse.odin, and it is ADDITIVE: it is never the only
 // route to anything above, which is what makes `mouse: off` a preference rather than a
-// mutilation. The wheel scrolls whatever the cursor is over and deliberately does NOT move
-// focus, so the pane these bindings act on is still whatever you last chose with
-// Alt+Left/Right. Clicks arrive per pane as each one moves to Clay (docs/clay-refactor.md,
-// C3 onward): a click selects a row or places the caret, and every verb it reaches is one
-// of the ones above.
+// mutilation. Every pointer verb below has a keyboard twin in the right column, and that is
+// a rule the next one has to satisfy too, not an observation about the current set.
 //
-// THE KEYBOARD OUTRANKS THE POINTER, and this file is where that starts: any key that does
-// something stands the pointer down (mouse_stand_down) — the cursor is hidden and nothing
-// hovers — until the pointer moves or is pressed. Two highlights that both mean "here" is
-// one too many, and while you are driving with the arrows the pointer is not saying
-// anything, it is just resting somewhere. A BARE MODIFIER is excluded, which is the part
-// worth remembering when adding one: Alt+click drops a cursor, so holding Alt must leave
-// the cursor on screen to aim with, and Ctrl held is the filetree's chord bar.
+//   click                     place the caret / select a row     a motion key, Up / Down
+//   Shift+click               extend the selection               Shift + a motion
+//   Alt+click                 drop a cursor there                Alt+A, then walk it
+//   double click              select the word / open the row     Ctrl+Left, Shift+Ctrl+Right / Enter
+//   triple click              select the line                    Home, Shift+End
+//   click a fold marker       expand the block                   Ctrl+Enter
+//   drag                      extend by the grade the press set  Shift + a motion
+//   drag the divider          nudge the split                    Alt+[ / Alt+]
+//   drag an image             pan the view                       the arrow keys
+//   double click an image     reset it to fit                    0 / f
+//   wheel                     scroll the view under the pointer  PageUp / PageDown, arrows
+//   wheel over an image       zoom about the pointer             Ctrl+= / Ctrl+-
+//
+// FOUR RULES, and they are the whole of the pointer's behaviour:
+//
+//   1. **A WHEEL SCROLLS A VIEW.** Never a selection, never a caret, never focus. It acts on
+//      whatever is UNDER the cursor whether or not that pane is focused, and scrolling
+//      DETACHES the view from whatever it was following; the next keystroke in that pane
+//      re-attaches. Over a terminal whose child asked for the pointer, the notch is the
+//      child's (terminal_wheel_forwards) — Shift keeps it local.
+//   2. **A CLICK ACTS ON PRESS AND NAMES ONE THING.** The first surface to hit-test something
+//      under the pointer owns it (mouse_take_click); an unclaimed press dies at the end of
+//      the frame rather than surviving into one where the pointer has moved.
+//   3. **FOCUS FOLLOWS THE CLICK — and only the click** (C8d). A press inside a pane moves
+//      the arrows there, through set_focus, without consuming the press: the pane still gets
+//      its own verb in the same frame. The wheel deliberately does not do this, because no
+//      wheel anywhere should steal focus, and neither does a press on the split divider.
+//   4. **THE KEYBOARD OUTRANKS THE POINTER**, and this file is where that starts: any key
+//      that does something stands the pointer down (mouse_stand_down) — the cursor is hidden
+//      and nothing hovers — until the pointer moves or is pressed. Two highlights that both
+//      mean "here" is one too many, and while you are driving with the arrows the pointer is
+//      not saying anything, it is just resting somewhere. A BARE MODIFIER is excluded, which
+//      is the part worth remembering when adding one: Alt+click drops a cursor, so holding
+//      Alt must leave the cursor on screen to aim with, and Ctrl held is the filetree's
+//      chord bar.
+//
+// Standing down suppresses HOVER, never a click — the gate is at the six places hover is
+// painted (hover_shown), never in a hit test, so no state exists in which a click the user
+// aimed is swallowed. See docs/clay-refactor.md, open decision 5.
 
 // Is this key a bare modifier — one that qualifies the next keystroke rather than being one?
 // Only used to decide what stands the pointer down (see handle_key), which is why Super is

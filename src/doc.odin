@@ -242,14 +242,10 @@ doc_top_cursor_line :: proc(d: ^Doc) -> int {
     return line
 }
 
-doc_has_any_selection :: proc(d: ^Doc) -> bool {
-    for c in d.cursors {
-        if cursor_has_selection(c) {
-            return true
-        }
-    }
-    return false
-}
+// `doc_has_any_selection` (any cursor holding a range) went at C9, uncalled. Every asker
+// turned out to want a specific cursor's answer, which is `cursor_has_selection` — one of the
+// four names C7d made the terminal share with this file, and the reason the aggregate was
+// never reached for.
 
 // The cursor's selection as an ordered (low, high) position pair.
 cursor_range :: proc(c: Cursor) -> (lo, hi: Pos) {

@@ -878,11 +878,50 @@ term_settermprop_cb :: proc "c" (prop: c.int, val: rawptr, user: rawptr) -> c.in
     return 1
 }
 
+// Does a wheel notch over this terminal belong to the CHILD rather than to our view?
+//
+// **One question, asked once.** Until C9 the wheel split on `on_altscreen` while
+// terminal_click split on `mouse_on` — two predicates for the same question ("is this
+// pointer event the child's?"), which agree in three of the four mode combinations and
+// disagree in the fourth: a mouse-tracking program that is NOT full-screen. `fzf --height`
+// drawing inline in a shell is the everyday case, and there your click drove fzf while your
+// wheel scrolled our scrollback out from under it — two verbs of one pointer going to two
+// different programs.
+//
+// So the child gets the notch if it has asked for EITHER: mouse reports, or the alt screen.
+// Which of the two is set decides only the ENCODING, and that decision already lives in
+// terminal_scroll_tui — buttons 4/5 for a mouse-tracking child, the page key otherwise — so
+// this proc deliberately does not care which bit it was.
+//
+// **Shift overrides, exactly as it does for a click** (C7d). alacritty and Zed both spell
+// this `&& !shift` on every forwarding branch, so Shift+wheel always falls through to the
+// local scrollback; ours had it on the click only, which made the two halves of the pointer
+// disagree about what Shift means. Read from `App.shift_held` rather than from a stored
+// press modifier, and that is not the click's mistake repeated: a notch is applied in the
+// callback that received it, so "now" IS the moment of the gesture. A press is claimed a
+// frame later, which is the whole reason Mouse.click_shift exists.
+//
+// Pure, and App-free so the four-way table is a headless test (tests/terminal_test.odin).
+terminal_wheel_forwards :: proc(t: ^Terminal, shift: bool) -> bool {
+    if t == nil || shift {
+        return false
+    }
+    return t.mouse_on || t.on_altscreen
+}
+
 // Scroll a focused full-screen TUI by one notch (dir<0 up, >0 down) — its own
 // scrollback is unreachable to us, so the line-selector drives it at the grid edge
 // instead of stopping. A mouse wheel tick (button 4/5) when the TUI tracks the mouse
 // (line-granular), else the page key it does grok (claude pages on PageUp/Down). No-op
 // on the headless test core (no PTY to write to).
+//
+// **The page key is where we still differ from the field, and it is not an oversight.**
+// alacritty, Zed and xterm.js all send ARROW keys here, one per line — but every one of them
+// gates that on DECSET 1007 (alternate scroll), which is the application's consent to having
+// its wheel turned into keystrokes. **libvterm does not implement 1007**, so we cannot ask
+// for that consent; and arrows without it are the riskier guess, because in a menu-driven
+// TUI Up/Down move a SELECTION rather than a view. PageUp/PageDown is the conservative
+// choice until the mode is reachable. See docs/clay-refactor.md, C9.
 terminal_scroll_tui :: proc(t: ^Terminal, dir: int) {
     if t.pty < 0 {
         return
