@@ -86,6 +86,7 @@ main :: proc() {
     app.grep_pane_always = cfg.grep_pane_always
     app.kill_confirm = cfg.kill_confirm
     app.conflict_prompt = cfg.conflict_prompt
+    app.mouse_on = cfg.mouse
     app.font_px = cfg.font_px // persisted font zoom; text_init bakes the atlas at it
 
     editor_init(&app.editor)
@@ -136,6 +137,11 @@ main :: proc() {
     glfw.SetWindowUserPointer(window, &app)
     glfw.SetKeyCallback(window, key_callback)
     glfw.SetCharCallback(window, char_callback)
+    // Pointer input (mouse.odin). Always registered: the `mouse` config gates what the
+    // events DO, not whether they arrive, so toggling it takes effect without a restart.
+    glfw.SetCursorPosCallback(window, cursor_pos_callback)
+    glfw.SetMouseButtonCallback(window, mouse_button_callback)
+    glfw.SetScrollCallback(window, scroll_callback)
 
     // Render first, then block until the next event. The UI only redraws when
     // something actually changes, so it idles at 0% CPU.

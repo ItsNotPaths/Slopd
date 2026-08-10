@@ -56,6 +56,7 @@ Config :: struct {
     grep_pane_always:  bool, // CL grep: always open the results pane vs jump straight on a lone hit
     kill_confirm:      bool, // procmon `k`: arm a confirm row vs SIGKILL immediately
     conflict_prompt:   bool, // disk changed under unsaved edits: prompt (y/n in the CL) vs silently keep my edits
+    mouse:             bool, // pointer input (wheel, and the clicks that follow it) on/off
 }
 
 load_config :: proc() -> Config {
@@ -77,6 +78,7 @@ load_config :: proc() -> Config {
         grep_pane_always = true, // always show the results pane (no auto-jump on a lone hit)
         kill_confirm    = true, // confirm a procmon kill before it fires
         conflict_prompt = true, // ask before a disk change is reconciled against unsaved edits
+        mouse           = true, // pointer input on; it is purely additive to the keyboard
     }
     path := find_config()
     if path == "" {
@@ -150,6 +152,8 @@ load_config :: proc() -> Config {
             if v, ok := parse_on_off(val); ok {cfg.kill_confirm = v}
         case "disk_conflict":
             if v, ok := parse_prompt_keep(val); ok {cfg.conflict_prompt = v}
+        case "mouse":
+            if v, ok := parse_on_off(val); ok {cfg.mouse = v}
         }
     }
     return cfg
@@ -229,7 +233,7 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return INDENT_OPTS[:]
     case .Theme:
         return theme_options(context.temp_allocator)
-    case .Folding, .IndentGuides, .Whitespace, .RiskyMode, .GrepPane, .KillConfirm:
+    case .Folding, .IndentGuides, .Whitespace, .RiskyMode, .GrepPane, .KillConfirm, .Mouse:
         return ON_OFF_OPTS[:]
     case .FolderCd, .GitCheckout, .GitCommit, .GitMerge, .GitRemote:
         return STAGE_RUN_OPTS[:]
@@ -295,6 +299,7 @@ Setting :: enum {
     GrepPane,
     KillConfirm,
     DiskConflict,
+    Mouse,
 }
 
 setting_key :: proc(s: Setting) -> string {
@@ -315,6 +320,7 @@ setting_key :: proc(s: Setting) -> string {
     case .GrepPane:     return "grep_pane"
     case .KillConfirm:  return "kill_confirm"
     case .DiskConflict: return "disk_conflict"
+    case .Mouse:        return "mouse"
     }
     return ""
 }
@@ -340,6 +346,7 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .GrepPane:     return on_off(a.grep_pane_always)
     case .KillConfirm:  return on_off(a.kill_confirm)
     case .DiskConflict: return a.conflict_prompt ? "prompt" : "keep"
+    case .Mouse:        return on_off(a.mouse_on)
     }
     return ""
 }
@@ -390,6 +397,8 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.kill_confirm = parse_on_off(val) or_return
     case .DiskConflict:
         a.conflict_prompt = parse_prompt_keep(val) or_return
+    case .Mouse:
+        a.mouse_on = parse_on_off(val) or_return
     }
     config_set(setting_key(s), val)
     return true

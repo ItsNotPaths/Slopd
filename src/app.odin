@@ -11,6 +11,14 @@ Rect :: struct {
     x, y, w, h: i32, // top-left origin, pixels
 }
 
+// Whether a point falls inside a rect — half-open on the far edges, so two rects sharing
+// a boundary (the panes either side of the gutter, the git columns either side of the
+// rule) can never both claim the same pixel. A zero-sized rect never hits, which is what
+// lets hit-testing skip a hidden-pane check: compute_layout leaves those zeroed.
+rect_hit :: proc(r: Rect, x, y: i32) -> bool {
+    return r.w > 0 && r.h > 0 && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
+}
+
 // Font zoom. font_px is the logical text size in points, shared by every pane; the
 // atlas bakes at font_px * DPI scale. Ctrl +/- steps it, Ctrl+0 resets to the base.
 // The chosen size is persisted to config, but debounced: we wait FONT_SAVE_DELAY of
@@ -187,6 +195,15 @@ App :: struct {
     // (SIGKILL) immediately.
     kill_confirm: bool,
 
+    // Mouse (mouse.odin). `mouse` mirrors the GLFW pointer callbacks; `mouse_on` is the
+    // config toggle. `lay` is the layout the LAST FRAME PAINTED — cached by render because
+    // pointer events arrive between frames and must resolve against what is on screen, not
+    // against a layout recomputed mid-animation. Zero until the first frame, and a zero
+    // Layout is all zero rects, so hit-testing before then simply finds nothing.
+    mouse:    Mouse,
+    mouse_on: bool,
+    lay:      Layout,
+
     // THROWAWAY (C1): --clay-probe swaps the aux pane for the Clay bridge probe.
     // Deleted with src/clay_probe.odin at the end of C1.
     clay_probe:   bool,
@@ -341,6 +358,7 @@ app_init :: proc(a: ^App) {
     a.split = 0.5
     a.term_active = 0 // sessions are spawned lazily (term_ensure)
     a.split_anim = Anim{to = a.split} // settled at the base ratio; git mode widens it
+    a.mouse_on = true // config may turn it off (main); on by default
     a.scale = 1
     a.font_px = FONT_BASE_PX
     cwd, err := os.get_working_directory(context.allocator) // owned; the launch cwd

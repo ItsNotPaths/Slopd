@@ -41,6 +41,13 @@ import "vendor:glfw"
 //   Ctrl+Enter                editor: collapse / expand the block opening on the line
 // Bare keys go to the focused editable (see cl_handle_key / buffer_key): typing,
 // motion, Tab, undo/redo (Ctrl+Z/Y), save (Ctrl+S), clipboard (Ctrl+C/X/V).
+//
+// Pointer input is the sibling file, mouse.odin, and it is ADDITIVE: it is never the only
+// route to anything above, which is what makes `mouse: off` a preference rather than a
+// mutilation. So far it is the wheel only — it scrolls whatever the cursor is over and
+// deliberately does NOT move focus, so the pane these bindings act on is still whatever
+// you last chose with Alt+Left/Right. Clicks arrive per pane as each one moves to Clay
+// (docs/clay-refactor.md, C3 onward), and this manifesto grows the mouse column then.
 
 key_callback :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: i32) {
     context = runtime.default_context()

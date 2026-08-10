@@ -499,14 +499,46 @@ git_any_checked :: proc(g: ^GitPane) -> bool {
     return false
 }
 
+// The git pane's sidebar takes this fraction of the pane's width; the diff viewer /
+// commit editor gets the rest. (The editor itself is GIT_EDITOR_SPLIT — layout.odin.)
+GIT_SIDEBAR_FRAC :: f32(0.40)
+
+// The pane's three columns: sidebar, the hairline rule, and the diff / commit column.
+// Pure, GL-free and the SINGLE definition of the split — draw_git paints these rects and
+// wheel_target hit-tests them, so the two cannot disagree. `pane` is the raw aux rect;
+// the focus-ring inset is applied here so callers cannot apply it differently. A pane too
+// small to divide returns three zero rects, which rect_hit rejects and draw_git treats as
+// "nothing to draw".
+git_columns :: proc(pane: Rect, scale: f32) -> (sidebar, rule, diff: Rect) {
+    area := inset(pane, i32(2 * scale))
+    if area.w <= 0 || area.h <= 0 {
+        return {}, {}, {}
+    }
+    div_w := min(max(i32(1), i32(scale)), area.w)
+    side_w := clamp(i32(f32(area.w) * GIT_SIDEBAR_FRAC), 0, area.w - div_w)
+    sidebar = Rect{area.x, area.y, side_w, area.h}
+    rule = Rect{area.x + side_w, area.y, div_w, area.h}
+    diff = Rect{rule.x + div_w, area.y, max(0, area.w - side_w - div_w), area.h}
+    return
+}
+
 // Up/Down in the SIDEBAR move the active section's selection (Status / Log lists). The
 // Branch strip uses Left/Right (git_branch_cycle), so Up/Down do nothing there. (The diff
 // region's Up/Down is the held auto-scroll — git_scroll_*; the commit caret arrives with
 // its Doc.)
+//
+// The region guard is the KEYBOARD's, not the movement's: arrows are dispatched by which
+// region holds focus, whereas a wheel scrolls whatever it happens to be over. Hence the
+// split — mouse.odin calls git_sidebar_move directly and leaves focus alone.
 git_move_sel :: proc(g: ^GitPane, dir: int) {
     if g.region != .Sidebar {
         return
     }
+    git_sidebar_move(g, dir)
+}
+
+// Move the active sidebar page's selection, regardless of which region holds focus.
+git_sidebar_move :: proc(g: ^GitPane, dir: int) {
     switch g.section {
     case .Status:
         if n := len(g.status); n > 0 {

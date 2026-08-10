@@ -14,6 +14,7 @@ Buffer :: struct {
     path:          string, // owned; "" = unnamed/scratch
     scroll:        int, // first visible line, the scroll TARGET (clamped at render)
     scroll_anim:   Anim, // visual top line tweening toward `scroll` (smooth scroll)
+    scroll_detached: f64, // glfw time the wheel cut the view loose from the caret; 0 = following it
     dirty:         bool,
     final_newline: bool, // did the file end in '\n'? preserved on save (POSIX round-trip)
     folds:         [dynamic]Fold, // collapsed blocks (Ctrl+Enter); see fold.odin
@@ -128,6 +129,7 @@ buffer_set_text :: proc(b: ^Buffer, text: string) {
     doc_set_text(&b.doc, text)
     b.scroll = 0
     b.scroll_anim = {} // settled at the top; a reused scratch buffer won't smear from its old scroll
+    b.scroll_detached = 0 // a wholesale text swap re-attaches the view to the caret
     clear(&b.folds) // a wholesale text swap invalidates every fold range
     b.fold_nlines = len(b.lines)
 }
@@ -435,6 +437,39 @@ buffer_scroll_target :: proc(b: ^Buffer, rows: int, center: bool) -> int {
         return buffer_back_visible(b, cur, rows - 1) // caret on the bottom row
     }
     return top
+}
+
+// Settle this frame's scroll target — the one place b.scroll is written per frame, called
+// from render. Normally that is just the policy above, but the WHEEL can cut the view loose
+// from the caret, and while it is loose the policy must not run at all: both modes derive
+// the top from the caret (MIDDLE re-centres on it outright, FOLLOW drags it back once it
+// would leave the pane), so either would yank a detached view straight back within a screen
+// of the caret. Detached, the view keeps whatever the wheel left it and is only bounded.
+//
+// A KEYSTROKE re-attaches it, and comparing timestamps is what makes that total: every
+// motion, edit, jump, undo and buffer switch is reached by a key, so none of them has to
+// know this flag exists — the alternative, hooking each caret-moving path, is exactly the
+// kind of hand-maintained invariant this refactor is trying to delete. Scrolling away and
+// typing therefore snaps back to the caret, which is what every editor does and what makes
+// the detached state safe: it cannot hide your own edits from you.
+buffer_scroll_apply :: proc(b: ^Buffer, rows: int, center: bool, last_input_at: f64) {
+    if b.scroll_detached > 0 && last_input_at > b.scroll_detached {
+        b.scroll_detached = 0
+    }
+    if b.scroll_detached > 0 {
+        // No policy, only bounds: any visible line may be the top, first to last.
+        b.scroll = buffer_prev_visible(b, clamp(b.scroll, 0, max(0, len(b.lines) - 1)))
+        return
+    }
+    b.scroll = buffer_scroll_target(b, rows, center)
+}
+
+// Move the detached view by `delta` visible-ish lines and stamp it as detached at `now`
+// (the wheel's entry point — see mouse.odin). Clamped to the buffer; buffer_scroll_apply
+// snaps the result onto a visible line, so folds need no handling here.
+buffer_scroll_by :: proc(b: ^Buffer, delta: int, now: f64) {
+    b.scroll = clamp(b.scroll + delta, 0, max(0, len(b.lines) - 1))
+    b.scroll_detached = now
 }
 
 // --- movement (no edits; the Doc ops wrap across line boundaries). select=true

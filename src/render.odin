@@ -74,6 +74,15 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
     gl.Clear(gl.COLOR_BUFFER_BIT)
 
     lay := compute_layout(win_w, win_h, a, now)
+    a.lay = lay // pointer events arriving before the next frame route against these rects
+
+    // Clay tracks the framebuffer the same way the GL viewport above does, and is handed
+    // this frame's pointer before anything is declared — SetPointerState resolves against
+    // the tree Clay already holds, so feeding it after the declarations would hit-test one
+    // frame late (see docs/clay-refactor.md, C1).
+    clay_resize(win_w, win_h)
+    mouse_feed_clay(a)
+
     pad := i32(8 * a.scale)
 
     // The focus ring only disambiguates which of two panes is active; with a single
@@ -186,9 +195,11 @@ draw_editor :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) 
     cur_line := b.cursors[b.primary].head.line // primary cursor drives scroll + the gutter
     rows := max(1, int(area.h / row_h))
 
-    // The scroll policy — follow the caret at the edges, or keep the topmost cursor on
-    // the middle row (config `scroll_mode`). Lives in buffer.odin, GL-free and tested.
-    b.scroll = buffer_scroll_target(b, rows, a.scroll_mode == .Middle)
+    // The scroll policy — follow the caret at the edges, or keep the topmost cursor on the
+    // middle row (config `scroll_mode`) — unless the wheel has detached the view, in which
+    // case it stays where the wheel left it until the next keystroke. Lives in buffer.odin,
+    // GL-free and tested.
+    buffer_scroll_apply(b, rows, a.scroll_mode == .Middle, a.last_input_at)
 
     // Smooth scroll: b.scroll is the target top line; the visual top tweens toward
     // it. Re-arm only when the target moves, so a settled view never re-renders.
@@ -1217,10 +1228,6 @@ config_draw_edit :: proc(t: ^Text, edit: ^Doc, ex, ty: f32, a: ^App, now: f64) {
     }
 }
 
-// The git pane's sidebar takes this fraction of the aux pane's width; the diff viewer
-// / commit editor gets the rest. (The editor itself is GIT_EDITOR_SPLIT — layout.odin.)
-GIT_SIDEBAR_FRAC :: f32(0.40)
-
 // Draw the selection playhead line. Off for now (selection still works off its row) —
 // kept as a switch for a future idea.
 DIFF_SHOW_PLAYHEAD :: false
@@ -1237,19 +1244,17 @@ COMMIT_MAX_ROWS :: 16
 // mode)" section of plan.txt).
 draw_git :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) {
     th := &a.theme
-    area := inset(pane, i32(2 * a.scale))
-    if area.w <= 0 || area.h <= 0 {
-        return
-    }
 
     // Split into the sidebar (left) and the diff / commit column (right), parted by a
-    // one-pixel rule. The diff column manages its own flushes (it scissors the scrolled
-    // content separately from the static title/commit chrome — see git_draw_diff).
-    div_w := max(i32(1), i32(a.scale))
-    side_w := clamp(i32(f32(area.w) * GIT_SIDEBAR_FRAC), 0, area.w)
-    sidebar := Rect{area.x, area.y, side_w, area.h}
-    rule := Rect{area.x + side_w, area.y, div_w, area.h}
-    diff := Rect{rule.x + div_w, area.y, max(0, area.w - side_w - div_w), area.h}
+    // one-pixel rule. The split itself lives in git.odin (git_columns) because mouse
+    // hit-testing needs the same three rects — computing it twice is exactly the drift
+    // this refactor exists to remove. The diff column manages its own flushes (it
+    // scissors the scrolled content separately from the static title/commit chrome —
+    // see git_draw_diff).
+    sidebar, rule, diff := git_columns(pane, a.scale)
+    if rule.h <= 0 {
+        return // degenerate pane: git_columns zeroes all three
+    }
 
     git_draw_sidebar(t, sidebar, a)
     flush_pane(t, sidebar, win_w, win_h)

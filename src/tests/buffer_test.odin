@@ -238,3 +238,91 @@ test_scroll_middle :: proc(t: ^testing.T) {
     testing.expect_value(t, app.doc_top_cursor_line(&b.doc), 50)
     testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, true), 45)
 }
+
+// --- detached scroll (buffer_scroll_apply; the wheel's half of the policy) ---
+//
+// The wheel cuts the view loose from the caret, and while it is loose NEITHER policy may
+// run: both derive the top from the caret, so either would drag a detached view back to
+// within a screen of it. A keystroke re-attaches. These pin the state machine, since it is
+// the part a mouse-shaped regression would break silently.
+
+// Detached, the view stays exactly where the wheel put it — under both scroll_modes, which
+// is the whole reason for detaching rather than special-casing MIDDLE.
+@(test)
+test_scroll_detached_holds :: proc(t: ^testing.T) {
+    ROWS :: 10
+    for center in ([?]bool{false, true}) {
+        b := numbered(100)
+        defer app.buffer_destroy(&b)
+        app.doc_reset_cursor(&b.doc, app.Pos{5, 0}) // caret near the top, view follows it
+
+        app.buffer_scroll_by(&b, 60, 100) // wheel: 60 lines down, detached at t=100
+        testing.expect_value(t, b.scroll, 60)
+
+        // Frames keep passing with no keystroke (last_input_at stays behind the stamp):
+        // the view holds, a screen-and-a-half from a caret the policy would have chased.
+        app.buffer_scroll_apply(&b, ROWS, center, 50)
+        testing.expect_value(t, b.scroll, 60)
+        app.buffer_scroll_apply(&b, ROWS, center, 50)
+        testing.expect_value(t, b.scroll, 60)
+    }
+}
+
+// A keystroke re-attaches, and the policy resumes from the caret — the guarantee that makes
+// the detached state safe, since it is what stops a scrolled-away view hiding your edits.
+@(test)
+test_scroll_detached_reattaches_on_input :: proc(t: ^testing.T) {
+    b := numbered(100)
+    defer app.buffer_destroy(&b)
+    ROWS :: 10
+    app.doc_reset_cursor(&b.doc, app.Pos{5, 0})
+
+    app.buffer_scroll_by(&b, 60, 100)
+    app.buffer_scroll_apply(&b, ROWS, false, 50) // no input since: still detached
+    testing.expect_value(t, b.scroll, 60)
+
+    app.buffer_scroll_apply(&b, ROWS, false, 101) // a keystroke lands after the detach
+    testing.expect_value(t, b.scroll_detached, f64(0)) // re-attached...
+    testing.expect_value(t, b.scroll, 5) // ...and FOLLOW pulled the view back to the caret
+
+    // Still attached on later frames, with no second detach to undo.
+    app.doc_reset_cursor(&b.doc, app.Pos{40, 0})
+    app.buffer_scroll_apply(&b, ROWS, false, 102)
+    testing.expect_value(t, b.scroll, 31) // caret onto the bottom row
+}
+
+// Attached is the default: with nothing detached, buffer_scroll_apply is exactly the
+// policy, so the wheel cannot have changed keyboard behaviour.
+@(test)
+test_scroll_attached_is_the_policy :: proc(t: ^testing.T) {
+    b := numbered(100)
+    defer app.buffer_destroy(&b)
+    ROWS :: 10
+    app.doc_reset_cursor(&b.doc, app.Pos{40, 0})
+
+    app.buffer_scroll_apply(&b, ROWS, true, 0)
+    testing.expect_value(t, b.scroll, app.buffer_scroll_target(&b, ROWS, true))
+    b.scroll = 0
+    app.buffer_scroll_apply(&b, ROWS, false, 0)
+    testing.expect_value(t, b.scroll, app.buffer_scroll_target(&b, ROWS, false))
+}
+
+// The detached view is bounded by the buffer, not free-running: the wheel cannot park the
+// top before line 0 or past the last line. buffer_set_text re-attaches (a wholesale swap).
+@(test)
+test_scroll_detached_bounds :: proc(t: ^testing.T) {
+    b := numbered(100)
+    defer app.buffer_destroy(&b)
+    ROWS :: 10
+
+    app.buffer_scroll_by(&b, -50, 100) // wheel up from the top
+    testing.expect_value(t, b.scroll, 0)
+    app.buffer_scroll_by(&b, 5000, 100) // and far past the end
+    testing.expect_value(t, b.scroll, 99)
+    app.buffer_scroll_apply(&b, ROWS, false, 50)
+    testing.expect_value(t, b.scroll, 99)
+
+    app.buffer_set_text(&b, "one\ntwo\n")
+    testing.expect_value(t, b.scroll_detached, f64(0))
+    testing.expect_value(t, b.scroll, 0)
+}
