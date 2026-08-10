@@ -202,6 +202,11 @@ App :: struct {
     // Layout is all zero rects, so hit-testing before then simply finds nothing.
     mouse:    Mouse,
     mouse_on: bool,
+    // Whether a pane tints the row under the pointer. Separate from `mouse_on` because it
+    // is a taste question, not a capability one: hover costs a repaint per motion event and
+    // the editor is keyboard-first, so it is worth being able to keep the pointer working
+    // while the chrome stays still. Every list pane reads this one flag (see config_ui).
+    hover_on: bool,
     lay:      Layout,
 
     scale:        f32, // DPI content scale: logical px * scale = physical px
@@ -356,6 +361,7 @@ app_init :: proc(a: ^App) {
     a.term_active = 0 // sessions are spawned lazily (term_ensure)
     a.split_anim = Anim{to = a.split} // settled at the base ratio; git mode widens it
     a.mouse_on = true // config may turn it off (main); on by default
+    a.hover_on = true // likewise
     a.scale = 1
     a.font_px = FONT_BASE_PX
     cwd, err := os.get_working_directory(context.allocator) // owned; the launch cwd

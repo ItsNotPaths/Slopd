@@ -37,6 +37,7 @@ FileTree :: struct {
     entries:  [dynamic]FileEntry,
     selected: int,
     scroll:   int, // first visible row — the viewport top (see list_scroll_target)
+    hover:    int, // the entry under the pointer, or -1 — transient frame state (config_ui)
 
     // The yank set: paths marked for a pending copy/cut, OWNED and kept across dir
     // navigation (yank here, walk elsewhere, paste there). yank_mode says what paste
@@ -46,6 +47,7 @@ FileTree :: struct {
 }
 
 filetree_init :: proc(ft: ^FileTree) {
+    ft.hover = -1 // nothing is hovered until a pointer event says so
     cwd, err := os.get_working_directory(context.allocator)
     if err != nil {
         cwd = strings.clone(".")

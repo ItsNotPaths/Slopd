@@ -159,6 +159,22 @@ focus_fg :: proc(a: ^App, who: Focus) -> [3]f32 {
     return a.focus == who ? a.theme.fg : a.theme.muted
 }
 
+// How far the hover tint travels from the pane background toward the selection bar. Well
+// short of it on purpose: the pointer resting somewhere is not a selection, and a list with
+// two equally loud bars in it is a list you have to read twice to find your place in.
+HOVER_MIX :: 0.35
+
+// The backdrop of the row under the pointer (open decision 5, settled in C5b: wanted, but
+// subtle and toggleable — `hover: on|off`, App.hover_on). Every list pane reads this one
+// proc, so the whole chrome agrees on what "the pointer is here" looks like.
+//
+// It MIXES rather than blending because the quad shader writes opaque: alpha is a
+// visibility bit, not a blend factor (clay_render.odin), so a translucent wash has to be
+// baked into the colour here or it does not exist at all.
+hover_bg :: proc(th: ^Theme) -> [3]f32 {
+    return th.bg + (th.separator - th.bg) * HOVER_MIX
+}
+
 // How long a scroll step takes to settle (seconds). Short by design — spartan.
 @(private = "file")
 SCROLL_DUR :: 0.09
@@ -874,194 +890,6 @@ procmon_draw_signals :: proc(t: ^Text, band: Rect, a: ^App, row_h: i32) {
             fill(t, Rect{i32(cellx) - i32(cw / 2), celly, i32(cellw), row_h}, th.accent)
         }
         text_draw(t, fmt.tprintf("%2d %s", s, SIG_NAMES[s]), cellx, f32(celly) + (f32(row_h) - lh) / 2, s == pm.sig_sel ? th.bg : th.fg)
-    }
-}
-
-// The config / syntax pane: a "settings" block (editable key: value rows) then a
-// "syntax" block listing each known language with its grammar status (✓/✗) and, when
-// a row is opened, its install-options dropdown (nested under the language). Section
-// headers are flanked by rules; setting values share one column. One selection
-// highlight (separator), centre-scrolled like the filetree.
-draw_config :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) {
-    cp := &a.config_pane
-    th := &a.theme
-    area := inset(pane, i32(2 * a.scale))
-    if area.w <= 0 || area.h <= 0 {
-        return
-    }
-    cw := t.font.cell_w
-    lh := t.font.line_height
-    row_h := i32(lh) + i32(2 * a.scale)
-    x0 := f32(area.x) + cw // one-cell left margin
-
-    // Pad every setting key to the widest so all the values (and editors) start in
-    // the same column: "<widest key>: ".
-    keycol := 0
-    for si in 0 ..< SETTING_COUNT {
-        keycol = max(keycol, len(setting_key(Setting(si))))
-    }
-    val_off := f32(keycol + 2) // key + ": "
-
-    // The flat list of display rows; cursor_row tracks the selection's display index
-    // so the scroll can follow it.
-    Row :: struct {
-        text:   string,
-        value:  string, // setting value, drawn at the shared value column; "" otherwise
-        color:  [3]f32,
-        sel:    bool, // draw the selection bar behind this row
-        edit:   bool, // an open inline editor (draw `doc` at the value column)
-        doc:    ^Doc, // the editor to draw when `edit` (the search box, cp.search)
-        flush:  bool, // a header line (rule or title): drawn flush-left, no value column
-        indent: i32, // extra left margin, in cells
-    }
-    rows := make([dynamic]Row, 0, 48, context.temp_allocator)
-    cursor_row := 0
-
-    // Section headers are a title in accent, flanked by full-width rules.
-    rule_row := Row {
-        text  = strings.repeat("-", max(1, int(f32(area.w) / cw) - 1), context.temp_allocator),
-        color = th.border_light,
-        flush = true,
-    }
-
-    append(&rows, rule_row)
-    append(&rows, Row{text = "settings", color = th.accent, flush = true})
-    append(&rows, rule_row)
-    for si in 0 ..< SETTING_COUNT {
-        s := Setting(si)
-        open := cp.open == .Setting && cp.open_idx == si
-        selected := cp.sel == si
-        if selected && !open {
-            cursor_row = len(rows) // when open, the highlighted option drives the scroll
-        }
-        val := setting_value(a, s)
-        append(
-            &rows,
-            Row {
-                text = fmt.tprintf("%s:", setting_key(s)),
-                value = val == "" ? "(default)" : val,
-                color = selected ? th.fg : th.muted,
-                sel = selected && !open, // while open the highlight is on the chosen option
-                indent = 1,
-            },
-        )
-        if open {
-            for o, oi in setting_options(a, s) {
-                osel := cp.opt_sel == oi
-                if osel {
-                    cursor_row = len(rows)
-                }
-                append(&rows, Row{text = o, color = osel ? th.fg : th.muted, sel = osel, indent = 4})
-            }
-        }
-    }
-
-    append(&rows, rule_row)
-    append(&rows, Row{text = "syntax", color = th.accent, flush = true})
-    append(&rows, rule_row)
-
-    // Search box: filters the long language list. Edited like a setting (Enter to
-    // focus, type to filter live, Esc to browse the results).
-    search_sel := cp.sel == SETTING_COUNT
-    if search_sel {
-        cursor_row = len(rows)
-    }
-    append(
-        &rows,
-        Row {
-            text = "search:",
-            value = doc_string(&cp.search, context.temp_allocator),
-            color = search_sel ? th.fg : th.muted,
-            sel = search_sel,
-            edit = search_sel, // the search box is live whenever it's highlighted
-            doc = &cp.search,
-            indent = 1,
-        },
-    )
-
-    for fi, idx in cp.filtered {
-        l := &cp.langs[fi]
-        row := SETTING_COUNT + 1 + idx
-        open := cp.open == .Lang && cp.open_idx == fi
-        if cp.sel == row {
-            cursor_row = len(rows)
-        }
-        mark := l.present ? "✓" : "✗"
-        append(
-            &rows,
-            Row {
-                text = fmt.tprintf("%s %s", mark, l.name),
-                color = l.present ? th.code_return_type : th.fg,
-                sel = cp.sel == row && (!open || cp.opt_sel == -1), // root stays selectable while open
-                indent = 1,
-            },
-        )
-        if open {
-            buf: [len(LangOption)]LangOption
-            opts := lang_options(l.present, buf[:])
-            for o, oi in opts {
-                osel := cp.opt_sel == oi
-                if osel {
-                    cursor_row = len(rows)
-                }
-                // Indented past the language name (mark + space) so options nest under it.
-                append(&rows, Row{text = lang_option_label(o), color = osel ? th.fg : th.muted, sel = osel, indent = 4})
-            }
-        }
-    }
-
-    // Track the cursor row under the shared `scroll_mode` policy (like the filetree). An
-    // open dropdown inserts its option rows, so the row space shifts under the stored top —
-    // Follow just re-frames from wherever it lands on the next frame.
-    max_rows := max(1, int(area.h / row_h))
-    cp.scroll = list_scroll_target(cp.scroll, cursor_row, max_rows, len(rows), a.scroll_mode == .Middle)
-    first := cp.scroll
-    visible := min(len(rows) - first, max_rows)
-
-    for k in 0 ..< visible {
-        r := rows[first + k]
-        y := area.y + i32(k) * row_h
-        if r.sel {
-            fill(t, Rect{area.x, y, area.w, row_h}, th.separator)
-        }
-        ty := f32(y) + (f32(row_h) - lh) / 2
-        rx := x0 + cw * f32(r.indent)
-        if r.flush {
-            text_draw(t, r.text, x0, ty, r.color)
-            continue
-        }
-        text_draw(t, r.text, rx, ty, r.color)
-        valx := x0 + cw * (f32(r.indent) + val_off)
-        if r.edit {
-            config_draw_edit(t, r.doc, valx, ty, a, now)
-        } else if r.value != "" {
-            text_draw(t, r.value, valx, ty, th.fg)
-        }
-    }
-
-    flush_pane(t, area, win_w, win_h)
-}
-
-// The inline settings editor: the edit buffer's runes at `ex` (the value column),
-// with per-cursor selection spans and carets — the command-line treatment, reused.
-@(private = "file")
-config_draw_edit :: proc(t: ^Text, edit: ^Doc, ex, ty: f32, a: ^App, now: f64) {
-    th := &a.theme
-    cw := t.font.cell_w
-    lh := t.font.line_height
-    line := &edit.lines[0]
-    y := i32(ty) // selection/caret share the glyph cell's top
-    for c in edit.cursors {
-        if cursor_has_selection(c) {
-            lo, hi := cursor_range(c)
-            fill(t, Rect{i32(ex + cw * f32(lo.col)), y, i32(cw * f32(hi.col - lo.col)), i32(lh)}, th.selection)
-        }
-    }
-    text_draw_runes(t, line.text[:], ex, ty, th.fg)
-    if caret_blink_on(a, now) {
-        for c in edit.cursors {
-            caret(t, Rect{i32(ex + cw * f32(c.head.col)), y, i32(2 * a.scale), i32(lh)}, th.fg)
-        }
     }
 }
 

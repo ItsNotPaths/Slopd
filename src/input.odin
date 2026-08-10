@@ -825,10 +825,10 @@ config_key :: proc(a: ^App, key, mods: i32) {
 
     switch key {
     case glfw.KEY_UP:
-        config_nav(a, -1)
+        config_pane_move(cp, -1)
         return
     case glfw.KEY_DOWN:
-        config_nav(a, 1)
+        config_pane_move(cp, 1)
         return
     }
 
@@ -845,7 +845,7 @@ config_key :: proc(a: ^App, key, mods: i32) {
     if config_pane_lang(cp, cp.sel) != nil {
         switch key {
         case glfw.KEY_RIGHT, glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
-            config_activate(a)
+            config_pane_open_lang(a)
         }
         return
     }
@@ -867,101 +867,29 @@ config_key :: proc(a: ^App, key, mods: i32) {
     }
 }
 
-// Row navigation (no dropdown open): just move the selection. Settings apply on
-// dropdown-select now, so there's no inline editor to commit/seed across the move.
-@(private = "file")
-config_nav :: proc(a: ^App, delta: int) {
-    config_pane_move(&a.config_pane, delta)
-}
-
-// Right / Enter on a language row opens its options dropdown.
-@(private = "file")
-config_activate :: proc(a: ^App) {
-    cp := &a.config_pane
-    if li, ok := config_pane_lang_index(cp, cp.sel); ok {
-        cp.open = .Lang
-        cp.open_idx = li // the language index, stable under filtering
-        cp.opt_sel = -1 // selection stays on the language root; -1 = the root row
-    }
-}
-
-// Navigation within an open dropdown — dispatched to the setting or language variant.
+// Navigation within an open dropdown. Up/Down move within it — config_dropdown_move owns
+// the difference between a setting's clamped choice list and a language's step-out into the
+// rows around it — Left cancels, and Enter/Right chooses (config_choose). Both verbs live in
+// config_pane.odin because a click reaches them too, and the two paths must not diverge.
 @(private = "file")
 config_dropdown_key :: proc(a: ^App, key: i32) {
-    switch a.config_pane.open {
-    case .Setting:
-        config_setting_dropdown_key(a, key)
-    case .Lang:
-        config_lang_dropdown_key(a, key)
-    case .None:
-    }
-}
-
-// A settings choice dropdown: Up/Down pick within the options (clamped), Left cancels,
-// Enter/Right commits the highlighted choice (validated + persisted) and closes.
-@(private = "file")
-config_setting_dropdown_key :: proc(a: ^App, key: i32) {
-    cp := &a.config_pane
-    s := Setting(cp.open_idx)
-    opts := setting_options(a, s)
     switch key {
     case glfw.KEY_DOWN:
-        cp.opt_sel = min(cp.opt_sel + 1, len(opts) - 1)
+        config_dropdown_move(a, 1)
     case glfw.KEY_UP:
-        cp.opt_sel = max(cp.opt_sel - 1, 0)
+        config_dropdown_move(a, -1)
     case glfw.KEY_LEFT:
-        cp.open = .None // cancel, keep the setting row selected
+        a.config_pane.open = .None // cancel, keep the row selected
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER, glfw.KEY_RIGHT:
-        if cp.opt_sel >= 0 && cp.opt_sel < len(opts) {
-            setting_commit(a, s, opts[cp.opt_sel])
-        }
-        cp.open = .None
-    }
-}
-
-// Navigation within an open language dropdown. Arrow keys only.
-@(private = "file")
-config_lang_dropdown_key :: proc(a: ^App, key: i32) {
-    cp := &a.config_pane
-    if cp.open_idx < 0 || cp.open_idx >= len(cp.langs) {
-        cp.open = .None
-        return
-    }
-    lang := &cp.langs[cp.open_idx] // open_idx is a language index
-    buf: [len(LangOption)]LangOption
-    opts := lang_options(lang.present, buf[:])
-    // opt_sel == -1 is the language root (still selected while open); 0.. are options.
-    switch key {
-    case glfw.KEY_DOWN:
-        if cp.opt_sel >= len(opts) - 1 {
-            cp.open = .None // step out below the dropdown
-            config_nav(a, 1)
-        } else {
-            cp.opt_sel += 1
-        }
-    case glfw.KEY_UP:
-        if cp.opt_sel <= -1 {
-            cp.open = .None // step off the root, upward
-            config_nav(a, -1)
-        } else {
-            cp.opt_sel -= 1
-        }
-    case glfw.KEY_LEFT:
-        cp.open = .None // collapse, keep the language row selected
-    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER, glfw.KEY_RIGHT:
-        if cp.opt_sel == -1 {
-            cp.open = .None // re-Enter on the root minimises
-        } else {
-            config_run_option(a, lang.name, opts[cp.opt_sel])
-            cp.open = .None
-        }
+        config_choose(a)
     }
 }
 
 // A chosen language option builds a `slopd ...` command and runs it in t1 (the
 // master CL terminal) — the same stubbed seam as the command line's shell path, so
 // these light up when libvterm injection lands. The CLI flags themselves work today.
-@(private = "file")
+// Package-level (not file-private) because config_choose calls it: the pointer path
+// reaches these options too, so the verb had to move out of the keyboard's file.
 config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
     // Re-invoke ourselves by absolute path (single-quoted for the shell) so these
     // work in the self-contained release where slopd isn't on PATH.

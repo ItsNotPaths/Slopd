@@ -203,6 +203,8 @@ filetree_layout :: proc(a: ^App, f: ^Font, pane: Rect, win_w, win_h: i32) -> cla
                         bg = clay_rgb(th.separator)
                     } else if marked {
                         bg = clay_rgb(th.line_highlight)
+                    } else if a.hover_on && i == ft.hover {
+                        bg = clay_rgb(hover_bg(th)) // C5b's toggle; last, so it never masks a mark
                     }
 
                     if clay.UI(clay.ID("ft_row", u32(i)))(
@@ -249,7 +251,9 @@ draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     if area.w <= 0 || area.h <= 0 {
         return
     }
-    filetree_click(a, filetree_hit(&a.tree, rows))
+    hit := filetree_hit(&a.tree, rows)
+    a.tree.hover = hit // resolved against the same (last) frame the click is
+    filetree_click(a, hit)
     filetree_scroll_apply(&a.tree, rows, a.scroll_mode == .Middle)
 
     cmds := filetree_layout(a, &t.font, pane, win_w, win_h)

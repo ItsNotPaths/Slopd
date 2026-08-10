@@ -84,6 +84,7 @@ main :: proc() {
     app.kill_confirm = cfg.kill_confirm
     app.conflict_prompt = cfg.conflict_prompt
     app.mouse_on = cfg.mouse
+    app.hover_on = cfg.hover
     app.font_px = cfg.font_px // persisted font zoom; text_init bakes the atlas at it
 
     editor_init(&app.editor)

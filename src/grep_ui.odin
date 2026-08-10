@@ -195,6 +195,10 @@ grep_layout :: proc(
                     bg: clay.Color
                     if sel {
                         bg = clay_rgb(th.line_highlight)
+                    } else if a.hover_on && r.hit >= 0 && r.hit == g.hover {
+                        // The whole block lights, not the row: that is what a click here
+                        // selects, so it is what the pointer should promise. C5b's toggle.
+                        bg = clay_rgb(hover_bg(th))
                     }
                     border: clay.BorderElementConfig
                     if sel && r.match {
@@ -273,7 +277,9 @@ draw_grep :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     // which the click below may change out from under them.
     rows := grep_rows(g, a.project_root, context.temp_allocator)
 
-    grep_click(a, grep_hit(rows, g.scroll, max_rows))
+    hit := grep_hit(rows, g.scroll, max_rows)
+    g.hover = hit // resolved against the same (last) frame the click is
+    grep_click(a, hit)
     grep_scroll_apply(g, grep_anchor(rows, g.selected), max_rows, len(rows), a.scroll_mode == .Middle)
 
     cmds := grep_layout(a, &t.font, pane, rows, win_w, win_h)

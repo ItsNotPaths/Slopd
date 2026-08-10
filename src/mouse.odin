@@ -200,17 +200,19 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
         case .Grep:
             grep_move(&a.grep, d)
         case .Config:
-            // A dropdown is a modal overlay whose Up/Down drive opt_sel, not the row
-            // selection, and its rows have no geometry outside draw_config. Wheeling it
-            // is a C5 job (the config pane's own Clay migration); until then a notch over
-            // an open dropdown does nothing rather than moving the list underneath it.
-            if a.config_pane.open == .None {
-                config_pane_move(&a.config_pane, d)
-            }
+            // Whatever currently owns the selection moves: an open dropdown's choices, or
+            // the row list when nothing is open. One proc, shared with the pane's Up/Down
+            // (config_dropdown_move) — the refusal that used to sit here existed only
+            // because the dropdown had no geometry outside draw_config, and C5b gave it
+            // some, so it is gone rather than preserved.
+            config_dropdown_move(a, d)
         case .Procmon:
-            // Same reasoning for procmon's two overlays. Otherwise the notch moves the
-            // process list, including when the pointer is over the graph band — the band
-            // does not scroll, and per-region routing needs the geometry C5 extracts.
+            // The signal selector and the kill-arm prompt still have no geometry outside
+            // draw_procmon, so a notch over one does nothing rather than moving the list
+            // underneath it — the refusal the config branch above has just shed, waiting on
+            // the same fix (C5c). Otherwise the notch moves the process list, including
+            // when the pointer is over the graph band: the band does not scroll, and
+            // per-region routing needs the geometry C5c extracts.
             pm := &a.procmon
             if !pm.sig_open && !pm.kill_armed {
                 procmon_select(pm, pm.sel + d)

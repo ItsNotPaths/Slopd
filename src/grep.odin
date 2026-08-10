@@ -40,6 +40,7 @@ GrepPane :: struct {
     hits:     [dynamic]GrepHit, // results, in scan order
     selected: int,              // the highlighted row (Up/Down move it; Enter jumps)
     scroll:   int,              // first visible DISPLAY row — the viewport top (list_scroll_target)
+    hover:    int,              // the block under the pointer, or -1 — transient (config_ui)
 }
 
 // Up/Down: move the highlighted row, clamped to the results (no wrap). The editor only
@@ -161,6 +162,7 @@ grep_set :: proc(g: ^GrepPane, query: string, hits: []GrepHit) {
     }
     g.selected = 0
     g.scroll = 0 // a fresh result set opens at the top
+    g.hover = -1
 }
 
 grep_clear :: proc(g: ^GrepPane) {
@@ -177,6 +179,7 @@ grep_clear :: proc(g: ^GrepPane) {
     clear(&g.hits)
     g.selected = 0
     g.scroll = 0
+    g.hover = -1
 }
 
 // Read a file and split it into lines (temp-allocated; the slices alias the file buffer).
