@@ -76,8 +76,8 @@ buffer_indent_levels :: proc(b: ^Buffer, line, unit: int) -> int {
 // renderer should highlight, and which rail (`level`) within it. ok=false at top level.
 Scope :: struct {
     lo, hi: int, // contiguous line span at least as deep as the cursor's line
-    level:  int, // the indent-guide level to draw in the active colour
-    ok:     bool, // false when the cursor is at top level (nothing to highlight)
+    level: int, // the indent-guide level to draw in the active colour
+    ok:    bool, // false when the cursor is at top level (nothing to highlight)
 }
 
 // The scope the cursor sits in, for the active indent-guide highlight. The span is the

@@ -103,15 +103,15 @@ editor_view :: proc(b: ^Buffer, f: ^Font, area: Rect, row_h: i32, rows: int, now
     top, off := smooth_scroll(&b.scroll_anim, b.scroll, now, row_h)
     gutter := editor_gutter_w(b)
     return Editor_View {
-        area = area,
-        row_h = row_h,
-        rows = rows,
-        top = top,
-        off = off,
+        area   = area,
+        row_h  = row_h,
+        rows   = rows,
+        top    = top,
+        off    = off,
         gutter = gutter,
         text_x = editor_text_x(area.x, gutter, f.cell_w),
-        cw = f.cell_w,
-        lh = f.line_height,
+        cw     = f.cell_w,
+        lh     = f.line_height,
     }
 }
 

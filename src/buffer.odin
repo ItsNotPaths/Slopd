@@ -11,16 +11,16 @@ import "core:time"
 
 Buffer :: struct {
     using doc:     Doc, // lines + cursors
-    path:          string, // owned; "" = unnamed/scratch
-    scroll:        int, // first visible line, the scroll TARGET (clamped at render)
-    scroll_anim:   Anim, // visual top line tweening toward `scroll` (smooth scroll)
+    path:            string, // owned; "" = unnamed/scratch
+    scroll:          int, // first visible line, the scroll TARGET (clamped at render)
+    scroll_anim:     Anim, // visual top line tweening toward `scroll` (smooth scroll)
     scroll_detached: f64, // glfw time the wheel cut the view loose from the caret; 0 = following it
-    dirty:         bool,
-    final_newline: bool, // did the file end in '\n'? preserved on save (POSIX round-trip)
-    folds:         [dynamic]Fold, // collapsed blocks (Ctrl+Enter); see fold.odin
-    fold_nlines:   int, // line count the folds were valid at (drop them when it changes)
-    disk_mtime:    time.Time, // file mtime at our last load/save; detects external rewrites (see buffer_reload_if_changed)
-    conflict:      bool, // the file changed on disk under unsaved edits: a decision is pending (the prompt; see buffer_conflict_resolve)
+    dirty:           bool,
+    final_newline:   bool, // did the file end in '\n'? preserved on save (POSIX round-trip)
+    folds:           [dynamic]Fold, // collapsed blocks (Ctrl+Enter); see fold.odin
+    fold_nlines:     int, // line count the folds were valid at (drop them when it changes)
+    disk_mtime:      time.Time, // file mtime at our last load/save; detects external rewrites (see buffer_reload_if_changed)
+    conflict:        bool, // the file changed on disk under unsaved edits: a decision is pending (the prompt; see buffer_conflict_resolve)
 }
 
 Editor :: struct {

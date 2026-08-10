@@ -37,20 +37,20 @@ fixture :: proc(a: ^app.App, ctx0: []string, ctx1: []string) {
     append(
         &a.grep.hits,
         app.GrepHit {
-            path = "/proj/src/a.odin",
-            line = 10,
-            text = "bb",
-            ctx = ctx0,
+            path      = "/proj/src/a.odin",
+            line      = 10,
+            text      = "bb",
+            ctx       = ctx0,
             ctx_first = 9,
         },
     )
     append(
         &a.grep.hits,
         app.GrepHit {
-            path = "/proj/src/b.odin",
-            line = 100,
-            text = "ee",
-            ctx = ctx1,
+            path      = "/proj/src/b.odin",
+            line      = 100,
+            text      = "ee",
+            ctx       = ctx1,
             ctx_first = 99,
         },
     )

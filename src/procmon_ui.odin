@@ -355,7 +355,7 @@ procmon_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now: 
         if clay.UI(clay.ID("pm_band"))(
             {
                 layout = {
-                    sizing = {clay.SizingGrow(), clay.SizingFixed(f32(band.h))},
+                    sizing          = {clay.SizingGrow(), clay.SizingFixed(f32(band.h))},
                     layoutDirection = .TopToBottom,
                 },
                 backgroundColor = band_bg,
@@ -371,8 +371,8 @@ procmon_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now: 
         if clay.UI(clay.ID("pm_hdr"))(
             {
                 layout = {
-                    sizing = {row_w, clay.SizingFixed(f32(row_h))},
-                    padding = {left = u16(cw)}, // the one-cell left margin
+                    sizing         = {row_w, clay.SizingFixed(f32(row_h))},
+                    padding        = {left = u16(cw)}, // the one-cell left margin
                     childAlignment = {y = .Center},
                 },
             },
@@ -388,7 +388,7 @@ procmon_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now: 
         if clay.UI(clay.ID("pm_body"))(
             {
                 layout = {
-                    sizing = {clay.SizingGrow(), clay.SizingGrow()},
+                    sizing          = {clay.SizingGrow(), clay.SizingGrow()},
                     layoutDirection = .TopToBottom,
                 },
                 // The tween's sub-row remainder, as ONE number on ONE element. This is
@@ -409,8 +409,8 @@ procmon_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now: 
                     if clay.UI(clay.ID("pm_row", u32(i)))(
                         {
                             layout = {
-                                sizing = {row_w, clay.SizingFixed(f32(row_h))},
-                                padding = {left = u16(cw)},
+                                sizing         = {row_w, clay.SizingFixed(f32(row_h))},
+                                padding        = {left = u16(cw)},
                                 childAlignment = {y = .Center},
                             },
                             backgroundColor = clay_rgb(th.urgent),
@@ -436,8 +436,8 @@ procmon_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now: 
                 if clay.UI(clay.ID("pm_row", u32(i)))(
                     {
                         layout = {
-                            sizing = {row_w, clay.SizingFixed(f32(row_h))},
-                            padding = {left = u16(cw)},
+                            sizing         = {row_w, clay.SizingFixed(f32(row_h))},
+                            padding        = {left = u16(cw)},
                             childAlignment = {y = .Center},
                         },
                         backgroundColor = bg,
@@ -468,8 +468,8 @@ procmon_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now: 
             if clay.UI(clay.ID("pm_filter"))(
                 {
                     layout = {
-                        sizing = {row_w, clay.SizingFixed(f32(row_h))},
-                        padding = {left = u16(cw)},
+                        sizing         = {row_w, clay.SizingFixed(f32(row_h))},
+                        padding        = {left = u16(cw)},
                         childAlignment = {y = .Center},
                     },
                     backgroundColor = clay_rgb(th.line_highlight),
@@ -505,8 +505,8 @@ procmon_declare_graph :: proc(a: ^App, cw: f32, lh, row_h: i32, row_w: clay.Sizi
     if clay.UI(clay.ID("pm_tabs"))(
         {
             layout = {
-                sizing = {row_w, clay.SizingFixed(f32(row_h))},
-                padding = {left = u16(cw), right = u16(cw)},
+                sizing         = {row_w, clay.SizingFixed(f32(row_h))},
+                padding        = {left = u16(cw), right = u16(cw)},
                 childAlignment = {y = .Center},
             },
         },
@@ -554,8 +554,8 @@ procmon_declare_graph :: proc(a: ^App, cw: f32, lh, row_h: i32, row_w: clay.Sizi
         if clay.UI(clay.ID("pm_plot"))(
             {
                 layout = {
-                    sizing = {clay.SizingGrow(), clay.SizingGrow()},
-                    padding = {left = u16(cw)},
+                    sizing         = {clay.SizingGrow(), clay.SizingGrow()},
+                    padding        = {left = u16(cw)},
                     childAlignment = {y = .Center},
                 },
             },
@@ -593,8 +593,8 @@ procmon_declare_signals :: proc(a: ^App, cw: f32, lh, row_h: i32, half: u16, row
     if clay.UI(clay.ID("pm_sighead"))(
         {
             layout = {
-                sizing = {row_w, clay.SizingFixed(f32(row_h))},
-                padding = {left = u16(cw)},
+                sizing         = {row_w, clay.SizingFixed(f32(row_h))},
+                padding        = {left = u16(cw)},
                 childAlignment = {y = .Center},
             },
         },
@@ -612,8 +612,8 @@ procmon_declare_signals :: proc(a: ^App, cw: f32, lh, row_h: i32, half: u16, row
         if clay.UI(clay.ID("pm_sigrow", u32(r)))(
             {
                 layout = {
-                    sizing = {row_w, clay.SizingFixed(f32(row_h))},
-                    padding = {left = half},
+                    sizing         = {row_w, clay.SizingFixed(f32(row_h))},
+                    padding        = {left = half},
                     childAlignment = {y = .Center},
                 },
             },
@@ -633,8 +633,8 @@ procmon_declare_signals :: proc(a: ^App, cw: f32, lh, row_h: i32, half: u16, row
                 if clay.UI(clay.ID("pm_sig", u32(s)))(
                     {
                         layout = {
-                            sizing = {clay.SizingFixed(cellw), clay.SizingGrow()},
-                            padding = {left = u16(cw) - half},
+                            sizing         = {clay.SizingFixed(cellw), clay.SizingGrow()},
+                            padding        = {left = u16(cw) - half},
                             childAlignment = {y = .Center},
                         },
                         backgroundColor = bg,

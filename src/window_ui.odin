@@ -229,9 +229,9 @@ WIN_ROOT :: "win_root"
 // answering — and it is spent there, in C8c.
 clay_pane_float :: proc(area: Rect) -> clay.FloatingElementConfig {
     return {
-        attachTo = .Root,
-        offset = {f32(area.x), f32(area.y)},
-        attachment = {element = .LeftTop, parent = .LeftTop},
+        attachTo           = .Root,
+        offset             = {f32(area.x), f32(area.y)},
+        attachment         = {element = .LeftTop, parent = .LeftTop},
         pointerCaptureMode = .Passthrough,
     }
 }
@@ -242,11 +242,11 @@ clay_pane_float :: proc(area: Rect) -> clay.FloatingElementConfig {
 clay_pane_box :: proc(area: Rect) -> clay.ElementDeclaration {
     return {
         layout = {
-            sizing = {clay.SizingFixed(f32(area.w)), clay.SizingFixed(f32(area.h))},
+            sizing          = {clay.SizingFixed(f32(area.w)), clay.SizingFixed(f32(area.h))},
             layoutDirection = .TopToBottom,
         },
         floating = clay_pane_float(area),
-        clip = {horizontal = true, vertical = true},
+        clip     = {horizontal = true, vertical = true},
     }
 }
 

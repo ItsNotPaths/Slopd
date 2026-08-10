@@ -113,8 +113,8 @@ test_highlight_semantic :: proc(t: ^testing.T) {
 
     Case :: struct {
         line, col: int,
-        want:      [3]f32,
-        what:      string,
+        want: [3]f32,
+        what: string,
     }
     cases := []Case {
         {4, 0, th.code_comment, "comment //"},

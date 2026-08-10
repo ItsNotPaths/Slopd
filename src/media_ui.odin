@@ -153,8 +153,8 @@ media_declare :: proc(a: ^App, f: ^Font, pane: Rect) {
             if fit.w > 0 && fit.h > 0 {
                 if clay.UI(clay.ID("md_image"))(
                     {
-                        layout = {sizing = {clay.SizingFixed(f32(fit.w)), clay.SizingFixed(f32(fit.h))}},
-                        image = {imageData = rawptr(uintptr(m.tex))},
+                        layout   = {sizing = {clay.SizingFixed(f32(fit.w)), clay.SizingFixed(f32(fit.h))}},
+                        image    = {imageData = rawptr(uintptr(m.tex))},
                         floating = media_image_float(fit, area),
                     },
                 ) {}
@@ -163,8 +163,8 @@ media_declare :: proc(a: ^App, f: ^Font, pane: Rect) {
             if clay.UI(clay.ID("md_empty"))(
                 {
                     layout = {
-                        sizing = {clay.SizingGrow(), clay.SizingGrow()},
-                        padding = {left = u16(8 * a.scale)},
+                        sizing         = {clay.SizingGrow(), clay.SizingGrow()},
+                        padding        = {left = u16(8 * a.scale)},
                         childAlignment = {y = .Center},
                     },
                 },
@@ -193,10 +193,10 @@ media_declare :: proc(a: ^App, f: ^Font, pane: Rect) {
 // making the pane's letterbox margin behave differently from its picture.
 media_image_float :: proc(fit, area: Rect) -> clay.FloatingElementConfig {
     return {
-        attachTo = .Parent,
-        attachment = {element = .LeftTop, parent = .LeftTop},
-        offset = {f32(fit.x - area.x), f32(fit.y - area.y)},
-        clipTo = .AttachedParent,
+        attachTo           = .Parent,
+        attachment         = {element = .LeftTop, parent = .LeftTop},
+        offset             = {f32(fit.x - area.x), f32(fit.y - area.y)},
+        clipTo             = .AttachedParent,
         pointerCaptureMode = .Passthrough,
     }
 }

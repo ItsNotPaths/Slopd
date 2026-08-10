@@ -29,13 +29,13 @@ Glyph :: struct {
 }
 
 Font :: struct {
-    pc:          stbtt.pack_context,        // kept open for the font's life; lazy bakes pack into it
-    info:        stbtt.fontinfo,            // for glyph-presence checks
-    ttf:         []u8,                      // borrowed font bytes (owned by Text); needed to bake on demand
-    pixels:      []byte,                    // CPU mirror of the atlas; PackFontRange writes here
-    cache:       map[rune]Glyph,            // codepoint -> baked quad (or absent marker)
-    px:          f32,                       // bake size, physical px
-    dirty:       bool,                      // pixels changed since last GPU upload
+    pc:     stbtt.pack_context,        // kept open for the font's life; lazy bakes pack into it
+    info:   stbtt.fontinfo,            // for glyph-presence checks
+    ttf:    []u8,                      // borrowed font bytes (owned by Text); needed to bake on demand
+    pixels: []byte,                    // CPU mirror of the atlas; PackFontRange writes here
+    cache:  map[rune]Glyph,            // codepoint -> baked quad (or absent marker)
+    px:     f32,                       // bake size, physical px
+    dirty:  bool,                      // pixels changed since last GPU upload
     dy0, dy1:    int,                       // dirty row band [dy0, dy1) to re-upload (valid when dirty)
     ready:       bool,                      // pc/pixels/tex initialized
     tex:         u32,

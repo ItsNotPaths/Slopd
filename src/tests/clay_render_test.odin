@@ -103,7 +103,7 @@ clay_test_tree :: proc() {
     if clay.UI(clay.ID("t_pane"))(
         {
             layout = {
-                sizing = {clay.SizingFixed(100), clay.SizingFixed(60)},
+                sizing          = {clay.SizingFixed(100), clay.SizingFixed(60)},
                 layoutDirection = .TopToBottom,
             },
             backgroundColor = {10, 20, 30, 255},
@@ -112,7 +112,7 @@ clay_test_tree :: proc() {
         if clay.UI(clay.ID("t_head"))(
             {
                 layout = {
-                    sizing = {clay.SizingGrow(), clay.SizingFixed(20)},
+                    sizing         = {clay.SizingGrow(), clay.SizingFixed(20)},
                     childAlignment = {y = .Center},
                 },
                 backgroundColor = {40, 40, 40, 255},
@@ -123,7 +123,7 @@ clay_test_tree :: proc() {
         if clay.UI(clay.ID("t_body"))(
             {
                 layout = {
-                    sizing = {clay.SizingGrow(), clay.SizingGrow()},
+                    sizing          = {clay.SizingGrow(), clay.SizingGrow()},
                     layoutDirection = .TopToBottom,
                 },
                 clip = {horizontal = true, vertical = true},
@@ -132,7 +132,7 @@ clay_test_tree :: proc() {
             for i in 0 ..< 3 {
                 if clay.UI(clay.ID("t_row", u32(i)))(
                     {
-                        layout = {sizing = {clay.SizingGrow(), clay.SizingFixed(20)}},
+                        layout          = {sizing = {clay.SizingGrow(), clay.SizingFixed(20)}},
                         backgroundColor = {f32(i) * 10, 0, 0, 255},
                     },
                 ) {}

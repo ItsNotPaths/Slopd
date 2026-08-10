@@ -23,8 +23,8 @@ Media :: struct {
     path: string, // owned; "" = nothing loaded
     tex:  u32, // GL RGBA texture (0 = none)
     w, h: i32, // image pixel dimensions
-    zoom: f32, // 1 = fit-to-pane (contain); >1 zooms in
-    pan:  [2]f32, // view offset in physical pixels, applied after centering
+    zoom:  f32, // 1 = fit-to-pane (contain); >1 zooms in
+    pan:   [2]f32, // view offset in physical pixels, applied after centering
     mtime: time.Time, // file mtime when decoded; re-decodes when it changes (see media_reload_if_changed)
 }
 

@@ -38,20 +38,20 @@ Open_Kind :: enum {
 // the search row's `search` filters the language list live as you type.
 ConfigPane :: struct {
     // Rows: [0, SETTING_COUNT) settings, then the search row, then the FILTERED langs.
-    sel:      int, // selected row
-    scroll:   int, // first visible DISPLAY row — the viewport top (see list_scroll_target)
+    sel:    int, // selected row
+    scroll: int, // first visible DISPLAY row — the viewport top (see list_scroll_target)
     // A wheel gesture DETACHES the view from the selection (glfw time; 0 = following it),
     // the flat-row twin of Buffer.scroll_detached. While it is set neither viewport policy
     // runs, so the wheel moves the view rather than the cursor; the next keystroke that
     // reaches this pane re-attaches it. See list_scroll_apply (scroll.odin).
     scroll_detached: f64,
-    open:     Open_Kind, // which row's dropdown is open (None when none)
-    open_idx: int, // Setting(open_idx) when open==.Setting; langs[open_idx] when .Lang
-    opt_sel:  int, // selection within an open dropdown: -1 = the language root, 0.. = options
-    search:   Doc, // the persistent syntax filter query (live on the search row)
-    dir:      string, // grammars directory (owned)
-    langs:    [dynamic]LangStatus, // names borrow the App registry (see config_pane_init)
-    filtered: [dynamic]int, // indices into langs matching `search` — the displayed langs
+    open:            Open_Kind, // which row's dropdown is open (None when none)
+    open_idx:        int, // Setting(open_idx) when open==.Setting; langs[open_idx] when .Lang
+    opt_sel:         int, // selection within an open dropdown: -1 = the language root, 0.. = options
+    search:          Doc, // the persistent syntax filter query (live on the search row)
+    dir:             string, // grammars directory (owned)
+    langs:           [dynamic]LangStatus, // names borrow the App registry (see config_pane_init)
+    filtered:        [dynamic]int, // indices into langs matching `search` — the displayed langs
     // The DISPLAY row under the pointer, or -1. Transient frame state written by config_frame
     // before it declares (like `scroll`), so the declaration can tint it without hit-testing
     // a second time. -1 whenever the mouse is off or has never moved, because Clay's pointer
@@ -233,11 +233,11 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
         append(
             &rows,
             ConfigRow {
-                kind = .Setting,
-                text = fmt.aprintf("%s:", setting_key(s), allocator = alloc),
-                value = val == "" ? "(default)" : strings.clone(val, alloc),
-                item = si,
-                opt = -1,
+                kind   = .Setting,
+                text   = fmt.aprintf("%s:", setting_key(s), allocator = alloc),
+                value  = val == "" ? "(default)" : strings.clone(val, alloc),
+                item   = si,
+                opt    = -1,
                 indent = 1,
             },
         )
@@ -252,11 +252,11 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
     append(
         &rows,
         ConfigRow {
-            kind = .Search,
-            text = "search:",
-            value = doc_string(&cp.search, alloc),
-            item = SETTING_COUNT,
-            opt = -1,
+            kind   = .Search,
+            text   = "search:",
+            value  = doc_string(&cp.search, alloc),
+            item   = SETTING_COUNT,
+            opt    = -1,
             indent = 1,
         },
     )
@@ -267,11 +267,11 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
         append(
             &rows,
             ConfigRow {
-                kind = .Lang,
-                text = fmt.aprintf("%s %s", l.present ? "✓" : "✗", l.name, allocator = alloc),
-                item = nav,
-                opt = -1,
-                indent = 1,
+                kind    = .Lang,
+                text    = fmt.aprintf("%s %s", l.present ? "✓" : "✗", l.name, allocator = alloc),
+                item    = nav,
+                opt     = -1,
+                indent  = 1,
                 present = l.present,
             },
         )

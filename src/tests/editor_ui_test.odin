@@ -43,15 +43,15 @@ fake_editor :: proc(a: ^app.App, text: string) {
 @(private = "file")
 mkview :: proc(top: int, off: i32, gutter := 2) -> app.Editor_View {
     return app.Editor_View {
-        area = AREA,
-        row_h = ROW_H,
-        rows = ROWS,
-        top = top,
-        off = off,
+        area   = AREA,
+        row_h  = ROW_H,
+        rows   = ROWS,
+        top    = top,
+        off    = off,
         gutter = gutter,
         text_x = app.editor_text_x(AREA.x, gutter, 10),
-        cw = 10,
-        lh = 16,
+        cw     = 10,
+        lh     = 16,
     }
 }
 

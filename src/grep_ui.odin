@@ -124,8 +124,8 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
         if clay.UI(clay.ID("gp_head"))(
             {
                 layout = {
-                    sizing = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
-                    padding = {left = u16(cw)}, // the one-cell left margin
+                    sizing         = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
+                    padding        = {left = u16(cw)}, // the one-cell left margin
                     childAlignment = {y = .Center},
                 },
             },
@@ -137,7 +137,7 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
         if clay.UI(clay.ID("gp_body"))(
             {
                 layout = {
-                    sizing = {clay.SizingGrow(), clay.SizingGrow()},
+                    sizing          = {clay.SizingGrow(), clay.SizingGrow()},
                     layoutDirection = .TopToBottom,
                 },
                 clip = {horizontal = true, vertical = true},
@@ -147,8 +147,8 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
                 if clay.UI(clay.ID("gp_empty"))(
                     {
                         layout = {
-                            sizing = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
-                            padding = {left = u16(2 * cw)}, // indented past the header
+                            sizing         = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
+                            padding        = {left = u16(2 * cw)}, // indented past the header
                             childAlignment = {y = .Center},
                         },
                     },
@@ -184,13 +184,13 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
                 if clay.UI(clay.ID("gp_row", u32(i)))(
                     {
                         layout = {
-                            sizing = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
-                            padding = {left = u16(cw)},
-                            childGap = u16(cw), // gutter, one cell, then the line
+                            sizing         = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
+                            padding        = {left = u16(cw)},
+                            childGap       = u16(cw), // gutter, one cell, then the line
                             childAlignment = {y = .Center},
                         },
                         backgroundColor = bg,
-                        border = border,
+                        border          = border,
                     },
                 ) {
                     // A spacer declares no children at all: it exists to take up a row
@@ -214,7 +214,7 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
                                 if clay.UI(clay.ID("gp_gut", u32(i)))(
                                     {
                                         layout = {
-                                            sizing = {width = clay.SizingFixed(f32(gutw) * cw)},
+                                            sizing         = {width = clay.SizingFixed(f32(gutw) * cw)},
                                             childAlignment = {x = .Right},
                                         },
                                     },

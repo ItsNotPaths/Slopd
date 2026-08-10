@@ -119,8 +119,8 @@ Sysbus :: struct {
 
     // The wake pipe: writing one byte breaks the worker out of poll(), which is how a
     // request is delivered promptly and how stopping is not a wait for the next timeout.
-    wake_r:      posix.FD,
-    wake_w:      posix.FD,
+    wake_r: posix.FD,
+    wake_w: posix.FD,
 
     // set before start, read by the worker
     watches: [dynamic]Sys_Watch,
@@ -644,10 +644,10 @@ sysbus_result_set :: proc(sb: ^Sysbus, id: u64, state: Sys_Req_State, name, text
     append(
         &sb.results,
         Sys_Result {
-            id = id,
-            state = state,
+            id         = id,
+            state      = state,
             error_name = strings.clone(name),
-            error_msg = strings.clone(text),
+            error_msg  = strings.clone(text),
         },
     )
     for len(sb.results) > SYS_RESULTS_KEEP {

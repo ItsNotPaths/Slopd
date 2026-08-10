@@ -29,16 +29,16 @@ import "vendor:glfw"
 PERF_FLUSH_INTERVAL :: 1.0 // seconds of samples per aggregated log line
 
 Perf :: struct {
-    enabled:   bool,
-    file:      ^os.File, // perf.log append handle (nil -> falls back to stderr)
-    queries:   [2]u32, // double-buffered GL_TIME_ELAPSED timer queries
-    issued:    [2]bool, // slot i holds an un-read timer result
-    parity:    int, // which slot the current frame writes
-    win_start: f64, // glfw time the open aggregation window began (0 = not yet opened)
-    cpu:       [dynamic]f32, // per-frame samples (ms) for the open window; heap (cross-frame)
-    gpu:       [dynamic]f32,
-    swap:      [dynamic]f32,
-    input:     [dynamic]f32, // keystroke->present latency (ms), only on frames that consumed fresh input
+    enabled:    bool,
+    file:       ^os.File, // perf.log append handle (nil -> falls back to stderr)
+    queries:    [2]u32, // double-buffered GL_TIME_ELAPSED timer queries
+    issued:     [2]bool, // slot i holds an un-read timer result
+    parity:     int, // which slot the current frame writes
+    win_start:  f64, // glfw time the open aggregation window began (0 = not yet opened)
+    cpu:        [dynamic]f32, // per-frame samples (ms) for the open window; heap (cross-frame)
+    gpu:        [dynamic]f32,
+    swap:       [dynamic]f32,
+    input:      [dynamic]f32, // keystroke->present latency (ms), only on frames that consumed fresh input
     input_seen: f64, // last keystroke timestamp already sampled, so each keystroke counts once
     w, h:      i32, // last framebuffer size, for the line
     verts:     int, // last frame's submitted vertex count

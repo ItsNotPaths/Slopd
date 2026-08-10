@@ -153,8 +153,8 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, now: f64 = 0) {
         if clay.UI(clay.ID("ft_head"))(
             {
                 layout = {
-                    sizing = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
-                    padding = {left = u16(cw)}, // the one-cell left margin, as before
+                    sizing         = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
+                    padding        = {left = u16(cw)}, // the one-cell left margin, as before
                     childAlignment = {y = .Center},
                 },
             },
@@ -165,7 +165,7 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, now: f64 = 0) {
         if clay.UI(clay.ID("ft_body"))(
             {
                 layout = {
-                    sizing = {clay.SizingGrow(), clay.SizingGrow()},
+                    sizing          = {clay.SizingGrow(), clay.SizingGrow()},
                     layoutDirection = .TopToBottom,
                 },
                 clip = {horizontal = true, vertical = true},
@@ -193,8 +193,8 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, now: f64 = 0) {
                 if clay.UI(clay.ID("ft_row", u32(i)))(
                     {
                         layout = {
-                            sizing = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
-                            padding = {left = u16(cw)},
+                            sizing         = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
+                            padding        = {left = u16(cw)},
                             childAlignment = {y = .Center},
                         },
                         backgroundColor = bg,

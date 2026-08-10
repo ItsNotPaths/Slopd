@@ -79,10 +79,10 @@ strip_slot :: proc(at: clay.FloatingAttachPointType, dx: f32) -> clay.ElementDec
     return {
         layout = {childAlignment = {y = .Center}},
         floating = {
-            attachTo = .Parent,
-            attachment = {element = at, parent = at},
-            offset = {dx, 0},
-            clipTo = .AttachedParent,
+            attachTo           = .Parent,
+            attachment         = {element = at, parent = at},
+            offset             = {dx, 0},
+            clipTo             = .AttachedParent,
             pointerCaptureMode = .Passthrough,
         },
     }

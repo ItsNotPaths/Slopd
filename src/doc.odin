@@ -584,11 +584,11 @@ doc_apply :: proc(d: ^Doc, edits_in: []Edit, rec: ^Batch = nil) -> bool {
             append(
                 &rec.ops,
                 Op {
-                    fwd_lo = e.start,
-                    fwd_hi = e.end,
-                    inv_lo = starts[i],
-                    inv_hi = heads[i],
-                    removed = strings.clone(removed[i]),
+                    fwd_lo   = e.start,
+                    fwd_hi   = e.end,
+                    inv_lo   = starts[i],
+                    inv_hi   = heads[i],
+                    removed  = strings.clone(removed[i]),
                     inserted = strings.clone(ins),
                 },
             )

@@ -114,12 +114,12 @@ terminal_sync :: proc(term: ^Terminal, th: ^Theme, cols, rows: int) {
 // for a different reason: see there.
 terminal_view :: proc(term: ^Terminal, area: Rect, row_h: i32, cw: f32, cols, rows: int) -> Terminal_View {
     return Terminal_View {
-        area = area,
-        cw = cw,
+        area  = area,
+        cw    = cw,
         row_h = row_h,
-        cols = cols,
-        rows = rows,
-        top = terminal_view_top(term),
+        cols  = cols,
+        rows  = rows,
+        top   = terminal_view_top(term),
     }
 }
 

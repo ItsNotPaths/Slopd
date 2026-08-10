@@ -15,8 +15,8 @@ import "vendor:glfw"
 // until libvterm).
 CommandLine :: struct {
     using doc:  Doc,
-    history:    [dynamic]string,
-    hist_idx:   int, // index into history; == len(history) means the live edit
+    history:  [dynamic]string,
+    hist_idx: int, // index into history; == len(history) means the live edit
     // Injection alert: a UI gesture (git/filetree, Alt+W) just pre-filled the line
     // rather than the user typing it. The text renders in the alert colour until the
     // user touches it — tracked by version so any edit (which bumps doc.version) clears

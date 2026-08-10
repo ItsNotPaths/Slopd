@@ -67,11 +67,11 @@ OVERLAY_Z :: 1
 // open clip stack at declaration time, which is the pane box every `<p>_declare` opens with.
 clay_overlay_float :: proc(at: clay.FloatingAttachPointType) -> clay.FloatingElementConfig {
     return {
-        attachTo = .Parent,
-        attachment = {element = at, parent = at},
-        clipTo = .AttachedParent,
+        attachTo           = .Parent,
+        attachment         = {element = at, parent = at},
+        clipTo             = .AttachedParent,
         pointerCaptureMode = .Capture,
-        zIndex = OVERLAY_Z,
+        zIndex             = OVERLAY_Z,
     }
 }
 
@@ -144,10 +144,10 @@ switcher_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
     if clay.UI(clay.ID("sw_col"))(
         {
             layout = {
-                sizing = {clay.SizingFixed(f32(colw)), clay.SizingFixed(f32(visible * int(row_h)))},
+                sizing          = {clay.SizingFixed(f32(colw)), clay.SizingFixed(f32(visible * int(row_h)))},
                 layoutDirection = .TopToBottom,
             },
-            floating = clay_overlay_float(.LeftTop),
+            floating        = clay_overlay_float(.LeftTop),
             backgroundColor = clay_rgb(lerp3(th.bg, th.border_dark, fade)),
         },
     ) {
@@ -163,7 +163,7 @@ switcher_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
             if clay.UI(clay.ID("sw_row", u32(i)))(
                 {
                     layout = {
-                        sizing = {clay.SizingGrow({max = f32(colw)}), clay.SizingFixed(f32(row_h))},
+                        sizing         = {clay.SizingGrow({max = f32(colw)}), clay.SizingFixed(f32(row_h))},
                         childAlignment = {x = .Center, y = .Center},
                     },
                     backgroundColor = bg,
@@ -326,11 +326,11 @@ chord_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
     if clay.UI(clay.ID("ch_bar"))(
         {
             layout = {
-                sizing = {clay.SizingFixed(f32(area.w)), clay.SizingFixed(f32(nrows * int(row_h)))},
-                padding = {left = pad, right = pad},
+                sizing          = {clay.SizingFixed(f32(area.w)), clay.SizingFixed(f32(nrows * int(row_h)))},
+                padding         = {left = pad, right = pad},
                 layoutDirection = .TopToBottom,
             },
-            floating = clay_overlay_float(.LeftBottom),
+            floating        = clay_overlay_float(.LeftBottom),
             backgroundColor = clay_rgb(lerp3(th.bg, th.border_dark, fade)),
         },
     ) {
@@ -342,7 +342,7 @@ chord_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
                             clay.SizingGrow({max = f32(area.w) - 2 * f32(pad)}), // rule 8
                             clay.SizingFixed(f32(row_h)),
                         },
-                        childGap = u16(CHORD_GAP * cw),
+                        childGap       = u16(CHORD_GAP * cw),
                         childAlignment = {y = .Center},
                     },
                 },

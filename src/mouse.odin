@@ -71,8 +71,8 @@ Mouse :: struct {
     // that does something (mouse_stand_down), cleared by any pointer motion or press
     // (mouse_wake). See those two for the reasoning; `cursor_hidden` is only the bookkeeping
     // that keeps mouse_apply_cursor from calling into GLFW every frame.
-    stood_down:     bool,
-    cursor_hidden:  bool,
+    stood_down:    bool,
+    cursor_hidden: bool,
 
     // The modifiers held AT THE PRESS, taken from GLFW's own `mods` rather than read off
     // App.alt_held / shift_held when the pane claims it. Two reasons, and the second is the

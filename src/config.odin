@@ -38,23 +38,23 @@ Scroll_Mode :: enum {
 // a few editor settings. Search order: $SLOPD_CONFIG, ~/.config/slopd/slopd.config,
 // ./slopd.config. Anything missing keeps the defaults below.
 Config :: struct {
-    theme_path:        string, // absolute (owned), or "" for the baked-in default
-    indent:            Indent,
-    line_numbers:      Line_Numbers,
-    scroll_mode:       Scroll_Mode, // every line view: follow the caret/selection, or keep it middled
-    font_px:           f32, // logical text size in points (font zoom), persisted across runs
-    jump_lines:        int, // how many lines Ctrl+Up/Down jumps in the editor
-    show_whitespace:   bool, // ghost the leading-space dots / tab marks
-    show_guides:       bool, // draw indent guides + the active-scope rail
-    folding:           bool, // allow Ctrl+Enter block folding
-    folder_cd_run:     bool, // filetree Alt+Enter: run the `cd` at once vs stage it in the CL
-    git_tool:          string, // external git tool Alt+G hands the project root to (owned); "" = none
-    git_term:          int, // which terminal session to run it in; 0 = spawn it detached
-    grep_pane_always:  bool, // CL grep: always open the results pane vs jump straight on a lone hit
-    kill_confirm:      bool, // procmon `k`: arm a confirm row vs SIGKILL immediately
-    conflict_prompt:   bool, // disk changed under unsaved edits: prompt (y/n in the CL) vs silently keep my edits
-    mouse:             bool, // pointer input (wheel, and the clicks that follow it) on/off
-    hover:             bool, // tint the row under the pointer; needs `mouse` to mean anything
+    theme_path:       string, // absolute (owned), or "" for the baked-in default
+    indent:           Indent,
+    line_numbers:     Line_Numbers,
+    scroll_mode:      Scroll_Mode, // every line view: follow the caret/selection, or keep it middled
+    font_px:          f32, // logical text size in points (font zoom), persisted across runs
+    jump_lines:       int, // how many lines Ctrl+Up/Down jumps in the editor
+    show_whitespace:  bool, // ghost the leading-space dots / tab marks
+    show_guides:      bool, // draw indent guides + the active-scope rail
+    folding:          bool, // allow Ctrl+Enter block folding
+    folder_cd_run:    bool, // filetree Alt+Enter: run the `cd` at once vs stage it in the CL
+    git_tool:         string, // external git tool Alt+G hands the project root to (owned); "" = none
+    git_term:         int, // which terminal session to run it in; 0 = spawn it detached
+    grep_pane_always: bool, // CL grep: always open the results pane vs jump straight on a lone hit
+    kill_confirm:     bool, // procmon `k`: arm a confirm row vs SIGKILL immediately
+    conflict_prompt:  bool, // disk changed under unsaved edits: prompt (y/n in the CL) vs silently keep my edits
+    mouse:            bool, // pointer input (wheel, and the clicks that follow it) on/off
+    hover:            bool, // tint the row under the pointer; needs `mouse` to mean anything
 }
 
 // Splits a config line at its trailing comment: `body` is everything before the '#'

@@ -376,10 +376,10 @@ entry_from :: proc(dir: string, fi: os.File_Info) -> FileEntry {
     sbuf: [16]u8
     tbuf: [24]u8
     return FileEntry {
-        name = strings.clone(fi.name),
-        path = path,
+        name   = strings.clone(fi.name),
+        path   = path,
         is_dir = is_dir,
-        exec = exec,
+        exec   = exec,
         display = format_row(
             mode_string(mbuf[:], fi.type, fi.mode),
             fi.name,

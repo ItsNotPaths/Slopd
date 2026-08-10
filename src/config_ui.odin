@@ -256,7 +256,7 @@ config_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []ConfigRow, now: f6
         if clay.UI(clay.ID("cf_body"))(
             {
                 layout = {
-                    sizing = {clay.SizingGrow(), clay.SizingGrow()},
+                    sizing          = {clay.SizingGrow(), clay.SizingGrow()},
                     layoutDirection = .TopToBottom,
                 },
                 clip = {horizontal = true, vertical = true},
@@ -283,8 +283,8 @@ config_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []ConfigRow, now: f6
                 if clay.UI(clay.ID("cf_row", u32(i)))(
                     {
                         layout = {
-                            sizing = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
-                            padding = {left = u16(cw * f32(1 + r.indent))},
+                            sizing         = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
+                            padding        = {left = u16(cw * f32(1 + r.indent))},
                             childAlignment = {y = .Center},
                         },
                         backgroundColor = bg,

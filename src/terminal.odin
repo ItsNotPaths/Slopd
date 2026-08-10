@@ -27,9 +27,9 @@ Terminal :: struct {
 
     // PTY + child shell. pty is the master fd (-1 when there is no child, e.g. a
     // headless test Terminal); alive drops to false when the shell exits (read EOF).
-    pty:    posix.FD,
-    pid:    posix.pid_t,
-    alive:  bool,
+    pty:   posix.FD,
+    pid:   posix.pid_t,
+    alive: bool,
 
     // Directory lock (Alt+L). A locked session keeps its own cwd: the `tu` builtin
     // skips it, and the switcher draws its number greyed. Purely advisory state —
@@ -67,10 +67,10 @@ Terminal :: struct {
     sb_ctx:     runtime.Context, // context the sb_* "c" callbacks allocate under
     scrollback: [dynamic]ScrollLine,
     sb_total:   int,
-    sel_active:   bool, // line-select / scroll mode on (cursor shown)
-    sel_head:     int,  // absolute line of the copy cursor (the moving edge)
-    sel_anchor:   int,  // absolute line the selection is pinned at (== head: no span)
-    view_top:     int,  // absolute line drawn at the top row while scrolled
+    sel_active: bool, // line-select / scroll mode on (cursor shown)
+    sel_head:   int,  // absolute line of the copy cursor (the moving edge)
+    sel_anchor: int,  // absolute line the selection is pinned at (== head: no span)
+    view_top:   int,  // absolute line drawn at the top row while scrolled
     // The WHEEL cut the view loose from the live bottom (terminal_scroll_by). The twin of
     // every list pane's `scroll_detached` and of the editor's, arriving late because this
     // pane used to reach its scrollback by dragging the keyboard's copy cursor around —
@@ -91,8 +91,8 @@ Terminal :: struct {
     // Pos.line is an ABSOLUTE line (scrollback-numbered, like sel_head); Pos.col is a
     // BOUNDARY between cells, 0..=width. That column IS alacritty's `Side::Left|Right`,
     // encoded as a number instead of a pair — see terminal_hit.
-    msel:         Cursor,
-    msel_on:      bool,
+    msel:    Cursor,
+    msel_on: bool,
     // A focused full-screen TUI (vim/less/claude) on the alt buffer owns its own
     // scrolling and scrollback. We track its mode bits via settermprop to route scroll
     // input there instead of to our scrollback — see term_settermprop_cb, the input.odin
@@ -229,10 +229,10 @@ terminal_color :: proc(t: ^Terminal, col: vt.Color) -> (rgb: [3]f32, is_default:
 @(private = "file")
 vt_color :: proc(rgb: [3]f32) -> vt.Color {
     return vt.Color {
-        type = 0, // RGB: the type bit is clear, no default flags
-        red = u8(clampf(rgb.r, 0, 1) * 255),
+        type  = 0, // RGB: the type bit is clear, no default flags
+        red   = u8(clampf(rgb.r, 0, 1) * 255),
         green = u8(clampf(rgb.g, 0, 1) * 255),
-        blue = u8(clampf(rgb.b, 0, 1) * 255),
+        blue  = u8(clampf(rgb.b, 0, 1) * 255),
     }
 }
 

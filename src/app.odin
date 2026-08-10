@@ -120,9 +120,9 @@ App :: struct {
     // The main (document) pane. `main` selects the surface; `editor` holds the text
     // buffers, `media` the one image currently viewed (Image surface). Opening an image
     // file flips main to .Image; opening a text file flips it back (see open_file).
-    main:        MainSurface,
-    editor:      Editor, // the text buffers (main pane, Text surface)
-    media:       Media, // the viewed image (main pane, Image surface); see media.odin
+    main:            MainSurface,
+    editor:          Editor, // the text buffers (main pane, Text surface)
+    media:           Media, // the viewed image (main pane, Image surface); see media.odin
     disk_poll_at:    f64, // glfw time of the next view-pane staleness check (see view_poll_disk)
     conflict_prompt: bool, // disk change under unsaved edits: prompt (y/n in the CL) vs silently keep (config)
 

@@ -17,26 +17,26 @@ import stbtt "vendor:stb/truetype"
 // shaders flip y to NDC.
 
 Text :: struct {
-    font:       Font,
-    glyph_prog: u32,
-    glyph_vao:  u32,
-    glyph_vbo:  u32,
-    glyph_us:   i32, // u_screen
-    quad_prog:  u32,
-    quad_vao:   u32,
-    quad_vbo:   u32,
-    quad_us:    i32, // u_screen
-    image_prog: u32, // textured RGBA quad (the media viewer): the glyph shader is R8/alpha
-    image_vao:  u32, // -only and the quad shader is untextured, so neither can blit an image
-    image_vbo:  u32,
-    image_us:   i32, // u_screen
-    glyphs:     [dynamic]f32, // scratch, 7 floats/vertex: x y u v r g b
-    under:      [dynamic]f32, // scratch, 5 floats/vertex: x y r g b
-    over:       [dynamic]f32, // scratch, same layout as `under`
-    images:     [dynamic]ImageQuad, // queued image blits, drawn per-pane between under-quads and glyphs
-    ttf:        []u8, // retained so the atlas can re-bake on DPI change
-    logical_px: f32, // atlas is baked at logical_px * scale physical pixels
-    scale:      f32, // DPI scale the atlas is currently baked for
+    font:        Font,
+    glyph_prog:  u32,
+    glyph_vao:   u32,
+    glyph_vbo:   u32,
+    glyph_us:    i32, // u_screen
+    quad_prog:   u32,
+    quad_vao:    u32,
+    quad_vbo:    u32,
+    quad_us:     i32, // u_screen
+    image_prog:  u32, // textured RGBA quad (the media viewer): the glyph shader is R8/alpha
+    image_vao:   u32, // -only and the quad shader is untextured, so neither can blit an image
+    image_vbo:   u32,
+    image_us:    i32, // u_screen
+    glyphs:      [dynamic]f32, // scratch, 7 floats/vertex: x y u v r g b
+    under:       [dynamic]f32, // scratch, 5 floats/vertex: x y r g b
+    over:        [dynamic]f32, // scratch, same layout as `under`
+    images:      [dynamic]ImageQuad, // queued image blits, drawn per-pane between under-quads and glyphs
+    ttf:         []u8, // retained so the atlas can re-bake on DPI change
+    logical_px:  f32, // atlas is baked at logical_px * scale physical pixels
+    scale:       f32, // DPI scale the atlas is currently baked for
     frame_verts: int, // vertices submitted this frame (reset in render; read by the perf log)
 }
 

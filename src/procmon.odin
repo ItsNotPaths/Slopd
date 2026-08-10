@@ -60,12 +60,12 @@ ProcScope :: enum {
 // freed by procmon_snapshot_free.
 ProcRow :: struct {
     pid, ppid: int,
-    name:      string,
-    cmd:       string,
-    user:      string,
-    rss_kb:    u64,
-    cpu_pct:   f32, // share of one core, btop-style (a busy thread reads ~100%)
-    is_child:  bool, // a descendant of the Slopd process
+    name:     string,
+    cmd:      string,
+    user:     string,
+    rss_kb:   u64,
+    cpu_pct:  f32, // share of one core, btop-style (a busy thread reads ~100%)
+    is_child: bool, // a descendant of the Slopd process
 }
 
 // A graph's ring buffer: normalised values in [0,1], newest at `head`, `n` filled.
@@ -92,28 +92,28 @@ ProcSnapshot :: struct {
 
 ProcmonPane :: struct {
     // navigation (main thread)
-    focus:       ProcFocus,
-    cat:         GraphCat,
-    scope:       ProcScope,
-    sel:         int, // selected row, index into `view`
-    sel_pid:     int, // the selected process's PID — selection identity across re-sorts
-    scroll:      int, // first visible row — the viewport TARGET top (see list_scroll_target)
+    focus:   ProcFocus,
+    cat:     GraphCat,
+    scope:   ProcScope,
+    sel:     int, // selected row, index into `view`
+    sel_pid: int, // the selected process's PID — selection identity across re-sorts
+    scroll:  int, // first visible row — the viewport TARGET top (see list_scroll_target)
     // A wheel gesture DETACHES the view from the selection (glfw time; 0 = following it),
     // the flat-row twin of Buffer.scroll_detached. While it is set neither viewport policy
     // runs, so the wheel moves the view rather than the cursor; the next keystroke that
     // reaches this pane re-attaches it. See list_scroll_apply (scroll.odin).
     scroll_detached: f64,
-    scroll_anim: Anim, // list smooth-scroll: the visual top tweening toward `scroll`
-    hover:       ProcHit, // what the pointer is over, resolved once per frame (procmon_ui.odin)
+    scroll_anim:     Anim, // list smooth-scroll: the visual top tweening toward `scroll`
+    hover:           ProcHit, // what the pointer is over, resolved once per frame (procmon_ui.odin)
 
     // live name filter (Space opens; reuses the shared Doc editing core)
     filtering: bool,
     filter:    Doc,
 
     // signal selector (replaces the graph band; btop-style 1..31)
-    sig_open:  bool,
-    sig_sel:   int, // 1..31
-    sig_multi: bool, // last keypress was a digit (so a second digit extends it)
+    sig_open:     bool,
+    sig_sel:      int, // 1..31
+    sig_multi:    bool, // last keypress was a digit (so a second digit extends it)
     sig_typed_at: f64, // glfw time of that keypress; the run expires PROC_SIG_RUN_S later
 
     // `k` confirm: armed by k when App.kill_confirm is on; the armed row shows a
@@ -141,15 +141,15 @@ ProcmonPane :: struct {
     running: bool,
 
     // sampler-private state (only the sampler touches these after init)
-    ncpu:        int,
-    last_total:  u64, // /proc/stat total jiffies at the previous tick
-    last_idle:   u64,
-    last_jiff:   map[int]u64, // per-pid utime+stime at the previous tick
+    ncpu:       int,
+    last_total: u64, // /proc/stat total jiffies at the previous tick
+    last_idle:  u64,
+    last_jiff:  map[int]u64, // per-pid utime+stime at the previous tick
     s_cpu, s_mem, s_disk, s_gpu: Series, // authoritative rings, copied into each snapshot
-    last_dsect:  u64, // disk sectors read+written at the previous tick
-    last_dtime:  f64, // wall clock of the previous disk sample
-    disk_peak:   f32, // running peak throughput, for the auto-scaled disk graph
-    users:       map[int]string, // uid -> name (loaded once from /etc/passwd; owned)
+    last_dsect: u64, // disk sectors read+written at the previous tick
+    last_dtime: f64, // wall clock of the previous disk sample
+    disk_peak:  f32, // running peak throughput, for the auto-scaled disk graph
+    users:      map[int]string, // uid -> name (loaded once from /etc/passwd; owned)
 }
 
 // --- lifecycle ---
@@ -279,12 +279,12 @@ procmon_sample :: proc(pm: ^ProcmonPane) {
             append(
                 &fresh,
                 ProcRow {
-                    pid = pid,
-                    ppid = ppid,
-                    name = strings.clone(name),
-                    cmd = proc_read_cmdline(pid, name),
-                    user = proc_user_name(pm, uid),
-                    rss_kb = rss,
+                    pid     = pid,
+                    ppid    = ppid,
+                    name    = strings.clone(name),
+                    cmd     = proc_read_cmdline(pid, name),
+                    user    = proc_user_name(pm, uid),
+                    rss_kb  = rss,
                     cpu_pct = cpu_pct,
                 },
             )

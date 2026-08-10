@@ -68,7 +68,7 @@ Highlighter :: struct {
     loaded: map[string]Loaded_Grammar, // by language name; load/compile once
     // The last buffer's parse tree, reused across frames until its content changes.
     // A caret blink or smooth scroll redraws without reparsing the whole file.
-    tree: ts.Tree,
+    tree:     ts.Tree,
     tree_buf: rawptr, // the Buffer it was parsed from (identity)
     tree_ver: u64, // doc.version at parse time
     tree_src: string, // the exact text the tree was parsed from; node byte offsets index
@@ -78,9 +78,9 @@ Highlighter :: struct {
     // for an identical result. Memoize the last painted rows keyed by what they depend
     // on — buffer, content version, window, and theme (colours bake in) — and reuse on a
     // match. Heap-owned so it survives the per-frame temp free_all; rebuilt on any change.
-    cache_rows: []Row_Colors,
-    cache_buf: rawptr,
-    cache_ver: u64,
+    cache_rows:  []Row_Colors,
+    cache_buf:   rawptr,
+    cache_ver:   u64,
     cache_first: int,
     cache_count: int,
     cache_theme: Theme,
@@ -167,9 +167,9 @@ highlighter_tree :: proc(h: ^Highlighter, b: ^Buffer, lang: ts.Language) -> ts.T
 @(private = "file")
 Capture_Span :: struct {
     start, end: ts.Point, // tree-sitter points: row = line, col = BYTE offset in line
-    size:       u32, // byte length, for "most specific (smallest) wins" ordering
-    pattern:    u16, // query pattern index; lowest wins on an identical-span tie
-    color:      [3]f32,
+    size:    u32, // byte length, for "most specific (smallest) wins" ordering
+    pattern: u16, // query pattern index; lowest wins on an identical-span tie
+    color:   [3]f32,
 }
 
 // Per-visible-row rune colours for buffer b's window [first_line, first_line+count).
@@ -232,11 +232,11 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
         append(
             &spans,
             Capture_Span {
-                start = ts.node_start_point(qc.node),
-                end = ts.node_end_point(qc.node),
-                size = ts.node_end_byte(qc.node) - ts.node_start_byte(qc.node),
+                start   = ts.node_start_point(qc.node),
+                end     = ts.node_end_point(qc.node),
+                size    = ts.node_end_byte(qc.node) - ts.node_start_byte(qc.node),
                 pattern = match.pattern_index,
-                color = color,
+                color   = color,
             },
         )
     }

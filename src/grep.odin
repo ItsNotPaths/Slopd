@@ -135,7 +135,7 @@ grep_parse :: proc(raw, query: string) -> (GrepHit, bool) {
     return GrepHit {
         path = strings.clone(raw[:c1], context.temp_allocator),
         line = lineno,
-        col = col,
+        col  = col,
         text = strings.clone(strings.trim_space(content), context.temp_allocator),
     }, true
 }
@@ -158,11 +158,11 @@ grep_set :: proc(g: ^GrepPane, query: string, hits: []GrepHit) {
         append(
             &g.hits,
             GrepHit {
-                path = strings.clone(h.path),
-                line = h.line,
-                col = h.col,
-                text = strings.clone(h.text),
-                ctx = ctx,
+                path      = strings.clone(h.path),
+                line      = h.line,
+                col       = h.col,
+                text      = strings.clone(h.text),
+                ctx       = ctx,
                 ctx_first = first,
             },
         )
@@ -273,10 +273,10 @@ grep_rows :: proc(g: ^GrepPane, root: string, alloc := context.allocator) -> []G
                 append(
                     &rows,
                     GrepRow {
-                        hit = hi,
+                        hit    = hi,
                         gutter = fmt.aprintf("%d", ln, allocator = alloc),
-                        text = c,
-                        match = ln == h.line,
+                        text   = c,
+                        match  = ln == h.line,
                     },
                 )
             }

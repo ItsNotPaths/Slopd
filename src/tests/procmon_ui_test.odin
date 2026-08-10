@@ -69,11 +69,11 @@ fixture :: proc(a: ^app.App, n: int) {
         append(
             &pm.cur.procs,
             app.ProcRow {
-                pid = 100 + i,
-                name = names[i % len(names)],
-                cmd = "/usr/bin/thing --flag",
-                user = "paths",
-                rss_kb = 2048,
+                pid     = 100 + i,
+                name    = names[i % len(names)],
+                cmd     = "/usr/bin/thing --flag",
+                user    = "paths",
+                rss_kb  = 2048,
                 cpu_pct = f32(i),
             },
         )
