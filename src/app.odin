@@ -12,7 +12,7 @@ Rect :: struct {
 }
 
 // Whether a point falls inside a rect — half-open on the far edges, so two rects sharing
-// a boundary (the panes either side of the gutter, the git columns either side of the
+// a boundary (the panes either side of the gutter, the halves either side of the
 // rule) can never both claim the same pixel. A zero-sized rect never hits, which is what
 // lets hit-testing skip a hidden-pane check: compute_layout leaves those zeroed.
 rect_hit :: proc(r: Rect, x, y: i32) -> bool {
@@ -36,7 +36,6 @@ AuxMode :: enum {
     FileTree,
     Terminal,
     Procmon,
-    Git,
     Config,
     Grep,
 }
@@ -48,7 +47,7 @@ Focus :: enum {
 
 // What the MAIN (left / "document") pane shows. The left pane holds the document you
 // opened — text by default, or a media viewer for an image — while the aux pane (right)
-// holds a TOOL acting on documents (filetree/git/terminal/…). That document-vs-tool line
+// holds a TOOL acting on documents (filetree/terminal/…). That document-vs-tool line
 // is why media surfaces are peers of the text editor here, not aux modes. Text/Image are
 // the v1 set; Audio/Video are future variants (each adds a draw_* / *_key branch + decode).
 MainSurface :: enum {
@@ -106,13 +105,12 @@ App :: struct {
 
     // The project root: the directory the `cd` command-line builtin sets (NOT a shell
     // cd — it's captured by Slopd). New terminals spawn here, the `tu` builtin syncs
-    // every unlocked terminal to it, the git pane (and other root-scoped tools) read
-    // it, and the idle status strip shows it. Owned; defaults to the launch cwd.
+    // every unlocked terminal to it, root-scoped tools read it, and the idle status
+    // strip shows it. Owned; defaults to the launch cwd.
     project_root: string,
 
     tree:        FileTree, // filetree aux mode (initialised in main, needs IO)
     config_pane: ConfigPane, // config / syntax aux mode (initialised in main, needs IO)
-    git:         GitPane, // git aux mode (Sublime-Merge-lite; initialised in main)
     procmon:     ProcmonPane, // procmon aux mode (btop-lite; sampler thread, initialised in main)
 
     // The main (document) pane. `main` selects the surface; `editor` holds the text
@@ -157,7 +155,7 @@ App :: struct {
     zen_anim:      Anim, // aux-pane reveal in Zen: 0 hidden .. 1 docked
     switcher_anim: Anim, // terminal switcher fade-in while Alt is held
     chord_anim:    Anim, // filetree chord cheat-sheet fade-in while Ctrl is held
-    split_anim:    Anim, // editor/aux split widen while git is the aux mode (carries the editor fraction)
+    split_anim:    Anim, // the editor/aux split ratio, eased when Alt+[ / Alt+] adjust it
 
     theme:        Theme, // colour palette (loaded from config in main)
     theme_path:   string, // active theme path (owned, resolved by load_config); "" = baked-in default
@@ -178,18 +176,13 @@ App :: struct {
     // the user to review and run with Enter (the reviewable default). See cl_dispatch.
     folder_cd_run:   bool,
 
-    // Git pane CL injections, same stage-vs-run policy as folder_cd: Enter on a branch
-    // produces `git checkout <branch>`; Enter in the commit box produces the staged-commit
-    // recipe; the Remote page's rows produce push/pull/fetch. When the matching flag is set
-    // the command fires at once, else it's staged in the CL for review.
-    git_checkout_run: bool,
-    git_commit_run:   bool,
-    git_merge_run:    bool,
-    git_remote_run:   bool,
-
-    // The git pane's slot-machine gag (Ctrl+Shift+Alt+S): when risky_mode is on the
-    // lucky-dip commit auto-sends (run, no review); otherwise it's staged in the CL.
-    risky_mode: bool,
+    // The external git tool Alt+G hands the project root to (`git_tool` in the config
+    // file). Owned; empty means "no tool configured", and Alt+G opens a plain shell at
+    // the root instead — you already have a git workflow, this just gets out of its way.
+    // git_term picks which terminal session hosts it; 0 spawns it detached, for a GUI
+    // tool that wants its own window. See git_tool.odin.
+    git_tool: string,
+    git_term: int,
 
     // Procmon `k`: when on (default) a kill arms a one-key confirm row first; off kills
     // (SIGKILL) immediately.
@@ -285,7 +278,7 @@ view_refresh :: proc(a: ^App) {
 
 // Periodically refresh the focused view pane so edits made by an external tool (an agent,
 // another editor) flow in instead of being overwritten by a later save. Only ticks while
-// the document pane holds focus (no stat traffic off in a terminal or the git pane);
+// the document pane holds focus (no stat traffic off in a terminal or a tool pane);
 // switching INTO the pane refreshes it immediately via set_focus, this catches changes
 // that land while you sit in it. Called once per frame; app_next_wake schedules the wake
 // so the poll fires even at rest.
@@ -307,16 +300,9 @@ set_focus :: proc(a: ^App, who: Focus) {
         now := glfw.GetTime()
         anim_start(&a.zen_anim, now, anim_value(&a.zen_anim, now), a.focus == .Aux ? 1 : 0, ZEN_DUR)
     }
-    // The git pane reloads whenever it gains focus, so its optics never go stale behind
-    // edits made elsewhere (a save in the editor, a commit in a terminal). git status /
-    // log are fast and this only fires on a real focus change. Covers both the goto
-    // (set_aux -> here) and Alt+Right into an already-git aux pane.
-    if a.focus == .Aux && a.aux_mode == .Git {
-        git_refresh(a)
-    }
-    // The view pane mirrors the git pane: it refreshes the instant it gains focus, so an
-    // external edit (an agent or another editor rewriting the open file) flows in at once
-    // rather than waiting for the poll — and can't be silently overwritten by a later save.
+    // The view pane refreshes the instant it gains focus, so an external edit (an agent
+    // or another editor rewriting the open file) flows in at once rather than waiting for
+    // the poll — and can't be silently overwritten by a later save.
     view_refresh(a)
     // Procmon only samples /proc while its pane is on screen, so the loop returns to
     // 0% idle otherwise. In Split both panes are always visible (so it keeps updating
@@ -359,7 +345,7 @@ app_init :: proc(a: ^App) {
     a.focus = .Editor
     a.split = 0.5
     a.term_active = 0 // sessions are spawned lazily (term_ensure)
-    a.split_anim = Anim{to = a.split} // settled at the base ratio; git mode widens it
+    a.split_anim = Anim{to = a.split} // settled at the base ratio; Alt+[ / Alt+] ease it
     a.mouse_on = true // config may turn it off (main); on by default
     a.hover_on = true // likewise
     a.scale = 1

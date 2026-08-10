@@ -71,16 +71,12 @@ cl_dispatch :: proc(a: ^App, text: string, run: bool) {
 cl_cancel :: proc(a: ^App) {
     a.cl_active = false
     doc_clear(&a.cl.doc)
-    git_cl_settle(a, a.git.cl_wait, false) // a git command staged here was dropped (no-op otherwise)
 }
 
 cl_submit :: proc(a: ^App) {
     input := strings.trim_space(doc_string(&a.cl.doc, context.temp_allocator))
     a.cl_active = false
     doc_clear(&a.cl.doc)
-    // A git command staged here SHIPS on a real submit, backs off on an empty line (no-op
-    // when the pane wasn't waiting). Settled before exec so the pane reacts this frame.
-    git_cl_settle(a, a.git.cl_wait, input != "")
     if input == "" {
         return
     }
@@ -276,9 +272,7 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         set_aux(a, .FileTree)
         filetree_reload(&a.tree) // `ls` is also the REFRESH gesture — and the tail of a staged rm
     case "gs":
-        set_aux(a, .Git)
-    case "gr":
-        git_refresh(a) // re-read repo state in place (after a git-pane action mutates it)
+        git_tool_open(a) // hand the project root to the configured external git tool
     case "cf":
         set_aux(a, .Config)
         config_pane_refresh(&a.config_pane)
@@ -647,7 +641,7 @@ cl_ghost_hint :: proc(line: string) -> string {
 @(private = "file")
 cl_is_builtin :: proc(name: string) -> bool {
     switch name {
-    case "ls", "gs", "gr", "cf", "zen", "zm", "full", "fm", "put", "j", "jump", "grep", "cd", "reload",
+    case "ls", "gs", "cf", "zen", "zm", "full", "fm", "put", "j", "jump", "grep", "cd", "reload",
          "tu", "w", "wa", "q", "q!", "wq", "wqa", "waq":
         return true
     }

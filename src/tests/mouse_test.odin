@@ -60,7 +60,7 @@ test_wheel_target_main_surface :: proc(t: ^testing.T) {
 // Every aux mode routes to exactly one target, and the four list panes share one.
 @(test)
 test_wheel_target_aux_modes :: proc(t: ^testing.T) {
-    AUX_X :: 800 // inside the aux pane, right of the git sidebar/diff split at x=701
+    AUX_X :: 800 // comfortably inside the aux pane
     cases := [?]struct {
         mode: app.AuxMode,
         want: app.Wheel_Target,
@@ -70,39 +70,11 @@ test_wheel_target_aux_modes :: proc(t: ^testing.T) {
         {.Config, .List},
         {.Procmon, .List},
         {.Terminal, .Terminal},
-        {.Git, .Git_Diff}, // AUX_X lands in the diff column; the split is covered below
     }
     for c in cases {
         a := routing_app(c.mode)
         testing.expect_value(t, app.wheel_target(&a, LAY, AUX_X, 300), c.want)
     }
-}
-
-// The git pane's two columns, resolved through git_columns — the same proc draw_git lays
-// out with, which is the point: a hit test and a paint that share one definition cannot
-// drift. The hairline rule between them belongs to neither column.
-@(test)
-test_wheel_target_git_columns :: proc(t: ^testing.T) {
-    a := routing_app(.Git)
-    side, rule, diff := app.git_columns(LAY.aux, 1)
-
-    // The split is 40% of the pane inside its 2px focus-ring inset, parted by a 1px rule:
-    // a 498-wide pane insets to 494, of which the sidebar takes floor(494 * 0.40) = 197.
-    testing.expect_value(t, side.x, 504)
-    testing.expect_value(t, side.w, 197)
-    testing.expect_value(t, rule.w, 1)
-    testing.expect_value(t, diff.x, side.x + side.w + 1)
-    testing.expect_value(t, side.w + rule.w + diff.w, LAY.aux.w - 4)
-
-    testing.expect_value(t, app.wheel_target(&a, LAY, side.x, 300), app.Wheel_Target.Git_Sidebar)
-    testing.expect_value(t, app.wheel_target(&a, LAY, side.x + side.w - 1, 300), app.Wheel_Target.Git_Sidebar)
-    testing.expect_value(t, app.wheel_target(&a, LAY, rule.x, 300), app.Wheel_Target.None)
-    testing.expect_value(t, app.wheel_target(&a, LAY, diff.x, 300), app.Wheel_Target.Git_Diff)
-    testing.expect_value(t, app.wheel_target(&a, LAY, diff.x + diff.w - 1, 300), app.Wheel_Target.Git_Diff)
-
-    // The pane's own inset is not part of either column, so a notch on the focus ring is
-    // not a notch on the sidebar.
-    testing.expect_value(t, app.wheel_target(&a, LAY, LAY.aux.x, 300), app.Wheel_Target.None)
 }
 
 // A hidden pane is a ZERO rect out of compute_layout, which is what lets wheel_target skip
@@ -139,7 +111,7 @@ test_wheel_target_before_first_frame :: proc(t: ^testing.T) {
 // --- the verb half -------------------------------------------------------------------
 
 // A notch in a list pane moves the VIEW and leaves the selection where it is — the same
-// thing it means in the editor, the terminal and the git diff, and the same thing it means
+// thing it means in the editor and the terminal, and the same thing it means
 // on every other desktop. WHEEL_LINES rows per notch, and the press stamps the pane as
 // detached so neither viewport policy overwrites the write on the next frame.
 @(test)
@@ -191,25 +163,3 @@ test_wheel_apply_inert_targets :: proc(t: ^testing.T) {
     testing.expect_value(t, a.grep.scroll, 0)
 }
 
-// The git sidebar scrolls under the pointer WITHOUT stealing region focus: git_move_sel is
-// the keyboard path and refuses off-region, git_sidebar_move is the movement itself. A
-// wheel over the sidebar while the diff holds focus must still move the sidebar.
-@(test)
-test_wheel_apply_git_sidebar_ignores_region_focus :: proc(t: ^testing.T) {
-    a := routing_app(.Git)
-    for i in 0 ..< 20 {
-        append(&a.git.commits, app.Commit{})
-    }
-    defer delete(a.git.commits)
-    a.git.section = .Log
-    a.git.region = .Diff // focus is on the OTHER column
-
-    app.wheel_apply(&a, .Git_Sidebar, 1)
-    testing.expect_value(t, a.git.sel_log, app.WHEEL_LINES)
-    testing.expect_value(t, a.git.region, app.GitRegion.Diff) // focus untouched
-
-    // The keyboard path stays guarded — that asymmetry is the reason for the split.
-    a.git.sel_log = 0
-    app.git_move_sel(&a.git, 1)
-    testing.expect_value(t, a.git.sel_log, 0)
-}

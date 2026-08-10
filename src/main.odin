@@ -75,11 +75,8 @@ main :: proc() {
     app.show_guides = cfg.show_guides
     app.folding = cfg.folding
     app.folder_cd_run = cfg.folder_cd_run
-    app.git_checkout_run = cfg.git_checkout_run
-    app.git_commit_run = cfg.git_commit_run
-    app.git_merge_run = cfg.git_merge_run
-    app.git_remote_run = cfg.git_remote_run
-    app.risky_mode = cfg.risky_mode
+    app.git_tool = cfg.git_tool
+    app.git_term = cfg.git_term
     app.grep_pane_always = cfg.grep_pane_always
     app.kill_confirm = cfg.kill_confirm
     app.conflict_prompt = cfg.conflict_prompt
@@ -95,8 +92,6 @@ main :: proc() {
     defer grammars_destroy(app.grammars)
     config_pane_init(&app.config_pane, app.grammars)
     defer config_pane_destroy(&app.config_pane)
-    git_init(&app.git)
-    defer git_destroy(&app.git)
     procmon_init(&app.procmon)
     defer procmon_destroy(&app.procmon)
     highlighter_init(&app.hl)
@@ -159,8 +154,6 @@ main :: proc() {
 
         now := glfw.GetTime()
         view_poll_disk(&app, now) // re-read an externally-changed file into the focused view pane
-        git_scroll_pump(&app, now) // advance a held diff auto-scroll at its (accelerating) tick
-        git_spin_pump(&app, now) // pay out the slot-machine gag once its reels settle
         w, h := glfw.GetFramebufferSize(window)
         // Track DPI, then re-bake the atlas if the DPI scale (monitor move) or the
         // font zoom (Ctrl +/-) changed since last frame. text_apply no-ops otherwise.

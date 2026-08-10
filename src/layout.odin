@@ -15,11 +15,6 @@ Layout :: struct {
     vis:    Pane_Vis, // which panes these rects are for — computed once, here
 }
 
-// The editor's width fraction while the git aux mode is active: the panes split
-// 1/4 editor : 3/4 aux so the git sidebar + diff get room. The split eases between
-// this and a.split via App.split_anim (see compute_layout + GIT_SPLIT_DUR).
-GIT_EDITOR_SPLIT :: f32(0.25)
-
 compute_layout :: proc(win_w, win_h: i32, a: ^App, now: f64) -> Layout {
     out: Layout
     out.gutter = i32(2 * a.scale)
@@ -35,13 +30,11 @@ compute_layout :: proc(win_w, win_h: i32, a: ^App, now: f64) -> Layout {
     out.strip = Rect{0, content_h, win_w, strip_h}
     content := Rect{0, 0, win_w, content_h}
 
-    // Git widens the aux pane: the editor's width fraction eases toward GIT_EDITOR_SPLIT
-    // while git is the aux mode, back to a.split otherwise. Re-aimed on change like
-    // smooth scroll (anim.odin) so it self-corrects each frame; read in the Split
-    // arrangement below. (Zen keeps a.split — see the Git plan note.)
-    split_to := a.aux_mode == .Git ? GIT_EDITOR_SPLIT : a.split
-    if split_to != a.split_anim.to {
-        anim_start(&a.split_anim, now, anim_value(&a.split_anim, now), split_to, GIT_SPLIT_DUR)
+    // The editor's width fraction, eased rather than snapped when Alt+[ / Alt+] adjust
+    // it. Re-aimed on change like smooth scroll (anim.odin) so it self-corrects each
+    // frame; read in the Split arrangement below.
+    if a.split != a.split_anim.to {
+        anim_start(&a.split_anim, now, anim_value(&a.split_anim, now), a.split, SPLIT_DUR)
     }
     split := anim_value(&a.split_anim, now)
 
@@ -51,8 +44,8 @@ compute_layout :: proc(win_w, win_h: i32, a: ^App, now: f64) -> Layout {
     // glyphs keep their positions and only get clipped at the sliding edge, no reflow.
     if a.view == .Zen {
         r := anim_value(&a.zen_anim, now) // 0 hidden .. 1 docked
-        // Use the git-widened, animated `split` (not the raw a.split) so the git aux pane
-        // gets its full 3/4 width in Zen too, and the widen EASES rather than snapping.
+        // Use the animated `split` rather than the raw a.split so an adjustment EASES
+        // in Zen too rather than snapping.
         aux_w := max(0, win_w - i32(f32(win_w) * split))
         aux_x := win_w - i32(f32(aux_w) * r)
         if r > 0.001 {

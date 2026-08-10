@@ -24,7 +24,7 @@ VSYNC_PACED :: 0.0
 // Animation timings (seconds) — short by design, in keeping with the spartan ethos.
 BLINK_HALF :: 0.5 // caret on for this long, then off for this long
 ZEN_DUR :: 0.12 // aux-pane slide in/out
-GIT_SPLIT_DUR :: 0.12 // editor/aux split widen entering/leaving git mode (zen-paced)
+SPLIT_DUR :: 0.12 // editor/aux split adjustment (Alt+[ / Alt+]), zen-paced
 SWITCHER_DUR :: 0.10 // terminal switcher fade-in
 
 Anim :: struct {
@@ -62,16 +62,7 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     if a.view == .Zen && anim_active(&a.zen_anim, now) { // aux-pane slide
         wake = sched_min(wake, VSYNC_PACED)
     }
-    if a.view == .Split && anim_active(&a.split_anim, now) { // git pane widen/narrow
-        wake = sched_min(wake, VSYNC_PACED)
-    }
-    if a.aux_mode == .Git && anim_active(&a.git.diff_scroll_anim, now) { // diff smooth scroll
-        wake = sched_min(wake, VSYNC_PACED)
-    }
-    if a.aux_mode == .Git && a.git.scroll_dir != 0 { // diff auto-scroll: wake for the next tick
-        wake = sched_min(wake, max(0, a.git.scroll_next - now))
-    }
-    if a.aux_mode == .Git && a.git.spin.active && !a.git.spin.landed { // spinning: tick to the payout
+    if a.view == .Split && anim_active(&a.split_anim, now) { // the split widen/narrow
         wake = sched_min(wake, VSYNC_PACED)
     }
     if a.alt_held && a.aux_mode == .Terminal && anim_active(&a.switcher_anim, now) { // switcher fade

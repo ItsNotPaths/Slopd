@@ -76,8 +76,9 @@ grep_open_selected :: proc(a: ^App) {
 // -H always-with-filename (so a single-file result parses the same as a tree), -I skip
 // binaries, --exclude-dir=.git. `word` adds -w (whole-word — symbol lookup); `fixed` adds
 // -F (literal pattern, not a regex). GNU grep emits no column, so we recover it on parse
-// (first occurrence of the query on the line). Shelling out mirrors git_run: no shell, so
-// the pattern + paths need no quoting, and `--` guards a pattern that begins with '-'.
+// (first occurrence of the query on the line). It execs grep directly through
+// os.process_exec rather than through a shell, so the pattern + paths need no quoting, and
+// `--` guards a pattern that begins with '-'.
 // Returns temp-allocated hits ([] on no match or spawn error).
 grep_run :: proc(root, query: string, word := false, fixed := false) -> []GrepHit {
     if root == "" || query == "" {

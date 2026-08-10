@@ -25,7 +25,7 @@ import clay "../bindings/clay"
 //      definition.
 //
 //   2. Routing resolves against the layout the last frame PAINTED (App.lay), not a freshly
-//      computed one. Mid-animation — the Zen slide, the git split widen — a recomputed
+//      computed one. Mid-animation — the Zen slide, a split adjustment — a recomputed
 //      layout is already somewhere else, so a notch would land in a pane the user cannot
 //      see yet. This is the same "hit-test against the previous frame" rule Clay's own
 //      SetPointerState follows (see docs/clay-refactor.md, C1).
@@ -85,12 +85,10 @@ mouse_take_click :: proc(a: ^App) -> (count: int, ok: bool) {
 // pane" because each scrolls a categorically different thing: a view, a selection, or a
 // child process's own scrollback.
 Wheel_Target :: enum {
-    None, // the status strip, the inter-pane gutter, the git column rule, off-window
+    None, // the status strip, the inter-pane gutter, off-window
     Editor, // editor pane, Text surface: the buffer's viewport
     Media, // editor pane, Image surface: pan/zoom is C8, so nothing yet
     Terminal,
-    Git_Sidebar, // git pane, left column — a list, so the wheel moves its selection
-    Git_Diff, // git pane, right column — the diff's own scroll
     List, // filetree / grep / config / procmon
 }
 
@@ -110,18 +108,6 @@ wheel_target :: proc(a: ^App, lay: Layout, mx, my: i32) -> Wheel_Target {
     switch a.aux_mode {
     case .Terminal:
         return .Terminal
-    case .Git:
-        // The git pane is the one aux mode with sub-columns whose split matters here.
-        // git_columns is the same proc draw_git lays out with, so this cannot drift from
-        // what was painted — the divergence C6 deletes git_diff_rows over.
-        side, _, diff := git_columns(lay.aux, a.scale)
-        if rect_hit(side, mx, my) {
-            return .Git_Sidebar
-        }
-        if rect_hit(diff, mx, my) {
-            return .Git_Diff
-        }
-        return .None // the hairline rule between the columns
     case .FileTree, .Grep, .Config, .Procmon:
         return .List
     }
@@ -151,8 +137,8 @@ wheel_target :: proc(a: ^App, lay: Layout, mx, my: i32) -> Wheel_Target {
 // WHEEL_LINES *items*, which in grep meant three BLOCKS, about eighteen display rows for
 // one notch. Detached, a notch is three rows in every pane.
 //
-// The terminal and the git diff need no detach: they already keep view and selection
-// apart, so the wheel moves the view and scroll_mode never enters into it.
+// The terminal needs no detach: it already keeps view and selection apart, so the wheel
+// moves the view and scroll_mode never enters into it.
 wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
     if notch == 0 {
         return
@@ -191,13 +177,6 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
             // extend = false, so this scrolls without laying down a selection span.
             terminal_sel_move(t, d, false)
         }
-    case .Git_Diff:
-        git_diff_scroll(&a.git, d)
-    case .Git_Sidebar:
-        // git_sidebar_move, not git_move_sel: the latter is the KEY path and refuses
-        // unless the sidebar holds the region focus, whereas a wheel scrolls whatever it
-        // is over. Focus is deliberately not stolen — focus-follows-click is C8.
-        git_sidebar_move(&a.git, d)
     case .List:
         // Every list pane scrolls its VIEW, through one shared proc. The stamp is the whole
         // mechanism: while it is set the pane's viewport policy does not run, so this write
@@ -239,8 +218,8 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
             } else {
                 list_scroll_by(&pm.scroll, &pm.scroll_detached, d, now)
             }
-        case .Terminal, .Git:
-        // Not list panes; wheel_target never routes them here.
+        case .Terminal:
+        // Not a list pane; wheel_target never routes it here.
         }
     }
 }

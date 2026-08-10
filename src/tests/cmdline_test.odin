@@ -60,8 +60,6 @@ test_cl_goto :: proc(t: ^testing.T) {
     app.cl_exec(&a, "ls")
     testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree)
     testing.expect_value(t, a.focus, app.Focus.Aux)
-    app.cl_exec(&a, "gs")
-    testing.expect_value(t, a.aux_mode, app.AuxMode.Git)
 }
 
 @(test)
@@ -121,13 +119,13 @@ test_cl_history :: proc(t: ^testing.T) {
 
     app.doc_set_text(&a.cl.doc, "ls")
     app.cl_submit(&a)
-    app.doc_set_text(&a.cl.doc, "gs")
+    app.doc_set_text(&a.cl.doc, "cf")
     app.cl_submit(&a)
 
     app.cl_open(&a) // hist_idx parked at the live edit
-    app.cl_history_prev(&a);testing.expect_value(t, val(&a), "gs")
+    app.cl_history_prev(&a);testing.expect_value(t, val(&a), "cf")
     app.cl_history_prev(&a);testing.expect_value(t, val(&a), "ls")
-    app.cl_history_next(&a);testing.expect_value(t, val(&a), "gs")
+    app.cl_history_next(&a);testing.expect_value(t, val(&a), "cf")
     app.cl_history_next(&a);testing.expect_value(t, val(&a), "") // back to live
 }
 
@@ -292,7 +290,7 @@ test_cl_chain_success_runs_builtin :: proc(t: ^testing.T) {
     append(&a.terminals, tm)
     defer {app.cl_chain_clear(&a);free(tm);delete(a.terminals)}
 
-    app.cl_exec(&a, "build_thing && gs")
+    app.cl_exec(&a, "build_thing && cf")
     testing.expect(t, a.cl_chain.waiting, "should block on the shell step's exit")
 
     tm.exit_ready = true // shell reports success
@@ -300,7 +298,7 @@ test_cl_chain_success_runs_builtin :: proc(t: ^testing.T) {
     tm.exit_code = 0
     app.cl_chain_pump(&a)
 
-    testing.expect_value(t, a.aux_mode, app.AuxMode.Git) // gs ran
+    testing.expect_value(t, a.aux_mode, app.AuxMode.Config) // cf ran
     testing.expect(t, !a.cl_chain.waiting && len(a.cl_chain.steps) == 0, "chain finished")
 }
 
@@ -312,7 +310,7 @@ test_cl_chain_failure_short_circuits :: proc(t: ^testing.T) {
     append(&a.terminals, tm)
     defer {app.cl_chain_clear(&a);free(tm);delete(a.terminals)}
 
-    app.cl_exec(&a, "build_thing && gs")
+    app.cl_exec(&a, "build_thing && cf")
     testing.expect(t, a.cl_chain.waiting, "should block on the shell step's exit")
 
     tm.exit_ready = true // shell reports failure
@@ -320,7 +318,7 @@ test_cl_chain_failure_short_circuits :: proc(t: ^testing.T) {
     tm.exit_code = 1
     app.cl_chain_pump(&a)
 
-    testing.expect(t, a.aux_mode != app.AuxMode.Git, "gs must be skipped on failure")
+    testing.expect(t, a.aux_mode != app.AuxMode.Config, "cf must be skipped on failure")
     testing.expect(t, !a.cl_chain.waiting && len(a.cl_chain.steps) == 0, "chain cleared")
 }
 
@@ -430,9 +428,9 @@ test_cl_chain_multi_step_all_succeed :: proc(t: ^testing.T) {
     tm := fake_live(&a)
     defer free_live(&a, tm)
 
-    app.cl_exec(&a, "build && gs && deploy && ls") // shell, builtin, shell, builtin
+    app.cl_exec(&a, "build && cf && deploy && ls") // shell, builtin, shell, builtin
     testing.expect(t, a.cl_chain.waiting, "waiting on `build`")
-    feed_exit(&a, tm, 0) // build ok -> gs runs -> `deploy` injected
+    feed_exit(&a, tm, 0) // build ok -> cf runs -> `deploy` injected
     testing.expect(t, a.cl_chain.waiting, "waiting on `deploy`")
     feed_exit(&a, tm, 0) // deploy ok -> ls runs
 
@@ -446,8 +444,8 @@ test_cl_chain_mid_failure_stops_rest :: proc(t: ^testing.T) {
     tm := fake_live(&a)
     defer free_live(&a, tm)
 
-    app.cl_exec(&a, "build && gs && deploy && ls")
-    feed_exit(&a, tm, 0) // build ok -> gs -> `deploy` waits
+    app.cl_exec(&a, "build && cf && deploy && ls")
+    feed_exit(&a, tm, 0) // build ok -> cf -> `deploy` waits
     feed_exit(&a, tm, 7) // deploy FAILS -> ls must be skipped
 
     testing.expect(t, a.aux_mode != app.AuxMode.FileTree, "ls skipped after a mid-chain failure")
@@ -459,12 +457,12 @@ test_cl_chain_first_failure_stops_all :: proc(t: ^testing.T) {
     a: app.App
     tm := fake_live(&a)
     defer free_live(&a, tm)
-    a.aux_mode = app.AuxMode.Config // a known starting pane
+    a.aux_mode = app.AuxMode.Procmon // a known starting pane
 
-    app.cl_exec(&a, "build && gs && ls")
+    app.cl_exec(&a, "build && cf && ls")
     feed_exit(&a, tm, 1) // build fails immediately -> no builtin runs
 
-    testing.expect(t, a.aux_mode != app.AuxMode.Git, "gs skipped")
+    testing.expect(t, a.aux_mode != app.AuxMode.Config, "cf skipped")
     testing.expect(t, a.aux_mode != app.AuxMode.FileTree, "ls skipped")
     testing.expect(t, len(a.cl_chain.steps) == 0, "chain cleared")
 }

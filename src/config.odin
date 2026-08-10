@@ -28,7 +28,7 @@ Line_Numbers :: enum {
 // would leave it; Middle pins the target to the pane's middle row, so Up/Down always move
 // the content instead. One policy across every line-oriented view — the editor follows its
 // caret (buffer_scroll_target, which also walks folds), while the filetree / procmon / grep /
-// config / git sidebar lists follow their selection (list_scroll_target).
+// config lists follow their selection (list_scroll_target).
 Scroll_Mode :: enum {
     Follow,
     Middle,
@@ -48,16 +48,35 @@ Config :: struct {
     show_guides:       bool, // draw indent guides + the active-scope rail
     folding:           bool, // allow Ctrl+Enter block folding
     folder_cd_run:     bool, // filetree Alt+Enter: run the `cd` at once vs stage it in the CL
-    git_checkout_run:  bool, // git branch Enter: run `git checkout` at once vs stage it
-    git_commit_run:    bool, // git commit Enter: run the commit recipe at once vs stage it
-    git_merge_run:     bool, // git branch Space / merge finish: run vs stage it
-    git_remote_run:    bool, // git Remote page push/pull/fetch: run at once vs stage it
-    risky_mode:        bool, // git slot machine: auto-send the lucky-dip commit (no review)
+    git_tool:          string, // external git tool Alt+G hands the project root to (owned); "" = none
+    git_term:          int, // which terminal session to run it in; 0 = spawn it detached
     grep_pane_always:  bool, // CL grep: always open the results pane vs jump straight on a lone hit
     kill_confirm:      bool, // procmon `k`: arm a confirm row vs SIGKILL immediately
     conflict_prompt:   bool, // disk changed under unsaved edits: prompt (y/n in the CL) vs silently keep my edits
     mouse:             bool, // pointer input (wheel, and the clicks that follow it) on/off
     hover:             bool, // tint the row under the pointer; needs `mouse` to mean anything
+}
+
+// A config line with its trailing `# comment` removed, trimmed; "" for a blank or
+// comment-only line.
+//
+// This is not cosmetic. The header promises "simple `key: value`, '#' comments" and every
+// shipped line uses a trailing one, but the parser only ever skipped lines that STARTED
+// with '#' — so `mouse: on   # on | off` handed parse_on_off the string
+// "on   # on | off", which matches nothing, and the setting silently fell back to its
+// default. It went unnoticed because every commented line in slopd.config happens to
+// carry the value that is already the default, so the fallback and the intent agreed.
+// The first setting where they would not is git_tool, whose value is free text: without
+// this, `git_tool:   # e.g. lazygit` configures a tool literally named "# e.g. lazygit".
+//
+// A '#' inside a value is therefore not supported, which is the same bargain the file's
+// own header already struck.
+config_strip_comment :: proc(line: string) -> string {
+    s := line
+    if h := strings.index_byte(s, '#'); h >= 0 {
+        s = s[:h]
+    }
+    return strings.trim_space(s)
 }
 
 load_config :: proc() -> Config {
@@ -71,11 +90,7 @@ load_config :: proc() -> Config {
         show_guides     = true,
         folding         = true,
         folder_cd_run   = false, // stage the cd in the CL by default (reviewable)
-        git_checkout_run = false, // stage branch checkout / commit / merge / remote in the CL by default
-        git_commit_run  = false,
-        git_merge_run   = false,
-        git_remote_run  = false,
-        risky_mode      = false, // the lucky-dip commit is staged for review by default
+        git_term        = 0, // detached by default: a GUI tool wants its own window, not a PTY
         grep_pane_always = true, // always show the results pane (no auto-jump on a lone hit)
         kill_confirm    = true, // confirm a procmon kill before it fires
         conflict_prompt = true, // ask before a disk change is reconciled against unsaved edits
@@ -92,8 +107,8 @@ load_config :: proc() -> Config {
     }
     rest := string(src)
     for line in strings.split_lines_iterator(&rest) {
-        s := strings.trim_space(line)
-        if len(s) == 0 || s[0] == '#' {
+        s := config_strip_comment(line)
+        if len(s) == 0 {
             continue
         }
         colon := strings.index_byte(s, ':')
@@ -138,16 +153,13 @@ load_config :: proc() -> Config {
             if v, ok := parse_on_off(val); ok {cfg.folding = v}
         case "folder_cd":
             if v, ok := parse_stage_run(val); ok {cfg.folder_cd_run = v}
-        case "git_checkout":
-            if v, ok := parse_stage_run(val); ok {cfg.git_checkout_run = v}
-        case "git_commit":
-            if v, ok := parse_stage_run(val); ok {cfg.git_commit_run = v}
-        case "git_merge":
-            if v, ok := parse_stage_run(val); ok {cfg.git_merge_run = v}
-        case "git_remote":
-            if v, ok := parse_stage_run(val); ok {cfg.git_remote_run = v}
-        case "risky_mode":
-            if v, ok := parse_on_off(val); ok {cfg.risky_mode = v}
+        case "git_tool":
+            delete(cfg.git_tool)
+            cfg.git_tool = strings.clone(val)
+        case "git_term":
+            // Empty (or unparseable) stays 0 — detached. A number names a terminal
+            // session; git_tool_open clamps it to the sessions that can exist.
+            if v, ok := strconv.parse_int(val); ok {cfg.git_term = max(0, v)}
         case "grep_pane":
             if v, ok := parse_on_off(val); ok {cfg.grep_pane_always = v}
         case "kill_confirm":
@@ -237,9 +249,9 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return INDENT_OPTS[:]
     case .Theme:
         return theme_options(context.temp_allocator)
-    case .Folding, .IndentGuides, .Whitespace, .RiskyMode, .GrepPane, .KillConfirm, .Mouse, .Hover:
+    case .Folding, .IndentGuides, .Whitespace, .GrepPane, .KillConfirm, .Mouse, .Hover:
         return ON_OFF_OPTS[:]
-    case .FolderCd, .GitCheckout, .GitCommit, .GitMerge, .GitRemote:
+    case .FolderCd:
         return STAGE_RUN_OPTS[:]
     case .DiskConflict:
         return PROMPT_KEEP_OPTS[:]
@@ -295,11 +307,6 @@ Setting :: enum {
     IndentGuides,
     Whitespace,
     FolderCd,
-    GitCheckout,
-    GitCommit,
-    GitMerge,
-    GitRemote,
-    RiskyMode,
     GrepPane,
     KillConfirm,
     DiskConflict,
@@ -317,11 +324,6 @@ setting_key :: proc(s: Setting) -> string {
     case .IndentGuides: return "indent_guides"
     case .Whitespace:   return "whitespace"
     case .FolderCd:     return "folder_cd"
-    case .GitCheckout:  return "git_checkout"
-    case .GitCommit:    return "git_commit"
-    case .GitMerge:     return "git_merge"
-    case .GitRemote:    return "git_remote"
-    case .RiskyMode:    return "risky_mode"
     case .GrepPane:     return "grep_pane"
     case .KillConfirm:  return "kill_confirm"
     case .DiskConflict: return "disk_conflict"
@@ -344,11 +346,6 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .IndentGuides: return on_off(a.show_guides)
     case .Whitespace:   return on_off(a.show_whitespace)
     case .FolderCd:     return a.folder_cd_run ? "run" : "stage"
-    case .GitCheckout:  return a.git_checkout_run ? "run" : "stage"
-    case .GitCommit:    return a.git_commit_run ? "run" : "stage"
-    case .GitMerge:     return a.git_merge_run ? "run" : "stage"
-    case .GitRemote:    return a.git_remote_run ? "run" : "stage"
-    case .RiskyMode:    return on_off(a.risky_mode)
     case .GrepPane:     return on_off(a.grep_pane_always)
     case .KillConfirm:  return on_off(a.kill_confirm)
     case .DiskConflict: return a.conflict_prompt ? "prompt" : "keep"
@@ -388,16 +385,6 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.show_whitespace = parse_on_off(val) or_return
     case .FolderCd:
         a.folder_cd_run = parse_stage_run(val) or_return
-    case .GitCheckout:
-        a.git_checkout_run = parse_stage_run(val) or_return
-    case .GitCommit:
-        a.git_commit_run = parse_stage_run(val) or_return
-    case .GitMerge:
-        a.git_merge_run = parse_stage_run(val) or_return
-    case .GitRemote:
-        a.git_remote_run = parse_stage_run(val) or_return
-    case .RiskyMode:
-        a.risky_mode = parse_on_off(val) or_return
     case .GrepPane:
         a.grep_pane_always = parse_on_off(val) or_return
     case .KillConfirm:
