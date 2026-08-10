@@ -172,7 +172,7 @@ mouse_take_click :: proc(a: ^App) -> (count: int, ok: bool) {
 Wheel_Target :: enum {
     None, // the status strip, the inter-pane gutter, off-window
     Editor, // editor pane, Text surface: the buffer's viewport
-    Media, // editor pane, Image surface: pan/zoom is C8d, so nothing yet
+    Media, // editor pane, Image surface: the zoom (C8d) — the one target that is not a scroll
     Terminal,
     List, // filetree / grep / config / procmon
 }
@@ -232,9 +232,11 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
     switch target {
     case .None:
     case .Media:
-    // Media pan/zoom is C8d (media_fit_rect is already pure, so it is a small job when
-    // it comes). Listed rather than folded into .None so the pane is visibly accounted
-    // for and a notch here is a deliberate no-op, not an unhandled case.
+        // The one target that does not scroll: over an image a notch ZOOMS, about the
+        // pointer (C8d). It is the only branch here that ignores `d` — WHEEL_LINES is a
+        // count of rows and a picture has none — so the notch count goes straight through
+        // to media_wheel, which compounds it into a zoom factor.
+        media_wheel(a, notch)
     case .Editor:
         if len(a.editor.buffers) == 0 {
             return

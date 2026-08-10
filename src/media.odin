@@ -70,8 +70,41 @@ media_fit_rect :: proc(pane: Rect, iw, ih: i32, zoom: f32, pan: [2]f32) -> Rect 
 MEDIA_ZOOM_MIN :: f32(0.05)
 MEDIA_ZOOM_MAX :: f32(32)
 
+// One step of zoom, shared by the =/- keys and by a wheel notch (C8d) so the two cannot
+// drift apart about what "one step in" means.
+MEDIA_ZOOM_STEP :: f32(1.25)
+
 media_zoom :: proc(m: ^Media, factor: f32) {
     m.zoom = clampf(m.zoom * factor, MEDIA_ZOOM_MIN, MEDIA_ZOOM_MAX)
+}
+
+// Zoom about a POINT rather than about the pane centre: the image pixel under (mx, my)
+// stays under (mx, my). That is what makes a wheel zoom read as a lens over the picture
+// rather than as a slider beside it — you point at the thing you want bigger. The keyboard's
+// media_zoom keeps the centre fixed instead, because a key has no point to zoom about.
+//
+// The correction is one line of similar triangles and no new geometry: the fitted size
+// scales EXACTLY with the zoom, so after a zoom by r every pixel of the image has moved
+// away from the image's centre by a factor of r. Pinning the pointer therefore means moving
+// the pan by (r - 1) times the vector from the pointer to that centre — zero when they
+// coincide, which is why zooming about the middle needs no correction at all.
+//
+// `r` is derived from the zoom that actually landed rather than from `factor`, so a step
+// that hit MEDIA_ZOOM_MIN/MAX corrects by what the clamp allowed instead of drifting the
+// image sideways at the ends of the range.
+media_zoom_at :: proc(m: ^Media, factor: f32, pane: Rect, mx, my: i32) {
+    before := m.zoom
+    media_zoom(m, factor)
+    if m.zoom == before {
+        return
+    }
+    fit := media_fit_rect(pane, m.w, m.h, before, m.pan)
+    if fit.w <= 0 || fit.h <= 0 {
+        return // nothing on screen to keep under the pointer
+    }
+    r := m.zoom / before
+    m.pan.x += (f32(fit.x) + f32(fit.w) / 2 - f32(mx)) * (r - 1)
+    m.pan.y += (f32(fit.y) + f32(fit.h) / 2 - f32(my)) * (r - 1)
 }
 
 media_pan :: proc(m: ^Media, dx, dy: f32) {
@@ -152,9 +185,9 @@ media_key :: proc(a: ^App, key, mods: i32) {
     step := 40 * a.scale
     switch key {
     case glfw.KEY_EQUAL, glfw.KEY_KP_ADD:
-        media_zoom(m, 1.25)
+        media_zoom(m, MEDIA_ZOOM_STEP)
     case glfw.KEY_MINUS, glfw.KEY_KP_SUBTRACT:
-        media_zoom(m, 1.0 / 1.25)
+        media_zoom(m, 1.0 / MEDIA_ZOOM_STEP)
     case glfw.KEY_0, glfw.KEY_KP_0, glfw.KEY_F:
         media_fit(m)
     case glfw.KEY_LEFT:

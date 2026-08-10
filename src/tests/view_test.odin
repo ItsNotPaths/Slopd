@@ -101,3 +101,34 @@ test_view_toggles :: proc(t: ^testing.T) {
     app.view_toggle_full(&a) // Full -> Split
     testing.expect_value(t, a.view, app.View.Split)
 }
+
+// `normal` / `nm` names the arrangement instead of flipping a bit, which is the whole reason
+// it exists: the two toggles only lead back to Split from their OWN mode, so getting out
+// otherwise means remembering which one you are in. Asserted from all three views, including
+// the two crossed cases that make a toggle the wrong tool — `zen` from Full lands in Zen and
+// `full` from Zen lands in Full, neither of which is where the user asking for normal wants
+// to be.
+@(test)
+test_view_normal_names_the_arrangement :: proc(t: ^testing.T) {
+    a: app.App // .Split
+    a.focus = .Aux
+
+    app.view_normal(&a)
+    testing.expect_value(t, a.view, app.View.Split) // idempotent from Split
+    testing.expect_value(t, a.focus, app.Focus.Aux) // and focus is KEPT, unlike zen's exit
+
+    a.view = .Zen
+    app.view_normal(&a)
+    testing.expect_value(t, a.view, app.View.Split)
+    testing.expect_value(t, a.focus, app.Focus.Aux)
+
+    a.view = .Full
+    app.view_normal(&a)
+    testing.expect_value(t, a.view, app.View.Split)
+
+    // Both panes are on screen afterwards, whichever one holds the arrows — which is the
+    // thing "normal" actually promises, and what the aux pane's own liveness reads off
+    // (set_focus re-asks whether procmon is visible).
+    v := app.panes_visible(&a)
+    testing.expect(t, v.editor && v.aux, "normal mode must show both panes")
+}

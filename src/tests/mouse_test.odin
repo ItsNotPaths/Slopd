@@ -160,8 +160,45 @@ test_wheel_apply_inert_targets :: proc(t: ^testing.T) {
     testing.expect_value(t, a.grep.scroll_detached, f64(0)) // and nothing was detached
     app.wheel_apply(&a, .None, 3)
     testing.expect_value(t, a.grep.scroll, 0)
-    app.wheel_apply(&a, .Media, 3) // pan/zoom is C8
+
+    // .Media is no longer inert (C8d: a notch zooms), but it must still not reach a
+    // neighbour's handler — and with the main surface on Text there is no image to zoom, so
+    // it changes nothing at all.
+    app.wheel_apply(&a, .Media, 3)
     testing.expect_value(t, a.grep.scroll, 0)
+    testing.expect_value(t, a.media.zoom, f32(0)) // untouched: this App has no image open
+}
+
+// A notch over the image ZOOMS — the one wheel target in the program that is not a scroll,
+// and the one that ignores WHEEL_LINES outright (a picture has no rows to count).
+//
+// Routed through wheel_apply rather than by calling media_wheel, because the claim is that
+// the ROUTING reaches it: the branch was a declared no-op from C2 until here, and a target
+// that silently kept doing nothing would look exactly like a target that works.
+@(test)
+test_wheel_apply_media_zooms :: proc(t: ^testing.T) {
+    a := routing_app(.FileTree)
+    a.main = .Image
+    a.lay = LAY
+    a.media = app.Media {
+        w    = 200,
+        h    = 100,
+        zoom = 1,
+    }
+    a.mouse.x, a.mouse.y = 250, 280 // the editor pane's centre-ish
+
+    app.wheel_apply(&a, .Media, -1) // negative is UP: toward the picture
+    testing.expect_value(t, a.media.zoom, app.MEDIA_ZOOM_STEP)
+
+    app.wheel_apply(&a, .Media, 1) // and back out again
+    testing.expect(t, abs(a.media.zoom - 1) < 1e-5, "a notch each way returns to where it started")
+
+    // Several notches at once (a trackpad's batched event) land where the same number of
+    // discrete notches would, rather than counting as one.
+    a.media.zoom = 1
+    app.wheel_apply(&a, .Media, -2)
+    expected := app.MEDIA_ZOOM_STEP * app.MEDIA_ZOOM_STEP
+    testing.expect(t, abs(a.media.zoom - expected) < 1e-5, "notches compound")
 }
 
 

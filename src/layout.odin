@@ -7,6 +7,14 @@ package main
 // There is no maximize: the editor and aux panes are always both present, split
 // vertically, with the status strip along the bottom.
 
+// How far the editor/aux split may be pushed either way. Named here, beside the arithmetic
+// that spends it, because there are two writers now: Alt+`[` / Alt+`]` step it (input.odin)
+// and the divider drag sets it outright (window_ui.odin, C8d). A pointer must not be able to
+// reach a width the keyboard cannot, and two copies of a pair of magic numbers is how that
+// stops being true.
+SPLIT_MIN :: 0.15
+SPLIT_MAX :: 0.85
+
 Layout :: struct {
     editor: Rect, // the text editor pane (zero rect when hidden: Full on the aux surface)
     aux:    Rect, // the aux pane (zero rect when hidden: Zen while editing)

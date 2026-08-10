@@ -130,9 +130,16 @@ test_drag_autoscrolling_edges :: proc(t: ^testing.T) {
     a.mouse.y = 570
     testing.expect(t, app.drag_autoscrolling(&a), "the aux pane has the same bottom edge")
 
-    // The divider (C8) drags by pixel delta and has no view to run off the end of.
+    // The divider (C8d) drags by pixel delta and has no view to run off the end of.
     a.drag.kind = .Split
     testing.expect(t, !app.drag_autoscrolling(&a), "a divider does not autoscroll")
+
+    // Nor does the media pan (C8d), and this is the one whose answer is NEITHER AXIS rather
+    // than "the vertical one" — the pointer is well below the editor pane here, which is the
+    // position that makes every other kind say yes.
+    a.drag.kind = .Media_Pan
+    a.mouse.x, a.mouse.y = 120, 900
+    testing.expect(t, !app.drag_autoscrolling(&a), "a pan has no rows to walk past the edge")
 
     // Before the first frame a.lay is all zeroes, and a zero-height rect must not read as
     // "the pointer is past the bottom of it" — which `y >= r.y + r.h` says for every y at
@@ -187,4 +194,63 @@ test_drag_next_wake :: proc(t: ^testing.T) {
     // A whole interval, give or take the f64 round trip through an absolute glfw time.
     testing.expect(t, abs(app.drag_next_wake(&a, 100) - app.DRAG_SCROLL_S) < 1e-9, "one interval to the next step")
     testing.expect_value(t, app.drag_next_wake(&a, 100 + app.DRAG_SCROLL_S), 0.0)
+}
+
+// The motion threshold, C8d's addition to the machine and the only piece of it the editor
+// and the terminal deliberately do not use. Its whole reason for existing is that a CLICK on
+// the split divider must do nothing at all, where a click in text is just a zero-length drag.
+//
+// **The latch is the assertion that matters.** An un-latched threshold reads correctly on the
+// way out and wrongly on the way back: a divider dragged well past the threshold and then
+// returned to within a pixel of the press would refuse the last frame and leave the split
+// stranded at wherever the pointer had been. The mutation this pins is dropping the early
+// `if a.drag.moved` return, which fails on the third expect and nothing else.
+@(test)
+test_drag_moved_latches :: proc(t: ^testing.T) {
+    a := dragging_app(300, 200)
+    app.drag_begin(&a, .Split, 0, 1, app.Pos{}, 0)
+
+    testing.expect(t, !app.drag_moved(&a, 3), "a press that has not moved is not a drag")
+    a.mouse.x = 302 // two pixels: inside the threshold, in the axis that matters
+    testing.expect(t, !app.drag_moved(&a, 3), "nor is one that has barely twitched")
+
+    a.mouse.x = 340
+    testing.expect(t, app.drag_moved(&a, 3), "past the threshold it is a drag")
+    a.mouse.x = 301 // back within a pixel of the press
+    testing.expect(t, app.drag_moved(&a, 3), "and stays one on the way back")
+
+    // The threshold is max-norm: either axis alone is enough, which is what a pointer that
+    // moves in two dimensions requires.
+    b := dragging_app(300, 200)
+    app.drag_begin(&b, .Media_Pan, 0, 1, app.Pos{}, 0)
+    b.mouse.y = 210
+    testing.expect(t, app.drag_moved(&b, 3), "vertical travel counts too")
+
+    // And a fresh capture starts un-latched — the field is per-GESTURE, so a drag that ended
+    // must not hand its verdict to the next press.
+    app.drag_release(&b)
+    app.drag_sweep(&b)
+    app.drag_begin(&b, .Split, 0, 1, app.Pos{}, 0)
+    testing.expect(t, !app.drag_moved(&b, 3), "a new press starts from nothing")
+}
+
+// The pan client's origin: the VIEW's position at press time, carried so each frame
+// re-derives the pan from the total travel rather than accumulating a per-frame delta.
+// It is the media surface's `anchor` — the same field in role, storing the opposite thing
+// for the opposite reason (drag.odin).
+@(test)
+test_drag_begin_carries_the_pan_origin :: proc(t: ^testing.T) {
+    a := dragging_app(400, 250)
+    app.drag_begin(&a, .Media_Pan, 0, 1, app.Pos{}, 0, [2]f32{-30, 12})
+
+    testing.expect_value(t, a.drag.kind, app.Drag_Kind.Media_Pan)
+    testing.expect_value(t, a.drag.origin_pan, [2]f32{-30, 12})
+    testing.expect_value(t, a.drag.origin_x, 400)
+    testing.expect_value(t, a.drag.origin_y, 250)
+
+    // The parameter defaults, so the three clients that have no pan are unchanged by it
+    // existing — which is the whole reason it is a default rather than a widened signature.
+    b := dragging_app(400, 250)
+    app.drag_begin(&b, .Editor_Text, 0, 1, app.Pos{3, 3}, 3)
+    testing.expect_value(t, b.drag.origin_pan, [2]f32{0, 0})
 }

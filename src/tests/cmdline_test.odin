@@ -396,6 +396,22 @@ test_cl_parse_grep_is_builtin :: proc(t: ^testing.T) {
     testing.expect_value(t, steps[0].text, "grep foo")
 }
 
+// The three view commands are builtins, and `nm` is the one where forgetting to say so is
+// actively dangerous rather than merely broken: `nm` is a real binary on every Linux box (the
+// GNU symbol lister), so a name missing from cl_is_builtin would not fail — it would quietly
+// run something else in t1 and leave the arrangement alone.
+@(test)
+test_cl_parse_view_commands_are_builtins :: proc(t: ^testing.T) {
+    for name in ([]string{"zen", "zm", "full", "fm", "normal", "nm"}) {
+        a: app.App
+        defer app.cl_chain_clear(&a)
+        app.cl_parse(&a, name)
+        steps := a.cl_chain.steps[:]
+        testing.expect_value(t, len(steps), 1)
+        testing.expectf(t, !steps[0].shell, "%s reached the shell instead of the arrangement", name)
+    }
+}
+
 // --- multi-step chain runner (&& across several steps; exit codes simulated) ---
 
 @(private = "file")

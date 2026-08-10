@@ -201,3 +201,214 @@ test_window_one_tree_answers_for_every_pane :: proc(t: ^testing.T) {
     testing.expect(t, !clay.PointerOver(clay.ID("ed_pane")), "the editor claimed the gutter")
     testing.expect(t, !clay.PointerOver(clay.ID("ft_pane")), "the aux pane claimed the gutter")
 }
+
+// ---------------------------------------------------------------------------------------
+// C8d: the window's own pointer verbs — the divider drag and focus-follows-click
+// ---------------------------------------------------------------------------------------
+//
+// Both live here rather than in a pane's test because neither belongs to a pane. The divider
+// is the GUTTER, which by construction is the one strip of the window no pane owns; focus is
+// a property of the arrangement, and set_focus (app.odin) is deliberately its single choke
+// point for every pane at once. They also share an ordering that is the substance of C8d:
+// they run BEFORE compute_layout, because what they write is what it reads.
+//
+// The layout is the one at the top of this file — a 500x300 window at a.split = 0.5 — so the
+// divider's centre is at x = 250 and the gutter is x[249, 251).
+
+@(private = "file")
+LAY :: app.Layout {
+    editor = ED_PANE,
+    aux    = AUX_PANE,
+    strip  = {0, 280, WIN_W, 20},
+    gutter = 2,
+    vis    = {editor = true, aux = true},
+}
+
+// An App with the pointer at (x, y), a press parked for something to claim, and the last
+// frame's layout in hand. app_init is deliberately not called: nothing here needs a project
+// root, and set_focus on a bare App is exactly the thing under test.
+@(private = "file")
+pointing_app :: proc(x, y: i32) -> app.App {
+    a := app.App{scale = 1, mouse_on = true, split = 0.5, lay = LAY}
+    a.mouse.known = true
+    a.mouse.down = true
+    a.mouse.click = true
+    a.mouse.click_count = 1
+    a.mouse.x, a.mouse.y = x, y
+    return a
+}
+
+// The grab band: the 2px gutter, widened by DIVIDER_GRAB either side so it can be hit at all.
+// The widening is the reason the divider gets first refusal on a press (window_pointer) —
+// it deliberately overlaps both panes' focus-ring insets, and a band that overlapped a pane
+// and asked SECOND would be reachable only in the two pixels it was widened to escape.
+@(test)
+test_divider_band_straddles_the_gutter :: proc(t: ^testing.T) {
+    band, ok := app.divider_band(LAY, 1)
+    testing.expect(t, ok, "two panes side by side have a divider")
+    testing.expect_value(t, band, app.Rect{245, 0, 10, 280}) // 249 - 4, 2 + 2*4
+    testing.expect(t, band.x < ED_PANE.x + ED_PANE.w, "the band must reach into the editor's edge")
+    testing.expect(t, band.x + band.w > AUX_PANE.x, "and into the aux pane's")
+
+    // The DPI scale is in it, because the gutter is and a 4px grab on a HiDPI screen is 2
+    // logical pixels of target.
+    hidpi, _ := app.divider_band(LAY, 2)
+    testing.expect_value(t, hidpi.w, 2 + 2 * 8)
+}
+
+// **The gap IS the predicate**, and these are the three arrangements it answers for. Zen is
+// the one worth stating: its panes TOUCH (the aux pane slides over the editor rather than
+// beside it), so there is no divider and the boundary belongs to the editor's own text — which
+// is the correct answer rather than a limitation.
+@(test)
+test_divider_band_needs_two_panes_and_a_gutter :: proc(t: ^testing.T) {
+    zen := LAY // the aux pane docked over the editor: adjacent, no window background between
+    zen.editor = {0, 0, 251, 280}
+    zen.aux = {251, 0, 249, 280}
+    _, ok := app.divider_band(zen, 1)
+    testing.expect(t, !ok, "panes that touch have no divider between them")
+
+    lone := LAY
+    lone.aux = {}
+    lone.vis = {editor = true, aux = false}
+    _, ok = app.divider_band(lone, 1)
+    testing.expect(t, !ok, "one visible pane has nothing to divide")
+
+    _, ok = app.divider_band(app.Layout{}, 1)
+    testing.expect(t, !ok, "before the first frame there is no layout at all")
+}
+
+// A press in the band captures the divider and CLAIMS the press, so neither the pane whose
+// edge it overlaps nor focus-follows-click acts on it. Then the split follows the pointer,
+// snapped rather than eased — a divider that trailed the cursor by an animation is the one
+// thing direct manipulation must never do.
+//
+// The mutation this pins: dropping the `a.split_anim` re-aim leaves compute_layout starting a
+// SPLIT_DUR ease on the next frame, and the last expect fails.
+@(test)
+test_divider_drag_moves_the_split :: proc(t: ^testing.T) {
+    a := pointing_app(250, 140) // dead centre of the gutter
+
+    app.divider_click(&a, a.lay)
+    testing.expect(t, app.drag_live(&a, .Split, 0), "a press in the band must capture")
+    testing.expect(t, !a.mouse.click, "and must claim the press")
+
+    // Inside the threshold: still a click, and a click on a divider does nothing at all.
+    a.mouse.x = 252
+    app.divider_drag(&a, WIN_W)
+    testing.expect_value(t, a.split, f32(0.5))
+
+    a.mouse.x = 350
+    app.divider_drag(&a, WIN_W)
+    testing.expect_value(t, a.split, f32(0.7))
+    testing.expect_value(t, a.split_anim.to, a.split) // snapped: no ease is pending
+    testing.expect(t, a.split_anim.duration <= 0, "the divider must not trail the pointer")
+}
+
+// The drag is clamped to the range Alt+[ / Alt+] clamp to, because it is the same setting:
+// a pointer must not be able to reach a width the keyboard cannot.
+@(test)
+test_divider_drag_clamps_like_the_keyboard :: proc(t: ^testing.T) {
+    testing.expect_value(t, app.divider_split_at(0, WIN_W), f32(app.SPLIT_MIN))
+    testing.expect_value(t, app.divider_split_at(WIN_W, WIN_W), f32(app.SPLIT_MAX))
+    testing.expect_value(t, app.divider_split_at(250, WIN_W), f32(0.5))
+    testing.expect_value(t, app.divider_split_at(250, 0), f32(app.SPLIT_MIN)) // no window yet
+
+    a := pointing_app(250, 140)
+    app.divider_click(&a, a.lay)
+    a.mouse.x = -400 // dragged off the left of the window entirely
+    app.divider_drag(&a, WIN_W)
+    testing.expect_value(t, a.split, f32(app.SPLIT_MIN))
+}
+
+// A press that is not on the divider is left pending for whoever else is drawing — the same
+// rule every pane's click verb follows (mouse_take_click), and the reason a press in the
+// middle of the editor is not eaten by a resize gesture.
+@(test)
+test_divider_ignores_presses_elsewhere :: proc(t: ^testing.T) {
+    a := pointing_app(100, 140)
+    app.divider_click(&a, a.lay)
+    testing.expect(t, a.mouse.click, "a press over a pane must stay pending")
+    testing.expect_value(t, a.drag.kind, app.Drag_Kind.None)
+
+    b := pointing_app(250, 140)
+    b.mouse_on = false
+    app.divider_click(&b, b.lay)
+    testing.expect_value(t, b.drag.kind, app.Drag_Kind.None)
+
+    // And with no drag held, the per-frame verb writes nothing at all.
+    c := pointing_app(400, 140)
+    app.divider_drag(&c, WIN_W)
+    testing.expect_value(t, c.split, f32(0.5))
+}
+
+// Focus follows the click — C3's deliberate deferral, landing for every pane at once because
+// doing it for one would have made one pane grab focus while five did not.
+//
+// **The press is not consumed**, which is the half worth pinning: clicking a filetree row
+// focuses the tree AND selects the row, in that order, in one frame. A version that took the
+// click here would focus the pane and swallow the verb the user aimed.
+@(test)
+test_focus_follows_click_without_eating_it :: proc(t: ^testing.T) {
+    a := pointing_app(300, 140) // over the aux pane, with focus in the editor
+    testing.expect_value(t, a.focus, app.Focus.Editor)
+
+    app.focus_follows_click(&a, a.lay)
+    testing.expect_value(t, a.focus, app.Focus.Aux)
+    testing.expect(t, a.mouse.click, "the pane still has to claim its own row")
+
+    a.mouse.x = 100 // and back over the editor
+    app.focus_follows_click(&a, a.lay)
+    testing.expect_value(t, a.focus, app.Focus.Editor)
+}
+
+// The places a press changes nothing: the gutter (which is what keeps a resize from stealing
+// focus), the status strip, off-window, and a pane that already has focus. The last one is not
+// thrift — set_focus re-stats the focused document for external edits, and firing that on
+// every click inside the focused pane would put a disk stat on the click path.
+@(test)
+test_focus_follows_click_only_where_a_pane_is :: proc(t: ^testing.T) {
+    who, ok := app.click_focus_target(LAY, 250, 140)
+    testing.expect(t, !ok, "the gutter belongs to neither pane")
+    who, ok = app.click_focus_target(LAY, 100, 290)
+    testing.expect(t, !ok, "nor does the status strip")
+    who, ok = app.click_focus_target(LAY, 900, 140)
+    testing.expect(t, !ok, "nor does off-window")
+
+    who, ok = app.click_focus_target(LAY, 300, 140)
+    testing.expect(t, ok && who == .Aux, "a press over the aux pane names it")
+
+    // No pending press: nothing moves, whatever the pointer is over.
+    a := pointing_app(300, 140)
+    a.mouse.click = false
+    app.focus_follows_click(&a, a.lay)
+    testing.expect_value(t, a.focus, app.Focus.Editor)
+
+    // A hidden pane carries a zero rect, so it can never be clicked into.
+    lone := LAY
+    lone.aux = {}
+    lone.vis = {editor = true, aux = false}
+    _, ok = app.click_focus_target(lone, 300, 140)
+    testing.expect(t, !ok, "a hidden pane has no rect to press")
+}
+
+// The two verbs in the order window_pointer runs them, which is the ordering claim itself: the
+// divider takes its press FIRST, so a resize gesture near the boundary cannot also move focus.
+// Without that order the band's overlap into the aux pane would focus the aux pane on every
+// grab — a resize that quietly redirects the keyboard.
+@(test)
+test_window_pointer_divider_outranks_focus :: proc(t: ^testing.T) {
+    a := pointing_app(254, 140) // inside the band, and inside the AUX pane's rect
+    testing.expect(t, app.rect_hit(AUX_PANE, 254, 140), "the fixture must be over the aux pane")
+
+    app.window_pointer(&a, WIN_W)
+    testing.expect(t, app.drag_live(&a, .Split, 0), "the divider takes the press")
+    testing.expect_value(t, a.focus, app.Focus.Editor) // unmoved: the press was already spent
+
+    // Two pixels further in and it is an ordinary press on the pane, which does move focus.
+    b := pointing_app(256, 140)
+    app.window_pointer(&b, WIN_W)
+    testing.expect_value(t, b.drag.kind, app.Drag_Kind.None)
+    testing.expect_value(t, b.focus, app.Focus.Aux)
+    testing.expect(t, b.mouse.click, "and the pane's own verb still gets it")
+}

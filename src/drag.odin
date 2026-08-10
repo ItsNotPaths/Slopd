@@ -49,16 +49,17 @@ package main
 DRAG_SCROLL_S :: 0.015
 DRAG_SCROLL_MAX :: 8
 
-// What a press captured. Media pan and the split divider are C8d's and the terminal's
-// character selection is C7d's; they are named here rather than added later because the
-// machine is built once against ALL of its clients (that is why C7c is a checkpoint of its
-// own) and because an enum that lists them makes the switch in drag_autoscrolling total.
+// What a press captured. All four were named at C7c, when only the first was live, because
+// the machine is built once against ALL of its clients (that is why C7c is a checkpoint of
+// its own) and because an enum that lists them makes the switch in drag_autoscrolling total.
+// C7d brought the second and C8d the last two; nothing in this file changed to admit them
+// except the autoscroll's answer for the pan, which the C7c note had already predicted.
 Drag_Kind :: enum {
     None,
-    Editor_Text, // C7c: the editor's text selection — the only live client today
+    Editor_Text, // C7c: the editor's text selection
     Terminal_Sel, // C7d: per-character grid selection
-    Split, // C8d: the editor/aux divider
-    Media_Pan, // C8d: panning the image surface
+    Split, // C8d: the editor/aux divider — the one client with a motion threshold
+    Media_Pan, // C8d: panning the image surface — the only 2D drag
 }
 
 Drag :: struct {
@@ -76,6 +77,26 @@ Drag :: struct {
     // Where the press landed, in framebuffer pixels. The split divider and the media pan
     // (C8d) drag by pixel delta from here, and it is nothing to do with the editor's anchor.
     origin_x, origin_y: i32,
+
+    // The media pan at press time — the pan client's `anchor`: where the VIEW was when the
+    // gesture began, so each frame re-derives the pan from the TOTAL pixel delta rather than
+    // accumulating a per-frame one. Same argument as `anchor`'s, arriving at the same answer
+    // for the opposite reason: the editor stores its origin in document units because the
+    // view moves under it, and this stores the view because the document does not move at all.
+    //
+    // Accumulating instead (pan += the delta since the last frame, origin advanced to here)
+    // is the obvious alternative and it quietly makes origin_x/y mean two different things
+    // in two clients — a threshold in one measures from the press, a pan in the other from
+    // the previous frame. One f32 pair is cheaper than that ambiguity.
+    origin_pan: [2]f32,
+
+    // The gesture has travelled past its client's motion threshold. LATCHED: a press that
+    // has become a drag does not stop being one by coming back near where it started, and
+    // an un-latched threshold leaves the client's state written for a position the pointer
+    // has since left. Only clients that HAVE a threshold read it (drag_moved) — the editor
+    // and the terminal deliberately have none, because a zero-length drag there re-derives
+    // the position the click already set (C7c).
+    moved: bool,
 
     // Where the press landed in the DOCUMENT, resolved once and never re-resolved. Both
     // columns, for C7a's reason: `anchor` is the caret BOUNDARY a character-grade drag
@@ -117,7 +138,7 @@ Drag :: struct {
 // between two frames, and that is a click, not a drag. The cost is that a flick completed
 // inside one frame keeps only its press position, which is unavoidable without replaying
 // event history and is under 16ms of travel.
-drag_begin :: proc(a: ^App, kind: Drag_Kind, target, grade: int, anchor: Pos, glyph: int) {
+drag_begin :: proc(a: ^App, kind: Drag_Kind, target, grade: int, anchor: Pos, glyph: int, pan: [2]f32 = {}) {
     if !a.mouse.down {
         return
     }
@@ -129,7 +150,34 @@ drag_begin :: proc(a: ^App, kind: Drag_Kind, target, grade: int, anchor: Pos, gl
         anchor_glyph = glyph,
         origin_x     = a.mouse.x,
         origin_y     = a.mouse.y,
+        origin_pan   = pan,
     }
+}
+
+// Has this gesture travelled far enough to BE a drag? `px` is the client's own threshold in
+// framebuffer pixels, max-norm (the same shape DOUBLE_CLICK_PX's slop is, and for the same
+// reason: a pointer moves in two axes and neither one is the interesting number).
+//
+// **The answer latches**, which is the whole reason this is a proc and not an expression at
+// the call site. An un-latched threshold reads correctly on the way out and wrongly on the
+// way back: a divider dragged 40px right and then returned to 1px from the press would
+// refuse the last frame and leave the split where the 40px was, with the pointer somewhere
+// else entirely. Once a press has become a drag it stays one until the button comes up.
+//
+// Only a client that must distinguish a click from a drag needs this. The editor and the
+// terminal do not — a zero-length drag there re-derives the position the click already set,
+// so the two agree by construction (C7c). The split divider does: a CLICK on it must do
+// nothing at all, and without a threshold the sub-pixel jitter of a press would nudge the
+// split by whatever pixel the pointer settled on.
+drag_moved :: proc(a: ^App, px: i32) -> bool {
+    if a.drag.moved {
+        return true
+    }
+    if abs(a.mouse.x - a.drag.origin_x) < px && abs(a.mouse.y - a.drag.origin_y) < px {
+        return false
+    }
+    a.drag.moved = true
+    return true
 }
 
 // Whether `kind` over `target` is the drag currently held. The target comparison is what
@@ -174,9 +222,14 @@ drag_sweep :: proc(a: ^App) {
 drag_autoscrolling :: proc(a: ^App) -> bool {
     r: Rect
     switch a.drag.kind {
-    case .None, .Split:
-        return false // the divider has no view to run off the end of
-    case .Editor_Text, .Media_Pan:
+    case .None, .Split, .Media_Pan:
+        // The divider has no view to run off the end of, and the media pan's answer is
+        // NEITHER AXIS rather than "the vertical one" — C7c predicted that and this is
+        // where it is spent. An image is not a list of rows: a pan already moves the
+        // surface a pixel per pixel of pointer travel, so "past the edge" has nothing left
+        // to mean, and walking it would be a second thing moving the same view.
+        return false
+    case .Editor_Text:
         r = a.lay.editor
     case .Terminal_Sel:
         r = a.lay.aux

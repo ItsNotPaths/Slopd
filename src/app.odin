@@ -63,6 +63,10 @@ MainSurface :: enum {
 // … (or the `full`/`fm` builtin) swap which surface is up. `--util` launches into
 // Full on the filetree. Visibility is recomputed every frame from this + focus, so
 // there is no separate hidden/popped state to keep in sync.
+//
+// The command line reaches all three: `zen`/`zm` and `full`/`fm` TOGGLE their own mode,
+// while `normal`/`nm` names Split outright — the way back that does not depend on
+// remembering which mode you are in (see view_normal).
 View :: enum {
     Split,
     Zen,
@@ -325,6 +329,25 @@ view_toggle_zen :: proc(a: ^App) {
 // keeping whichever surface is current so the toggle never loses your place.
 view_toggle_full :: proc(a: ^App) {
     a.view = a.view == .Full ? .Split : .Full
+    set_focus(a, a.focus)
+}
+
+// Back to the normal arrangement — both panes on screen, split by `a.split` (the `normal` /
+// `nm` command line builtin).
+//
+// **The only one of the three that names an arrangement instead of toggling one**, which is
+// why it is worth having at all. `zen` and `full` each flip their own bit, so getting back to
+// Split means remembering which mode you are actually in: `zen` from Full lands in Zen, not
+// Split, and `full` from Zen lands in Full. `nm` is the one that always means what it says,
+// from any view, and it is idempotent.
+//
+// Focus is KEPT rather than forced to the editor, unlike view_toggle_zen's exit: in Split both
+// panes are on screen whichever one holds the arrows, so there is nothing an arrangement
+// change has to resolve. set_focus is still the way it lands, because leaving Zen has to
+// re-aim that view's reveal and re-ask whether procmon is on screen — both of which Split
+// answers differently and neither of which is this proc's business to know.
+view_normal :: proc(a: ^App) {
+    a.view = .Split
     set_focus(a, a.focus)
 }
 

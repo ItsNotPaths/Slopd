@@ -280,6 +280,8 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         view_toggle_zen(a)
     case "full", "fm":
         view_toggle_full(a)
+    case "normal", "nm":
+        view_normal(a) // not a toggle: the arrangement by name, from any view
     case "put":
         cl_put(a, args)
     case "j", "jump":
@@ -641,8 +643,8 @@ cl_ghost_hint :: proc(line: string) -> string {
 @(private = "file")
 cl_is_builtin :: proc(name: string) -> bool {
     switch name {
-    case "ls", "gs", "cf", "zen", "zm", "full", "fm", "put", "j", "jump", "grep", "cd", "reload",
-         "tu", "w", "wa", "q", "q!", "wq", "wqa", "waq":
+    case "ls", "gs", "cf", "zen", "zm", "full", "fm", "normal", "nm", "put", "j", "jump", "grep",
+         "cd", "reload", "tu", "w", "wa", "q", "q!", "wq", "wqa", "waq":
         return true
     }
     return false

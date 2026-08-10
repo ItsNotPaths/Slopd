@@ -315,9 +315,9 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             }
 
         case glfw.KEY_LEFT_BRACKET:
-            a.split = clampf(a.split - 0.02, 0.15, 0.85)
+            a.split = clampf(a.split - 0.02, SPLIT_MIN, SPLIT_MAX)
         case glfw.KEY_RIGHT_BRACKET:
-            a.split = clampf(a.split + 0.02, 0.15, 0.85)
+            a.split = clampf(a.split + 0.02, SPLIT_MIN, SPLIT_MAX)
         }
         return
     }

@@ -16,12 +16,12 @@ import gl "vendor:OpenGL"
 // background and the pane chrome first, then hands the panes to window_frame
 // (window_ui.odin), which declares them all into ONE Clay tree and paints it in one pass.
 //
-// What is LEFT here is the media surface, the only thing in the program still hand-drawn: a
-// panned and zoomed image sits at an arbitrary rect inside its pane, which is a floating child
-// rather than a laid-out one, and that is C8d's decision to make. It paints after window_frame,
-// which is the order it was drawn in before. The status strip went in C8b (strip_ui.odin) and
-// the terminal switcher and filetree chord bar in C8c (overlay_ui.odin), where they are
-// declared by the panes they cover rather than painted over the top of them.
+// **Nothing is hand-drawn here any more.** The status strip went in C8b (strip_ui.odin), the
+// terminal switcher and filetree chord bar in C8c (overlay_ui.odin), and the media surface —
+// the last one, and the one C8a explicitly left standing — in C8d (media_ui.odin), when the
+// pointer first got to move it and its rect stopped being something only a painter knew. What
+// is left in this file is the window background, the two pane backdrops with their focus
+// rings, and the frame's order.
 
 aux_mode_name :: proc(m: AuxMode) -> string {
     switch m {
@@ -74,6 +74,13 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
     gl.ClearColor(th.border_dark.r, th.border_dark.g, th.border_dark.b, 1)
     gl.Clear(gl.COLOR_BUFFER_BIT)
 
+    // The window's own pointer verbs — the divider drag and focus-follows-click (C8d) — run
+    // BEFORE the layout is solved, because what they write is what compute_layout reads:
+    // `a.split` is the arithmetic's input and focus decides which panes exist. They resolve
+    // against `a.lay`, the layout the LAST frame painted, which is the picture the user was
+    // looking at when they pressed. See window_pointer.
+    window_pointer(a, win_w)
+
     lay := compute_layout(win_w, win_h, a, now)
     a.lay = lay // pointer events arriving before the next frame route against these rects
 
@@ -100,19 +107,9 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
     // question and asking it in two places is how the two answers drift.
     window_frame(t, a, lay, win_w, win_h, now)
 
-    // The media surface is the one pane still painted by hand: an image that is panned and
-    // zoomed sits at an arbitrary rect inside its pane, which is a floating child rather
-    // than a laid-out one, and that is a decision for C8d, which is where the pointer first
-    // gets to move it. It guards on a zero rect internally (hidden under Full on the aux
-    // surface) and does not overlap anything window_frame declared.
-    if a.main == .Image {
-        draw_media(t, lay.editor, win_w, win_h, a)
-    }
-
-    // The two overlays went into the tree in C8c (overlay_ui.odin): each is declared by the
-    // pane it covers, so the switcher and the chord bar are painted by window_frame above,
-    // above their pane and inside its clip. Nothing is drawn after it here any more except
-    // the media surface, which overlaps nothing.
+    // Nothing is painted after the frame any more. The two overlays went into the tree in
+    // C8c (overlay_ui.odin), each declared by the pane it covers, and the media surface
+    // followed in C8d (media_ui.odin) — so the whole window is one tree and one paint.
 
     // A press nobody claimed dies here. Clicks are offered to the panes as they draw
     // (mouse_take_click), and one that hit nothing must not survive into the next frame,
@@ -193,27 +190,11 @@ hover_bg :: proc(th: ^Theme) -> [3]f32 {
 // that had to wait for C8a's single tree, since a strip declared while every pane held its own
 // would have ended each frame holding the tree the panes hit-test against.
 
-// The media viewer: the decoded image fit into the pane (contain letterbox), zoomable
-// and pannable. The pane bg + focus ring are already laid down by render's chrome pass,
-// so this just blits the texture over it, clipped to the inset content area so a zoomed
-// image never paints over the focus ring. The filename/dims/zoom show in the modeline.
-@(private = "file")
-draw_media :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
-    m := &a.media
-    th := &a.theme
-    area := inset(pane, i32(2 * a.scale))
-    if area.w <= 0 || area.h <= 0 {
-        return
-    }
-    if m.tex != 0 {
-        image_push(t, m.tex, media_fit_rect(area, m.w, m.h, m.zoom, m.pan))
-    } else {
-        pad := i32(8 * a.scale)
-        y := f32(area.y) + (f32(area.h) - t.font.line_height) / 2
-        text_draw(t, "(no image)", f32(area.x + pad), y, th.muted)
-    }
-    flush_pane(t, area, win_w, win_h)
-}
+// draw_media is `media_frame` in media_ui.odin since C8d — the last surface in the program
+// that was painted by hand rather than declared. What replaced its `image_push` is an Image
+// element floating at `media_fit_rect`'s answer, and what replaced its trailing
+// `flush_pane(t, area, …)` is that element's `clipTo = .AttachedParent`: the same scissor,
+// stated on the box instead of at a call site down here.
 
 // filetree_frame lives in filetree_ui.odin: the filetree is declared in Clay (C3), so its
 // geometry, its hit-testing and its paint are one tree rather than three copies of the
