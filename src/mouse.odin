@@ -172,7 +172,7 @@ mouse_take_click :: proc(a: ^App) -> (count: int, ok: bool) {
 Wheel_Target :: enum {
     None, // the status strip, the inter-pane gutter, off-window
     Editor, // editor pane, Text surface: the buffer's viewport
-    Media, // editor pane, Image surface: pan/zoom is C8, so nothing yet
+    Media, // editor pane, Image surface: pan/zoom is C8d, so nothing yet
     Terminal,
     List, // filetree / grep / config / procmon
 }
@@ -232,7 +232,7 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
     switch target {
     case .None:
     case .Media:
-    // Media pan/zoom is C8 (media_fit_rect is already pure, so it is a small job when
+    // Media pan/zoom is C8d (media_fit_rect is already pure, so it is a small job when
     // it comes). Listed rather than folded into .None so the pane is visibly accounted
     // for and a notch here is a deliberate no-op, not an unhandled case.
     case .Editor:

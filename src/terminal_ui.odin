@@ -58,7 +58,7 @@ import clay "../bindings/clay"
 // **Alt is global here for the same reason it is global to the keyboard.** input.odin
 // handles Alt-chords before the shell ever sees them, so an Alt+click that reached the TUI
 // would be the one place the rule broke — and while Alt is held the switcher overlay is up
-// over this pane anyway, so a press belongs to whatever C8 makes of that. Until then it is
+// over this pane anyway, so a press belongs to whatever C8c makes of that. Until then it is
 // simply not claimed.
 
 // Everything the pane's phases need to agree about: the box, the cell grid, and which
@@ -87,7 +87,7 @@ Terminal_View :: struct {
 // A degenerate pane reports zero rows AND zero columns, where the list panes report at
 // least one row: `rows` here is a number Slopd hands to another process through TIOCSWINSZ,
 // so "one row so the clip has something to cut" would be a lie told to a shell rather than
-// a rounding convenience. draw_terminal bails instead.
+// a rounding convenience. terminal_frame bails instead.
 terminal_geom :: proc(pane: Rect, scale: f32, line_h: f32, cell_w: f32) -> (area: Rect, row_h: i32, cols, rows: int) {
     area = inset(pane, i32(2 * scale))
     row_h = max(1, i32(line_h))
@@ -110,7 +110,7 @@ terminal_sync :: proc(term: ^Terminal, th: ^Theme, cols, rows: int) {
 
 // Build the view. Pure, unlike the editor's — there is no tween to re-aim, because the
 // terminal's viewport is an integer line and always has been (the copy cursor moves it in
-// whole lines and the live grid is bottom-aligned). draw_terminal still calls it twice, but
+// whole lines and the live grid is bottom-aligned). terminal_frame still calls it twice, but
 // for a different reason: see there.
 terminal_view :: proc(term: ^Terminal, area: Rect, row_h: i32, cw: f32, cols, rows: int) -> Terminal_View {
     return Terminal_View {
@@ -150,12 +150,12 @@ Terminal_Hit :: struct {
     live: bool,
 }
 
-// Resolve the pointer against the grid. As in C7a this is DELIBERATELY NOT clay.PointerOver
-// — the body is one element, so there is no tree question to ask, and asking one would tie
-// the pane to being the last to declare (invariant 11, docs/clay-refactor.md). Here that
-// happens to be true, since the terminal IS the aux pane and the aux pane draws last; the
-// rect is used anyway, because "correct only while nothing draws after me" is not a property
-// worth depending on when the alternative is one comparison.
+// Resolve the pointer against the grid. As in C7a this is not clay.PointerOver — the body is
+// one element, so there is no tree question to ask. When this was written it was also a
+// hedge: asking Clay would have tied the pane to declaring last (invariant 11,
+// docs/clay-refactor.md), which happened to be true here and was not worth depending on.
+// C8a retired that rule outright, so what is left is the plain reason — one box, one
+// comparison, and no tree needed to make it.
 //
 // The column FLOORS for `col`, because a terminal mouse report names a CELL — a TUI is told
 // which character the pointer is on, and there is no insertion point between two cells for
@@ -210,7 +210,7 @@ terminal_boundary_col :: proc(v: Terminal_View, x: i32) -> int {
 // unconditionally is one comparison in C (terminal_mouse_at).
 //
 // It is not gated on focus. Hover in a TUI is a property of where the pointer IS, not of
-// which pane owns the keyboard — and focus-follows-click is C8's question for every pane at
+// which pane owns the keyboard — and focus-follows-click is C8d's question for every pane at
 // once, not one this pane gets to answer early by itself.
 terminal_track :: proc(term: ^Terminal, hit: Terminal_Hit) {
     if term == nil || !term.mouse_on || !hit.ok || !hit.live {
@@ -224,7 +224,7 @@ terminal_track :: proc(term: ^Terminal, hit: Terminal_Hit) {
 // The press is claimed only when a cell was actually hit, so a press aimed at another pane
 // is not eaten. Alt is checked BEFORE the claim rather than after, which is the difference
 // between "Alt+click does nothing here" and "Alt+click is swallowed here": the switcher
-// overlay is up while Alt is held and C8 may well want that press.
+// overlay is up while Alt is held and C8c may well want that press.
 //
 // Nothing is stamped and nothing is re-attached, unlike C7a's editor click. The terminal
 // keeps its view and its selection apart already (wheel_apply says the same thing from the
@@ -375,18 +375,17 @@ Terminal_Body :: struct {
     v:    Terminal_View,
 }
 
-// Declare the pane and hand back the frame's command list. Three elements, the same shape
-// C7a settled on:
+// Declare the pane into the window's tree (C8a). Two elements, the same shape C7a settled on:
 //
-//   term_root  full-window container, padded to the pane's origin
-//     term_pane  the content area inside the focus ring (painted by panel(), not here)
-//       term_grid  the cell grid, as a Custom — and the element terminal_hit points at
+//   term_pane  the content area inside the focus ring, floating at the pane's own rect and
+//              clipping its own content (painted by panel(), not here)
+//     term_grid  the cell grid, as a Custom — and the element terminal_hit points at
 //
 // The Custom covers the whole content area rather than the whole-cell grid inside it, so
 // the box the painter is handed is the box the hit test sized itself from. The sub-cell
 // remainder is inside that box, painted with the default background like every other blank
 // cell, and rejected by the hit test rather than by the geometry.
-terminal_layout :: proc(a: ^App, term: ^Terminal, pane: Rect, win_w, win_h: i32, v: Terminal_View) -> clay.ClayArray(clay.RenderCommand) {
+terminal_declare :: proc(a: ^App, term: ^Terminal, pane: Rect, v: Terminal_View) {
     area := v.area
 
     body := new(Terminal_Body, context.temp_allocator)
@@ -394,38 +393,17 @@ terminal_layout :: proc(a: ^App, term: ^Terminal, pane: Rect, win_w, win_h: i32,
     cu := new(ClayCustom, context.temp_allocator)
     cu^ = ClayCustom{paint = terminal_paint_grid, user = body}
 
-    clay_resize(win_w, win_h)
-    clay.BeginLayout()
-
-    if clay.UI(clay.ID("term_root"))(
-        {
-            layout = {
-                sizing = {clay.SizingFixed(f32(win_w)), clay.SizingFixed(f32(win_h))},
-                padding = {left = u16(max(0, area.x)), top = u16(max(0, area.y))},
-            },
-        },
-    ) {
-        // No backgroundColor: panel() has already filled the pane and drawn its focus ring,
-        // and Clay's transparent default emits no Rectangle at all — so this pane's command
-        // list is the Custom and nothing else, which is what the test asserts.
-        if clay.UI(clay.ID("term_pane"))(
+    // No backgroundColor: panel() has already filled the pane and drawn its focus ring, and
+    // Clay's transparent default emits no Rectangle at all — so this pane's command list is
+    // the Custom bracketed by the pane's own clip, and nothing else.
+    if clay.UI(clay.ID("term_pane"))(clay_pane_box(area)) {
+        if clay.UI(clay.ID("term_grid"))(
             {
-                layout = {
-                    sizing = {clay.SizingFixed(f32(area.w)), clay.SizingFixed(f32(area.h))},
-                    layoutDirection = .TopToBottom,
-                },
+                layout = {sizing = {clay.SizingGrow(), clay.SizingGrow()}},
+                custom = {customData = cu},
             },
-        ) {
-            if clay.UI(clay.ID("term_grid"))(
-                {
-                    layout = {sizing = {clay.SizingGrow(), clay.SizingGrow()}},
-                    custom = {customData = cu},
-                },
-            ) {}
-        }
+        ) {}
     }
-
-    return clay.EndLayout(0)
 }
 
 // The absolute lines the KEYBOARD's copy cursor highlights, as a half-open range — empty
@@ -564,15 +542,14 @@ terminal_paint_grid :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App,
 // are on screen: clicking the live bottom line leaves select mode, and terminal_view_top
 // reports the live bottom rather than the scrolled top the moment it does. Declaring from
 // the pre-click view would paint one frame of the state the user just left.
-draw_terminal :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
+terminal_frame :: proc(t: ^Text, a: ^App, pane: Rect) {
     area, row_h, cols, rows := terminal_geom(pane, a.scale, t.font.line_height, t.font.cell_w)
     if cols == 0 || rows == 0 {
         return
     }
     term := term_current(a)
     if term == nil { // pane shown before a session exists (shouldn't happen — lazy spawn)
-        flush_pane(t, area, win_w, win_h)
-        return
+        return // declaring nothing leaves the pane as panel() painted it
     }
 
     // The grid the LAST frame painted is what the pointer is over, so the click resolves
@@ -586,6 +563,21 @@ draw_terminal :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     terminal_sync(term, &a.theme, cols, rows)
     v = terminal_view(term, area, row_h, t.font.cell_w, cols, rows)
 
-    cmds := terminal_layout(a, term, pane, win_w, win_h, v)
-    clay_paint(t, a, &cmds, area, win_w, win_h)
+    terminal_declare(a, term, pane, v)
+}
+
+// The pane alone in a window, as a command list: the test-facing wrapper (see
+// filetree_layout for why every pane keeps one).
+terminal_layout :: proc(
+    a: ^App,
+    term: ^Terminal,
+    pane: Rect,
+    win_w, win_h: i32,
+    v: Terminal_View,
+) -> clay.ClayArray(clay.RenderCommand) {
+    clay_window_begin(win_w, win_h)
+    if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
+        terminal_declare(a, term, pane, v)
+    }
+    return clay.EndLayout(0)
 }

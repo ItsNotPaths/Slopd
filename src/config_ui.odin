@@ -4,7 +4,7 @@ import clay "../bindings/clay"
 
 // The config / syntax pane's UI half — C5b, the third pane declared in Clay and the first
 // with rows that are neither one-per-item nor uniformly clickable. filetree_ui.odin is the
-// template and grep_ui.odin the row -> item indirection; the frame order in draw_config is
+// template and grep_ui.odin the row -> item indirection; the frame order in config_frame is
 // the same and load-bearing for the same reason (see filetree_ui.odin's header).
 //
 // Three things are new here.
@@ -226,26 +226,19 @@ config_paint_edit :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
     flush_pane(t, clip, win_w, win_h)
 }
 
-// Declare the pane and hand back the frame's command list. Reads App and the flattened
-// rows, writes only Clay — no mutation, no GL. `rows` is passed in rather than rebuilt so
-// the frame flattens exactly once, and so the hit test, the click and this declaration
-// cannot be looking at different lists.
+// Declare the pane into the window's tree (C8a). Reads App and the flattened rows, writes
+// only Clay — no mutation, no GL. `rows` is passed in rather than rebuilt so the frame
+// flattens exactly once, and so the hit test, the click and this declaration cannot be
+// looking at different lists.
 //
 // The tree is:
-//   cf_root  full-window container, padded to put the pane where render decided it goes
-//     cf_pane   the content area inside the focus ring
-//       cf_body   the clip group
-//         cf_row/i    one per visible DISPLAY row, keyed by row index
-//           cf_key/i    the fixed key column, so every value starts on the same cell
-//           cf_edit/i   the search field's Custom (that row only)
-config_layout :: proc(
-    a: ^App,
-    f: ^Font,
-    pane: Rect,
-    rows: []ConfigRow,
-    win_w, win_h: i32,
-    now: f64 = 0,
-) -> clay.ClayArray(clay.RenderCommand) {
+//   cf_pane   the content area inside the focus ring, floating at the pane's own rect and
+//             clipping its own content
+//     cf_body   the clip group
+//       cf_row/i    one per visible DISPLAY row, keyed by row index
+//         cf_key/i    the fixed key column, so every value starts on the same cell
+//         cf_edit/i   the search field's Custom (that row only)
+config_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []ConfigRow, now: f64 = 0) {
     cp := &a.config_pane
     th := &a.theme
     area, row_h, max_rows, _ := config_geom(pane, a.scale, f.line_height, f.cell_w)
@@ -256,100 +249,79 @@ config_layout :: proc(
     first := clamp(cp.scroll, 0, max(0, len(rows)))
     visible := max(0, min(len(rows) - first, max_rows))
 
-    clay_resize(win_w, win_h)
-    clay.BeginLayout()
-
-    if clay.UI(clay.ID("cf_root"))(
-        {
-            layout = {
-                sizing = {clay.SizingFixed(f32(win_w)), clay.SizingFixed(f32(win_h))},
-                padding = {left = u16(max(0, area.x)), top = u16(max(0, area.y))},
-            },
-        },
-    ) {
-        // Nothing here paints a background: panel() has already filled the pane and drawn
-        // its focus ring, and Clay's transparent default emits no Rectangle at all, so every
-        // fill below is one that means something.
-        if clay.UI(clay.ID("cf_pane"))(
+    // Nothing here paints a background: panel() has already filled the pane and drawn
+    // its focus ring, and Clay's transparent default emits no Rectangle at all, so every
+    // fill below is one that means something.
+    if clay.UI(clay.ID("cf_pane"))(clay_pane_box(area)) {
+        if clay.UI(clay.ID("cf_body"))(
             {
                 layout = {
-                    sizing = {clay.SizingFixed(f32(area.w)), clay.SizingFixed(f32(area.h))},
+                    sizing = {clay.SizingGrow(), clay.SizingGrow()},
                     layoutDirection = .TopToBottom,
                 },
+                clip = {horizontal = true, vertical = true},
             },
         ) {
-            if clay.UI(clay.ID("cf_body"))(
-                {
-                    layout = {
-                        sizing = {clay.SizingGrow(), clay.SizingGrow()},
-                        layoutDirection = .TopToBottom,
-                    },
-                    clip = {horizontal = true, vertical = true},
-                },
-            ) {
-                for k in 0 ..< visible {
-                    i := first + k
-                    r := rows[i]
-                    sel := config_row_selected(cp, r)
-                    col := config_row_color(th, r, sel)
-                    flush := r.kind == .Rule || r.kind == .Header
+            for k in 0 ..< visible {
+                i := first + k
+                r := rows[i]
+                sel := config_row_selected(cp, r)
+                col := config_row_color(th, r, sel)
+                flush := r.kind == .Rule || r.kind == .Header
 
-                    // The selection bar, and under the pointer a fainter one. Hover never
-                    // competes with the selection: the selected row keeps its own bar.
-                    bg: clay.Color
-                    if sel {
-                        bg = clay_rgb(th.separator)
-                    } else if hover_shown(a) && i == cp.hover && r.item >= 0 {
-                        bg = clay_rgb(hover_bg(th))
-                    }
+                // The selection bar, and under the pointer a fainter one. Hover never
+                // competes with the selection: the selected row keeps its own bar.
+                bg: clay.Color
+                if sel {
+                    bg = clay_rgb(th.separator)
+                } else if hover_shown(a) && i == cp.hover && r.item >= 0 {
+                    bg = clay_rgb(hover_bg(th))
+                }
 
-                    // The one-cell left margin plus the row's own indent, as whole cells.
-                    // cell_w is rounded at bake time, so this is exact in u16 pixels.
-                    if clay.UI(clay.ID("cf_row", u32(i)))(
-                        {
-                            layout = {
-                                sizing = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
-                                padding = {left = u16(cw * f32(1 + r.indent))},
-                                childAlignment = {y = .Center},
-                            },
-                            backgroundColor = bg,
+                // The one-cell left margin plus the row's own indent, as whole cells.
+                // cell_w is rounded at bake time, so this is exact in u16 pixels.
+                if clay.UI(clay.ID("cf_row", u32(i)))(
+                    {
+                        layout = {
+                            sizing = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
+                            padding = {left = u16(cw * f32(1 + r.indent))},
+                            childAlignment = {y = .Center},
                         },
-                    ) {
-                        if flush {
-                            // A rule or a section title spans from the margin with no value
-                            // column, which is what made these "flush" rows in draw_config.
+                        backgroundColor = bg,
+                    },
+                ) {
+                    if flush {
+                        // A rule or a section title spans from the margin with no value
+                        // column, which is what made these "flush" rows in draw_config.
+                        clay.Text(r.text, clay_text_config(col, lh))
+                    } else {
+                        if clay.UI(clay.ID("cf_key", u32(i)))(
+                            {layout = {sizing = {width = clay.SizingFixed(val_off * cw)}}},
+                        ) {
                             clay.Text(r.text, clay_text_config(col, lh))
-                        } else {
-                            if clay.UI(clay.ID("cf_key", u32(i)))(
-                                {layout = {sizing = {width = clay.SizingFixed(val_off * cw)}}},
-                            ) {
-                                clay.Text(r.text, clay_text_config(col, lh))
-                            }
-                            if r.kind == .Search {
-                                // The live filter box: a Custom, because carets are
-                                // over-quads (see the header). The struct outlives
-                                // EndLayout in the frame's temp arena.
-                                cu := new(ClayCustom, context.temp_allocator)
-                                ed := new(Config_Edit, context.temp_allocator)
-                                ed^ = {doc = &cp.search, now = now}
-                                cu^ = {paint = config_paint_edit, user = ed}
-                                if clay.UI(clay.ID("cf_edit", u32(i)))(
-                                    {
-                                        layout = {sizing = {clay.SizingGrow(), clay.SizingGrow()}},
-                                        custom = {customData = cu},
-                                    },
-                                ) {}
-                            } else if r.value != "" {
-                                clay.Text(r.value, clay_text_config(th.fg, lh))
-                            }
+                        }
+                        if r.kind == .Search {
+                            // The live filter box: a Custom, because carets are
+                            // over-quads (see the header). The struct outlives
+                            // EndLayout in the frame's temp arena.
+                            cu := new(ClayCustom, context.temp_allocator)
+                            ed := new(Config_Edit, context.temp_allocator)
+                            ed^ = {doc = &cp.search, now = now}
+                            cu^ = {paint = config_paint_edit, user = ed}
+                            if clay.UI(clay.ID("cf_edit", u32(i)))(
+                                {
+                                    layout = {sizing = {clay.SizingGrow(), clay.SizingGrow()}},
+                                    custom = {customData = cu},
+                                },
+                            ) {}
+                        } else if r.value != "" {
+                            clay.Text(r.value, clay_text_config(th.fg, lh))
                         }
                     }
                 }
             }
         }
     }
-
-    return clay.EndLayout(0)
 }
 
 // The config / syntax pane: a "settings" block (key: value rows, each choosing from a
@@ -359,7 +331,7 @@ config_layout :: proc(
 // language list live as you type. One selection highlight, centre-scrolled like the
 // filetree. Up/Down move, Right/Enter open a dropdown, Enter chooses; a click selects a row,
 // a double click opens its dropdown, and a click on an option chooses it.
-draw_config :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) {
+config_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     area, _, max_rows, cols := config_geom(pane, a.scale, t.font.line_height, t.font.cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
@@ -384,6 +356,22 @@ draw_config :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) 
     rows = config_rows(cp, a, cols, context.temp_allocator)
     config_scroll_apply(cp, config_anchor(cp, rows), max_rows, len(rows), a.scroll_mode == .Middle, pane_input_at(a))
 
-    cmds := config_layout(a, &t.font, pane, rows, win_w, win_h, now)
-    clay_paint(t, a, &cmds, area, win_w, win_h)
+    config_declare(a, &t.font, pane, rows, now)
+}
+
+// The pane alone in a window, as a command list: the test-facing wrapper (see
+// filetree_layout for why every pane keeps one).
+config_layout :: proc(
+    a: ^App,
+    f: ^Font,
+    pane: Rect,
+    rows: []ConfigRow,
+    win_w, win_h: i32,
+    now: f64 = 0,
+) -> clay.ClayArray(clay.RenderCommand) {
+    clay_window_begin(win_w, win_h)
+    if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
+        config_declare(a, f, pane, rows, now)
+    }
+    return clay.EndLayout(0)
 }

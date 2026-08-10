@@ -133,7 +133,7 @@ clay_resize :: proc(w, h: i32) {
 //
 // Contract: the bridge flushes everything queued so far under the CURRENT clip before
 // calling `paint`, so the painter starts with empty batches and owns its region outright
-// — including its own flush_pane, exactly as draw_editor and draw_terminal already end.
+// — including its own flush_pane, exactly as editor_paint_body and terminal_paint_grid end.
 // Anything it leaves queued would be drawn later under a different clip.
 //
 // A BOX IS NOT A CLIP, which is why `paint` takes both. `r` is where the surface starts —

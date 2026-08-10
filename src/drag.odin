@@ -49,7 +49,7 @@ package main
 DRAG_SCROLL_S :: 0.015
 DRAG_SCROLL_MAX :: 8
 
-// What a press captured. Media pan and the split divider are C8's and the terminal's
+// What a press captured. Media pan and the split divider are C8d's and the terminal's
 // character selection is C7d's; they are named here rather than added later because the
 // machine is built once against ALL of its clients (that is why C7c is a checkpoint of its
 // own) and because an enum that lists them makes the switch in drag_autoscrolling total.
@@ -57,8 +57,8 @@ Drag_Kind :: enum {
     None,
     Editor_Text, // C7c: the editor's text selection — the only live client today
     Terminal_Sel, // C7d: per-character grid selection
-    Split, // C8: the editor/aux divider
-    Media_Pan, // C8: panning the image surface
+    Split, // C8d: the editor/aux divider
+    Media_Pan, // C8d: panning the image surface
 }
 
 Drag :: struct {
@@ -74,7 +74,7 @@ Drag :: struct {
     ending: bool,
 
     // Where the press landed, in framebuffer pixels. The split divider and the media pan
-    // (C8) drag by pixel delta from here, and it is nothing to do with the editor's anchor.
+    // (C8d) drag by pixel delta from here, and it is nothing to do with the editor's anchor.
     origin_x, origin_y: i32,
 
     // Where the press landed in the DOCUMENT, resolved once and never re-resolved. Both

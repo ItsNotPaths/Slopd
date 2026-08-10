@@ -1051,7 +1051,7 @@ term_free_env :: proc(envp: [^]cstring) {
 // ---------------------------------------------------------------------------
 
 TERM_MAX :: 99
-TERM_INIT_ROWS :: 24 // spawn size; draw_terminal resizes to the real pane next frame
+TERM_INIT_ROWS :: 24 // spawn size; terminal_frame resizes to the real pane next frame
 TERM_INIT_COLS :: 80
 
 term_count :: proc(a: ^App) -> int {

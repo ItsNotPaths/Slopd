@@ -14,7 +14,7 @@ import clay "../bindings/clay"
 // about the listing itself changed here — same dired-style header, same one-cell margin,
 // same prefix column, same colours. The redesign is a separate job.
 //
-// The frame order in draw_filetree is the load-bearing part, and it reads oddly until you
+// The frame order in filetree_frame is the load-bearing part, and it reads oddly until you
 // know why:
 //
 //   1. Resolve the pending click FIRST, against the boxes Clay is still holding from the
@@ -23,9 +23,10 @@ import clay "../bindings/clay"
 //      SetPointerState (fed at the top of render) resolves against exactly that tree.
 //   2. THEN move the viewport, so a click that changed the selection scrolls in the same
 //      frame it was made.
-//   3. THEN declare and paint, so the frame shows the post-click state. Consuming the
-//      click after the declaration instead would paint the pre-click list and leave the
-//      selection invisible until the next unrelated event woke the loop.
+//   3. THEN declare, so the frame paints the post-click state. Consuming the click after
+//      the declaration instead would paint the pre-click list and leave the selection
+//      invisible until the next unrelated event woke the loop. (The paint itself is the
+//      window's since C8a — one tree, one clay_paint; see window_ui.odin.)
 
 // Extra vertical padding per row, in logical pixels — the twin of GREP_ROW_PAD, and the
 // value draw_filetree has always used. Rows are whole pixels tall so the list stays on the
@@ -89,7 +90,7 @@ filetree_hit :: proc(ft: ^FileTree, rows: int) -> int {
 //
 // The click is claimed only when a row was actually hit; a press over the header, the
 // margin or another pane is left for whoever else is drawing (nobody, today) and dropped
-// at the end of the frame. Focus is NOT taken: focus-follows-click is C8 and belongs to
+// at the end of the frame. Focus is NOT taken: focus-follows-click is C8d and belongs to
 // every pane at once, since a filetree that grabs focus while the git pane does not is
 // worse than one that never does.
 filetree_click :: proc(a: ^App, row: int) {
@@ -116,21 +117,21 @@ filetree_click :: proc(a: ^App, row: int) {
     }
 }
 
-// Declare the pane and hand back the frame's command list. Reads App, writes only Clay —
-// no mutation, no GL — which is what lets tests/filetree_ui_test.odin assert the resolved
-// boxes for a known listing and viewport without a window.
+// Declare the pane into the window's tree (C8a). Reads App, writes only Clay — no mutation,
+// no GL — which is what lets tests/filetree_ui_test.odin assert the resolved boxes for a
+// known listing and viewport without a window.
 //
 // The tree is:
-//   ft_root  full-window container, padded to put the pane where render decided it goes
-//     ft_pane   the content area inside the focus ring (painted by panel(), not here)
-//       ft_head  the dired-style header: the current directory, muted
-//       ft_body  the clip group — rows past the bottom edge are cut here
-//         ft_row/i   one per visible entry, keyed by ENTRY index so a hit names an entry
-//           ft_pre/i   the two-cell prefix column, so names start on a fixed cell
+//   ft_pane   the content area inside the focus ring, floating at the pane's own rect and
+//             clipping its own content (painted by panel(), not here)
+//     ft_head  the dired-style header: the current directory, muted
+//     ft_body  the clip group — rows past the bottom edge are cut here
+//       ft_row/i   one per visible entry, keyed by ENTRY index so a hit names an entry
+//         ft_pre/i   the two-cell prefix column, so names start on a fixed cell
 //
 // Row indices are the entry's own, not the visible row's: that is what makes filetree_hit
 // return something meaningful without a second mapping to maintain.
-filetree_layout :: proc(a: ^App, f: ^Font, pane: Rect, win_w, win_h: i32) -> clay.ClayArray(clay.RenderCommand) {
+filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect) {
     ft := &a.tree
     th := &a.theme
     area, row_h, rows := filetree_geom(pane, a.scale, f.line_height)
@@ -140,113 +141,105 @@ filetree_layout :: proc(a: ^App, f: ^Font, pane: Rect, win_w, win_h: i32) -> cla
     first := clamp(ft.scroll, 0, max(0, len(ft.entries)))
     visible := max(0, min(len(ft.entries) - first, rows))
 
-    clay_resize(win_w, win_h)
-    clay.BeginLayout()
-
-    // Clay lays out from (0, 0) at the framebuffer size, so a pane at an arbitrary rect is
-    // a full-window root padded by the pane's origin holding a fixed-size child. The panes
-    // become siblings of a real split when C8 declares the window frame; until then this
-    // is the cheapest way to put one pane where compute_layout already decided it goes.
-    if clay.UI(clay.ID("ft_root"))(
-        {
-            layout = {
-                sizing = {clay.SizingFixed(f32(win_w)), clay.SizingFixed(f32(win_h))},
-                padding = {left = u16(max(0, area.x)), top = u16(max(0, area.y))},
-            },
-        },
-    ) {
-        // No backgroundColor anywhere in this tree: panel() has already filled the pane and
-        // drawn its focus ring, and Clay's default transparent is not painted (clay_color
-        // reports it invisible), so the fills that do appear are the ones that mean
-        // something — a marked row, the selection.
-        if clay.UI(clay.ID("ft_pane"))(
+    // No backgroundColor anywhere in this tree: panel() has already filled the pane and
+    // drawn its focus ring, and Clay's default transparent is not painted (clay_color
+    // reports it invisible), so the fills that do appear are the ones that mean
+    // something — a marked row, the selection.
+    if clay.UI(clay.ID("ft_pane"))(clay_pane_box(area)) {
+        if clay.UI(clay.ID("ft_head"))(
             {
                 layout = {
-                    sizing = {clay.SizingFixed(f32(area.w)), clay.SizingFixed(f32(area.h))},
-                    layoutDirection = .TopToBottom,
+                    sizing = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
+                    padding = {left = u16(cw)}, // the one-cell left margin, as before
+                    childAlignment = {y = .Center},
                 },
             },
         ) {
-            if clay.UI(clay.ID("ft_head"))(
-                {
-                    layout = {
-                        sizing = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
-                        padding = {left = u16(cw)}, // the one-cell left margin, as before
-                        childAlignment = {y = .Center},
-                    },
+            clay.Text(ft.dir, clay_text_config(th.muted, lh))
+        }
+
+        if clay.UI(clay.ID("ft_body"))(
+            {
+                layout = {
+                    sizing = {clay.SizingGrow(), clay.SizingGrow()},
+                    layoutDirection = .TopToBottom,
                 },
-            ) {
-                clay.Text(ft.dir, clay_text_config(th.muted, lh))
-            }
+                clip = {horizontal = true, vertical = true},
+            },
+        ) {
+            for k in 0 ..< visible {
+                i := first + k
+                e := &ft.entries[i]
+                marked := filetree_yanked_contains(ft, e.path)
+                ringed := ring_contains(a, e.path)
 
-            if clay.UI(clay.ID("ft_body"))(
-                {
-                    layout = {
-                        sizing = {clay.SizingGrow(), clay.SizingGrow()},
-                        layoutDirection = .TopToBottom,
-                    },
-                    clip = {horizontal = true, vertical = true},
-                },
-            ) {
-                for k in 0 ..< visible {
-                    i := first + k
-                    e := &ft.entries[i]
-                    marked := filetree_yanked_contains(ft, e.path)
-                    ringed := ring_contains(a, e.path)
+                // One background per element, where the old code laid two fills over
+                // each other: the selection bar covered the mark bar exactly, so the
+                // pixels are the same and the precedence is now stated rather than
+                // implied by draw order.
+                bg: clay.Color
+                if i == ft.selected {
+                    bg = clay_rgb(th.separator)
+                } else if marked {
+                    bg = clay_rgb(th.line_highlight)
+                } else if hover_shown(a) && i == ft.hover {
+                    bg = clay_rgb(hover_bg(th)) // C5b's toggle; last, so it never masks a mark
+                }
 
-                    // One background per element, where the old code laid two fills over
-                    // each other: the selection bar covered the mark bar exactly, so the
-                    // pixels are the same and the precedence is now stated rather than
-                    // implied by draw order.
-                    bg: clay.Color
-                    if i == ft.selected {
-                        bg = clay_rgb(th.separator)
-                    } else if marked {
-                        bg = clay_rgb(th.line_highlight)
-                    } else if hover_shown(a) && i == ft.hover {
-                        bg = clay_rgb(hover_bg(th)) // C5b's toggle; last, so it never masks a mark
-                    }
-
-                    if clay.UI(clay.ID("ft_row", u32(i)))(
-                        {
-                            layout = {
-                                sizing = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
-                                padding = {left = u16(cw)},
-                                childAlignment = {y = .Center},
-                            },
-                            backgroundColor = bg,
+                if clay.UI(clay.ID("ft_row", u32(i)))(
+                    {
+                        layout = {
+                            sizing = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
+                            padding = {left = u16(cw)},
+                            childAlignment = {y = .Center},
                         },
-                    ) {
-                        // Marked-for-yank takes the prefix slot (accent '+'); else the
-                        // unsaved-ring star or a dash.
-                        prefix := marked ? "+" : ringed ? "*" : "-"
-                        pcol := marked ? th.accent : ringed ? th.urgent : th.muted
+                        backgroundColor = bg,
+                    },
+                ) {
+                    // Marked-for-yank takes the prefix slot (accent '+'); else the
+                    // unsaved-ring star or a dash.
+                    prefix := marked ? "+" : ringed ? "*" : "-"
+                    pcol := marked ? th.accent : ringed ? th.urgent : th.muted
 
-                        // A fixed TWO-cell column, not a gap: the prefix is one cell and the
-                        // name starts on the next but one, which is the column the listing
-                        // has always used. Sized in cells (a float, cell_w is exact) rather
-                        // than as padding, which Clay takes as whole pixels.
-                        if clay.UI(clay.ID("ft_pre", u32(i)))(
-                            {layout = {sizing = {width = clay.SizingFixed(2 * cw)}}},
-                        ) {
-                            clay.Text(prefix, clay_text_config(pcol, lh))
-                        }
-                        clay.Text(e.display, clay_text_config(e.is_dir ? th.code_return_type : th.fg, lh))
+                    // A fixed TWO-cell column, not a gap: the prefix is one cell and the
+                    // name starts on the next but one, which is the column the listing
+                    // has always used. Sized in cells (a float, cell_w is exact) rather
+                    // than as padding, which Clay takes as whole pixels.
+                    if clay.UI(clay.ID("ft_pre", u32(i)))(
+                        {layout = {sizing = {width = clay.SizingFixed(2 * cw)}}},
+                    ) {
+                        clay.Text(prefix, clay_text_config(pcol, lh))
                     }
+                    clay.Text(e.display, clay_text_config(e.is_dir ? th.code_return_type : th.fg, lh))
                 }
             }
         }
     }
+}
 
+// The pane alone in a window, as a command list — the test-facing half of the declaration
+// above, and the shape every `<p>_layout` has taken since C8a put the panes in one tree. The
+// app never calls it; tests/filetree_ui_test.odin does, because a pane's boxes are the same
+// whether or not another pane is declared beside it, and asserting them one pane at a time is
+// what keeps a pane test about the pane.
+filetree_layout :: proc(a: ^App, f: ^Font, pane: Rect, win_w, win_h: i32) -> clay.ClayArray(clay.RenderCommand) {
+    clay_window_begin(win_w, win_h)
+    if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
+        filetree_declare(a, f, pane)
+    }
     return clay.EndLayout(0)
 }
 
 // The filetree listing: a dired-style header (current dir) then rows, each prefixed '+'
 // (marked for yank), '*' (in the unsaved ring) or '-' (neither). The selection is
 // highlighted and the list tracks it under the shared `scroll_mode` policy; directories
-// are tinted. Declared in Clay and painted by the bridge — see the header for why the
-// three steps happen in this order.
-draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
+// are tinted. See the header for why the three steps happen in this order.
+//
+// It no longer paints, and the rename says so: since C8a the window declares one tree and
+// paints it once (window_ui.odin), so a pane's frame ends at its declaration. Everything
+// before that is unchanged and deliberately so — the phases and their order ARE the pane
+// template, and the only thing the single tree took away was the pane's own clay_paint.
+filetree_frame :: proc(t: ^Text, a: ^App, pane: Rect) {
     area, _, rows := filetree_geom(pane, a.scale, t.font.line_height)
     if area.w <= 0 || area.h <= 0 {
         return
@@ -256,6 +249,5 @@ draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     filetree_click(a, hit)
     filetree_scroll_apply(&a.tree, rows, a.scroll_mode == .Middle, pane_input_at(a))
 
-    cmds := filetree_layout(a, &t.font, pane, win_w, win_h)
-    clay_paint(t, a, &cmds, area, win_w, win_h)
+    filetree_declare(a, &t.font, pane)
 }

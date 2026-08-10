@@ -953,7 +953,7 @@ proc_load_users :: proc() -> map[int]string {
     return out
 }
 
-// --- formatting helpers (shared with draw_procmon in render.odin) ---
+// --- formatting helpers (shared with procmon_ui.odin's declaration) ---
 
 // Human kB (1234567 -> "1.2 GB"). Temp-allocated.
 proc_human_kb :: proc(kb: u64) -> string {

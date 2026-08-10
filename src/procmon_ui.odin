@@ -16,7 +16,7 @@ import clay "../bindings/clay"
 //      every row's y. In Clay it is the body clip's `childOffset`, which is what that
 //      field is for — one number on one element instead of a term in each row's
 //      arithmetic. The window is therefore the ANIMATED top, not pm.scroll, and is
-//      computed either side of the click (see draw_procmon).
+//      computed either side of the click (see procmon_frame).
 //   2. **The first Custom that is not a text grid.** The graph band is a plot: bars rising
 //      from a baseline, one per history sample, at sub-cell widths. It is not chrome and
 //      declaring 120 elements for it would be absurd, so it takes the escape hatch the
@@ -184,7 +184,7 @@ procmon_hit :: proc(pm: ^ProcmonPane, top, rows: int) -> ProcHit {
 // Intra-pane focus does move here, unlike the wheel: a click on a tab or a row says which
 // half of the pane you are working in, and leaving the arrows pointed at the other half
 // after you just clicked would be its own surprise. Pane focus (App.focus) is untouched —
-// focus-follows-click is C8 and belongs to every pane at once.
+// focus-follows-click is C8d and belongs to every pane at once.
 procmon_click :: proc(a: ^App, hit: ProcHit) {
     if hit.kind == .None {
         return
@@ -295,36 +295,28 @@ procmon_cells :: proc(texts: [6]string, cols: [6][3]f32, cw: f32, lh: i32) {
     clay.Text(texts[5], clay_text_config(cols[5], lh)) // the command, clipped by the body
 }
 
-// Declare the pane and hand back the frame's command list. Reads App, writes only Clay —
-// no mutation, no GL — which is what lets tests/procmon_ui_test.odin assert the resolved
-// boxes without a window. `top` and `off` are passed in rather than recomputed so the
-// declaration cannot animate to a different place than the frame decided on.
+// Declare the pane into the window's tree (C8a). Reads App, writes only Clay — no mutation,
+// no GL — which is what lets tests/procmon_ui_test.odin assert the resolved boxes without a
+// window. `top` and `off` are passed in rather than recomputed so the declaration cannot
+// animate to a different place than the frame decided on.
 //
 // The tree is:
-//   pm_root  full-window container, padded to put the pane where render decided it goes
-//     pm_pane   the content area inside the focus ring
-//       pm_band    the graph band OR the signal selector — one or the other, never both
-//         pm_tabs      the category row
-//           pm_cat/i     one per GraphCat, and a hit target
-//           pm_read      the current readout, right-aligned
-//         pm_plot      the bars, as a Custom (or the "unavailable" notice)
-//         pm_sighead   the signal selector's target line
-//         pm_sigrow/r  its grid rows
-//           pm_sig/s     one per signal 1..31, and a hit target
-//       pm_hdr     the column header
-//       pm_body    the clip group, offset by the tween's sub-row remainder
-//         pm_row/i   one per visible process, keyed by VIEW index
-//       pm_filter  the live filter bar, when open
-//         pm_fedit   its editable half, as a Custom
-procmon_layout :: proc(
-    a: ^App,
-    f: ^Font,
-    pane: Rect,
-    top: int,
-    off: i32,
-    win_w, win_h: i32,
-    now: f64 = 0,
-) -> clay.ClayArray(clay.RenderCommand) {
+//   pm_pane   the content area inside the focus ring, floating at the pane's own rect and
+//             clipping its own content
+//     pm_band    the graph band OR the signal selector — one or the other, never both
+//       pm_tabs      the category row
+//         pm_cat/i     one per GraphCat, and a hit target
+//         pm_read      the current readout, right-aligned
+//       pm_plot      the bars, as a Custom (or the "unavailable" notice)
+//       pm_sighead   the signal selector's target line
+//       pm_sigrow/r  its grid rows
+//         pm_sig/s     one per signal 1..31, and a hit target
+//     pm_hdr     the column header
+//     pm_body    the clip group, offset by the tween's sub-row remainder
+//       pm_row/i   one per visible process, keyed by VIEW index
+//     pm_filter  the live filter bar, when open
+//       pm_fedit   its editable half, as a Custom
+procmon_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now: f64 = 0) {
     pm := &a.procmon
     th := &a.theme
     area, row_h, band, _, max_rows := procmon_geom(pane, a.scale, f.line_height, pm.sig_open, pm.filtering)
@@ -347,118 +339,73 @@ procmon_layout :: proc(
     // the body's clip is what stops it painting past the list.
     visible := max(0, min(n - first, max_rows + 1))
 
-    clay_resize(win_w, win_h)
-    clay.BeginLayout()
+    // No background anywhere it is not meant: panel() has already filled the pane and
+    // drawn its focus ring, and Clay's transparent default emits no Rectangle at all.
+    if clay.UI(clay.ID("pm_pane"))(clay_pane_box(area)) {
+        // The band is tinted as a whole: a faint accent wash when the graphs hold the
+        // pane's focus, a danger wash while a signal is armed. Both are the element's
+        // own background, where they used to be a fill under everything else.
+        band_bg: clay.Color
+        if pm.sig_open {
+            band_bg = clay_rgb(lerp3(th.bg, th.urgent, 0.10))
+        } else if pm.focus == .Graphs && a.focus == .Aux {
+            band_bg = clay_rgb(lerp3(th.bg, th.accent, 0.08))
+        }
 
-    if clay.UI(clay.ID("pm_root"))(
-        {
-            layout = {
-                sizing = {clay.SizingFixed(f32(win_w)), clay.SizingFixed(f32(win_h))},
-                padding = {left = u16(max(0, area.x)), top = u16(max(0, area.y))},
-            },
-        },
-    ) {
-        // No background anywhere it is not meant: panel() has already filled the pane and
-        // drawn its focus ring, and Clay's transparent default emits no Rectangle at all.
-        if clay.UI(clay.ID("pm_pane"))(
+        if clay.UI(clay.ID("pm_band"))(
             {
                 layout = {
-                    sizing = {clay.SizingFixed(f32(area.w)), clay.SizingFixed(f32(area.h))},
+                    sizing = {clay.SizingGrow(), clay.SizingFixed(f32(band.h))},
                     layoutDirection = .TopToBottom,
+                },
+                backgroundColor = band_bg,
+            },
+        ) {
+            if pm.sig_open {
+                procmon_declare_signals(a, cw, lh, row_h, half, row_w)
+            } else {
+                procmon_declare_graph(a, cw, lh, row_h, row_w)
+            }
+        }
+
+        if clay.UI(clay.ID("pm_hdr"))(
+            {
+                layout = {
+                    sizing = {row_w, clay.SizingFixed(f32(row_h))},
+                    padding = {left = u16(cw)}, // the one-cell left margin
+                    childAlignment = {y = .Center},
                 },
             },
         ) {
-            // The band is tinted as a whole: a faint accent wash when the graphs hold the
-            // pane's focus, a danger wash while a signal is armed. Both are the element's
-            // own background, where they used to be a fill under everything else.
-            band_bg: clay.Color
-            if pm.sig_open {
-                band_bg = clay_rgb(lerp3(th.bg, th.urgent, 0.10))
-            } else if pm.focus == .Graphs && a.focus == .Aux {
-                band_bg = clay_rgb(lerp3(th.bg, th.accent, 0.08))
-            }
+            procmon_cells(
+                {"CPU%", "MEM", "PID", "USER", "NAME", "COMMAND"},
+                {th.muted, th.muted, th.muted, th.muted, th.muted, th.muted},
+                cw,
+                lh,
+            )
+        }
 
-            if clay.UI(clay.ID("pm_band"))(
-                {
-                    layout = {
-                        sizing = {clay.SizingGrow(), clay.SizingFixed(f32(band.h))},
-                        layoutDirection = .TopToBottom,
-                    },
-                    backgroundColor = band_bg,
+        if clay.UI(clay.ID("pm_body"))(
+            {
+                layout = {
+                    sizing = {clay.SizingGrow(), clay.SizingGrow()},
+                    layoutDirection = .TopToBottom,
                 },
-            ) {
-                if pm.sig_open {
-                    procmon_declare_signals(a, cw, lh, row_h, half, row_w)
-                } else {
-                    procmon_declare_graph(a, cw, lh, row_h, row_w)
-                }
-            }
+                // The tween's sub-row remainder, as ONE number on ONE element. This is
+                // what childOffset is for, and it replaces the `- off` term that used
+                // to appear in every row's y.
+                clip = {horizontal = true, vertical = true, childOffset = {0, -f32(off)}},
+            },
+        ) {
+            list_focus := pm.focus == .List && a.focus == .Aux
+            for k in 0 ..< visible {
+                i := first + k
+                r := &pm.cur.procs[pm.view[i]]
 
-            if clay.UI(clay.ID("pm_hdr"))(
-                {
-                    layout = {
-                        sizing = {row_w, clay.SizingFixed(f32(row_h))},
-                        padding = {left = u16(cw)}, // the one-cell left margin
-                        childAlignment = {y = .Center},
-                    },
-                },
-            ) {
-                procmon_cells(
-                    {"CPU%", "MEM", "PID", "USER", "NAME", "COMMAND"},
-                    {th.muted, th.muted, th.muted, th.muted, th.muted, th.muted},
-                    cw,
-                    lh,
-                )
-            }
-
-            if clay.UI(clay.ID("pm_body"))(
-                {
-                    layout = {
-                        sizing = {clay.SizingGrow(), clay.SizingGrow()},
-                        layoutDirection = .TopToBottom,
-                    },
-                    // The tween's sub-row remainder, as ONE number on ONE element. This is
-                    // what childOffset is for, and it replaces the `- off` term that used
-                    // to appear in every row's y.
-                    clip = {horizontal = true, vertical = true, childOffset = {0, -f32(off)}},
-                },
-            ) {
-                list_focus := pm.focus == .List && a.focus == .Aux
-                for k in 0 ..< visible {
-                    i := first + k
-                    r := &pm.cur.procs[pm.view[i]]
-
-                    // The kill confirm REPLACES its row with a one-key prompt rather than
-                    // covering it — the same swap the signal selector makes with the band,
-                    // and the reason this pane has no occlusion either.
-                    if pm.kill_armed && r.pid == pm.kill_pid {
-                        if clay.UI(clay.ID("pm_row", u32(i)))(
-                            {
-                                layout = {
-                                    sizing = {row_w, clay.SizingFixed(f32(row_h))},
-                                    padding = {left = u16(cw)},
-                                    childAlignment = {y = .Center},
-                                },
-                                backgroundColor = clay_rgb(th.urgent),
-                            },
-                        ) {
-                            prompt := fmt.tprintf(
-                                "kill %s (%d)?   enter/y = confirm    esc = cancel",
-                                proc_trunc(r.name, 24),
-                                r.pid,
-                            )
-                            clay.Text(prompt, clay_text_config(th.bg, lh))
-                        }
-                        continue
-                    }
-
-                    bg: clay.Color
-                    if i == pm.sel {
-                        bg = clay_rgb(list_focus ? th.selection : th.line_highlight)
-                    } else if hover_shown(a) && !pm.kill_armed && pm.hover.kind == .Row && pm.hover.idx == i {
-                        bg = clay_rgb(hover_bg(th)) // never competes with the selection
-                    }
-
+                // The kill confirm REPLACES its row with a one-key prompt rather than
+                // covering it — the same swap the signal selector makes with the band,
+                // and the reason this pane has no occlusion either.
+                if pm.kill_armed && r.pid == pm.kill_pid {
                     if clay.UI(clay.ID("pm_row", u32(i)))(
                         {
                             layout = {
@@ -466,62 +413,86 @@ procmon_layout :: proc(
                                 padding = {left = u16(cw)},
                                 childAlignment = {y = .Center},
                             },
-                            backgroundColor = bg,
+                            backgroundColor = clay_rgb(th.urgent),
                         },
                     ) {
-                        // Hot processes are tinted: green past 10% of a core, red past 50%.
-                        // Derived here rather than stored on the row, for the same reason
-                        // GrepRow dropped its colour field — a snapshot carries no palette.
-                        cpu_col := r.cpu_pct >= 50 ? th.urgent : (r.cpu_pct >= 10 ? th.code_return_type : th.fg)
-                        procmon_cells(
-                            {
-                                fmt.tprintf("%5.1f", r.cpu_pct),
-                                proc_human_kb(r.rss_kb),
-                                fmt.tprintf("%d", r.pid),
-                                proc_trunc(r.user, 9),
-                                proc_trunc(r.name, 17),
-                                r.cmd,
-                            },
-                            {cpu_col, th.fg, th.muted, th.muted, th.fg, th.muted},
-                            cw,
-                            lh,
+                        prompt := fmt.tprintf(
+                            "kill %s (%d)?   enter/y = confirm    esc = cancel",
+                            proc_trunc(r.name, 24),
+                            r.pid,
                         )
+                        clay.Text(prompt, clay_text_config(th.bg, lh))
                     }
+                    continue
                 }
-            }
 
-            if pm.filtering {
-                if clay.UI(clay.ID("pm_filter"))(
+                bg: clay.Color
+                if i == pm.sel {
+                    bg = clay_rgb(list_focus ? th.selection : th.line_highlight)
+                } else if hover_shown(a) && !pm.kill_armed && pm.hover.kind == .Row && pm.hover.idx == i {
+                    bg = clay_rgb(hover_bg(th)) // never competes with the selection
+                }
+
+                if clay.UI(clay.ID("pm_row", u32(i)))(
                     {
                         layout = {
                             sizing = {row_w, clay.SizingFixed(f32(row_h))},
                             padding = {left = u16(cw)},
                             childAlignment = {y = .Center},
                         },
-                        backgroundColor = clay_rgb(th.line_highlight),
+                        backgroundColor = bg,
                     },
                 ) {
-                    if clay.UI()({layout = {sizing = {width = clay.SizingFixed(7 * cw)}}}) {
-                        clay.Text("filter ", clay_text_config(th.accent, lh))
-                    }
-                    // The live query: a Custom, because a caret is an over-quad. The two
-                    // structs outlive EndLayout in the frame's temp arena.
-                    cu := new(ClayCustom, context.temp_allocator)
-                    fe := new(Procmon_Filter, context.temp_allocator)
-                    fe^ = {doc = &pm.filter, now = now}
-                    cu^ = {paint = procmon_paint_filter, user = fe}
-                    if clay.UI(clay.ID("pm_fedit"))(
+                    // Hot processes are tinted: green past 10% of a core, red past 50%.
+                    // Derived here rather than stored on the row, for the same reason
+                    // GrepRow dropped its colour field — a snapshot carries no palette.
+                    cpu_col := r.cpu_pct >= 50 ? th.urgent : (r.cpu_pct >= 10 ? th.code_return_type : th.fg)
+                    procmon_cells(
                         {
-                            layout = {sizing = {clay.SizingGrow(), clay.SizingGrow()}},
-                            custom = {customData = cu},
+                            fmt.tprintf("%5.1f", r.cpu_pct),
+                            proc_human_kb(r.rss_kb),
+                            fmt.tprintf("%d", r.pid),
+                            proc_trunc(r.user, 9),
+                            proc_trunc(r.name, 17),
+                            r.cmd,
                         },
-                    ) {}
+                        {cpu_col, th.fg, th.muted, th.muted, th.fg, th.muted},
+                        cw,
+                        lh,
+                    )
                 }
             }
         }
-    }
 
-    return clay.EndLayout(0)
+        if pm.filtering {
+            if clay.UI(clay.ID("pm_filter"))(
+                {
+                    layout = {
+                        sizing = {row_w, clay.SizingFixed(f32(row_h))},
+                        padding = {left = u16(cw)},
+                        childAlignment = {y = .Center},
+                    },
+                    backgroundColor = clay_rgb(th.line_highlight),
+                },
+            ) {
+                if clay.UI()({layout = {sizing = {width = clay.SizingFixed(7 * cw)}}}) {
+                    clay.Text("filter ", clay_text_config(th.accent, lh))
+                }
+                // The live query: a Custom, because a caret is an over-quad. The two
+                // structs outlive EndLayout in the frame's temp arena.
+                cu := new(ClayCustom, context.temp_allocator)
+                fe := new(Procmon_Filter, context.temp_allocator)
+                fe^ = {doc = &pm.filter, now = now}
+                cu^ = {paint = procmon_paint_filter, user = fe}
+                if clay.UI(clay.ID("pm_fedit"))(
+                    {
+                        layout = {sizing = {clay.SizingGrow(), clay.SizingGrow()}},
+                        custom = {customData = cu},
+                    },
+                ) {}
+            }
+        }
+    }
 }
 
 @(private = "file")
@@ -694,7 +665,7 @@ procmon_declare_signals :: proc(a: ^App, cw: f32, lh, row_h: i32, half: u16, row
 // off that anim being active, so skipping it would leave the list frozen part-scrolled
 // until an unrelated event woke the loop. C5b's config pane flattens twice for the same
 // class of reason: a click that changes the list has to be bracketed, not followed.
-draw_procmon :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) {
+procmon_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     pm := &a.procmon
     area, row_h, _, _, max_rows := procmon_geom(pane, a.scale, t.font.line_height, pm.sig_open, pm.filtering)
     if area.w <= 0 || area.h <= 0 {
@@ -710,6 +681,23 @@ draw_procmon :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64)
     off: i32
     top, off = procmon_window(pm, now, row_h)
 
-    cmds := procmon_layout(a, &t.font, pane, top, off, win_w, win_h, now)
-    clay_paint(t, a, &cmds, area, win_w, win_h)
+    procmon_declare(a, &t.font, pane, top, off, now)
+}
+
+// The pane alone in a window, as a command list: the test-facing wrapper (see
+// filetree_layout for why every pane keeps one).
+procmon_layout :: proc(
+    a: ^App,
+    f: ^Font,
+    pane: Rect,
+    top: int,
+    off: i32,
+    win_w, win_h: i32,
+    now: f64 = 0,
+) -> clay.ClayArray(clay.RenderCommand) {
+    clay_window_begin(win_w, win_h)
+    if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
+        procmon_declare(a, f, pane, top, off, now)
+    }
+    return clay.EndLayout(0)
 }

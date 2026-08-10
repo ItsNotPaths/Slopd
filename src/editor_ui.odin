@@ -91,7 +91,7 @@ Editor_View :: struct {
 }
 
 // Build the view — and RE-AIM the scroll animation, which is why this is not a pure query
-// and why draw_editor calls it twice.
+// and why editor_frame calls it twice.
 //
 // smooth_scroll is what makes anim_active true, and app_next_wake schedules the next frame
 // off exactly that (scroll.odin). The loop is WaitEvents-driven, so a frame that moves
@@ -233,20 +233,18 @@ Editor_Hit :: struct {
 // compute — that division is the boundary working as intended, Clay routing to the surface
 // and the surface reading its own pixels.
 //
-// THE FIRST HALF IS DELIBERATELY NOT clay.PointerOver, AND THAT IS THE TRAP OF THIS
-// CHECKPOINT. Clay holds exactly ONE tree — BeginLayout resets it — and today every pane
-// declares its own, one after another, so the tree Clay is holding when a frame starts is
-// whichever pane declared LAST. The three list panes get away with asking Clay (and
-// procmon's wheel with asking for `pm_band`) purely because the aux pane draws last; the
-// editor draws FIRST, so by the time it asks, its own elements were overwritten by the aux
-// pane's a frame ago and PointerOver("ed_body") is false forever. Clicks that simply never
-// happen, with nothing in the command list to show for it.
+// THE FIRST HALF IS NOT clay.PointerOver, and the reason changed at C8a. It used to be
+// forced: Clay held one tree, every pane declared its own, and the tree standing when a frame
+// started was whichever pane declared LAST — so the editor, which declares FIRST, got `false`
+// from PointerOver("ed_body") no matter where the pointer was. Clicks that simply never
+// happened, with nothing in a command list to show for it. That was invariant 11
+// (docs/clay-refactor.md) and it is retired: the window declares one tree, the editor is in
+// it, and PointerOver would answer correctly today (tests/window_ui_test.odin pins that).
 //
-// So the pane's own rect answers this, exactly as wheel_target answers it for routing
-// (mouse.odin) — one rect, no tree needed. rect_hit is half-open, so the pane boundary
-// cannot be claimed twice. C8 is where this stops being a hazard rather than a rule: when
-// the window frame is declared once, with the panes as siblings of a real split, there is
-// one tree per frame and PointerOver means what it looks like it means everywhere.
+// The rect stays because it is the better tool for ONE box, not because Clay is unsafe:
+// wheel_target answers the same question the same way (mouse.odin), rect_hit is half-open so
+// a pane boundary cannot be claimed twice, and it needs no tree at all — which keeps
+// editor_hit callable from a test that never declares anything.
 //
 // The fold marker is tested BEFORE the text, and only on a line that actually has one, so
 // the ordinary case pays one array scan of the fold list (usually empty).
@@ -485,17 +483,10 @@ Editor_Body :: struct {
 // resolves for itself. The Custom hatch is for pixels no widget tree wants, and 60 rows of
 // per-glyph colour is the case it was reserved for (docs/clay-refactor.md, the boundary).
 //
-//   ed_root  full-window container, padded to the pane's origin
-//     ed_pane  the content area inside the focus ring (painted by panel(), not here)
-//       ed_body  the text surface, as a Custom — and the element editor_hit points at
-editor_layout :: proc(
-    a: ^App,
-    f: ^Font,
-    pane: Rect,
-    win_w, win_h: i32,
-    v: Editor_View,
-    now: f64,
-) -> clay.ClayArray(clay.RenderCommand) {
+//   ed_pane  the content area inside the focus ring, floating at the pane's own rect and
+//            clipping its own content (painted by panel(), not here)
+//     ed_body  the text surface, as a Custom — and the element editor_hit points at
+editor_declare :: proc(a: ^App, f: ^Font, pane: Rect, v: Editor_View, now: f64) {
     b := editor_current(&a.editor)
     area := v.area
 
@@ -504,38 +495,17 @@ editor_layout :: proc(
     cu := new(ClayCustom, context.temp_allocator)
     cu^ = ClayCustom{paint = editor_paint_body, user = body}
 
-    clay_resize(win_w, win_h)
-    clay.BeginLayout()
-
-    if clay.UI(clay.ID("ed_root"))(
-        {
-            layout = {
-                sizing = {clay.SizingFixed(f32(win_w)), clay.SizingFixed(f32(win_h))},
-                padding = {left = u16(max(0, area.x)), top = u16(max(0, area.y))},
-            },
-        },
-    ) {
-        // No backgroundColor: panel() has already filled the pane and drawn its focus ring,
-        // and Clay's transparent default emits no Rectangle at all — so this pane's command
-        // list is the Custom and nothing else, which is what the test asserts.
-        if clay.UI(clay.ID("ed_pane"))(
+    // No backgroundColor: panel() has already filled the pane and drawn its focus ring, and
+    // Clay's transparent default emits no Rectangle at all — so this pane's command list is
+    // the Custom bracketed by the pane's own clip, and nothing else.
+    if clay.UI(clay.ID("ed_pane"))(clay_pane_box(area)) {
+        if clay.UI(clay.ID("ed_body"))(
             {
-                layout = {
-                    sizing = {clay.SizingFixed(f32(area.w)), clay.SizingFixed(f32(area.h))},
-                    layoutDirection = .TopToBottom,
-                },
+                layout = {sizing = {clay.SizingGrow(), clay.SizingGrow()}},
+                custom = {customData = cu},
             },
-        ) {
-            if clay.UI(clay.ID("ed_body"))(
-                {
-                    layout = {sizing = {clay.SizingGrow(), clay.SizingGrow()}},
-                    custom = {customData = cu},
-                },
-            ) {}
-        }
+        ) {}
     }
-
-    return clay.EndLayout(0)
 }
 
 // The text surface: a line-number gutter, the buffer's lines with syntax colour, the
@@ -654,7 +624,7 @@ editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
 //
 // The order is the template's, and the doubled editor_view is the editor's own wrinkle —
 // see that proc for why the second call is load-bearing rather than tidy.
-draw_editor :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) {
+editor_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     b := editor_current(&a.editor)
     area, row_h, rows := editor_geom(pane, a.scale, t.font.line_height)
     if area.w <= 0 || area.h <= 0 {
@@ -673,8 +643,24 @@ draw_editor :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) 
     buffer_scroll_apply(b, rows, a.scroll_mode == .Middle, a.last_input_at)
     v = editor_view(b, &t.font, area, row_h, rows, now)
 
-    cmds := editor_layout(a, &t.font, pane, win_w, win_h, v, now)
-    clay_paint(t, a, &cmds, area, win_w, win_h)
+    editor_declare(a, &t.font, pane, v, now)
+}
+
+// The pane alone in a window, as a command list: the test-facing wrapper (see
+// filetree_layout for why every pane keeps one).
+editor_layout :: proc(
+    a: ^App,
+    f: ^Font,
+    pane: Rect,
+    win_w, win_h: i32,
+    v: Editor_View,
+    now: f64,
+) -> clay.ClayArray(clay.RenderCommand) {
+    clay_window_begin(win_w, win_h)
+    if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
+        editor_declare(a, f, pane, v, now)
+    }
+    return clay.EndLayout(0)
 }
 
 // --- painters, moved wholesale from render.odin with the pane they serve ---

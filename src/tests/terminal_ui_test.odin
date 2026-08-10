@@ -279,14 +279,21 @@ test_terminal_command_list :: proc(t: ^testing.T) {
     v := app.terminal_view(term, area, row_h, f.cell_w, cols, rows)
     cmds := app.terminal_layout(&a, term, PANE, 500, 300, v)
 
-    customs, others := 0, 0
-    box: app.Rect
+    customs, others, scissors := 0, 0, 0
+    box, clip: app.Rect
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
         #partial switch c.commandType {
         case .Custom:
             customs += 1
             box = app.clay_rect(c.boundingBox)
+        case .ScissorStart:
+            scissors += 1
+            if c.id == clay.ID("term_pane").id {
+                clip = app.clay_rect(c.boundingBox)
+            }
+        case .ScissorEnd:
+            scissors += 1
         case .None:
         case:
             others += 1
@@ -295,6 +302,12 @@ test_terminal_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, customs, 1)
     testing.expect_value(t, others, 0) // panel() paints the frame; this tree declares no fill
     testing.expect_value(t, box, AREA)
+
+    // The pane's own clip, and the whole of what C8a's single tree cost this pane: the
+    // per-pane clay_paint that used to be handed the pane rect is gone, so the clip is
+    // declared where the box is. It is also what the Custom's painter is handed as `clip`.
+    testing.expect_value(t, scissors, 2)
+    testing.expect_value(t, clip, AREA)
 }
 
 // With no TUI holding the mouse, a click is OURS, and it selects a CHARACTER (C7d).

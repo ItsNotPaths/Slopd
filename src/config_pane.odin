@@ -52,7 +52,7 @@ ConfigPane :: struct {
     dir:      string, // grammars directory (owned)
     langs:    [dynamic]LangStatus, // names borrow the App registry (see config_pane_init)
     filtered: [dynamic]int, // indices into langs matching `search` — the displayed langs
-    // The DISPLAY row under the pointer, or -1. Transient frame state written by draw_config
+    // The DISPLAY row under the pointer, or -1. Transient frame state written by config_frame
     // before it declares (like `scroll`), so the declaration can tint it without hit-testing
     // a second time. -1 whenever the mouse is off or has never moved, because Clay's pointer
     // is parked off-screen then (mouse_feed_clay) and nothing can be over anything.

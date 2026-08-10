@@ -18,7 +18,13 @@ import gl "vendor:OpenGL"
 //
 // A pane appends its quads + glyphs, then calls flush_pane to composite and clip
 // them in one go (under-quads -> glyphs -> carets). render() lays down the window
-// background and the pane chrome first, then hands each region to its draw_* proc.
+// background and the pane chrome first, then hands the panes to window_frame
+// (window_ui.odin), which declares them all into ONE Clay tree and paints it in one pass.
+//
+// What is LEFT here is what has not been declared yet: the media surface, the two overlays
+// and the status strip, each still hand-drawn and each with a C8 sub-checkpoint of its own
+// (C8b the strip, C8c the overlays, C8d the media surface). They paint after window_frame,
+// which is the order they were drawn in before.
 
 aux_mode_name :: proc(m: AuxMode) -> string {
     switch m {
@@ -74,47 +80,35 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
     lay := compute_layout(win_w, win_h, a, now)
     a.lay = lay // pointer events arriving before the next frame route against these rects
 
-    // Clay tracks the framebuffer the same way the GL viewport above does, and is handed
-    // this frame's pointer before anything is declared — SetPointerState resolves against
-    // the tree Clay already holds, so feeding it after the declarations would hit-test one
-    // frame late (see docs/clay-refactor.md, C1).
-    clay_resize(win_w, win_h)
+    // Clay is handed this frame's pointer before anything is declared — SetPointerState
+    // resolves against the tree Clay already holds, so feeding it after the declarations
+    // would hit-test one frame late (see docs/clay-refactor.md, C1). That tree is now the
+    // whole WINDOW rather than whichever pane happened to declare last, which is what makes
+    // every pane's PointerOver answer about itself (C8a).
+    //
+    // Clay tracks the framebuffer the way the GL viewport above does; window_frame does that
+    // as it opens the tree, so it is not repeated here.
     mouse_feed_clay(a)
 
-    pad := i32(8 * a.scale)
-
-    // The focus ring only disambiguates which of two panes is active; with a single
-    // pane on screen (Zen-editor / Full) it is just a full-window border, so drop
-    // it. Hidden panes carry a zero rect and the draw guards skip them.
-    show_ring := lay.vis.editor && lay.vis.aux
-
     // Chrome: both pane backgrounds/rings + the status strip, composited in one flush.
-    panel(t, lay.editor, th.bg, th.accent, show_ring && a.focus == .Editor, a.scale)
-    panel(t, lay.aux, th.bg, th.accent, show_ring && a.focus == .Aux, a.scale)
+    panel(t, lay.editor, th.bg, th.accent, focus_ring(a, lay.vis, .Editor), a.scale)
+    panel(t, lay.aux, th.bg, th.accent, focus_ring(a, lay.vis, .Aux), a.scale)
     fill(t, lay.strip, th.border_light)
     flush_pane(t, Rect{0, 0, win_w, win_h}, win_w, win_h)
 
-    // The main pane is the document: a text editor or, for an image, the media viewer.
-    // Both guard on a zero rect internally (hidden under Full on the aux surface).
+    // Every live pane claims its click, moves its viewport and declares itself into ONE
+    // tree, painted in one pass — window_ui.odin, C8a. The per-pane dispatch that used to
+    // live here went with it, because "which panes exist this frame" is the window frame's
+    // question and asking it in two places is how the two answers drift.
+    window_frame(t, a, lay, win_w, win_h, now)
+
+    // The media surface is the one pane still painted by hand: an image that is panned and
+    // zoomed sits at an arbitrary rect inside its pane, which is a floating child rather
+    // than a laid-out one, and that is a decision for C8d, which is where the pointer first
+    // gets to move it. It guards on a zero rect internally (hidden under Full on the aux
+    // surface) and does not overlap anything window_frame declared.
     if a.main == .Image {
         draw_media(t, lay.editor, win_w, win_h, a)
-    } else {
-        draw_editor(t, lay.editor, win_w, win_h, a, now)
-    }
-
-    if a.aux_mode == .FileTree {
-        draw_filetree(t, lay.aux, win_w, win_h, a) // Clay-declared (C3), see filetree_ui.odin
-    } else if a.aux_mode == .Config {
-        draw_config(t, lay.aux, win_w, win_h, a, now)
-    } else if a.aux_mode == .Terminal {
-        draw_terminal(t, lay.aux, win_w, win_h, a)
-    } else if a.aux_mode == .Grep {
-        draw_grep(t, lay.aux, win_w, win_h, a)
-    } else if a.aux_mode == .Procmon {
-        draw_procmon(t, lay.aux, win_w, win_h, a, now)
-    } else {
-        label(t, aux_mode_name(a.aux_mode), lay.aux, pad, focus_fg(a, .Aux))
-        flush_pane(t, lay.aux, win_w, win_h)
     }
 
     // Switcher overlay: plain Alt only. Alt+Ctrl / Alt+Shift drive the terminal
@@ -161,6 +155,29 @@ focus_fg :: proc(a: ^App, who: Focus) -> [3]f32 {
     return a.focus == who ? a.theme.fg : a.theme.muted
 }
 
+// Whether `who` takes the focus ring this frame. The ring's whole job is to disambiguate
+// which of TWO panes the arrows go to, so with a single pane on screen it is just a border
+// around the window and is dropped. Hidden panes carry a zero rect and the draw guards skip
+// them, so this is about what is VISIBLE, not about what exists.
+//
+// **Zen's editor never rings, and that is the case the plain `vis.editor && vis.aux` test
+// gets wrong.** In Zen the aux pane is a transient reveal that is present exactly while it
+// holds focus, so focusing the editor starts it RETRACTING — and for the length of that slide
+// both panes are still visible while the editor grows toward the full width. Ringing it there
+// paints an accent border around the entire window for a few frames, which is precisely the
+// full-window border this proc exists to avoid; it just arrives one animation early. There is
+// nothing to disambiguate either way, because in Zen the aux pane's presence IS the answer to
+// "which pane is focused".
+//
+// The aux pane still rings in Zen, on the way in: while it slides over the editor the ring is
+// what says the arrows now go there, and it is a real two-pane moment.
+focus_ring :: proc(a: ^App, vis: Pane_Vis, who: Focus) -> bool {
+    if !vis.editor || !vis.aux || a.focus != who {
+        return false
+    }
+    return !(a.view == .Zen && who == .Editor)
+}
+
 // How far the hover tint travels from the pane background toward the selection bar. Well
 // short of it on purpose: the pointer resting somewhere is not a selection, and a list with
 // two equally loud bars in it is a list you have to read twice to find your place in.
@@ -184,12 +201,12 @@ hover_bg :: proc(th: ^Theme) -> [3]f32 {
 // draw_editor and its painters (the indent guides, the whitespace markers, the fold marker,
 // the per-glyph colour runs, the gutter's two number helpers) moved to editor_ui.odin in
 // C7, with the pane they serve: the body is a Clay `Custom` now, and a Custom's painter
-// cannot be file-private to render.odin any more than a layout proc can.
+// cannot be file-private to render.odin any more than a layout proc can. The proc itself is
+// `editor_frame` since C8a, when the paint moved to the window and the name stopped fitting.
 
-// Draws a label inside a pane at the top-left. (Caller flushes the region.)
-label :: proc(t: ^Text, s: string, r: Rect, pad: i32, color: [3]f32) {
-    text_draw(t, s, f32(r.x + pad), f32(r.y + pad), color)
-}
+// `label` (a string at a pane's top-left) went with C8a's aux dispatch: it existed for the
+// "unmigrated pane" placeholder render used to fall through to, and every aux mode is
+// declared now, so the fall-through and its one caller are both gone.
 
 // The command line as it lives in the status strip: prompt, the editable runes,
 // a selection highlight, and a caret. Monospace makes every x pure arithmetic.
@@ -465,20 +482,20 @@ scroll_label :: proc(line, nlines: int) -> string {
     return fmt.tprintf("%d%%", line * 100 / (nlines - 1))
 }
 
-// draw_filetree lives in filetree_ui.odin: the filetree is declared in Clay (C3), so its
+// filetree_frame lives in filetree_ui.odin: the filetree is declared in Clay (C3), so its
 // geometry, its hit-testing and its paint are one tree rather than three copies of the
-// same arithmetic. Its Ctrl-chord overlay is still hand-drawn and stays here until C8.
+// same arithmetic. Its Ctrl-chord overlay is still hand-drawn and stays here until C8c.
 
-// draw_grep lives in grep_ui.odin: the results pane is declared in Clay (C5a), and its
+// grep_frame lives in grep_ui.odin: the results pane is declared in Clay (C5a), and its
 // display-row flattening moved to grep.odin, where the model it flattens already lives.
 
-// draw_procmon lives in procmon_ui.odin: the process monitor is declared in Clay (C5c),
+// procmon_frame lives in procmon_ui.odin: the process monitor is declared in Clay (C5c),
 // with its graph band and its live filter bar as the first Custom surfaces outside the
 // editor and the terminal.
 
-// draw_terminal lives in terminal_ui.odin: the cell grid is declared in Clay (C7b) as one
+// terminal_frame lives in terminal_ui.odin: the cell grid is declared in Clay (C7b) as one
 // Custom, with the pointer either forwarded to a mouse-tracking TUI or driving our own copy
-// cursor. Its Alt-held switcher overlay is still hand-drawn and stays here until C8.
+// cursor. Its Alt-held switcher overlay is still hand-drawn and stays here until C8c.
 
 // The terminal switcher: a slim i3-style numbered column shown while Alt is held.
 // It is inset within the pane's focus outline (so it sits seamlessly inside the

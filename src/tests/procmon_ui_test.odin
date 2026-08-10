@@ -159,7 +159,9 @@ test_procmon_command_list :: proc(t: ^testing.T) {
         #partial switch c.commandType {
         case .ScissorStart:
             scissors += 1
-            body = r
+            if c.id == clay.ID("pm_body").id {
+                body = r
+            }
         case .Rectangle:
             rects += 1
             if c.id == clay.ID("pm_row", 1).id {
@@ -204,8 +206,9 @@ test_procmon_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, hdr, [6]i32{X_CPU, X_MEM, X_PID, X_USER, X_NAME, X_CMD})
     testing.expect_value(t, cell, [6]i32{X_CPU, X_MEM, X_PID, X_USER, X_NAME, X_CMD})
 
-    // The list body is the one clip group, starting under the column header.
-    testing.expect_value(t, scissors, 1)
+    // Two clip groups: the pane's own (C8a) and the list body, which starts under the
+    // column header. `body` is captured by id, so the count is the only thing that changed.
+    testing.expect_value(t, scissors, 2)
     testing.expect_value(t, body, app.Rect{AREA.x, LIST_Y, AREA.w, 252})
 
     // Rows stack on the grid from the top of the body, and the text is centred in each.
@@ -347,10 +350,11 @@ test_procmon_smooth_scroll_offset :: proc(t: ^testing.T) {
     testing.expect_value(t, row_y(&moving, 5), i32(LIST_Y - 7))
 
     // The clip is NOT offset — only its children are. A body that moved with them would
-    // let the partial row paint over the column header.
+    // let the partial row paint over the column header. Matched by id since C8a: the pane
+    // declares a clip of its own, and it starts at the top of the pane, not at the list.
     for i in 0 ..< moving.length {
         c := clay.RenderCommandArray_Get(&moving, i)
-        if c.commandType == .ScissorStart {
+        if c.commandType == .ScissorStart && c.id == clay.ID("pm_body").id {
             testing.expect_value(t, app.clay_rect(c.boundingBox).y, i32(LIST_Y))
         }
     }

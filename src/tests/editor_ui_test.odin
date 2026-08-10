@@ -216,14 +216,21 @@ test_editor_command_list :: proc(t: ^testing.T) {
     v := app.editor_view(b, &f, area, row_h, rows, 0)
     cmds := app.editor_layout(&a, &f, PANE, 500, 300, v, 0)
 
-    customs, others := 0, 0
-    box: app.Rect
+    customs, others, scissors := 0, 0, 0
+    box, clip: app.Rect
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
         #partial switch c.commandType {
         case .Custom:
             customs += 1
             box = app.clay_rect(c.boundingBox)
+        case .ScissorStart:
+            scissors += 1
+            if c.id == clay.ID("ed_pane").id {
+                clip = app.clay_rect(c.boundingBox)
+            }
+        case .ScissorEnd:
+            scissors += 1
         case .None:
         case:
             others += 1
@@ -232,6 +239,12 @@ test_editor_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, customs, 1)
     testing.expect_value(t, others, 0) // panel() paints the frame; this tree declares no fill
     testing.expect_value(t, box, AREA)
+
+    // The pane's own clip, and the whole of what C8a's single tree cost this pane: the
+    // per-pane clay_paint that used to be handed the pane rect is gone, so the clip is
+    // declared where the box is. It is also what the Custom's painter is handed as `clip`.
+    testing.expect_value(t, scissors, 2)
+    testing.expect_value(t, clip, AREA)
 }
 
 // A hit is the pane's own rect plus our arithmetic — deliberately NOT clay.PointerOver;
@@ -277,17 +290,16 @@ test_editor_hit :: proc(t: ^testing.T) {
     testing.expect_value(t, app.editor_hit(&a, b, v).kind, app.Editor_Hit_Kind.None)
 }
 
-// The regression test for the trap C7 fell into. Clay holds exactly ONE tree — BeginLayout
-// resets it — and every pane still declares its own, in render()'s order: the editor first,
-// the aux pane second. So a frame ends with Clay holding the AUX pane's elements, and an
-// editor that asked clay.PointerOver("ed_body") the way the list panes ask about their rows
-// would get `false` forever: clicks that never happen, with nothing in a command list to
-// show for it. The list panes are not clever here, they are merely LAST.
+// Written for the trap C7 fell into — an editor that asked clay.PointerOver got `false`
+// forever, because the aux pane declared after it and replaced the tree — and kept, with its
+// premise inverted, now that C8a declares the window once.
 //
-// This declares both panes in the real order and then requires the editor to resolve
-// anyway, which is exactly what the pane's own rect buys. It also fails if C8 folds the
-// panes into one tree and someone "simplifies" this back to PointerOver without checking
-// that the tree really is shared by then.
+// It declares both panes in render()'s order, into ONE tree, and asserts the editor resolves
+// BOTH ways: through Clay, which is the retirement of invariant 11, and through its own rect,
+// which is what editor_hit actually uses and what makes it testable without a tree. The two
+// answers agreeing is the property; if they ever stop, one of the two is lying about where
+// the pane is. (tests/window_ui_test.odin is where the retirement itself is pinned; this is
+// the editor's own stake in it.)
 @(test)
 test_editor_hit_survives_the_aux_pane :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
@@ -307,17 +319,26 @@ test_editor_hit_survives_the_aux_pane :: proc(t: ^testing.T) {
     area, row_h, rows := app.editor_geom(PANE, 1, f.line_height)
     v := app.editor_view(b, &f, area, row_h, rows, 0)
 
-    // One whole frame, in render()'s order.
-    _ = app.editor_layout(&a, &f, PANE, 500, 300, v, 0)
-    _ = app.filetree_layout(&a, &f, app.Rect{420, 50, 60, 200}, 500, 300)
+    // One whole frame, in render()'s order: editor first, aux pane second, one tree.
+    frame :: proc(a: ^app.App, f: ^app.Font, v: app.Editor_View) {
+        app.clay_window_begin(500, 300)
+        if clay.UI(clay.ID(app.WIN_ROOT))(app.clay_window_root(500, 300)) {
+            app.editor_declare(a, f, PANE, v, 0)
+            app.filetree_declare(a, f, app.Rect{420, 50, 60, 200})
+        }
+        _ = clay.EndLayout(0)
+    }
+    frame(&a, &f, v)
 
-    // The next frame's pointer, over the editor. Clay is holding the filetree's tree.
+    // The next frame's pointer, over the editor — and the aux pane, declared after it, no
+    // longer takes the tree with it.
     a.mouse.x, a.mouse.y = TEXT_X + 22, AREA.y + ROW_H + 4
     clay.SetPointerState({f32(a.mouse.x), f32(a.mouse.y)}, false)
+    frame(&a, &f, v)
     testing.expect(
         t,
-        !clay.PointerOver(clay.ID("ed_body")),
-        "premise changed: the aux pane no longer replaces the editor's tree — re-read this test",
+        clay.PointerOver(clay.ID("ed_body")),
+        "invariant 11 is back: the aux pane replaced the editor's tree again",
     )
 
     hit := app.editor_hit(&a, b, v)

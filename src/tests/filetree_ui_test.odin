@@ -117,7 +117,7 @@ test_filetree_command_list :: proc(t: ^testing.T) {
     cmds := app.filetree_layout(&a, &f, PANE, 500, 300)
 
     counts: [10]int
-    head_text, scissor: app.Rect
+    head_text, scissor, pane_clip: app.Rect
     row_boxes: [20]app.Rect
     row_seen: [20]bool
     texts := 0
@@ -137,7 +137,12 @@ test_filetree_command_list :: proc(t: ^testing.T) {
             }
             texts += 1
         case .ScissorStart:
-            scissor = r
+            // Two now, and they are not interchangeable — see the assertions below.
+            if c.id == clay.ID("ft_pane").id {
+                pane_clip = r
+            } else {
+                scissor = r
+            }
         case .Rectangle:
             for j in 0 ..< 20 {
                 if c.id == clay.ID("ft_row", u32(j)).id {
@@ -152,9 +157,14 @@ test_filetree_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, head_text.y, AREA.y + (ROW_H - 16) / 2)
     testing.expect_value(t, head_text.x, AREA.x + 10) // the one-cell left margin
 
-    // The clip group is the body, under the header and running to the bottom of the pane.
-    testing.expect_value(t, counts[int(clay.RenderCommandType.ScissorStart)], 1)
-    testing.expect_value(t, counts[int(clay.RenderCommandType.ScissorEnd)], 1)
+    // TWO clip groups since C8a, and the outer one is the point of the checkpoint: with one
+    // tree over the whole window there is no per-pane clay_paint left to be handed the pane
+    // rect as its root clip, so the pane clips ITSELF. Without it a long directory name in
+    // the header would paint across the gutter into the editor.
+    testing.expect_value(t, counts[int(clay.RenderCommandType.ScissorStart)], 2)
+    testing.expect_value(t, counts[int(clay.RenderCommandType.ScissorEnd)], 2)
+    testing.expect_value(t, pane_clip, AREA)
+    // The inner one is the body, under the header and running to the bottom of the pane.
     testing.expect_value(t, scissor, app.Rect{AREA.x, AREA.y + ROW_H, AREA.w, AREA.h - ROW_H})
 
     // Only the SELECTED row draws a background (nothing is marked here), and it is the

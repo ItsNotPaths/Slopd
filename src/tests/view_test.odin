@@ -31,6 +31,39 @@ test_view_zen_aux_follows_focus :: proc(t: ^testing.T) {
     testing.expect(t, v.editor && v.aux) // aux slides back in
 }
 
+// The focus ring: drawn only when two panes are on screen AND the pane in question holds
+// focus — with one pane up it is a border around the whole window, which says nothing.
+//
+// The Zen editor is the case worth pinning, because `vis` alone gets it wrong. Focusing the
+// editor in Zen starts the aux pane RETRACTING, and for the length of that slide `vis` still
+// reports both panes while the editor grows toward the full width — so a ring keyed on
+// visibility flashes a full-window outline for a few frames. Reported from the machine, and
+// it is the reason focus_ring exists rather than an inline `vis.editor && vis.aux`.
+@(test)
+test_focus_ring_never_rings_the_zen_editor :: proc(t: ^testing.T) {
+    both :: app.Pane_Vis{editor = true, aux = true}
+    lone :: app.Pane_Vis{editor = true, aux = false}
+
+    a: app.App // Split
+    a.focus = .Editor
+    testing.expect(t, app.focus_ring(&a, both, .Editor), "Split: the focused pane must ring")
+    testing.expect(t, !app.focus_ring(&a, both, .Aux), "Split: the unfocused pane must not ring")
+
+    // Mid-retraction in Zen: both panes visible, the editor focused and nearly full width.
+    a.view = .Zen
+    testing.expect(t, !app.focus_ring(&a, both, .Editor), "the Zen editor ringed the whole window")
+
+    // The aux pane's own ring survives — sliding IN, it is what says the arrows go there.
+    a.focus = .Aux
+    testing.expect(t, app.focus_ring(&a, both, .Aux), "the Zen aux pane lost its ring")
+
+    // Settled Zen (aux retracted) and Full both leave one pane up: no ring at all.
+    a.focus = .Editor
+    testing.expect(t, !app.focus_ring(&a, lone, .Editor), "a lone pane ringed the window")
+    a.view = .Full
+    testing.expect(t, !app.focus_ring(&a, lone, .Editor), "Full ringed the window")
+}
+
 // Full: exactly one surface fills the window, chosen by focus — focusing the editor
 // shows the editor, focusing the aux shows the aux pane (Alt+E / Alt+T etc. swap).
 @(test)
