@@ -98,11 +98,13 @@ Mouse :: struct {
 // scheduler and would make the cursor vanish mid-thought while you read; the keyboard is
 // already the unambiguous signal, and it costs nothing to watch.
 //
-// What wakes it: MOTION and PRESSES only. A wheel notch does not, and that is a decision —
-// scrolling is a pointer action that does not move the pointer, so revealing the cursor and
-// relighting whatever it happens to be resting over would put back the exact competition
-// this removes. Scrolling still works while stood down (routing reads a position, not a
-// hover), so nothing is lost.
+// What wakes it: ANY pointer event — motion, a press, or a wheel event. The wheel was
+// briefly excluded on the reasoning that scrolling does not move the pointer, so waking
+// would relight whatever the cursor happened to be resting over; that is true and it is not
+// the point. Turning a wheel is a hand on the mouse, and a program that keeps the cursor
+// hidden while you are visibly using the mouse is wrong about who is driving. Hover
+// following a scroll is what hover IS — the row under the pointer changed because the rows
+// moved — and the next keystroke stands it straight back down.
 //
 // **Standing down suppresses HOVER, never a click.** A press wakes the pointer in the
 // callback, before any pane gets a chance to claim it, so there is no state in which a
@@ -369,9 +371,35 @@ mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mo
     m.click = true
 }
 
-// A wheel notch: resolve where it landed, then apply it. GLFW's yoffset is positive for a
-// scroll UP, which is the opposite of every "lines down" convention downstream, so the
-// sign flips exactly once — here.
+// Spend one wheel event: wake the pointer, accumulate the sub-notch travel, then route and
+// apply whatever whole notches that produced. GLFW's yoffset is positive for a scroll UP,
+// which is the opposite of every "lines down" convention downstream, so the sign flips
+// exactly once — here.
+//
+// Split out of scroll_callback so it is reachable headlessly: everything the callback keeps
+// needs a window handle, and everything here is a decision worth a test — the wake, the
+// accumulator (which does nothing at all on a device that sends ±1 per notch, so a run on
+// this desk says nothing either way about it), and the routing.
+//
+// THE WAKE IS UNCONDITIONAL, ahead of the accumulator rather than beside the apply: a
+// trackpad delivers a long run of fractional events that each spend no notch, and the hand
+// is plainly on the pointer throughout. Waking only when a notch lands would leave the
+// cursor hidden through exactly the gesture that is most obviously pointer use.
+mouse_wheel :: proc(a: ^App, yoffset: f64) {
+    if !a.mouse_on || yoffset == 0 {
+        return
+    }
+    mouse_wake(a)
+    // Accumulate, then spend whole notches and keep the remainder (see Mouse.accum).
+    // int() truncates toward zero, so the leftover always carries the same sign.
+    a.mouse.accum += -yoffset
+    notch := int(a.mouse.accum)
+    a.mouse.accum -= f64(notch)
+    wheel_apply(a, wheel_target(a, a.lay, a.mouse.x, a.mouse.y), notch)
+}
+
+// The GLFW half: resolve the pointer's position if we have never had one, then spend the
+// event.
 scroll_callback :: proc "c" (window: glfw.WindowHandle, xoffset, yoffset: f64) {
     context = runtime.default_context()
     a := (^App)(glfw.GetWindowUserPointer(window))
@@ -386,12 +414,7 @@ scroll_callback :: proc "c" (window: glfw.WindowHandle, xoffset, yoffset: f64) {
         a.mouse.x, a.mouse.y = mouse_to_fb(window, x, y)
         a.mouse.known = true
     }
-    // Accumulate, then spend whole notches and keep the remainder (see Mouse.accum).
-    // int() truncates toward zero, so the leftover always carries the same sign.
-    a.mouse.accum += -yoffset
-    notch := int(a.mouse.accum)
-    a.mouse.accum -= f64(notch)
-    wheel_apply(a, wheel_target(a, a.lay, a.mouse.x, a.mouse.y), notch)
+    mouse_wheel(a, yoffset)
 }
 
 // Hand Clay this frame's pointer, so PointerOver / OnHover resolve during the declarations

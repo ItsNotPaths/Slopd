@@ -214,28 +214,87 @@ test_mouse_stand_down_never_eats_a_click :: proc(t: ^testing.T) {
     testing.expect_value(t, count, 1)
 }
 
-// A wheel notch deliberately does NOT wake it: scrolling is a pointer action that does not
-// move the pointer, so relighting whatever it happens to rest over would put back the exact
-// competition this removes. Scrolling itself keeps working, because routing reads a
-// position and not a hover.
+// A wheel event WAKES the pointer, like any other pointer event: turning a wheel is a hand
+// on the mouse, and keeping the cursor hidden while the mouse is visibly in use is wrong
+// about who is driving.
 //
-// Scope, stated because a mutation proved it: this pins the half that is reachable —
-// wheel_apply, which is where every notch is spent — and it would catch a wake added there.
-// It cannot see scroll_callback, which needs a real window (GetWindowUserPointer) and so is
-// not exercised by anything headless; that half is held by inspection alone.
+// This goes through mouse_wheel rather than wheel_apply on purpose — that is the seam the
+// wake lives on, and it exists as a separate proc so this is testable at all. The half left
+// in scroll_callback is only the "we have never had a cursor position" fallback, which
+// needs a real window.
 @(test)
-test_mouse_wheel_does_not_wake :: proc(t: ^testing.T) {
+test_mouse_wheel_wakes :: proc(t: ^testing.T) {
     a := routing_app(.Grep)
     for i in 0 ..< 20 {
         append(&a.grep.hits, app.GrepHit{line = i + 1})
     }
     defer delete(a.grep.hits)
     a.hover_on = true
+    a.mouse_on = true
+    a.mouse.known = true
+    // mouse_wheel routes the notch itself, so unlike the wheel_apply tests above it needs a
+    // cached layout and a position: the pointer sits over the aux pane.
+    a.lay = LAY
+    a.mouse.x, a.mouse.y = 700, 300
     app.mouse_stand_down(&a)
 
-    app.wheel_apply(&a, .List, 2)
-    testing.expect_value(t, a.grep.scroll, 2 * app.WHEEL_LINES) // the notch still landed
-    testing.expect(t, !app.hover_shown(&a), "a wheel notch must not reveal the pointer")
+    app.mouse_wheel(&a, -1) // GLFW's sign: negative yoffset is a scroll DOWN
+    testing.expect(t, app.hover_shown(&a), "a wheel event must reveal the pointer")
+    testing.expect_value(t, a.grep.scroll, app.WHEEL_LINES)
+
+    // A SUB-NOTCH event wakes too, though it spends no notch. This is the case that matters
+    // for a trackpad: a long run of fractional events, the hand plainly on the pointer
+    // throughout, and a wake gated on whole notches would leave the cursor hidden through
+    // the whole gesture.
+    app.mouse_stand_down(&a)
+    before := a.grep.scroll
+    app.mouse_wheel(&a, -0.25)
+    testing.expect(t, app.hover_shown(&a), "a fractional wheel event must reveal it too")
+    testing.expect_value(t, a.grep.scroll, before) // ... and moved nothing yet
+
+    // `mouse: off` is still off: no wake, no scroll.
+    app.mouse_stand_down(&a)
+    a.mouse_on = false
+    app.mouse_wheel(&a, -1)
+    testing.expect(t, !app.hover_shown(&a))
+    testing.expect_value(t, a.grep.scroll, before)
+}
+
+// The sub-notch accumulator, which until now nothing exercised: a mouse wheel reports whole
+// notches, but a trackpad (and libinput's high-resolution axis) reports fractions of one,
+// and rounding each event up would make a gentle two-finger drag tear through the buffer.
+// On a ±1 device it is arithmetically the identity, so a clean run at this desk says nothing
+// either way about it — hence a test rather than a shrug.
+@(test)
+test_mouse_wheel_subnotch_accumulates :: proc(t: ^testing.T) {
+    a := routing_app(.Grep)
+    for i in 0 ..< 40 {
+        append(&a.grep.hits, app.GrepHit{line = i + 1})
+    }
+    defer delete(a.grep.hits)
+    a.mouse_on = true
+    a.mouse.known = true
+    a.lay = LAY
+    a.mouse.x, a.mouse.y = 700, 300
+
+    // Four quarter-notches make exactly one notch, and not before the fourth.
+    for _ in 0 ..< 3 {
+        app.mouse_wheel(&a, -0.25)
+        testing.expect_value(t, a.grep.scroll, 0)
+    }
+    app.mouse_wheel(&a, -0.25)
+    testing.expect_value(t, a.grep.scroll, app.WHEEL_LINES)
+
+    // The remainder carries with its own sign, so reversing direction does not spend a
+    // notch that was never accumulated.
+    a.grep.scroll = 0
+    app.mouse_wheel(&a, -0.5)
+    testing.expect_value(t, a.grep.scroll, 0)
+    app.mouse_wheel(&a, 0.5) // back the other way: the accumulator returns to zero
+    testing.expect_value(t, a.grep.scroll, 0)
+    app.mouse_wheel(&a, 0.5)
+    app.mouse_wheel(&a, 0.5)
+    testing.expect_value(t, a.grep.scroll, -app.WHEEL_LINES) // one notch UP
 }
 
 // A bare modifier is not a verb, and must not stand the pointer down: Alt+click drops a
