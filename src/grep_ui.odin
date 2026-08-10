@@ -195,7 +195,7 @@ grep_layout :: proc(
                     bg: clay.Color
                     if sel {
                         bg = clay_rgb(th.line_highlight)
-                    } else if a.hover_on && r.hit >= 0 && r.hit == g.hover {
+                    } else if hover_shown(a) && r.hit >= 0 && r.hit == g.hover {
                         // The whole block lights, not the row: that is what a click here
                         // selects, so it is what the pointer should promise. C5b's toggle.
                         bg = clay_rgb(hover_bg(th))

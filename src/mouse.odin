@@ -67,6 +67,13 @@ Mouse :: struct {
     click_x:     i32, // and where it landed, for the slop
     click_y:     i32,
 
+    // The keyboard has taken over: the cursor is hidden and nothing hovers. Set by any key
+    // that does something (mouse_stand_down), cleared by any pointer motion or press
+    // (mouse_wake). See those two for the reasoning; `cursor_hidden` is only the bookkeeping
+    // that keeps mouse_apply_cursor from calling into GLFW every frame.
+    stood_down:     bool,
+    cursor_hidden:  bool,
+
     // The modifiers held AT THE PRESS, taken from GLFW's own `mods` rather than read off
     // App.alt_held / shift_held when the pane claims it. Two reasons, and the second is the
     // one that bites: a press is claimed on a later frame than it arrived, so a modifier
@@ -76,6 +83,65 @@ Mouse :: struct {
     // bit values (C7).
     click_shift: bool,
     click_alt:   bool,
+}
+
+// --- standing the pointer down while the keyboard is in use ---
+//
+// Two highlights that both mean "here" are one too many. A list pane paints the row under
+// the pointer AND the selected row, and while you are moving the selection with the arrows
+// the pointer is not saying anything — it is sitting wherever you left it, lighting a row
+// you are not thinking about and competing with the one you are. So a keystroke stands the
+// pointer down: the cursor is hidden and nothing hovers, until the pointer does something
+// that means the hand is back on it.
+//
+// This is not a timeout and deliberately not one. A dwell timer would need a wake in the
+// scheduler and would make the cursor vanish mid-thought while you read; the keyboard is
+// already the unambiguous signal, and it costs nothing to watch.
+//
+// What wakes it: MOTION and PRESSES only. A wheel notch does not, and that is a decision —
+// scrolling is a pointer action that does not move the pointer, so revealing the cursor and
+// relighting whatever it happens to be resting over would put back the exact competition
+// this removes. Scrolling still works while stood down (routing reads a position, not a
+// hover), so nothing is lost.
+//
+// **Standing down suppresses HOVER, never a click.** A press wakes the pointer in the
+// callback, before any pane gets a chance to claim it, so there is no state in which a
+// deliberate click is swallowed — which is why the gate lives at the four places hover is
+// PAINTED (hover_shown) and not in any pane's hit test. Clay is still fed the real pointer
+// for the same reason: wheel routing asks it where a notch landed (procmon's band, C5c),
+// and parking the pointer off-screen to kill hover would quietly break that instead.
+
+// A key that does something: hide the pointer and stop it answering.
+mouse_stand_down :: proc(a: ^App) {
+    a.mouse.stood_down = true
+}
+
+// A pointer event: the hand is back on the mouse, so bring it back.
+mouse_wake :: proc(a: ^App) {
+    a.mouse.stood_down = false
+}
+
+// Whether hover may PAINT this frame. The config toggle (`hover: on|off`) and the stand-down
+// state, in one place, because every pane needs both and neither is worth restating four
+// times. The hovered item is still resolved while stood down — it costs nothing, it is the
+// same call the click needs, and a pane that stopped tracking it would have to re-hit-test
+// on the motion event that wakes it.
+hover_shown :: proc(a: ^App) -> bool {
+    return a.hover_on && !a.mouse.stood_down
+}
+
+// Push the cursor's visibility to GLFW, once per frame, from the one state that decides it.
+// Called from the main loop rather than from the callbacks on purpose: this way there is a
+// single writer and no path can strand a hidden cursor — turning `mouse: off` while the
+// pointer is stood down reveals it on the next frame, because the desired state below is
+// simply false again.
+mouse_apply_cursor :: proc(a: ^App) {
+    want := a.mouse_on && a.mouse.stood_down
+    if want == a.mouse.cursor_hidden || a.window == nil {
+        return
+    }
+    a.mouse.cursor_hidden = want
+    glfw.SetInputMode(a.window, glfw.CURSOR, want ? glfw.CURSOR_HIDDEN : glfw.CURSOR_NORMAL)
 }
 
 // Claim the pending click. Clearing it here is what makes a press have exactly ONE noun:
@@ -251,7 +317,14 @@ cursor_pos_callback :: proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
     if a == nil {
         return
     }
-    a.mouse.x, a.mouse.y = mouse_to_fb(window, xpos, ypos)
+    // A motion event that does not actually move the pointer must not wake it: GLFW delivers
+    // one when the window moves under a still cursor, and a workspace switch or a tiling
+    // reflow would otherwise put the cursor back mid-keystroke.
+    x, y := mouse_to_fb(window, xpos, ypos)
+    if !a.mouse.known || x != a.mouse.x || y != a.mouse.y {
+        mouse_wake(a)
+    }
+    a.mouse.x, a.mouse.y = x, y
     a.mouse.known = true
 }
 
@@ -272,6 +345,12 @@ mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mo
     if !a.mouse.down || !a.mouse_on {
         return
     }
+    // A press is the hand back on the mouse, so it wakes BEFORE it is parked for a pane to
+    // claim — the click then acts at the position it was made, with the cursor visible
+    // again from that frame on. Waking after would make the first click of a run act while
+    // still stood down, which is the one case where "ignored" would be wrong: the user
+    // aimed it.
+    mouse_wake(a)
     // A press can be the first pointer event the window ever sees, exactly as a wheel notch
     // can (a cursor already sitting over a freshly opened window reports no motion), so ask
     // GLFW outright rather than resolving against a position we never received.

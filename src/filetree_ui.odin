@@ -203,7 +203,7 @@ filetree_layout :: proc(a: ^App, f: ^Font, pane: Rect, win_w, win_h: i32) -> cla
                         bg = clay_rgb(th.separator)
                     } else if marked {
                         bg = clay_rgb(th.line_highlight)
-                    } else if a.hover_on && i == ft.hover {
+                    } else if hover_shown(a) && i == ft.hover {
                         bg = clay_rgb(hover_bg(th)) // C5b's toggle; last, so it never masks a mark
                     }
 

@@ -164,6 +164,11 @@ main :: proc() {
             clay_font_changed() // every cached string width is stale at the new cell size
         }
 
+        // Show or hide the cursor to match the pointer's stood-down state (mouse.odin). Here
+        // rather than in the callbacks so there is exactly one writer, and no sequence of
+        // events — including turning `mouse: off` while it is hidden — can strand it.
+        mouse_apply_cursor(&app)
+
         // Frame timing: cpu = render's vertex assembly, gpu = a timer query around its
         // draws, swap = the SwapBuffers (vsync) block. perf_frame reads back the previous
         // frame's gpu timer and logs a window once a second. All no-ops unless --perflog.

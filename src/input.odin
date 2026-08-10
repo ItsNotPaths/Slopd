@@ -45,10 +45,34 @@ import "vendor:glfw"
 //
 // Pointer input is the sibling file, mouse.odin, and it is ADDITIVE: it is never the only
 // route to anything above, which is what makes `mouse: off` a preference rather than a
-// mutilation. So far it is the wheel only — it scrolls whatever the cursor is over and
-// deliberately does NOT move focus, so the pane these bindings act on is still whatever
-// you last chose with Alt+Left/Right. Clicks arrive per pane as each one moves to Clay
-// (docs/clay-refactor.md, C3 onward), and this manifesto grows the mouse column then.
+// mutilation. The wheel scrolls whatever the cursor is over and deliberately does NOT move
+// focus, so the pane these bindings act on is still whatever you last chose with
+// Alt+Left/Right. Clicks arrive per pane as each one moves to Clay (docs/clay-refactor.md,
+// C3 onward): a click selects a row or places the caret, and every verb it reaches is one
+// of the ones above.
+//
+// THE KEYBOARD OUTRANKS THE POINTER, and this file is where that starts: any key that does
+// something stands the pointer down (mouse_stand_down) — the cursor is hidden and nothing
+// hovers — until the pointer moves or is pressed. Two highlights that both mean "here" is
+// one too many, and while you are driving with the arrows the pointer is not saying
+// anything, it is just resting somewhere. A BARE MODIFIER is excluded, which is the part
+// worth remembering when adding one: Alt+click drops a cursor, so holding Alt must leave
+// the cursor on screen to aim with, and Ctrl held is the filetree's chord bar.
+
+// Is this key a bare modifier — one that qualifies the next keystroke rather than being one?
+// Only used to decide what stands the pointer down (see handle_key), which is why Super is
+// in the list despite nothing binding it: the question is "did the user ask for something",
+// and a modifier on its own never has.
+key_is_modifier :: proc(key: i32) -> bool {
+    switch key {
+    case glfw.KEY_LEFT_ALT, glfw.KEY_RIGHT_ALT,
+         glfw.KEY_LEFT_CONTROL, glfw.KEY_RIGHT_CONTROL,
+         glfw.KEY_LEFT_SHIFT, glfw.KEY_RIGHT_SHIFT,
+         glfw.KEY_LEFT_SUPER, glfw.KEY_RIGHT_SUPER:
+        return true
+    }
+    return false
+}
 
 key_callback :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: i32) {
     context = runtime.default_context()
@@ -71,6 +95,7 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     a.last_input_at = glfw.GetTime()
     a.blink_base = a.last_input_at // typing: caret solid, then resumes blinking
     a.move_all_armed = false // typing isn't a motion; cancel a pending move-all
+    mouse_stand_down(a) // typing hides the pointer, exactly as a bound key does
     if a.cl_active {
         doc_insert_rune(&a.cl.doc, codepoint)
     } else if tf := term_focused(a); tf != nil {
@@ -100,6 +125,14 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         now := glfw.GetTime()
         a.blink_base = now // any keypress holds the caret solid, then blinks
         a.last_input_at = now // perf log: timestamp for keystroke->present latency
+
+        // The keyboard takes over: hide the pointer and stop it hovering (mouse.odin). A
+        // BARE MODIFIER does not count, and that exclusion is the whole subtlety — Alt+click
+        // drops a cursor, so holding Alt has to leave the cursor on screen for you to aim
+        // it, and Ctrl held is the filetree's chord bar rather than a verb of its own.
+        if !key_is_modifier(key) {
+            mouse_stand_down(a)
+        }
     }
 
     // Track Alt held — drives the terminal-session overlay (fading it in on press).

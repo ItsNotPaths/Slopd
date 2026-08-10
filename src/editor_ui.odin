@@ -235,6 +235,10 @@ editor_hit :: proc(a: ^App, b: ^Buffer, v: Editor_View) -> Editor_Hit {
     if !a.mouse_on || !a.mouse.known || a.main != .Text {
         return {}
     }
+    // Deliberately NOT gated on a.mouse.stood_down (mouse.odin). Standing the pointer down
+    // suppresses HOVER, never a click: a press wakes the pointer before any pane can claim
+    // it, so refusing hits here would only ever discard a click the user aimed — and would
+    // make this pane behave differently from the four that resolve their rows regardless.
     if !rect_hit(v.area, a.mouse.x, a.mouse.y) {
         return {}
     }

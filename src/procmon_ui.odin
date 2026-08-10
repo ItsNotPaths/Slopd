@@ -455,7 +455,7 @@ procmon_layout :: proc(
                     bg: clay.Color
                     if i == pm.sel {
                         bg = clay_rgb(list_focus ? th.selection : th.line_highlight)
-                    } else if a.hover_on && !pm.kill_armed && pm.hover.kind == .Row && pm.hover.idx == i {
+                    } else if hover_shown(a) && !pm.kill_armed && pm.hover.kind == .Row && pm.hover.idx == i {
                         bg = clay_rgb(hover_bg(th)) // never competes with the selection
                     }
 
@@ -549,7 +549,7 @@ procmon_declare_graph :: proc(a: ^App, cw: f32, lh, row_h: i32, row_w: clay.Sizi
             // highlight read as "cpu    " with the label jammed against its leading edge.
             lit := GraphCat(i) == pm.cat
             bg: clay.Color
-            if a.hover_on && pm.hover.kind == .Tab && pm.hover.idx == i && !lit {
+            if hover_shown(a) && pm.hover.kind == .Tab && pm.hover.idx == i && !lit {
                 bg = clay_rgb(hover_bg(th))
             }
             if clay.UI(clay.ID("pm_cat", u32(i)))(
@@ -656,7 +656,7 @@ procmon_declare_signals :: proc(a: ^App, cw: f32, lh, row_h: i32, half: u16, row
                 bg: clay.Color
                 if armed {
                     bg = clay_rgb(th.accent)
-                } else if a.hover_on && pm.hover.kind == .Signal && pm.hover.idx == s {
+                } else if hover_shown(a) && pm.hover.kind == .Signal && pm.hover.idx == s {
                     bg = clay_rgb(hover_bg(th))
                 }
                 if clay.UI(clay.ID("pm_sig", u32(s)))(

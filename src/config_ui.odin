@@ -299,7 +299,7 @@ config_layout :: proc(
                     bg: clay.Color
                     if sel {
                         bg = clay_rgb(th.separator)
-                    } else if a.hover_on && i == cp.hover && r.item >= 0 {
+                    } else if hover_shown(a) && i == cp.hover && r.item >= 0 {
                         bg = clay_rgb(hover_bg(th))
                     }
 

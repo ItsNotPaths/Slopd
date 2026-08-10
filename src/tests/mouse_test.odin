@@ -2,6 +2,7 @@ package tests
 
 import app ".."
 import "core:testing"
+import "vendor:glfw" // key codes only, for the bare-modifier rule; no window is opened
 
 // C2's routing decision table. wheel_target is pure — App state plus the frame's Layout
 // in, a target out — so the whole "which pane owns this notch" question is settled here
@@ -163,3 +164,90 @@ test_wheel_apply_inert_targets :: proc(t: ^testing.T) {
     testing.expect_value(t, a.grep.scroll, 0)
 }
 
+
+// Standing the pointer down while the keyboard is in use. The problem it solves is two
+// highlights that both mean "here": a list paints the row under the pointer AND the selected
+// row, and while the arrows are moving the selection the pointer is not saying anything —
+// it is resting wherever it was left, lighting a row nobody is thinking about.
+@(test)
+test_mouse_stand_down_gates_hover :: proc(t: ^testing.T) {
+    a: app.App
+    a.mouse_on = true
+    a.hover_on = true
+
+    testing.expect(t, app.hover_shown(&a), "hover is on by default with the mouse on")
+
+    app.mouse_stand_down(&a)
+    testing.expect(t, !app.hover_shown(&a), "a keystroke must stop hover painting")
+
+    app.mouse_wake(&a)
+    testing.expect(t, app.hover_shown(&a), "moving the pointer brings it back")
+
+    // The config toggle and the stand-down are independent gates, and hover needs both.
+    a.hover_on = false
+    testing.expect(t, !app.hover_shown(&a))
+    a.hover_on = true
+    app.mouse_stand_down(&a)
+    a.mouse_on = false
+    testing.expect(t, !app.hover_shown(&a))
+}
+
+// The gate is on PAINTING hover, never on claiming a click — a press wakes the pointer in
+// the callback, before any pane can ask. So there is no state in which a click the user
+// aimed is swallowed, and a pane that is stood down still resolves what is under the
+// pointer for the click's sake.
+@(test)
+test_mouse_stand_down_never_eats_a_click :: proc(t: ^testing.T) {
+    a: app.App
+    a.mouse_on = true
+    a.hover_on = true
+    app.mouse_stand_down(&a)
+
+    // What the button callback does, in its order: wake, then park the press.
+    app.mouse_wake(&a)
+    a.mouse.click = true
+    a.mouse.click_count = 1
+
+    testing.expect(t, app.hover_shown(&a), "the press woke the pointer")
+    count, ok := app.mouse_take_click(&a)
+    testing.expect(t, ok, "a click must still be claimable")
+    testing.expect_value(t, count, 1)
+}
+
+// A wheel notch deliberately does NOT wake it: scrolling is a pointer action that does not
+// move the pointer, so relighting whatever it happens to rest over would put back the exact
+// competition this removes. Scrolling itself keeps working, because routing reads a
+// position and not a hover.
+//
+// Scope, stated because a mutation proved it: this pins the half that is reachable —
+// wheel_apply, which is where every notch is spent — and it would catch a wake added there.
+// It cannot see scroll_callback, which needs a real window (GetWindowUserPointer) and so is
+// not exercised by anything headless; that half is held by inspection alone.
+@(test)
+test_mouse_wheel_does_not_wake :: proc(t: ^testing.T) {
+    a := routing_app(.Grep)
+    for i in 0 ..< 20 {
+        append(&a.grep.hits, app.GrepHit{line = i + 1})
+    }
+    defer delete(a.grep.hits)
+    a.hover_on = true
+    app.mouse_stand_down(&a)
+
+    app.wheel_apply(&a, .List, 2)
+    testing.expect_value(t, a.grep.scroll, 2 * app.WHEEL_LINES) // the notch still landed
+    testing.expect(t, !app.hover_shown(&a), "a wheel notch must not reveal the pointer")
+}
+
+// A bare modifier is not a verb, and must not stand the pointer down: Alt+click drops a
+// cursor, so holding Alt has to leave the cursor on screen for you to aim it, and Ctrl held
+// is the filetree's chord bar rather than a keystroke of its own.
+@(test)
+test_key_is_modifier :: proc(t: ^testing.T) {
+    testing.expect(t, app.key_is_modifier(glfw.KEY_LEFT_ALT))
+    testing.expect(t, app.key_is_modifier(glfw.KEY_RIGHT_CONTROL))
+    testing.expect(t, app.key_is_modifier(glfw.KEY_LEFT_SHIFT))
+    testing.expect(t, app.key_is_modifier(glfw.KEY_LEFT_SUPER))
+    testing.expect(t, !app.key_is_modifier(glfw.KEY_A))
+    testing.expect(t, !app.key_is_modifier(glfw.KEY_DOWN))
+    testing.expect(t, !app.key_is_modifier(glfw.KEY_ENTER))
+}
