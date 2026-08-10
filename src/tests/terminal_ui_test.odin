@@ -297,58 +297,74 @@ test_terminal_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, box, AREA)
 }
 
-// With no TUI holding the mouse, a click is ours: it puts the copy cursor on the line under
-// the pointer. Shift extends the span from the anchor, exactly as Shift+Up does.
+// With no TUI holding the mouse, a click is OURS, and it selects a CHARACTER (C7d).
 //
-// **INTERIM — C7d rewrites this test.** Line granularity is the keyboard's model; a click
-// should select the CHARACTER under the pointer, and what this asserts for one click is what
-// a triple click should do. The claim/no-claim rules at the end and the stale-view clamp are
-// the parts that outlive the rewrite.
+// This replaces C7b's row-granular version. What that test asserted for a single click is
+// what a triple click asserts here, which was the tell that the model underneath it was the
+// keyboard's: a pointer names a character and only arrow keys have a reason to name a line.
+// The claim/no-claim rules and the stale-view clamp are carried over unchanged — they were
+// never about granularity.
 @(test)
-test_terminal_click_moves_the_copy_cursor :: proc(t: ^testing.T) {
+test_terminal_click_selects_by_character :: proc(t: ^testing.T) {
     a: app.App
     fake_app(&a)
     term := mkterm()
     defer killterm(term)
-    feed(term, "l0\r\nl1\r\nl2\r\nl3\r\nl4")
+    feed(term, "alpha bravo\r\ncharlie delta\r\nl2\r\nl3\r\nl4")
     v := mkview()
 
+    // A single click is an empty selection AT a boundary — a place to extend from, not a
+    // span. Nothing is selected until something moves.
     point_at(&a, 2, 0)
     press(&a)
     app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
-    testing.expect(t, term.sel_active, "a click enters select mode")
-    testing.expect_value(t, term.sel_head, 2)
-    testing.expect_value(t, term.sel_anchor, 2) // no span yet
+    testing.expect(t, term.msel_on, "a click starts a mouse selection")
+    testing.expect_value(t, term.msel.anchor, app.Pos{2, 0})
+    testing.expect_value(t, term.msel.head, app.Pos{2, 0})
+    testing.expect(t, !app.terminal_msel_has_span(term), "a bare click selects nothing yet")
+    testing.expect(t, !term.sel_active, "the keyboard's copy cursor stands down")
     testing.expect(t, !a.mouse.click, "a click on a cell must be claimed")
 
-    // Shift+click extends: the anchor stays where the first click put it.
+    // Shift+click extends: the anchor stays where the first click put it, and now there is
+    // something to copy.
     point_at(&a, 4, 0)
     press(&a, shift = true)
     app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
-    lo, hi := app.terminal_sel_range(term)
-    testing.expect_value(t, lo, 2)
-    testing.expect_value(t, hi, 4)
+    testing.expect_value(t, term.msel.anchor, app.Pos{2, 0})
+    testing.expect_value(t, term.msel.head, app.Pos{4, 0})
 
     text := app.terminal_selection_text(term)
     defer delete(text)
-    testing.expect_value(t, text, "l2\nl3\nl4")
+    testing.expect_value(t, text, "l2\nl3\n")
 
-    // A double click repeats the single one and does nothing more. INTERIM: the count is not
-    // choosing a verb here (a terminal line has no Enter, which is what rule 7 asked), it is
-    // choosing GRANULARITY, and this pane has only one granularity to offer until C7d gives
-    // it character and word.
-    point_at(&a, 1, 0)
+    // A DOUBLE click selects the word under the pointer — the run of one character class,
+    // through line.odin's word_span, which is the editor's double click over a grid.
+    point_at(&a, 0, 8) // inside "bravo", columns 6..11
     press(&a, count = 2)
     app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
-    testing.expect_value(t, term.sel_head, 1)
-    testing.expect_value(t, term.sel_anchor, 1)
+    testing.expect_value(t, term.msel.anchor, app.Pos{0, 6})
+    testing.expect_value(t, term.msel.head, app.Pos{0, 11})
 
-    // Clicking the live bottom line leaves select mode: there is nothing to copy there, and
-    // it is how the copy cursor is dismissed with the pointer.
-    point_at(&a, ROWS - 1, 0)
-    press(&a)
+    // ... and it takes the GLYPH pointed at, not the caret boundary. Pointing at the right
+    // half of the last 'a' of "alpha" rounds the boundary to 5, which is the space; a word
+    // taken from that boundary selects the gap instead of the word, at every word ending on
+    // screen. C7a's one-pixel-two-questions finding, on the path C7b said it could not reach.
+    a.mouse.x = AREA.x + 4 * 10 + 6
+    a.mouse.y = AREA.y + 3
+    press(&a, count = 2)
+    hit := app.terminal_hit(&a, term, v)
+    testing.expect_value(t, hit.col, 4) // the premise: the two columns disagree here
+    testing.expect_value(t, hit.bcol, 5)
+    app.terminal_click(&a, term, hit)
+    testing.expect_value(t, term.msel.anchor, app.Pos{0, 0})
+    testing.expect_value(t, term.msel.head, app.Pos{0, 5})
+
+    // A TRIPLE click takes the whole line — which is what C7b's single click did.
+    point_at(&a, 1, 3)
+    press(&a, count = 3)
     app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
-    testing.expect(t, !term.sel_active, "the bottom input line dismisses the cursor")
+    testing.expect_value(t, term.msel.anchor, app.Pos{1, 0})
+    testing.expect_value(t, term.msel.head, app.Pos{1, COLS})
 
     // A press that hit no cell is left for whoever else is drawing.
     a.mouse.x, a.mouse.y = 10, 10
@@ -358,13 +374,105 @@ test_terminal_click_moves_the_copy_cursor :: proc(t: ^testing.T) {
 
     // A STALE view — the window shrank between the press and the frame that claims it, so
     // the pointer's row names a line past the end of the session. The clamp is what makes
-    // that cost a cursor on the wrong line rather than an index off the end of the history.
+    // that cost a selection on the wrong line rather than an index off the end of the
+    // history, and it is the half of C7b's verb that outlived the verb.
     stale := mkview(8)
     point_at(&a, 10, 0) // absolute line 18, where the bottom is 11
     press(&a)
     app.terminal_click(&a, term, app.terminal_hit(&a, term, stale))
-    testing.expect_value(t, term.sel_head, 11)
-    testing.expect(t, !term.sel_active, "clamped onto the bottom line, which has nothing to copy")
+    testing.expect_value(t, term.msel.head.line, 11)
+}
+
+// The pointer drags by character, and the grade fixed at the press applies for the whole
+// gesture (C7c's machine, this pane's second client).
+@(test)
+test_terminal_drag_selects :: proc(t: ^testing.T) {
+    a: app.App
+    fake_app(&a)
+    term := mkterm()
+    defer killterm(term)
+    feed(term, "alpha bravo\r\ncharlie delta")
+    v := mkview()
+    a.mouse.down = true
+
+    // Press inside "alpha", drag into "bravo" on the same row: a character span.
+    point_at(&a, 0, 2)
+    press(&a)
+    app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
+    testing.expect(t, app.drag_live(&a, .Terminal_Sel, 0), "a local press captures")
+
+    point_at(&a, 0, 8)
+    app.terminal_drag(&a, term, v, 100)
+    testing.expect_value(t, term.msel.anchor, app.Pos{0, 2})
+    testing.expect_value(t, term.msel.head, app.Pos{0, 8})
+
+    // Down a row and back left: the anchor holds, the head goes where the pointer is.
+    point_at(&a, 1, 1)
+    app.terminal_drag(&a, term, v, 101)
+    testing.expect_value(t, term.msel.anchor, app.Pos{0, 2})
+    testing.expect_value(t, term.msel.head, app.Pos{1, 1})
+
+    // A WORD-grade drag keeps expanding by whole words — the behaviour a "double click
+    // selects a word" implementation does not give you.
+    point_at(&a, 0, 8) // in "bravo"
+    press(&a, count = 2)
+    app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
+    point_at(&a, 1, 10) // into "delta" on the next row
+    app.terminal_drag(&a, term, v, 102)
+    testing.expect_value(t, term.msel.anchor, app.Pos{0, 6}) // the start of "bravo"
+    testing.expect_value(t, term.msel.head, app.Pos{1, 13}) // the end of "delta"
+
+    // Back over the press and the ANCHOR flips to the far end of the pressed word.
+    point_at(&a, 0, 2) // into "alpha"
+    app.terminal_drag(&a, term, v, 103)
+    testing.expect_value(t, term.msel.anchor, app.Pos{0, 11})
+    testing.expect_value(t, term.msel.head, app.Pos{0, 0})
+
+    // A drag serves the session it started in: switching terminals mid-gesture leaves it
+    // held but inert rather than writing into somebody else's grid.
+    a.term_active = 1
+    point_at(&a, 1, 5)
+    app.terminal_drag(&a, term, v, 104)
+    testing.expect_value(t, term.msel.head, app.Pos{0, 0})
+}
+
+// Past the bottom edge the drag scrolls the view ITSELF — there is no viewport policy here
+// to follow the selection, unlike the editor's client, so the walk moves view_top with it.
+@(test)
+test_terminal_drag_autoscrolls :: proc(t: ^testing.T) {
+    a: app.App
+    fake_app(&a)
+    term := mkterm()
+    defer killterm(term)
+    for i in 0 ..< 30 {
+        feed(term, i == 0 ? "L0" : "\r\nL")
+    }
+    a.mouse.down = true
+
+    // Scrolled back into history, press on the top row.
+    term.sel_active = true
+    term.view_top = 5
+    v := mkview(app.terminal_view_top(term))
+    point_at(&a, 0, 0)
+    press(&a)
+    app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
+    testing.expect_value(t, term.msel.anchor.line, 5)
+    testing.expect_value(t, app.terminal_view_top(term), 5) // the click did not snap the view
+
+    // Above the pane: the walk goes UP into history and drags the view with it.
+    a.mouse.y = AREA.y - ROW_H
+    app.terminal_drag(&a, term, v, 100)
+    testing.expect_value(t, term.msel.head.line, 3)
+    testing.expect_value(t, term.view_top, 3)
+
+    // Held still inside the same tick, the line holds rather than snapping back to the edge.
+    app.terminal_drag(&a, term, v, 100)
+    testing.expect_value(t, term.msel.head.line, 3)
+
+    // The next tick walks on from where it got to.
+    app.terminal_drag(&a, term, v, 100 + app.DRAG_SCROLL_S)
+    testing.expect_value(t, term.msel.head.line, 1)
+    testing.expect_value(t, term.view_top, 1)
 }
 
 // The forward path, asserted as the bytes that reach the child process. SGR reports are
@@ -381,11 +489,19 @@ test_terminal_click_forwards_to_the_tui :: proc(t: ^testing.T) {
     testing.expect(t, term.mouse_on, "DECSET 1000 should reach term.mouse_on via settermprop")
     v := mkview()
 
-    point_at(&a, 3, 7)
+    // Deliberately in the RIGHT half of cell 7, where the boundary column rounds to 8: a
+    // report names the CELL the pointer is inside, and a forward path that reached for the
+    // selection's boundary instead would land one cell over inside somebody else's program.
+    // Every C7b mutation missed this, because they all clicked cell-centre.
+    a.mouse.x = AREA.x + 7 * 10 + 6
+    a.mouse.y = AREA.y + 3 * ROW_H + 3
     press(&a)
-    app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
+    hit3 := app.terminal_hit(&a, term, v)
+    testing.expect_value(t, hit3.col, 7)
+    testing.expect_value(t, hit3.bcol, 8)
+    app.terminal_click(&a, term, hit3)
     testing.expect_value(t, sink_text(&sk), "\x1b[<0;8;4M\x1b[<0;8;4m")
-    testing.expect(t, !term.sel_active, "a forwarded click is not a copy-cursor move")
+    testing.expect(t, !term.msel_on, "a forwarded click starts no selection of ours")
     testing.expect(t, !a.mouse.click, "a forwarded click is still claimed")
 
     // Ctrl rides along as MOD_CTRL (4 << 2 = 16 in the report's code field) — the one
@@ -396,18 +512,26 @@ test_terminal_click_forwards_to_the_tui :: proc(t: ^testing.T) {
     app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
     testing.expect_value(t, sink_text(&sk), "\x1b[<16;1;1M\x1b[<16;1;1m")
 
-    // SHIFT IS THE OVERRIDE (xterm): the click stays ours and nothing reaches the TUI. That
-    // half is permanent. The anchor-follows-head half is INTERIM — this code spends Shift on
-    // the override alone, where alacritty has it override AND extend; C7d composes the two,
-    // and this assertion flips to "the anchor stayed put".
+    // SHIFT IS THE OVERRIDE (xterm): the click stays ours and nothing reaches the TUI.
+    //
+    // **And it EXTENDS as well**, which C7b said it could not — that inference came from a
+    // row-granular cursor with no anchor worth extending, not from the references. alacritty
+    // gates both jobs on one condition, so over a mouse-tracking TUI the first Shift+click
+    // starts a local selection and the second grows it, with the child process none the wiser.
     sk.n = 0
     point_at(&a, 5, 2)
     press(&a, shift = true)
     app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
     testing.expect_value(t, sink_text(&sk), "")
-    testing.expect(t, term.sel_active, "Shift+click keeps the click local")
-    testing.expect_value(t, term.sel_head, 5)
-    testing.expect_value(t, term.sel_anchor, 5)
+    testing.expect(t, term.msel_on, "Shift+click keeps the click local")
+    testing.expect_value(t, term.msel.anchor, app.Pos{5, 2})
+
+    point_at(&a, 7, 4)
+    press(&a, shift = true)
+    app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
+    testing.expect_value(t, sink_text(&sk), "")
+    testing.expect_value(t, term.msel.anchor, app.Pos{5, 2}) // pinned where the first put it
+    testing.expect_value(t, term.msel.head, app.Pos{7, 4})
 
     // Alt is global everywhere in this program, so it neither forwards nor selects — and it
     // does not CLAIM the press either, since the switcher overlay is up while Alt is held.
@@ -416,7 +540,7 @@ test_terminal_click_forwards_to_the_tui :: proc(t: ^testing.T) {
     press(&a, alt = true)
     app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
     testing.expect_value(t, sink_text(&sk), "")
-    testing.expect_value(t, term.sel_head, 5) // unmoved
+    testing.expect_value(t, term.msel.head, app.Pos{7, 4}) // unmoved
     testing.expect(t, a.mouse.click, "Alt+click is left unclaimed for the overlay")
 }
 
@@ -437,7 +561,7 @@ test_terminal_click_without_tracking_sends_nothing :: proc(t: ^testing.T) {
     press(&a)
     app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
     testing.expect_value(t, sink_text(&sk), "")
-    testing.expect_value(t, term.sel_head, 4) // it drove the copy cursor instead
+    testing.expect_value(t, term.msel.head, app.Pos{4, 4}) // it started a selection instead
 }
 
 // A TUI holding the mouse still cannot be sent a click on a line that scrolled out of its
@@ -462,7 +586,7 @@ test_terminal_click_on_scrollback_stays_local :: proc(t: ^testing.T) {
     press(&a)
     app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
     testing.expect_value(t, sink_text(&sk), "")
-    testing.expect_value(t, term.sel_head, 4)
+    testing.expect_value(t, term.msel.head.line, 4)
 }
 
 // Motion. libvterm filters by the TUI's own mode, which is why terminal_track forwards
@@ -527,4 +651,187 @@ test_terminal_track_forwards_motion :: proc(t: ^testing.T) {
     point_at(&a, 0, 0) // absolute line 4, four lines deep in captured history
     app.terminal_track(back, app.terminal_hit(&a, back, scrolled))
     testing.expect_value(t, sink_text(&sk4), "")
+}
+
+// A triple click through a WRAPPED command selects the command, not the row the pointer
+// happened to land on. The one place the continuation flag reaches the selection rather than
+// just the copy — and the reason terminal_grade_span asks for the logical line at each end.
+@(test)
+test_terminal_triple_click_takes_the_whole_wrapped_line :: proc(t: ^testing.T) {
+    a: app.App
+    fake_app(&a)
+    term := mkterm(ROWS, 10) // a 10-wide grid, so a long command wraps
+    defer killterm(term)
+    feed(term, "0123456789abcd\r\nsecond")
+    v := app.Terminal_View{area = AREA, cw = 10, row_h = ROW_H, cols = 10, rows = ROWS, top = 0}
+
+    // Point at the SECOND row of the wrapped command and take the whole thing.
+    point_at(&a, 1, 1)
+    press(&a, count = 3)
+    app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
+    testing.expect_value(t, term.msel.anchor, app.Pos{0, 0})
+    testing.expect_value(t, term.msel.head, app.Pos{1, 10})
+
+    // ... and it copies back as the one line it was typed as.
+    text := app.terminal_selection_text(term)
+    defer delete(text)
+    testing.expect_value(t, text, "0123456789abcd")
+}
+
+// The keyboard and the pointer are alternatives, not layers: taking hold of one drops the
+// other, so there is never a state in which two selections are drawn and Ctrl+Shift+C has to
+// guess. The wheel comes through terminal_sel_move too, which is why scrolling drops a mouse
+// selection — in this pane our scrollback is only reachable by moving the copy cursor.
+@(test)
+test_terminal_selections_are_alternatives :: proc(t: ^testing.T) {
+    a: app.App
+    fake_app(&a)
+    term := mkterm()
+    defer killterm(term)
+    feed(term, "alpha\r\nbravo\r\ncharlie")
+    v := mkview()
+
+    // A click retires the copy cursor...
+    term.sel_active = true
+    term.sel_head, term.sel_anchor = 1, 1
+    point_at(&a, 2, 1)
+    press(&a)
+    app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
+    testing.expect(t, !term.sel_active)
+    testing.expect(t, term.msel_on)
+
+    // ... and a keyboard move (or a wheel notch, which is the same proc) retires the click's.
+    app.terminal_sel_move(term, -1, false)
+    testing.expect(t, !term.msel_on)
+    testing.expect(t, term.sel_active)
+
+    // Typing drops whichever is up.
+    point_at(&a, 0, 0)
+    press(&a)
+    app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
+    testing.expect(t, term.msel_on)
+    app.terminal_sel_reset(term)
+    testing.expect(t, !term.msel_on)
+    testing.expect(t, !term.sel_active)
+}
+
+// What the painter tints, as a value. The whole point of C7d is that a selection is per
+// CELL and not per row, and this is the assertion that says so — the painter itself is the
+// one place a headless test cannot follow, so the arithmetic was moved out of it.
+@(test)
+test_terminal_msel_row_span :: proc(t: ^testing.T) {
+    a: app.App
+    fake_app(&a)
+    term := mkterm()
+    defer killterm(term)
+    feed(term, "alpha\r\nbravo\r\ncharlie\r\ndelta")
+
+    // Nothing selected paints nothing, and a bare click (an empty selection) is nothing.
+    lo, hi := app.terminal_msel_row_span(term, 1, COLS)
+    testing.expect_value(t, lo, 0)
+    testing.expect_value(t, hi, 0)
+    app.terminal_msel_set(term, app.Pos{1, 3}, app.Pos{1, 3})
+    lo, hi = app.terminal_msel_row_span(term, 1, COLS)
+    testing.expect_value(t, hi, lo)
+
+    // A span over three lines: the first clipped at its start, the last at its end, the
+    // interior full — and the lines either side untouched.
+    app.terminal_msel_set(term, app.Pos{1, 2}, app.Pos{3, 4})
+    lo, hi = app.terminal_msel_row_span(term, 1, COLS)
+    testing.expect_value(t, lo, 2)
+    testing.expect_value(t, hi, COLS)
+    lo, hi = app.terminal_msel_row_span(term, 2, COLS)
+    testing.expect_value(t, lo, 0)
+    testing.expect_value(t, hi, COLS)
+    lo, hi = app.terminal_msel_row_span(term, 3, COLS)
+    testing.expect_value(t, lo, 0)
+    testing.expect_value(t, hi, 4)
+    lo, hi = app.terminal_msel_row_span(term, 0, COLS)
+    testing.expect_value(t, hi, lo)
+    lo, hi = app.terminal_msel_row_span(term, 4, COLS)
+    testing.expect_value(t, hi, lo)
+
+    // Within ONE line it is a run of cells, which is the case a row tint gets wrong and the
+    // one the whole checkpoint exists for.
+    app.terminal_msel_set(term, app.Pos{2, 2}, app.Pos{2, 5})
+    lo, hi = app.terminal_msel_row_span(term, 2, COLS)
+    testing.expect_value(t, lo, 2)
+    testing.expect_value(t, hi, 5)
+
+    // Backwards, it is the same run — the pair is ordered on READ (cursor_range), never on
+    // write, so the head stays the end the eye is at.
+    app.terminal_msel_set(term, app.Pos{2, 5}, app.Pos{2, 2})
+    lo, hi = app.terminal_msel_row_span(term, 2, COLS)
+    testing.expect_value(t, lo, 2)
+    testing.expect_value(t, hi, 5)
+}
+
+// A click after a scroll that was ESCAPED must not jump the view back to where that scroll
+// left it. view_top is stale then — sel_active is off, so terminal_view_top is reporting the
+// live bottom — and taking a reading through it is what keeps the click honest.
+@(test)
+test_terminal_click_does_not_restore_a_stale_view :: proc(t: ^testing.T) {
+    a: app.App
+    fake_app(&a)
+    term := mkterm()
+    defer killterm(term)
+    for i in 0 ..< 30 {
+        feed(term, i == 0 ? "L0" : "\r\nL")
+    }
+
+    // Scrolled back, then escaped: view_top still holds the old position.
+    term.sel_active = true
+    term.view_top = 4
+    app.terminal_sel_reset(term)
+    testing.expect_value(t, term.view_top, 4) // stale, deliberately
+    testing.expect_value(t, app.terminal_view_top(term), term.sb_total) // but the view is live
+
+    v := mkview(app.terminal_view_top(term))
+    point_at(&a, 0, 0)
+    press(&a)
+    app.terminal_click(&a, term, app.terminal_hit(&a, term, v))
+    testing.expect_value(t, app.terminal_view_top(term), term.sb_total)
+}
+
+// What the painter tints for the KEYBOARD's copy cursor, as a value — the twin of
+// test_terminal_msel_row_span, and out of the painter for the same reason.
+//
+// The half-open reading is the whole assertion. The copy cursor is drawn as a rule along the
+// TOP edge of its line, so anchor and head are two boundaries and the lines between them are
+// [min, max). Read inclusively — as it was until a bug report — the anchor's own line lights
+// up as well, which from the live bottom is the empty line you are typing on.
+@(test)
+test_terminal_sel_row_span :: proc(t: ^testing.T) {
+    a: app.App
+    fake_app(&a)
+    term := mkterm()
+    defer killterm(term)
+    feed(term, "l0\r\nl1\r\nl2\r\nl3")
+
+    lo, hi := app.terminal_sel_row_span(term)
+    testing.expect_value(t, hi, lo) // nothing selected paints nothing
+
+    // The marker moved but nothing extended: still no highlight, just the rule.
+    app.terminal_sel_move(term, -1, false)
+    lo, hi = app.terminal_sel_row_span(term)
+    testing.expect_value(t, hi, lo)
+
+    // One Shift press lights exactly ONE line — the one below the marker it just left.
+    head := term.sel_head
+    app.terminal_sel_move(term, -1, true)
+    lo, hi = app.terminal_sel_row_span(term)
+    testing.expect_value(t, lo, head - 1)
+    testing.expect_value(t, hi, head)
+    testing.expect_value(t, hi - lo, 1)
+
+    // The membership test, not just its ends: the anchor's own line is OUT, which is the
+    // whole of the bug and the whole of the fix.
+    testing.expect(t, app.terminal_sel_row_shown(term, head - 1), "the line under the marker")
+    testing.expect(t, !app.terminal_sel_row_shown(term, head), "the anchor's own line is not selected")
+    testing.expect(t, !app.terminal_sel_row_shown(term, head - 2), "nor the one above the marker")
+
+    // And a second press lights exactly two.
+    app.terminal_sel_move(term, -1, true)
+    lo, hi = app.terminal_sel_row_span(term)
+    testing.expect_value(t, hi - lo, 2)
 }

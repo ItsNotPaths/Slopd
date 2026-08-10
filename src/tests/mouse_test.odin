@@ -310,3 +310,32 @@ test_key_is_modifier :: proc(t: ^testing.T) {
     testing.expect(t, !app.key_is_modifier(glfw.KEY_DOWN))
     testing.expect(t, !app.key_is_modifier(glfw.KEY_ENTER))
 }
+
+// The terminal's notch, through wheel_apply rather than past it — the routing table's one
+// remaining exception, now retired.
+//
+// It used to call terminal_sel_move, so a notch moved the keyboard's COPY CURSOR: our
+// scrollback was reachable only by dragging that cursor around, which put a keyboard-only
+// marker on screen that nobody asked for and dragged a selection's anchor under it. Rule 10
+// says a wheel scrolls the view and never the selection, and this pane was the last place it
+// did not hold.
+@(test)
+test_wheel_apply_terminal_scrolls_the_view :: proc(t: ^testing.T) {
+    a := routing_app(.Terminal)
+    term := new(app.Terminal)
+    defer free(term)
+    app.terminal_vt_init(term, 2, 20)
+    defer app.terminal_vt_destroy(term)
+    app.terminal_enable_scrollback(term)
+    app.terminal_feed(term, transmute([]u8)string("L0\r\nL1\r\nL2\r\nL3\r\nL4"))
+    append(&a.terminals, term)
+    defer delete(a.terminals)
+
+    app.wheel_apply(&a, .Terminal, -1)
+    testing.expect_value(t, app.terminal_view_top(term), term.sb_total - app.WHEEL_LINES)
+    testing.expect(t, !term.sel_active, "a notch must not conjure a copy cursor")
+    testing.expect(t, term.view_detached, "... it detaches the VIEW, like every other pane")
+
+    app.wheel_apply(&a, .Terminal, 1)
+    testing.expect_value(t, app.terminal_view_top(term), term.sb_total) // back to the live bottom
+}

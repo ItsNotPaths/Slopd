@@ -189,8 +189,10 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     if key == glfw.KEY_ESCAPE {
         if a.cl_chain.waiting {
             cl_chain_clear(a) // abandon a stuck/pending && chain (the shell command runs on)
-        } else if ts := term_sel_target(a); ts != nil && ts.sel_active {
-            terminal_sel_reset(ts) // first Esc leaves line-select, back to the input line
+        } else if ts := term_sel_target(a); ts != nil && (ts.sel_active || ts.msel_on) {
+            // First Esc leaves the selection, back to the input line — whichever way it was
+            // made. terminal_sel_reset drops both (C7d).
+            terminal_sel_reset(ts)
         } else if tf := term_focused(a); tf != nil {
             terminal_input_key(tf, key, mods)
         } else if a.cl_active {
@@ -553,7 +555,9 @@ editor_copy :: proc(a: ^App) {
 // Copy a terminal's selected lines (the line-select cursor's range) to the system
 // clipboard. Plain joined text — no per-cursor pieces, so paste anywhere is literal.
 term_copy :: proc(a: ^App, t: ^Terminal) {
-    if !t.sel_active {
+    // Either selection will do — the keyboard's line range or the mouse's character span
+    // (C7d). terminal_selection_text picks; this only has to know there is something.
+    if !t.sel_active && !terminal_msel_has_span(t) {
         return
     }
     clipboard_set(a, terminal_selection_text(t), nil)

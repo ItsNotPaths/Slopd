@@ -150,6 +150,17 @@ StateFallbacks :: struct {
 SB_Pushline_Callback :: #type proc "c" (cols: c.int, cells: [^]ScreenCell, user: rawptr) -> c.int
 SB_Popline_Callback  :: #type proc "c" (cols: c.int, cells: [^]ScreenCell, user: rawptr) -> c.int
 
+// sb_pushline's four-argument form, which carries the one bit the three-argument form drops:
+// whether the line being pushed is a flow CONTINUATION of the line above it — i.e. whether
+// it exists because the one before it wrapped, rather than because something printed a
+// newline. Without it a copied soft-wrapped shell command comes back in two pieces.
+//
+// It is an ABI-compatible tenth slot in the same struct and libvterm ignores it until
+// screen_callbacks_has_pushline4 is called, after which it is used INSTEAD of sb_pushline
+// (screen.c, sb_pushline_from_row) — so an implementation that opts in must fill this slot
+// and may leave the other nil.
+SB_Pushline4_Callback :: #type proc "c" (cols: c.int, cells: [^]ScreenCell, continuation: bool, user: rawptr) -> c.int
+
 // settermprop reports terminal property changes (cursor visibility, title, ...). Slopd
 // reads only PROP_ALTSCREEN, to know when a full-screen TUI is on its own alt buffer
 // (then it owns scrolling — PageUp passes through to it, not Slopd's scrollback). `val`
@@ -159,19 +170,33 @@ Settermprop_Callback :: #type proc "c" (prop: c.int, val: rawptr, user: rawptr) 
 PROP_ALTSCREEN :: 3 // VTERM_PROP_ALTSCREEN (CURSORVISIBLE=1, CURSORBLINK=2, ALTSCREEN=3)
 PROP_MOUSE     :: 8 // VTERM_PROP_MOUSE: 0 = off, else the active mouse tracking mode
 
+// Per-line flags. Slopd reads only `continuation` (C7d: a soft-wrapped line must copy back
+// as one line), but the whole bit-field is declared so the struct's layout matches the ABI
+// when read through a pointer.
+LineInfo :: bit_field c.uint {
+    doublewidth:  bool   | 1,
+    doubleheight: c.uint | 2,
+    continuation: bool   | 1, // this line exists because the one above it wrapped
+}
+
 // VTermScreenCallbacks, field order ABI-fixed to the header. All entries are
 // function pointers; the ones Slopd ignores (damage/moverect/movecursor/bell/resize/
 // sb_clear) stay rawptr-nil.
+//
+// sb_pushline4 is the tenth slot and is the one Slopd fills — see that callback type. The
+// nine-slot version stays declared and nil, because the two are alternatives rather than a
+// pair, and a reader of this struct should be able to see that the plain one was a choice.
 ScreenCallbacks :: struct {
-    damage:      rawptr,
-    moverect:    rawptr,
-    movecursor:  rawptr,
-    settermprop: Settermprop_Callback,
-    bell:        rawptr,
-    resize:      rawptr,
-    sb_pushline: SB_Pushline_Callback,
-    sb_popline:  SB_Popline_Callback,
-    sb_clear:    rawptr,
+    damage:       rawptr,
+    moverect:     rawptr,
+    movecursor:   rawptr,
+    settermprop:  Settermprop_Callback,
+    bell:         rawptr,
+    resize:       rawptr,
+    sb_pushline:  SB_Pushline_Callback,
+    sb_popline:   SB_Popline_Callback,
+    sb_clear:     rawptr,
+    sb_pushline4: SB_Pushline4_Callback,
 }
 
 @(default_calling_convention = "c", link_prefix = "vterm_")
@@ -200,6 +225,15 @@ foreign vt {
     screen_set_default_colors   :: proc(screen: Screen, default_fg, default_bg: ^Color) ---
     screen_set_unrecognised_fallbacks :: proc(screen: Screen, fallbacks: ^StateFallbacks, user: rawptr) ---
     screen_set_callbacks :: proc(screen: Screen, callbacks: ^ScreenCallbacks, user: rawptr) ---
+    // Opt into the four-argument sb_pushline. The flag lives on the SCREEN rather than in
+    // the callbacks struct (that is what makes the tenth slot ABI-compatible), so it is
+    // independent of screen_set_callbacks and survives it — but both have to be in place
+    // before the first line scrolls off, or that line is pushed through the three-argument
+    // form and loses its continuation bit.
+    screen_callbacks_has_pushline4 :: proc(screen: Screen) ---
 
     state_get_cursorpos :: proc(state: State, cursorpos: ^Pos) ---
+    // Per-line flags for a LIVE grid row. The scrollback's copy of the same bit arrives
+    // through sb_pushline4; this is how the rows that have not scrolled off yet are asked.
+    state_get_lineinfo  :: proc(state: State, row: c.int) -> ^LineInfo ---
 }

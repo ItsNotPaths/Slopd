@@ -101,50 +101,26 @@ test_terminal_line_selection :: proc(t: ^testing.T) {
     testing.expect_value(t, term.sel_head, 2)
     testing.expect_value(t, term.sel_anchor, 2) // no span yet
 
-    app.terminal_sel_move(&term, -1, true) // Shift: extend up to row 1
+    // No span yet: the cursor is a BOUNDARY, so anchor == head selects nothing at all.
+    testing.expect_value(t, app.terminal_selection_text(&term), "")
+
+    app.terminal_sel_move(&term, -1, true) // Shift: extend up over row 1
     lo, hi := app.terminal_sel_range(&term)
     testing.expect_value(t, lo, 1)
-    testing.expect_value(t, hi, 2)
+    testing.expect_value(t, hi, 2) // half-open: line 1, and ONLY line 1
 
+    // One Shift press selects ONE line. It selected two until a bug report, because the
+    // range was read as inclusive while the marker was drawn as a boundary — so the anchor's
+    // own line came along, which from the live bottom is the empty line you type on.
     text := app.terminal_selection_text(&term)
     defer delete(text)
-    testing.expect_value(t, text, "l1\nl2")
-}
+    testing.expect_value(t, text, "l1")
 
-// The POINTER's verb (C7b): put the copy cursor ON a line, where terminal_sel_move walks
-// to one. Same shape as the motion it mirrors — enter off the bottom, Shift keeps the
-// anchor, the bottom with no span drops out — plus the clamp, which the motion does not
-// need because a keystroke can only ever step one line at a time.
-//
-// SUPERSEDED BY C7d along with the verb: a pointer addresses a character, not a line. The
-// CLAMP is the part to carry over — a position derived from a pixel is only as good as the
-// geometry that made it, whatever its granularity — and it is the assertion that was missing
-// until a mutation went looking for it.
-@(test)
-test_terminal_sel_at_absolute :: proc(t: ^testing.T) {
-    term := mkterm(4, 20)
-    defer app.terminal_vt_destroy(&term)
-    feed(&term, "l0\r\nl1\r\nl2") // rows 0..2; row 3 is the empty bottom
-
-    app.terminal_sel_at(&term, 1, false)
-    testing.expect(t, term.sel_active, "a placement enters select mode")
-    testing.expect_value(t, term.sel_head, 1)
-    testing.expect_value(t, term.sel_anchor, 1)
-
-    app.terminal_sel_at(&term, 2, true) // Shift: grow the span, anchor pinned
-    lo, hi := app.terminal_sel_range(&term)
-    testing.expect_value(t, lo, 1)
-    testing.expect_value(t, hi, 2)
-
-    // A line derived from a pixel is only as good as the geometry that made it: a stale
-    // view (a resize between the press and the frame that claims it) must cost a cursor on
-    // the wrong line, never an index off the end of the buffer.
-    app.terminal_sel_at(&term, 999, false)
-    testing.expect_value(t, term.sel_head, 3) // clamped to the bottom...
-    testing.expect(t, !term.sel_active, "... which is the bottom with no span, so select mode ends")
-
-    app.terminal_sel_at(&term, -999, false)
-    testing.expect_value(t, term.sel_head, 0) // ... and to the oldest retained line
+    // A second press grows it by exactly one more.
+    app.terminal_sel_move(&term, -1, true)
+    more := app.terminal_selection_text(&term)
+    defer delete(more)
+    testing.expect_value(t, more, "l0\nl1")
 }
 
 // Moving back down to the bottom with no span drops out of select mode (the hidden
@@ -187,11 +163,11 @@ test_terminal_scrollback_capture_and_select :: proc(t: ^testing.T) {
     app.terminal_sel_move(&term, -1, true) // line 1
     lo, hi := app.terminal_sel_range(&term)
     testing.expect_value(t, lo, 1)
-    testing.expect_value(t, hi, 3)
+    testing.expect_value(t, hi, 3) // half-open: lines 1 and 2, the anchor's own line excluded
 
     text := app.terminal_selection_text(&term)
     defer delete(text)
-    testing.expect_value(t, text, "L1\nL2\nL3")
+    testing.expect_value(t, text, "L1\nL2")
 }
 
 // A full-screen TUI on the alt screen (DECSET 1049) must NOT spill its redraws into our
@@ -363,4 +339,190 @@ test_terminal_bg_reset_paths :: proc(t: ^testing.T) {
         check_default(t, &term, 1, 0, "alt-screen after reset")
         check_default(t, &term, 2, 7, "alt-screen after reset")
     }
+}
+
+// --- C7d: soft wrap, and the copy bug that predates the mouse entirely ---
+//
+// A shell line longer than the grid occupies two ROWS but is one LINE, and the copy path
+// used to join every row with a newline — so Ctrl+Shift+C handed back a command that could
+// not be pasted. That is shipped KEYBOARD behaviour, wrong since the copy cursor landed, and
+// the terminal integration pass is what found it.
+//
+// libvterm knew the answer the whole time. This test asserts the premise as loudly as the
+// conclusion: if a future libvterm stops flagging continuations, the first expect fails with
+// a message saying so rather than the copy quietly splitting again.
+@(test)
+test_terminal_continuation_flag :: proc(t: ^testing.T) {
+    term := mkterm(4, 10)
+    defer app.terminal_vt_destroy(&term)
+    feed(&term, "0123456789abcd") // 14 chars into a 10-wide grid: wraps onto row 1
+
+    testing.expect(t, !app.terminal_continuation(&term, 0), "the first row continues nothing")
+    testing.expect(
+        t,
+        app.terminal_continuation(&term, 1),
+        "premise changed: libvterm no longer flags a wrapped row as a continuation",
+    )
+    testing.expect(t, !app.terminal_continuation(&term, 2), "a row nothing wrapped onto")
+
+    // The logical line is the run of rows the one command occupies, from either end of it.
+    first, last := app.terminal_logical_line(&term, 1)
+    testing.expect_value(t, first, 0)
+    testing.expect_value(t, last, 1)
+    first, last = app.terminal_logical_line(&term, 0)
+    testing.expect_value(t, first, 0)
+    testing.expect_value(t, last, 1)
+}
+
+// The fix, end to end, on the KEYBOARD's path — which is the one that has been wrong.
+@(test)
+test_terminal_copy_rejoins_a_wrapped_line :: proc(t: ^testing.T) {
+    term := mkterm(4, 10)
+    defer app.terminal_vt_destroy(&term)
+    // Two logical lines, the first of which wraps: rows 0+1 are one line, row 2 is another.
+    feed(&term, "0123456789abcd\r\nsecond")
+
+    term.sel_active = true
+    term.sel_anchor, term.sel_head = 0, 3 // half-open: lines 0..2, i.e. both logical lines
+    text := app.terminal_selection_text(&term)
+    defer delete(text)
+    testing.expect_value(t, text, "0123456789abcd\nsecond")
+}
+
+// ... and once the wrapped line has scrolled off into history, where the flag has to have
+// been captured on the way past rather than asked for after the fact. This is what the
+// sb_pushline4 opt-in buys; the three-argument callback drops the bit here.
+@(test)
+test_terminal_copy_rejoins_a_wrapped_scrollback_line :: proc(t: ^testing.T) {
+    term := mkterm(3, 10)
+    defer app.terminal_vt_destroy(&term)
+    app.terminal_enable_scrollback(&term)
+    feed(&term, "0123456789abcd\r\nb\r\nc\r\nd\r\ne")
+
+    testing.expect(t, term.sb_total >= 2, "the wrapped rows scrolled into history")
+    testing.expect(t, term.scrollback[1].continuation, "the flag rode in on sb_pushline4")
+
+    term.sel_active = true
+    term.sel_anchor, term.sel_head = 0, 2 // half-open: the wrapped line's two rows
+    text := app.terminal_selection_text(&term)
+    defer delete(text)
+    testing.expect_value(t, text, "0123456789abcd")
+}
+
+// The range walk clips per line and trims only where a segment runs to the row's own edge —
+// the blanks a terminal pads a row with are not part of what you dragged over, but the ones
+// you did drag over are.
+@(test)
+test_terminal_range_text_clips_and_trims :: proc(t: ^testing.T) {
+    term := mkterm(4, 20)
+    defer app.terminal_vt_destroy(&term)
+    feed(&term, "alpha bravo\r\ncharlie delta")
+
+    // Mid-line to mid-line, across a line break.
+    a := app.terminal_range_text(&term, app.Pos{0, 6}, app.Pos{1, 7})
+    defer delete(a)
+    testing.expect_value(t, a, "bravo\ncharlie")
+
+    // A segment that stops short keeps the spaces inside it...
+    b := app.terminal_range_text(&term, app.Pos{0, 4}, app.Pos{0, 8})
+    defer delete(b)
+    testing.expect_value(t, b, "a br")
+
+    // ... while one that runs to the edge is trimmed of the row's padding.
+    c := app.terminal_range_text(&term, app.Pos{0, 0}, app.Pos{0, 20})
+    defer delete(c)
+    testing.expect_value(t, c, "alpha bravo")
+}
+
+// The word span over a grid is line.odin's word_span, which is what makes a terminal double
+// click and an editor double click agree about what a word is.
+@(test)
+test_terminal_word_span :: proc(t: ^testing.T) {
+    term := mkterm(4, 20)
+    defer app.terminal_vt_destroy(&term)
+    feed(&term, "alpha bravo")
+
+    lo, hi := app.terminal_word_span(&term, 0, 8) // inside "bravo"
+    testing.expect_value(t, lo, 6)
+    testing.expect_value(t, hi, 11)
+
+    lo, hi = app.terminal_word_span(&term, 0, 5) // the space between them is a run too
+    testing.expect_value(t, lo, 5)
+    testing.expect_value(t, hi, 6)
+
+    // Past the written text, the blanks are one run out to the row's width — a cell that was
+    // never written is whitespace, not a class of its own.
+    lo, hi = app.terminal_word_span(&term, 0, 15)
+    testing.expect_value(t, lo, 11)
+    testing.expect_value(t, hi, 20)
+}
+
+// --- the wheel scrolls the VIEW, and only the view ---
+//
+// This pane was the last place C7c's rule 10 did not hold. Our scrollback used to be
+// reachable only by dragging the keyboard's copy cursor around, so a wheel notch moved a
+// cursor — putting a keyboard-only marker on screen that nobody asked for and dragging a
+// selection's anchor under it. The view has its own detach now, like every other pane's.
+@(test)
+test_terminal_wheel_scrolls_the_view_only :: proc(t: ^testing.T) {
+    term := mkterm(2, 20)
+    defer app.terminal_vt_destroy(&term)
+    app.terminal_enable_scrollback(&term)
+    feed(&term, "L0\r\nL1\r\nL2\r\nL3\r\nL4") // 2-row grid: L0..L2 into history
+
+    app.terminal_scroll_by(&term, -2)
+    testing.expect_value(t, app.terminal_view_top(&term), 1)
+    testing.expect(t, !term.sel_active, "scrolling must not conjure a copy cursor")
+    testing.expect_value(t, term.sel_head, 0) // and must not move one either
+    testing.expect_value(t, app.terminal_selection_text(&term), "")
+
+    // Clamped at both ends: never past the oldest retained line, never below the live grid.
+    app.terminal_scroll_by(&term, -99)
+    testing.expect_value(t, app.terminal_view_top(&term), 0)
+    app.terminal_scroll_by(&term, 99)
+    testing.expect_value(t, app.terminal_view_top(&term), term.sb_total)
+
+    // A keystroke to the shell re-attaches, exactly as it does in every list pane.
+    app.terminal_scroll_by(&term, -2)
+    testing.expect(t, term.view_detached)
+    app.terminal_sel_reset(&term)
+    testing.expect_value(t, app.terminal_view_top(&term), term.sb_total)
+}
+
+// A mouse selection SURVIVES a scroll — which is what both reference terminals do, and what
+// you want when the thing you are selecting runs off the top of the pane. It could not,
+// while the wheel was a copy-cursor move: that dropped the selection on every notch.
+@(test)
+test_terminal_wheel_keeps_a_mouse_selection :: proc(t: ^testing.T) {
+    term := mkterm(2, 20)
+    defer app.terminal_vt_destroy(&term)
+    app.terminal_enable_scrollback(&term)
+    feed(&term, "L0\r\nL1\r\nL2\r\nL3\r\nL4")
+
+    app.terminal_msel_set(&term, app.Pos{3, 0}, app.Pos{4, 2})
+    app.terminal_scroll_by(&term, -2)
+    testing.expect(t, term.msel_on, "a notch is not a new selection gesture")
+    testing.expect_value(t, term.msel.anchor, app.Pos{3, 0})
+    testing.expect_value(t, app.terminal_view_top(&term), 1)
+}
+
+// Reaching for the keyboard after a wheel scroll starts the copy cursor at the bottom of
+// what is ON SCREEN, not at the live bottom — otherwise the first Shift+Alt+Up yanks the
+// view back to where you were not looking.
+@(test)
+test_terminal_keyboard_selects_from_the_scrolled_view :: proc(t: ^testing.T) {
+    term := mkterm(2, 20)
+    defer app.terminal_vt_destroy(&term)
+    app.terminal_enable_scrollback(&term)
+    feed(&term, "L0\r\nL1\r\nL2\r\nL3\r\nL4")
+
+    app.terminal_scroll_by(&term, -3) // view_top 0: showing L0, L1
+    app.terminal_sel_move(&term, -1, true) // Shift: select the bottom visible line
+    testing.expect_value(t, term.sel_anchor, 1) // the boundary below L1...
+    testing.expect_value(t, term.sel_head, 0) // ... and the one above it
+
+    text := app.terminal_selection_text(&term)
+    defer delete(text)
+    testing.expect_value(t, text, "L0")
+    testing.expect_value(t, app.terminal_view_top(&term), 0) // the view stayed put
 }

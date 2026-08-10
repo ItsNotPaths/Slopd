@@ -71,6 +71,28 @@ Terminal :: struct {
     sel_head:     int,  // absolute line of the copy cursor (the moving edge)
     sel_anchor:   int,  // absolute line the selection is pinned at (== head: no span)
     view_top:     int,  // absolute line drawn at the top row while scrolled
+    // The WHEEL cut the view loose from the live bottom (terminal_scroll_by). The twin of
+    // every list pane's `scroll_detached` and of the editor's, arriving late because this
+    // pane used to reach its scrollback by dragging the keyboard's copy cursor around —
+    // which made a wheel notch a keyboard gesture, and put a marker on screen that nobody
+    // asked for. Cleared by any keystroke that reaches the shell, exactly as they all are.
+    view_detached: bool,
+
+    // The MOUSE's per-character selection (C7d), which sits BESIDE the keyboard's copy
+    // cursor above rather than replacing it — the keyboard's row granularity is a property
+    // of the arrows that drive it, and it is not wrong, it is just not what a pointer means.
+    //
+    // `Cursor` and `Pos` are the editor's, deliberately (open decision 6): a selection is an
+    // anchor and a head kept in GESTURE order and normalised on read by cursor_range, which
+    // is exactly what both alacritty and ghostty do under their own names. The grid keeps its
+    // own storage — cells carry attrs and wide-char spacers, and there is one selection here
+    // where the editor has N cursors — so what is shared is the algebra, not the buffer.
+    //
+    // Pos.line is an ABSOLUTE line (scrollback-numbered, like sel_head); Pos.col is a
+    // BOUNDARY between cells, 0..=width. That column IS alacritty's `Side::Left|Right`,
+    // encoded as a number instead of a pair — see terminal_hit.
+    msel:         Cursor,
+    msel_on:      bool,
     // A focused full-screen TUI (vim/less/claude) on the alt buffer owns its own
     // scrolling and scrollback. We track its mode bits via settermprop to route scroll
     // input there instead of to our scrollback — see term_settermprop_cb, the input.odin
@@ -83,7 +105,12 @@ Terminal :: struct {
 // scrolled off the top. Owned by the Terminal; freed in terminal_vt_destroy (and as
 // the oldest lines are trimmed past SCROLLBACK_MAX).
 ScrollLine :: struct {
-    cells: []vt.ScreenCell,
+    cells:        []vt.ScreenCell,
+    // Whether this line exists because the line ABOVE it wrapped, rather than because
+    // something printed a newline (libvterm's sb_pushline4, C7d). It is the bit that makes a
+    // copied soft-wrapped command paste back as one line, and it has to be captured here
+    // because once the row is in history libvterm no longer knows anything about it.
+    continuation: bool,
 }
 
 // How many scrolled-off lines to keep, and the slack we let the buffer overshoot
@@ -247,13 +274,107 @@ terminal_view_cell :: proc(t: ^Terminal, n, col: int) -> (cell: vt.ScreenCell, o
 // The absolute line shown at the top row: the scrolled position while selecting,
 // else the live grid top (bottom-aligned). Clamped so the view never runs past the
 // oldest history nor below the full live grid.
+//
+// A mouse selection pins it too (C7d), and that is not a nicety. Our scrollback is only
+// reachable through the copy cursor, so scrolling back IS `sel_active` — and a click that
+// retired the copy cursor without this would snap the view to the live bottom, throwing away
+// the scroll the user made in order to have something to click on.
 terminal_view_top :: proc(t: ^Terminal) -> int {
-    top := t.sel_active ? t.view_top : t.sb_total
+    top := t.sel_active || t.msel_on || t.view_detached ? t.view_top : t.sb_total
     return clamp(top, terminal_oldest(t), t.sb_total)
 }
 
-// The inclusive absolute line range currently selected (lo..hi). lo==hi is the bare
-// copy cursor (no span) — only the thin cursor line is drawn, no highlight.
+// Scroll the VIEW by `delta` lines, touching nothing else — the wheel's verb.
+//
+// It used to be `terminal_sel_move`, and that was wrong in the way C7c's rule 10 is about:
+// **a wheel is not a cursor movement.** This pane was the one place the rule was not applied,
+// on the reasoning that our scrollback is only reachable through the copy cursor — true at
+// the time, and an argument for giving the view its own detach rather than for driving a
+// keyboard structure with the mouse. Scrolling put a copy-cursor marker on screen that
+// nobody asked for, and dragged a selection's anchor around under it.
+//
+// Nothing here touches sel_* or msel: a mouse selection SURVIVES a scroll, which is what both
+// reference terminals do and what you want when the thing you are selecting runs off the top.
+terminal_scroll_by :: proc(t: ^Terminal, delta: int) {
+    if delta == 0 {
+        return
+    }
+    t.view_top = clamp(terminal_view_top(t) + delta, terminal_oldest(t), t.sb_total)
+    t.view_detached = true
+}
+
+// The width of absolute line `n`: a captured scrollback line keeps the width it was captured
+// at, a live row is the current grid width. One definition, because a copy walk, a clamp and
+// a trailing-blank trim all need it and a disagreement between them is an off-by-one in the
+// copied text.
+terminal_line_width :: proc(t: ^Terminal, n: int) -> int {
+    if n >= t.sb_total {
+        return t.cols
+    }
+    idx := n - terminal_oldest(t)
+    if idx < 0 || idx >= len(t.scrollback) {
+        return 0
+    }
+    return len(t.scrollback[idx].cells)
+}
+
+// Whether absolute line `n` exists because the line above it WRAPPED, rather than because
+// something printed a newline. Two sources for one question, which is the whole reason it is
+// a proc: a line still on the live grid is libvterm's to answer (state_get_lineinfo), and a
+// line that has scrolled off is ours, because libvterm forgets a row the moment it hands it
+// over (the flag rides in on sb_pushline4 and is stored on the ScrollLine).
+//
+// Not answerable for a line popped BACK onto the grid by a resize: sb_popline has no
+// four-argument form, so the flag is dropped on the way in. A grid that grew taller can
+// therefore split one wrapped line in a copy, which is a libvterm limitation rather than a
+// choice, and is bounded by "only the lines the resize pulled back".
+terminal_continuation :: proc(t: ^Terminal, n: int) -> bool {
+    if n >= t.sb_total {
+        row := n - t.sb_total
+        if row < 0 || row >= t.rows || t.state == nil {
+            return false
+        }
+        li := vt.state_get_lineinfo(t.state, c.int(row))
+        return li != nil && li.continuation
+    }
+    idx := n - terminal_oldest(t)
+    if idx < 0 || idx >= len(t.scrollback) {
+        return false
+    }
+    return t.scrollback[idx].continuation
+}
+
+// The first and last absolute line of the LOGICAL line containing `n` — the run of rows a
+// single wrapped command occupies. What a triple click selects, because the row a wrapped
+// command happens to land on is not a thing the user typed.
+terminal_logical_line :: proc(t: ^Terminal, n: int) -> (first, last: int) {
+    first, last = n, n
+    for first > terminal_oldest(t) && terminal_continuation(t, first) {
+        first -= 1
+    }
+    for last < terminal_bottom(t) && terminal_continuation(t, last + 1) {
+        last += 1
+    }
+    return
+}
+
+// The absolute line range currently selected, HALF-OPEN: lines [lo, hi). lo==hi is the bare
+// copy cursor — only the thin cursor line is drawn, no highlight.
+//
+// Half-open because **the copy cursor is a BOUNDARY, not a line**, and always has been on
+// screen: the painter draws it as a thin rule along the TOP edge of its line, sitting between
+// that line and the one above. `sel_anchor` and `sel_head` are two such boundaries, and the
+// lines between them are [min, max) — the anchor's own line belongs to the selection only
+// when the head is below it.
+//
+// It was inclusive until a bug report, and the extra line that produced is exactly the line
+// the anchor marker had already moved off. Worst from the live bottom, where the anchor
+// starts: Shift+Alt+Up selected the last output line AND the empty line you are typing on,
+// which is the one line in the pane that can never be worth copying.
+//
+// The reading also buys something the inclusive one could not express: with two boundaries,
+// "exactly one line" is a span of 1 and "nothing" is a span of 0, where before both collapsed
+// onto lo==hi and a single-line selection was unreachable.
 terminal_sel_range :: proc(t: ^Terminal) -> (lo, hi: int) {
     return min(t.sel_anchor, t.sel_head), max(t.sel_anchor, t.sel_head)
 }
@@ -263,12 +384,26 @@ terminal_sel_range :: proc(t: ^Terminal) -> (lo, hi: int) {
 // grow a span; otherwise the anchor follows, and returning to the bottom with no
 // span drops back to plain input mode. Scrolls the view to keep the cursor visible.
 terminal_sel_move :: proc(t: ^Terminal, delta: int, extend: bool) {
+    // The copy cursor and the mouse's character selection are alternatives, not layers, so
+    // taking hold of one drops the other. The WHEEL no longer comes through here at all —
+    // it has terminal_scroll_by — so this is only ever a real keystroke.
+    terminal_msel_reset(t)
     if !t.sel_active {
+        // The reading is taken BEFORE sel_active flips, exactly as terminal_msel_set takes
+        // its own — terminal_view_top answers a different question once the flag is set, and
+        // it would be answering it off a view_top nothing had written yet.
+        //
+        // Start from the bottom of what is ON SCREEN, which is the live bottom unless the
+        // wheel has scrolled the view away from it. One expression covers both, and seeding
+        // from the live bottom outright would yank a wheel-scrolled view back the moment you
+        // reached for the keyboard to select what you had just scrolled to.
+        top := terminal_view_top(t)
         t.sel_active = true
-        t.sel_head = terminal_bottom(t)
+        t.sel_head = clamp(top + t.rows - 1, terminal_oldest(t), terminal_bottom(t))
         t.sel_anchor = t.sel_head
-        t.view_top = t.sb_total
+        t.view_top = top
     }
+    t.view_detached = false // the keyboard owns the view again, as in every other pane
     // On the alt screen the off-screen history is the TUI's, not ours, so the selection
     // stays within the live grid (floor = the top live row, not into the pre-TUI primary
     // scrollback). Pushing past an edge tells the TUI to scroll instead of stopping dead,
@@ -301,104 +436,215 @@ terminal_sel_move :: proc(t: ^Terminal, delta: int, extend: bool) {
     t.view_top = clamp(t.view_top, floor, t.sb_total)
 }
 
-// Put the copy cursor ON absolute line `n` — the POINTER's verb, where terminal_sel_move
-// above is the keyboard's. A click names a destination outright, which no keystroke can
-// say, so this is a new verb rather than a mouse path into the old one (C7a found the same
-// thing about the editor's five new Doc verbs, and for the same reason).
-//
-// SUPERSEDED BY C7d, and kept only until it lands. The copy cursor is ROW-granular because
-// the keyboard built it — arrows address lines cheaply — and a pointer addresses a
-// character, so answering a click with a whole line is not what a terminal does. What
-// carries forward is everything below the first line: a pointer verb is still a NEW verb,
-// the position still has to be clamped, and the view still must not be re-aimed.
-//
-// It is the same SHAPE as the motion it mirrors — enter select mode off the live bottom,
-// `extend` keeps the anchor to grow a span, and returning to the bottom with nothing
-// selected drops back to plain input mode — so the two paths cannot grow behaviour the
-// other lacks. Two deliberate differences:
-//
-//   - `n` is CLAMPED rather than trusted. A line derived from a pixel is only as good as
-//     the geometry that made it, and a resize between the press and the frame that claims
-//     it must cost a copy cursor on the wrong line, never an index off the end of the
-//     scrollback.
-//   - The view is NOT re-aimed. terminal_sel_move scrolls to keep the cursor on screen
-//     because a motion can walk off an edge; a clicked line is on screen by definition.
-//     (And it does not drive a TUI at the edge either — you cannot click past one.)
-terminal_sel_at :: proc(t: ^Terminal, n: int, extend: bool) {
-    if !t.sel_active {
-        t.sel_active = true
-        t.sel_head = terminal_bottom(t)
-        t.sel_anchor = t.sel_head
-        t.view_top = t.sb_total
-    }
-    // On the alt screen the off-screen history is the TUI's, not ours, so the selection
-    // stays within the live grid — the same floor terminal_sel_move uses.
-    floor := t.on_altscreen ? t.sb_total : terminal_oldest(t)
-    t.sel_head = clamp(n, floor, terminal_bottom(t))
-    if !extend {
-        t.sel_anchor = t.sel_head
-    }
-    if t.sel_head == terminal_bottom(t) && t.sel_anchor == terminal_bottom(t) {
-        t.sel_active = false // nothing to copy: clicking the input line dismisses the cursor
-    }
-}
-
 // Leave select/scroll mode: hide the cursor and snap the view back to the live
-// bottom (Esc, or any real keystroke to the shell).
+// bottom (Esc, or any real keystroke to the shell). Drops the mouse's selection with it —
+// typing is how you say "done looking at that", whichever way you made the selection.
 terminal_sel_reset :: proc(t: ^Terminal) {
     t.sel_active = false
+    t.view_detached = false // and the view snaps back to the live bottom with it
+    terminal_msel_reset(t)
 }
 
-// The selected lines as text: each line's cells up to its last non-blank, joined by
-// newlines. Caller owns the result. Empty when there is no live selection.
+// ---------------------------------------------------------------------------
+// The mouse's per-character selection (C7d). The keyboard's copy cursor above is
+// untouched; these are its pointer-shaped twins, and they are twins on purpose — the same
+// four verbs the editor's Doc grew in C7a, over a grid instead of a document.
 //
-// KNOWN BUG, and it is the keyboard's, not the mouse's: **a soft-wrapped line comes back in
-// two pieces.** A shell line longer than the grid occupies two rows, this joins every row
-// with a newline, and Ctrl+Shift+C therefore hands you a command you cannot paste back. It
-// has been wrong since the copy cursor shipped; the terminal integration pass found it.
+//   terminal_clamp_pos    doc_clamp_pos      a Pos from a pixel is only as good as the
+//                                            geometry that made it
+//   terminal_msel_set     doc_select_span    both ends named at once, gesture order kept
+//   terminal_msel_head    doc_set_head       one end moved, the anchor left alone
+//   terminal_grade_span   doc_drag_span      the granularity re-derived every frame
 //
-// libvterm knows the answer and Slopd throws it away twice:
+// Positions are absolute lines and BOUNDARY columns throughout. A boundary is what lets a
+// selection end AFTER the character you are pointing at, which is the job alacritty's
+// `Anchor { point, side }` does with a cell plus a side bit; one number carries the same
+// information and lets cursor_range order a pair of them unmodified.
+// ---------------------------------------------------------------------------
+
+// Clamp a position into the selectable space — the twin of doc_clamp_pos, and the same
+// promise: a resize between the press and the frame that applies it costs a selection end on
+// the wrong line, never an index off the end of the scrollback.
 //
-//   - `sb_pushline4(cols, cells, continuation, user)` is a TENTH slot in the same
-//     VTermScreenCallbacks struct, opted into with vterm_screen_callbacks_has_pushline4().
-//     bindings/libvterm declares the nine-slot version, so ScrollLine loses the flag as the
-//     row is captured.
-//   - `vterm_state_get_lineinfo(state, row)->continuation` answers it for LIVE rows, and is
-//     not bound either.
+// The floor is the alt screen's, exactly as terminal_sel_move's is: while a full-screen TUI
+// is up, the history above the grid is ITS scrollback and not ours to select out of.
+terminal_clamp_pos :: proc(t: ^Terminal, p: Pos) -> Pos {
+    floor := t.on_altscreen ? t.sb_total : terminal_oldest(t)
+    line := clamp(p.line, floor, terminal_bottom(t))
+    return Pos{line, clamp(p.col, 0, terminal_line_width(t, line))}
+}
+
+// Collapse the mouse selection to anchor..head, in that order (the twin of doc_select_span).
 //
-// The fix is a binding addition, one bool on ScrollLine, and skipping the newline when the
-// NEXT line continues this one — alacritty spells the same condition with its WRAPLINE flag.
-// Scheduled with C7d, because the range → text walk is being rewritten there anyway.
+// Entering one retires the keyboard's copy cursor and CARRIES THE VIEW OVER, which is one
+// line doing two jobs because `sel_active` doubles as "the view is scrolled" in this pane
+// (our scrollback is only reachable by moving the copy cursor). Taking a reading through
+// terminal_view_top before msel_on flips is what makes both directions right:
+//
+//   scrolled back, then clicked      view_top is already the answer, and is kept — without
+//                                    this the screen snaps to the live bottom, throwing away
+//                                    the scroll the user made to have something to click on
+//   scrolled, escaped, then clicked  view_top is STALE, and terminal_view_top says so
+//                                    (sel_active is off, so it reports the live bottom) —
+//                                    without this the screen jumps back to the old scroll
+//
+// The second is the one a test has to go looking for, because the first leaves view_top
+// holding the number it already held.
+terminal_msel_set :: proc(t: ^Terminal, anchor, head: Pos) {
+    a := terminal_clamp_pos(t, anchor)
+    h := terminal_clamp_pos(t, head)
+    if !t.msel_on {
+        t.view_top = terminal_view_top(t)
+    }
+    t.sel_active = false
+    t.msel = Cursor{anchor = a, head = h, goal = h.col}
+    t.msel_on = true
+}
+
+// Move the selection's head, keeping its anchor — the twin of doc_set_head with select=true.
+// Shift+click, and every frame of a character-grade drag. With nothing selected yet it
+// starts an empty selection there, so a Shift+click into a bare terminal is a place to
+// extend FROM rather than a no-op.
+terminal_msel_head :: proc(t: ^Terminal, p: Pos) {
+    if !t.msel_on {
+        terminal_msel_set(t, p, p)
+        return
+    }
+    h := terminal_clamp_pos(t, p)
+    t.msel.head = h
+    t.msel.goal = h.col
+}
+
+// Drop the mouse selection. The view is NOT restored here — terminal_view_top falls back to
+// the live bottom on its own once neither selection is live, and the callers that want the
+// view kept (a new press) set one up again in the same frame.
+terminal_msel_reset :: proc(t: ^Terminal) {
+    t.msel_on = false
+    t.msel = {}
+}
+
+// Whether there is anything to copy: a span, not just a resting caret. A click that selected
+// nothing must not leave the pane in a state where Ctrl+Shift+C yields "".
+terminal_msel_has_span :: proc(t: ^Terminal) -> bool {
+    return t.msel_on && cursor_has_selection(t.msel)
+}
+
+// The run of one character class around `col` on absolute line `n`, over the grid instead of
+// over a Line. `word_span` is line.odin's — the same proc the editor's double click uses, and
+// its character classes ARE what alacritty configures as `semantic_escape_chars`. The row is
+// materialised as runes because that is what word_span takes, and blanks are normalised to
+// spaces so an unwritten cell is whitespace rather than a NUL in a class of its own.
+terminal_word_span :: proc(t: ^Terminal, n, col: int) -> (lo, hi: int) {
+    w := terminal_line_width(t, n)
+    if w <= 0 {
+        return 0, 0
+    }
+    runes := make([]rune, w, context.temp_allocator)
+    for i in 0 ..< w {
+        r := terminal_view_rune(t, n, i)
+        runes[i] = r >= 0x20 ? r : ' '
+    }
+    return word_span(runes, col)
+}
+
+// The span a drag covers at its fixed GRADE — word (2) or line (3+). The twin of
+// doc_drag_span, down to which end moves when the gesture crosses back over the press, and
+// for the same reason: the granularity is a property of the SELECTION and is expanded when
+// the range is read, so a double-click-drag keeps growing by whole words.
+//
+// `press` and `at` carry CELL columns here, not boundaries — a word names the character
+// being pointed at, and the boundary rounded off the same pixel sits one past the end of the
+// run at every word ending on screen (C7a's finding, which C7b wrongly concluded could not
+// recur in a terminal).
+//
+// Line grade takes the whole LOGICAL line at each end, so a triple click through a wrapped
+// command selects the command.
+terminal_grade_span :: proc(t: ^Terminal, grade: int, press, at: Pos) -> (anchor, head: Pos) {
+    p := terminal_clamp_pos(t, press)
+    q := terminal_clamp_pos(t, at)
+    if grade >= 3 {
+        if q.line >= p.line {
+            first, _ := terminal_logical_line(t, p.line)
+            _, last := terminal_logical_line(t, q.line)
+            return Pos{first, 0}, Pos{last, terminal_line_width(t, last)}
+        }
+        _, last := terminal_logical_line(t, p.line)
+        first, _ := terminal_logical_line(t, q.line)
+        return Pos{last, terminal_line_width(t, last)}, Pos{first, 0}
+    }
+    plo, phi := terminal_word_span(t, p.line, p.col)
+    qlo, qhi := terminal_word_span(t, q.line, q.col)
+    if !pos_less(q, p) {
+        return Pos{p.line, plo}, Pos{q.line, qhi}
+    }
+    return Pos{p.line, phi}, Pos{q.line, qlo}
+}
+
+// Whatever is currently selected, as text. Caller owns the result; empty when nothing is.
+//
+// TWO selections, ONE walk. The mouse's is a pair of boundary positions already; the
+// keyboard's row range becomes the pair that spans whole lines. Everything below the pair —
+// the clipping, the trailing-blank trim, and the wrap-aware join — is written once and
+// serves both, which is what makes the bug fix below reach the keyboard path that has had it
+// all along.
 terminal_selection_text :: proc(t: ^Terminal, alloc := context.allocator) -> string {
+    if t.msel_on {
+        lo, hi := cursor_range(t.msel)
+        return terminal_range_text(t, lo, hi, alloc)
+    }
     if !t.sel_active {
         return ""
     }
+    // [lo, hi) in lines becomes a start boundary and an end boundary: the whole of hi-1 is
+    // the last thing in it. An empty span copies nothing rather than a stray line.
     lo, hi := terminal_sel_range(t)
+    if lo == hi {
+        return ""
+    }
+    return terminal_range_text(t, Pos{lo, 0}, Pos{hi - 1, terminal_line_width(t, hi - 1)}, alloc)
+}
+
+// An absolute-position range as text: each line clipped to the range, joined by newlines —
+// **except where the next line is a flow CONTINUATION of this one, which is joined with
+// nothing at all.**
+//
+// That exception is a fix to shipped KEYBOARD behaviour and not a mouse feature (C7d's
+// integration pass found it). A shell line longer than the grid occupies two rows; joining
+// every row with a newline handed Ctrl+Shift+C a command that could not be pasted back, and
+// it had been wrong since the copy cursor shipped. libvterm knew the answer the whole time
+// and Slopd threw it away twice over — see terminal_continuation for both halves. alacritty
+// spells the same condition with its WRAPLINE flag.
+//
+// The trailing-blank trim applies only where a segment runs to the row's own edge, which is
+// exactly where the blanks are the terminal's padding rather than part of the selection: a
+// drag that stops mid-line keeps the spaces the user dragged over.
+terminal_range_text :: proc(t: ^Terminal, lo, hi: Pos, alloc := context.allocator) -> string {
     b := strings.builder_make(alloc)
-    for n in lo ..= hi {
-        terminal_append_line(t, &b, n)
-        if n < hi {
+    if hi.line < lo.line {
+        return strings.to_string(b)
+    }
+    for n in lo.line ..= hi.line {
+        w := terminal_line_width(t, n)
+        start := n == lo.line ? clamp(lo.col, 0, w) : 0
+        end := n == hi.line ? clamp(hi.col, 0, w) : w
+        if end >= w {
+            last := start - 1 // last column holding a visible glyph
+            for col in start ..< w {
+                if r := terminal_view_rune(t, n, col); r > 0x20 {
+                    last = col
+                }
+            }
+            end = last + 1
+        }
+        for col in start ..< end {
+            r := terminal_view_rune(t, n, col)
+            strings.write_rune(&b, r >= 0x20 ? r : ' ')
+        }
+        if n < hi.line && !terminal_continuation(t, n + 1) {
             strings.write_byte(&b, '\n')
         }
     }
     return strings.to_string(b)
-}
-
-// Append absolute line `n` to `b`, trimming trailing blank cells. A scrollback line
-// caps at its own captured width; a live row at the grid width.
-@(private = "file")
-terminal_append_line :: proc(t: ^Terminal, b: ^strings.Builder, n: int) {
-    width := n >= t.sb_total ? t.cols : len(t.scrollback[n - terminal_oldest(t)].cells)
-    last := -1 // last column holding a visible glyph
-    for col in 0 ..< width {
-        if r := terminal_view_rune(t, n, col); r > 0x20 {
-            last = col
-        }
-    }
-    for col in 0 ..= last {
-        r := terminal_view_rune(t, n, col)
-        strings.write_rune(b, r >= 0x20 ? r : ' ')
-    }
 }
 
 // The primary rune at an absolute (line, col), 0 when blank/out of range.
@@ -602,11 +848,18 @@ terminal_enable_scrollback :: proc(t: ^Terminal) {
     // in the app, the test runner's tracking allocator under test).
     t.sb_ctx = context
     t.callbacks = vt.ScreenCallbacks {
-        sb_pushline = term_sb_pushline_cb,
-        sb_popline  = term_sb_popline_cb,
-        settermprop = term_settermprop_cb,
+        sb_pushline4 = term_sb_pushline_cb,
+        sb_popline   = term_sb_popline_cb,
+        settermprop  = term_settermprop_cb,
     }
     vt.screen_set_callbacks(t.screen, &t.callbacks, t)
+    // The FOUR-argument pushline, opted into explicitly (C7d). The three-argument form
+    // drops the one bit that says whether a line exists because the one above it wrapped,
+    // and without it a copied soft-wrapped command comes back in two pieces. The opt-in is
+    // a separate call because the tenth slot is an ABI-compatible addition — libvterm keeps
+    // the flag on the screen, so both this and the callbacks must be in place before the
+    // first line scrolls off.
+    vt.screen_callbacks_has_pushline4(t.screen)
 }
 
 // Property change from libvterm. Slopd tracks only ALTSCREEN: a full-screen TUI just
@@ -647,12 +900,13 @@ terminal_scroll_tui :: proc(t: ^Terminal, dir: int) {
 // in a batch once we overshoot the cap. "c" callback — establish a context to alloc;
 // it runs on the main thread inside terminal_feed, so the heap allocator is fine.
 @(private = "file")
-term_sb_pushline_cb :: proc "c" (cols: c.int, cells: [^]vt.ScreenCell, user: rawptr) -> c.int {
+term_sb_pushline_cb :: proc "c" (cols: c.int, cells: [^]vt.ScreenCell, continuation: bool, user: rawptr) -> c.int {
     t := (^Terminal)(user)
     context = t.sb_ctx
     n := int(cols)
     line := ScrollLine {
-        cells = make([]vt.ScreenCell, n),
+        cells        = make([]vt.ScreenCell, n),
+        continuation = continuation,
     }
     copy(line.cells, cells[:n])
     append(&t.scrollback, line)

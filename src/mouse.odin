@@ -257,10 +257,14 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
                 terminal_scroll_tui(t, notch < 0 ? -1 : 1)
             }
         } else {
-            // Our scrollback is only reachable through the copy cursor (terminal_view_top
-            // returns the live bottom unless sel_active), so scrolling back IS moving it.
-            // extend = false, so this scrolls without laying down a selection span.
-            terminal_sel_move(t, d, false)
+            // The VIEW, not the copy cursor. ~~Our scrollback is only reachable through the
+            // copy cursor, so scrolling back IS moving it.~~ That was true and it made the
+            // terminal the one pane where a wheel notch moved a cursor — putting a
+            // keyboard-only marker on screen that nobody asked for, and dragging a
+            // selection's anchor around under it. The view has its own detach now
+            // (terminal_scroll_by), exactly as every list pane and the editor do, and rule 10
+            // finally holds everywhere: a wheel scrolls the view, never the selection.
+            terminal_scroll_by(t, d)
         }
     case .List:
         // Every list pane scrolls its VIEW, through one shared proc. The stamp is the whole
