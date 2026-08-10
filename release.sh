@@ -39,8 +39,13 @@ fi
 
 if [ $DO_LOCAL -eq 1 ]; then
     echo "==> Local build: $PROJECT_NAME -> $RELEASE_DIR"
-    rm -rf "$RELEASE_DIR"
+    # Empty the folder rather than replacing it. A rebuilt directory is a NEW directory:
+    # a shell sitting in it lands on a deleted inode, and anything pointing at it (a file
+    # manager tab, a symlink, a bookmark) has to be re-opened. -mindepth 1 spares the
+    # folder itself; -delete is depth-first and takes dotfiles, which a `rm -rf dir/*`
+    # glob would silently leave behind.
     mkdir -p "$RELEASE_DIR"
+    find "$RELEASE_DIR" -mindepth 1 -delete
     # -define:GLFW_SHARED=false  -> link vendor/glfw/lib/libglfw3.a statically so
     # the shipped binary does not depend on a system libglfw. (OpenGL is always
     # loaded at runtime from the GPU driver; there is nothing to link for it.)

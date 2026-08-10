@@ -39,6 +39,12 @@ FileTree :: struct {
     scroll:   int, // first visible row — the viewport top (see list_scroll_target)
     hover:    int, // the entry under the pointer, or -1 — transient frame state (config_ui)
 
+    // A wheel gesture DETACHES the view from the selection (glfw time; 0 = following it),
+    // the flat-row twin of Buffer.scroll_detached. While it is set neither viewport policy
+    // runs, so the wheel moves the view rather than the cursor; the next keystroke that
+    // reaches this pane re-attaches it. See list_scroll_apply (scroll.odin).
+    scroll_detached: f64,
+
     // The yank set: paths marked for a pending copy/cut, OWNED and kept across dir
     // navigation (yank here, walk elsewhere, paste there). yank_mode says what paste
     // does with them.

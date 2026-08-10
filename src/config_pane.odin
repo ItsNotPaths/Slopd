@@ -40,6 +40,11 @@ ConfigPane :: struct {
     // Rows: [0, SETTING_COUNT) settings, then the search row, then the FILTERED langs.
     sel:      int, // selected row
     scroll:   int, // first visible DISPLAY row — the viewport top (see list_scroll_target)
+    // A wheel gesture DETACHES the view from the selection (glfw time; 0 = following it),
+    // the flat-row twin of Buffer.scroll_detached. While it is set neither viewport policy
+    // runs, so the wheel moves the view rather than the cursor; the next keystroke that
+    // reaches this pane re-attaches it. See list_scroll_apply (scroll.odin).
+    scroll_detached: f64,
     open:     Open_Kind, // which row's dropdown is open (None when none)
     open_idx: int, // Setting(open_idx) when open==.Setting; langs[open_idx] when .Lang
     opt_sel:  int, // selection within an open dropdown: -1 = the language root, 0.. = options

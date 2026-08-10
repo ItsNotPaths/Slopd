@@ -41,6 +41,12 @@ GrepPane :: struct {
     selected: int,              // the highlighted row (Up/Down move it; Enter jumps)
     scroll:   int,              // first visible DISPLAY row — the viewport top (list_scroll_target)
     hover:    int,              // the block under the pointer, or -1 — transient (config_ui)
+
+    // A wheel gesture DETACHES the view from the selection (glfw time; 0 = following it),
+    // the flat-row twin of Buffer.scroll_detached. While it is set neither viewport policy
+    // runs, so the wheel moves the view rather than the cursor; the next keystroke that
+    // reaches this pane re-attaches it. See list_scroll_apply (scroll.odin).
+    scroll_detached: f64,
 }
 
 // Up/Down: move the highlighted row, clamped to the results (no wrap). The editor only

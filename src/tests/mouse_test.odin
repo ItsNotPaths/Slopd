@@ -138,28 +138,38 @@ test_wheel_target_before_first_frame :: proc(t: ^testing.T) {
 
 // --- the verb half -------------------------------------------------------------------
 
-// The list panes are "a cursor in a list", so a notch moves the SELECTION and the viewport
-// follows under either scroll_mode — the resolution to MIDDLE re-deriving the top from the
-// selection every frame. WHEEL_LINES rows per notch, clamped at both ends.
+// A notch in a list pane moves the VIEW and leaves the selection where it is — the same
+// thing it means in the editor, the terminal and the git diff, and the same thing it means
+// on every other desktop. WHEEL_LINES rows per notch, and the press stamps the pane as
+// detached so neither viewport policy overwrites the write on the next frame.
 @(test)
-test_wheel_apply_list_moves_selection :: proc(t: ^testing.T) {
+test_wheel_apply_list_scrolls_view :: proc(t: ^testing.T) {
     a := routing_app(.Grep)
     for i in 0 ..< 20 {
         append(&a.grep.hits, app.GrepHit{line = i + 1})
     }
     defer delete(a.grep.hits)
+    a.grep.selected = 4
 
     app.wheel_apply(&a, .List, 1)
-    testing.expect_value(t, a.grep.selected, app.WHEEL_LINES)
-    app.wheel_apply(&a, .List, 2)
-    testing.expect_value(t, a.grep.selected, 3 * app.WHEEL_LINES)
-    app.wheel_apply(&a, .List, -1)
-    testing.expect_value(t, a.grep.selected, 2 * app.WHEEL_LINES)
+    testing.expect_value(t, a.grep.scroll, app.WHEEL_LINES)
+    testing.expect_value(t, a.grep.selected, 4) // the cursor did not move
 
-    app.wheel_apply(&a, .List, -100) // clamped at the first row, not negative
-    testing.expect_value(t, a.grep.selected, 0)
-    app.wheel_apply(&a, .List, 100) // clamped at the last row
-    testing.expect_value(t, a.grep.selected, 19)
+    // The stamp itself is not asserted here: wheel_apply reads glfw.GetTime(), which is 0
+    // in a headless test, and 0 is the value that MEANS attached. The stamp and the
+    // re-attach are exercised against list_scroll_by / list_scroll_apply directly, in
+    // scroll_test.odin — the same split buffer_test.odin uses for the editor's detach.
+
+    app.wheel_apply(&a, .List, 2)
+    testing.expect_value(t, a.grep.scroll, 3 * app.WHEEL_LINES)
+    app.wheel_apply(&a, .List, -1)
+    testing.expect_value(t, a.grep.scroll, 2 * app.WHEEL_LINES)
+
+    // Deliberately UNCLAMPED here: the callback has no font, no pane rect and no flattened
+    // row list, so it cannot know where the end is. list_scroll_apply clamps on the next
+    // frame, which is asserted in scroll_test.odin.
+    app.wheel_apply(&a, .List, -100)
+    testing.expect(t, a.grep.scroll < 0, "the callback does not clamp; the frame does")
 }
 
 // A zero notch is a no-op, and the targets with nothing wired yet must stay silent rather
@@ -173,11 +183,12 @@ test_wheel_apply_inert_targets :: proc(t: ^testing.T) {
     defer delete(a.grep.hits)
 
     app.wheel_apply(&a, .List, 0) // no notches
-    testing.expect_value(t, a.grep.selected, 0)
+    testing.expect_value(t, a.grep.scroll, 0)
+    testing.expect_value(t, a.grep.scroll_detached, f64(0)) // and nothing was detached
     app.wheel_apply(&a, .None, 3)
-    testing.expect_value(t, a.grep.selected, 0)
+    testing.expect_value(t, a.grep.scroll, 0)
     app.wheel_apply(&a, .Media, 3) // pan/zoom is C8
-    testing.expect_value(t, a.grep.selected, 0)
+    testing.expect_value(t, a.grep.scroll, 0)
 }
 
 // The git sidebar scrolls under the pointer WITHOUT stealing region focus: git_move_sel is

@@ -138,16 +138,21 @@ wheel_target :: proc(a: ^App, lay: Layout, mx, my: i32) -> Wheel_Target {
 // MIDDLE outright, FOLLOW once the caret would leave the pane — so "move the view, leave
 // the selection" is not expressible while a policy is running. Two answers, by pane kind:
 //
-//   - The LIST panes are conceptually a cursor in a list, so the wheel moves the SELECTION
-//     and the viewport follows it under either policy. Nothing is detached, nothing to
-//     re-attach, and the pane behaves identically in both modes.
-//   - The EDITOR detaches instead (buffer_scroll_apply): its policy stops running until the
-//     next keystroke, so the view is genuinely free and the caret is not dragged around by
-//     a scroll gesture. A selection-moving wheel would be wrong here — the caret is an
-//     insertion point, not a cursor in a list.
+// ~~The LIST panes are conceptually a cursor in a list, so the wheel moves the SELECTION.~~
+// **Reversed: every list pane now DETACHES, exactly as the editor does.** A wheel scrolls
+// the VIEW — which is what a wheel means everywhere else in this program (the editor, the
+// terminal, the git diff) and everywhere else on the desktop — and the next keystroke that
+// reaches that pane re-attaches its policy to the selection (list_scroll_apply, scroll.odin).
 //
-// The terminal and the git diff need neither: they already keep view and selection apart,
-// so the wheel moves the view and scroll_mode never enters into it.
+// The original reasoning was sound and the conclusion was still wrong. MIDDLE really does
+// re-derive the top from the selection, so a view-only scroll IS overwritten on the next
+// frame — but the answer to that is the detach the editor already had, not a wheel that
+// moves the cursor. Moving the selection also had a wart it could not shed: a notch is
+// WHEEL_LINES *items*, which in grep meant three BLOCKS, about eighteen display rows for
+// one notch. Detached, a notch is three rows in every pane.
+//
+// The terminal and the git diff need no detach: they already keep view and selection
+// apart, so the wheel moves the view and scroll_mode never enters into it.
 wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
     if notch == 0 {
         return
@@ -194,28 +199,45 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
         // is over. Focus is deliberately not stolen — focus-follows-click is C8.
         git_sidebar_move(&a.git, d)
     case .List:
+        // Every list pane scrolls its VIEW, through one shared proc. The stamp is the whole
+        // mechanism: while it is set the pane's viewport policy does not run, so this write
+        // survives the frame in either scroll_mode, and the next keystroke to reach the pane
+        // clears it. No total is passed — the callback has no font, no pane rect and, for
+        // grep and config, no flattened row list, so it cannot know where the end is;
+        // list_scroll_apply clamps on the next frame, which bounds the overshoot at a notch.
+        now := glfw.GetTime()
         switch a.aux_mode {
         case .FileTree:
-            filetree_move(&a.tree, d)
+            list_scroll_by(&a.tree.scroll, &a.tree.scroll_detached, d, now)
         case .Grep:
-            grep_move(&a.grep, d)
+            list_scroll_by(&a.grep.scroll, &a.grep.scroll_detached, d, now)
         case .Config:
-            // Whatever currently owns the selection moves: an open dropdown's choices, or
-            // the row list when nothing is open. One proc, shared with the pane's Up/Down
-            // (config_dropdown_move) — the refusal that used to sit here existed only
-            // because the dropdown had no geometry outside draw_config, and C5b gave it
-            // some, so it is gone rather than preserved.
-            config_dropdown_move(a, d)
+            // Including with a dropdown open: its options are spliced into the row list, so
+            // scrolling the view carries them along and there is nothing special to do.
+            // config_dropdown_move stays the KEYBOARD's, where moving a selection is the
+            // point. (That branch was a refusal until C5b and a selection move until now.)
+            list_scroll_by(&a.config_pane.scroll, &a.config_pane.scroll_detached, d, now)
         case .Procmon:
-            // The signal selector and the kill-arm prompt still have no geometry outside
-            // draw_procmon, so a notch over one does nothing rather than moving the list
-            // underneath it — the refusal the config branch above has just shed, waiting on
-            // the same fix (C5c). Otherwise the notch moves the process list, including
-            // when the pointer is over the graph band: the band does not scroll, and
-            // per-region routing needs the geometry C5c extracts.
+            // The one aux mode whose regions stack vertically, so where the notch landed
+            // decides what it moves. That question goes to the tree CLAY is holding — the
+            // one the last frame painted — rather than to a recomputed procmon_geom, which
+            // would be a second copy of the band's height, drifting from the first the
+            // moment either changed. It also needs no font: the element knows its own box.
+            //
+            //   over the band, selector open   walks the 1..31 grid (procmon_sig_move)
+            //   over the band, graphs showing  nothing; a graph is a picture, not a view
+            //   over the list                  scrolls the list, like every other pane
+            //
+            // The list stays scrollable while the selector is up or a kill is armed, which
+            // the selection-moving version could not allow: a view scroll cannot arm, send
+            // or confirm anything, so there is nothing for the capture to protect.
             pm := &a.procmon
-            if !pm.sig_open && !pm.kill_armed {
-                procmon_select(pm, pm.sel + d)
+            if clay.PointerOver(clay.ID("pm_band")) {
+                if pm.sig_open {
+                    procmon_sig_move(pm, d)
+                }
+            } else {
+                list_scroll_by(&pm.scroll, &pm.scroll_detached, d, now)
             }
         case .Terminal, .Git:
         // Not list panes; wheel_target never routes them here.

@@ -63,3 +63,55 @@ test_list_shorter_than_viewport :: proc(t: ^testing.T) {
     testing.expect_value(t, app.list_scroll_target(3, 2, ROWS, 4, false), 0) // stale top re-clamped to 0
     testing.expect_value(t, app.list_scroll_target(0, 99, ROWS, 4, false), 0) // sel clamped to row 3
 }
+
+// The detach a wheel gesture leaves behind — the list twin of the editor's, and the reason
+// a notch can mean "move the view" at all. The three states, in order.
+@(test)
+test_list_scroll_detach :: proc(t: ^testing.T) {
+    scroll := 0
+    detached := f64(0)
+
+    // Attached, the policy runs: the selection at row 40 in MIDDLE centres the view.
+    app.list_scroll_apply(&scroll, &detached, 40, ROWS, TOTAL, true, 0)
+    testing.expect_value(t, scroll, 35)
+
+    // A notch detaches and moves the view. NEITHER policy runs after that — this is the
+    // assertion that matters, because MIDDLE re-derives the top from the selection every
+    // frame and would otherwise overwrite the gesture before it was ever seen.
+    app.list_scroll_by(&scroll, &detached, 9, 100)
+    testing.expect_value(t, scroll, 44)
+    app.list_scroll_apply(&scroll, &detached, 40, ROWS, TOTAL, true, 0)
+    testing.expect_value(t, scroll, 44)
+    app.list_scroll_apply(&scroll, &detached, 40, ROWS, TOTAL, false, 0)
+    testing.expect_value(t, scroll, 44)
+
+    // Only INPUT AFTER the gesture re-attaches. An older timestamp is a keystroke that
+    // happened before the scroll, which cannot have been a reaction to it.
+    app.list_scroll_apply(&scroll, &detached, 40, ROWS, TOTAL, false, 99)
+    testing.expect_value(t, scroll, 44)
+    app.list_scroll_apply(&scroll, &detached, 40, ROWS, TOTAL, false, 101)
+    testing.expect_value(t, scroll, 40) // row 40 is now ABOVE the view, so the top goes to it
+    testing.expect_value(t, detached, f64(0))
+}
+
+// The wheel callback cannot clamp — it has no font, no pane rect and no flattened row list —
+// so the frame does it, and the overshoot is bounded by one notch either way.
+@(test)
+test_list_scroll_detached_is_bounded :: proc(t: ^testing.T) {
+    scroll := 0
+    detached := f64(0)
+
+    app.list_scroll_by(&scroll, &detached, -50, 100)
+    app.list_scroll_apply(&scroll, &detached, 0, ROWS, TOTAL, false, 0)
+    testing.expect_value(t, scroll, 0)
+
+    // Past the end, any row may be the top — first to last, exactly as the detached editor
+    // lets any line be the top. A list shorter than its viewport pins at zero.
+    app.list_scroll_by(&scroll, &detached, 500, 100)
+    app.list_scroll_apply(&scroll, &detached, 0, ROWS, TOTAL, false, 0)
+    testing.expect_value(t, scroll, TOTAL - 1)
+
+    app.list_scroll_by(&scroll, &detached, 500, 100)
+    app.list_scroll_apply(&scroll, &detached, 0, ROWS, 0, false, 0)
+    testing.expect_value(t, scroll, 0)
+}

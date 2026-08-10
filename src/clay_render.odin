@@ -135,8 +135,17 @@ clay_resize :: proc(w, h: i32) {
 // calling `paint`, so the painter starts with empty batches and owns its region outright
 // — including its own flush_pane, exactly as draw_editor and draw_terminal already end.
 // Anything it leaves queued would be drawn later under a different clip.
+//
+// A BOX IS NOT A CLIP, which is why `paint` takes both. `r` is where the surface starts —
+// glyphs and bars are positioned from it — while `clip` is how much of it may actually
+// reach the screen. A row half off the bottom of a scrolling list still has a full-height
+// box, so a painter that scissored to `r` would draw outside the body it was declared in.
+// The bridge already tracks the clip in force on its stack and hands it over intersected
+// with the box, so `flush_pane(t, clip, ...)` is the whole of a painter's obligation; no
+// Custom can derive this for itself, and every Custom needs it (found by C5b's search
+// field, which had to carry its own copy — see docs/clay-refactor.md).
 ClayCustom :: struct {
-    paint: proc(t: ^Text, r: Rect, win_w, win_h: i32, a: ^App, user: rawptr),
+    paint: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr),
     user:  rawptr,
 }
 
@@ -209,7 +218,7 @@ clay_paint :: proc(
             cu := (^ClayCustom)(cmd.renderData.custom.customData)
             if cu != nil && cu.paint != nil {
                 flush_pane(t, clip, win_w, win_h) // hand the painter empty batches
-                cu.paint(t, r, win_w, win_h, a, cu.user)
+                cu.paint(t, r, clay_isect(r, clip), win_w, win_h, a, cu.user)
             }
 
         case .ScissorStart:

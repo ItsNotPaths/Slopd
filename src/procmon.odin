@@ -29,6 +29,12 @@ import "vendor:glfw"
 PROC_HIST :: 120 // history samples kept per graph (~2 min at the 1s tick)
 SIG_COLS :: 4 // signal-selector grid width (Up/Down step by this many)
 
+// How long a multi-digit signal number stays open to a second digit (seconds). Without a
+// bound, "1" typed a minute ago silently makes the next "5" mean 15 rather than 5 — the run
+// only ever ended on an arrow key. Three seconds is well past a deliberate two-key number
+// and well short of "I came back to this pane and typed a signal".
+PROC_SIG_RUN_S :: 3.0
+
 GraphCat :: enum {
     CPU,
     Memory,
@@ -92,7 +98,13 @@ ProcmonPane :: struct {
     sel:         int, // selected row, index into `view`
     sel_pid:     int, // the selected process's PID — selection identity across re-sorts
     scroll:      int, // first visible row — the viewport TARGET top (see list_scroll_target)
+    // A wheel gesture DETACHES the view from the selection (glfw time; 0 = following it),
+    // the flat-row twin of Buffer.scroll_detached. While it is set neither viewport policy
+    // runs, so the wheel moves the view rather than the cursor; the next keystroke that
+    // reaches this pane re-attaches it. See list_scroll_apply (scroll.odin).
+    scroll_detached: f64,
     scroll_anim: Anim, // list smooth-scroll: the visual top tweening toward `scroll`
+    hover:       ProcHit, // what the pointer is over, resolved once per frame (procmon_ui.odin)
 
     // live name filter (Space opens; reuses the shared Doc editing core)
     filtering: bool,
@@ -102,6 +114,7 @@ ProcmonPane :: struct {
     sig_open:  bool,
     sig_sel:   int, // 1..31
     sig_multi: bool, // last keypress was a digit (so a second digit extends it)
+    sig_typed_at: f64, // glfw time of that keypress; the run expires PROC_SIG_RUN_S later
 
     // `k` confirm: armed by k when App.kill_confirm is on; the armed row shows a
     // one-key confirm prompt instead of its columns until Enter/y or Esc.
@@ -469,6 +482,19 @@ procmon_select :: proc(pm: ^ProcmonPane, idx: int) {
     pm.sel_pid = pm.cur.procs[pm.view[pm.sel]].pid
 }
 
+// The graph the band is currently showing. Package-level and here rather than in the UI
+// half, because "which series does this category name" is a property of the snapshot, not
+// of how it is drawn.
+procmon_graphview :: proc(pm: ^ProcmonPane) -> ^GraphView {
+    switch pm.cat {
+    case .CPU:    return &pm.cur.cpu
+    case .Memory: return &pm.cur.mem
+    case .Disk:   return &pm.cur.disk
+    case .GPU:    return &pm.cur.gpu
+    }
+    return &pm.cur.cpu
+}
+
 // The selected process's PID, or 0 when the list is empty.
 procmon_sel_pid :: proc(pm: ^ProcmonPane) -> int {
     if pm.sel >= 0 && pm.sel < len(pm.view) {
@@ -483,6 +509,25 @@ procmon_kill :: proc(pm: ^ProcmonPane, signum: int) {
     if pid := procmon_sel_pid(pm); pid > 0 {
         posix.kill(posix.pid_t(pid), posix.Signal(signum))
     }
+}
+
+// Fire the armed signal and close the selector — the selector's one commit, reached by
+// its Enter and by a double click on a cell (procmon_click). Split out so the two paths
+// cannot drift: sending without closing would leave a selector over a process that may no
+// longer exist, which is the kind of thing only one of two copies ever remembers.
+procmon_sig_send :: proc(pm: ^ProcmonPane) {
+    procmon_kill(pm, pm.sig_sel)
+    pm.sig_open = false
+}
+
+// Point the graph band at a category. Trivial, and that is the point: the keyboard STEPS
+// through the enum (Tab / Left / Right) while a click PICKS one outright, so the two
+// paths share the destination rather than the motion. Focus follows, because clicking a
+// tab is an unambiguous statement that the band is what you are looking at — the same
+// reasoning that makes a click on a process row focus the list.
+procmon_pick_cat :: proc(pm: ^ProcmonPane, cat: GraphCat) {
+    pm.cat = cat
+    pm.focus = .Graphs
 }
 
 // --- input ---
@@ -519,9 +564,9 @@ procmon_key :: proc(a: ^App, key, mods: i32) {
         case glfw.KEY_DOWN:
             pm.focus = .List
         case glfw.KEY_TAB, glfw.KEY_RIGHT:
-            pm.cat = GraphCat((int(pm.cat) + 1) % len(GraphCat))
+            procmon_pick_cat(pm, GraphCat((int(pm.cat) + 1) % len(GraphCat)))
         case glfw.KEY_LEFT:
-            pm.cat = GraphCat((int(pm.cat) + len(GraphCat) - 1) % len(GraphCat))
+            procmon_pick_cat(pm, GraphCat((int(pm.cat) + len(GraphCat) - 1) % len(GraphCat)))
         }
     case .List:
         switch key {
@@ -580,6 +625,41 @@ procmon_filter_key :: proc(pm: ^ProcmonPane, key, mods: i32) {
     }
 }
 
+// A digit typed at the open signal selector. Digits accumulate into a run, so "1" then "5"
+// arms 15; a run that would overshoot 31 restarts from the digit just typed, because a
+// number you did not ask for is worse than starting over. A run also EXPIRES — see
+// PROC_SIG_RUN_S — so a digit typed long after the last one starts a fresh number rather
+// than becoming the units of a half-forgotten one.
+//
+// A LEADING ZERO IS IGNORED, and that is the whole of the bug this proc was extracted to
+// fix. It used to fall through to `clamp(0, 1, 31)`, so a bare "0" armed signal 1 AND armed
+// the run — which made "0" then "9" compute 1*10+9 and arm 19 (SIGSTOP) when you had asked
+// for 9 (SIGKILL). Sending the wrong signal because of a keystroke that should not have
+// counted is about the worst failure this pane has available. Leading zeros carry no
+// information in a 1..31 number, so the fix is to drop them rather than to clamp them.
+procmon_sig_digit :: proc(pm: ^ProcmonPane, d: int, now: f64) {
+    if pm.sig_multi && now - pm.sig_typed_at > PROC_SIG_RUN_S {
+        pm.sig_multi = false // the run went stale; this digit starts a new number
+    }
+    if d == 0 && !pm.sig_multi {
+        return // no run in progress: "0" is not a signal and must not start one
+    }
+    cand := pm.sig_multi ? pm.sig_sel * 10 + d : d
+    pm.sig_sel = (cand >= 1 && cand <= 31) ? cand : clamp(d, 1, 31)
+    pm.sig_multi = true
+    pm.sig_typed_at = now
+}
+
+// Move the armed signal by `d` cells through the 1..31 grid, clamped at both ends —
+// a closed choice, so walking off the end stays put rather than stepping out (the same
+// distinction config's two dropdown kinds draw). Shared by the selector's arrows and by a
+// wheel notch over it, which is what let wheel_apply's .Procmon branch stop refusing.
+// Typing a digit is the other way in, and any move ends a multi-digit run.
+procmon_sig_move :: proc(pm: ^ProcmonPane, d: int) {
+    pm.sig_sel = clamp(pm.sig_sel + d, 1, 31)
+    pm.sig_multi = false
+}
+
 // Signal-selector keys (btop-style): arrows walk the 1..31 grid, digits type a
 // number, Enter sends it to the selected process, q/Esc close without sending.
 @(private = "file")
@@ -588,21 +668,18 @@ procmon_sig_key :: proc(pm: ^ProcmonPane, key: i32) {
     case glfw.KEY_ESCAPE, glfw.KEY_Q:
         pm.sig_open = false
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
-        procmon_kill(pm, pm.sig_sel)
-        pm.sig_open = false
+        procmon_sig_send(pm)
     case glfw.KEY_LEFT:
-        pm.sig_sel = clamp(pm.sig_sel - 1, 1, 31);pm.sig_multi = false
+        procmon_sig_move(pm, -1)
     case glfw.KEY_RIGHT:
-        pm.sig_sel = clamp(pm.sig_sel + 1, 1, 31);pm.sig_multi = false
+        procmon_sig_move(pm, 1)
     case glfw.KEY_UP:
-        pm.sig_sel = clamp(pm.sig_sel - SIG_COLS, 1, 31);pm.sig_multi = false
+        procmon_sig_move(pm, -SIG_COLS)
     case glfw.KEY_DOWN:
-        pm.sig_sel = clamp(pm.sig_sel + SIG_COLS, 1, 31);pm.sig_multi = false
+        procmon_sig_move(pm, SIG_COLS)
     case:
         if d, ok := proc_digit(key); ok {
-            cand := pm.sig_multi ? pm.sig_sel * 10 + d : d
-            pm.sig_sel = (cand >= 1 && cand <= 31) ? cand : clamp(d, 1, 31)
-            pm.sig_multi = true
+            procmon_sig_digit(pm, d, glfw.GetTime())
         }
     }
 }

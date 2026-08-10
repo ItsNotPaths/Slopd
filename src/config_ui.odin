@@ -75,8 +75,8 @@ config_val_off :: proc() -> f32 {
 //
 // This is the write that used to be a side effect of painting (`cp.scroll = ...` sat in the
 // middle of draw_config). It is a normal state update now: GL-free, before any declaration.
-config_scroll_apply :: proc(cp: ^ConfigPane, anchor, rows, total: int, center: bool) {
-    cp.scroll = list_scroll_target(cp.scroll, anchor, rows, total, center)
+config_scroll_apply :: proc(cp: ^ConfigPane, anchor, rows, total: int, center: bool, last_input_at: f64 = 0) {
+    list_scroll_apply(&cp.scroll, &cp.scroll_detached, anchor, rows, total, center, last_input_at)
 }
 
 // Which DISPLAY row the pointer is over, or -1. A row index rather than an item, because a
@@ -183,21 +183,20 @@ config_row_color :: proc(th: ^Theme, r: ConfigRow, sel: bool) -> [3]f32 {
 // What the search row's Custom element needs in order to paint itself. Handed to the bridge
 // as `customData`, so it must outlive EndLayout — it lives in the frame's temp arena.
 //
-// `clip` is the surprise, and it is a gap in the ClayCustom contract rather than a quirk of
-// this pane: the bridge hands a painter its BOX, but a box is not a clip. A row half off the
-// bottom of the pane still has a full-height box, and a painter that scissors to it would
-// draw outside the body. Every Custom has to intersect with the clip it was declared inside,
-// so every Custom has to be told what that was. Noted for C5c's graph band and C7.
+// It used to carry the body clip too: this pane found that the bridge handed a painter its
+// BOX and a box is not a clip, so a search row half off the bottom of the pane would have
+// scissored to its full-height box and drawn outside the body. That was a gap in the
+// ClayCustom contract rather than a quirk of this pane, and C5c closed it — `paint` now
+// takes the live clip as a parameter, so there is nothing left here but the field's data.
 Config_Edit :: struct {
-    doc:  ^Doc,
-    clip: Rect,
-    now:  f64,
+    doc: ^Doc,
+    now: f64,
 }
 
 // The inline settings editor: the edit buffer's runes at the value column, with per-cursor
 // selection spans and carets — the command-line treatment, reused, and unchanged from the
 // config_draw_edit that used to live in render.odin beyond taking its box from Clay.
-config_paint_edit :: proc(t: ^Text, r: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
+config_paint_edit :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
     e := (^Config_Edit)(user)
     if e == nil || e.doc == nil || len(e.doc.lines) == 0 {
         return
@@ -222,9 +221,9 @@ config_paint_edit :: proc(t: ^Text, r: Rect, win_w, win_h: i32, a: ^App, user: r
             caret(t, Rect{i32(ex + cw * f32(c.head.col)), y, i32(2 * a.scale), i32(lh)}, th.fg)
         }
     }
-    // The painter owns its region and ends with its own flush (the ClayCustom contract) —
-    // intersected with the body clip, per Config_Edit.clip.
-    flush_pane(t, clay_isect(r, e.clip), win_w, win_h)
+    // The painter owns its region and ends with its own flush (the ClayCustom contract).
+    // `clip` arrives already intersected with the box, so this is the whole obligation.
+    flush_pane(t, clip, win_w, win_h)
 }
 
 // Declare the pane and hand back the frame's command list. Reads App and the flattened
@@ -256,10 +255,6 @@ config_layout :: proc(
 
     first := clamp(cp.scroll, 0, max(0, len(rows)))
     visible := max(0, min(len(rows) - first, max_rows))
-
-    // The body's clip, derived the same way Clay will resolve it, for the search field's
-    // Custom to intersect against (see Config_Edit.clip).
-    body := area
 
     clay_resize(win_w, win_h)
     clay.BeginLayout()
@@ -336,7 +331,7 @@ config_layout :: proc(
                                 // EndLayout in the frame's temp arena.
                                 cu := new(ClayCustom, context.temp_allocator)
                                 ed := new(Config_Edit, context.temp_allocator)
-                                ed^ = {doc = &cp.search, clip = body, now = now}
+                                ed^ = {doc = &cp.search, now = now}
                                 cu^ = {paint = config_paint_edit, user = ed}
                                 if clay.UI(clay.ID("cf_edit", u32(i)))(
                                     {
@@ -387,7 +382,7 @@ draw_config :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) 
     config_click(a, rows, hit)
 
     rows = config_rows(cp, a, cols, context.temp_allocator)
-    config_scroll_apply(cp, config_anchor(cp, rows), max_rows, len(rows), a.scroll_mode == .Middle)
+    config_scroll_apply(cp, config_anchor(cp, rows), max_rows, len(rows), a.scroll_mode == .Middle, pane_input_at(a))
 
     cmds := config_layout(a, &t.font, pane, rows, win_w, win_h, now)
     clay_paint(t, a, &cmds, area, win_w, win_h)

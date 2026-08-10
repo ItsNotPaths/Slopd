@@ -45,8 +45,8 @@ grep_geom :: proc(pane: Rect, scale: f32, line_h: f32) -> (area: Rect, row_h: i3
 // `anchor` and `total` are both in display rows (grep_anchor, len(rows)) — a block spans
 // several, so tracking hits here would centre on the wrong thing and leave a block's title
 // scrolled off above its own context.
-grep_scroll_apply :: proc(g: ^GrepPane, anchor, rows, total: int, center: bool) {
-    g.scroll = list_scroll_target(g.scroll, anchor, rows, total, center)
+grep_scroll_apply :: proc(g: ^GrepPane, anchor, rows, total: int, center: bool, last_input_at: f64 = 0) {
+    list_scroll_apply(&g.scroll, &g.scroll_detached, anchor, rows, total, center, last_input_at)
 }
 
 // Which HIT the pointer is over, or -1. The loop walks display rows (that is what Clay was
@@ -280,7 +280,7 @@ draw_grep :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     hit := grep_hit(rows, g.scroll, max_rows)
     g.hover = hit // resolved against the same (last) frame the click is
     grep_click(a, hit)
-    grep_scroll_apply(g, grep_anchor(rows, g.selected), max_rows, len(rows), a.scroll_mode == .Middle)
+    grep_scroll_apply(g, grep_anchor(rows, g.selected), max_rows, len(rows), a.scroll_mode == .Middle, pane_input_at(a))
 
     cmds := grep_layout(a, &t.font, pane, rows, win_w, win_h)
     clay_paint(t, a, &cmds, area, win_w, win_h)

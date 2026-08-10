@@ -57,8 +57,8 @@ filetree_geom :: proc(pane: Rect, scale: f32, line_h: f32) -> (area: Rect, row_h
 // scroll position was a side effect of painting: nothing headless could exercise it, and
 // a frame that did not draw did not scroll. It is a normal state update now, GL-free and
 // called before anything is declared.
-filetree_scroll_apply :: proc(ft: ^FileTree, rows: int, center: bool) {
-    ft.scroll = list_scroll_target(ft.scroll, ft.selected, rows, len(ft.entries), center)
+filetree_scroll_apply :: proc(ft: ^FileTree, rows: int, center: bool, last_input_at: f64 = 0) {
+    list_scroll_apply(&ft.scroll, &ft.scroll_detached, ft.selected, rows, len(ft.entries), center, last_input_at)
 }
 
 // Which entry the pointer is over, or -1 for none. Clay answers from the tree it is
@@ -254,7 +254,7 @@ draw_filetree :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     hit := filetree_hit(&a.tree, rows)
     a.tree.hover = hit // resolved against the same (last) frame the click is
     filetree_click(a, hit)
-    filetree_scroll_apply(&a.tree, rows, a.scroll_mode == .Middle)
+    filetree_scroll_apply(&a.tree, rows, a.scroll_mode == .Middle, pane_input_at(a))
 
     cmds := filetree_layout(a, &t.font, pane, win_w, win_h)
     clay_paint(t, a, &cmds, area, win_w, win_h)
