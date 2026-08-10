@@ -70,6 +70,36 @@ word_left_index :: proc(text: []rune, from: int) -> int {
     return i
 }
 
+// The run of one character class CONTAINING `col`, as a half-open [lo, hi) — what a
+// double-click selects (doc_select_word, C7). The word motions above are directional and
+// asymmetric by design (they skip whitespace on the way, so "the next stop" is never the
+// run you are standing in); this is the symmetric question, and expressing it in terms of
+// them would give the wrong answer at either end of a word.
+//
+// A column past the last rune looks LEFT — clicking off the end of a line selects the word
+// that ends there, which is what the caret at that column is next to. Whitespace is a class
+// like any other, so a double-click in an indent selects the indent run: predictable, and
+// it makes "select this blank gap" reachable at all.
+word_span :: proc(text: []rune, col: int) -> (lo, hi: int) {
+    n := len(text)
+    if n == 0 {
+        return 0, 0
+    }
+    i := clamp(col, 0, n)
+    if i == n {
+        i -= 1 // past the end: the run that ends here
+    }
+    c := class_of(text[i])
+    lo, hi = i, i + 1
+    for lo > 0 && class_of(text[lo - 1]) == c {
+        lo -= 1
+    }
+    for hi < n && class_of(text[hi]) == c {
+        hi += 1
+    }
+    return
+}
+
 // --- internals ---
 
 @(private = "file")

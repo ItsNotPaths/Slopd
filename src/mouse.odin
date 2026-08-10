@@ -66,6 +66,16 @@ Mouse :: struct {
     click_at:    f64, // glfw time of the press, for the double-click window
     click_x:     i32, // and where it landed, for the slop
     click_y:     i32,
+
+    // The modifiers held AT THE PRESS, taken from GLFW's own `mods` rather than read off
+    // App.alt_held / shift_held when the pane claims it. Two reasons, and the second is the
+    // one that bites: a press is claimed on a later frame than it arrived, so a modifier
+    // released in between would be read as never held; and the key-tracking flags only see
+    // keys this window received, while `mods` is the state the window system reports with
+    // the event itself. Stored as bools so this file stays the only one that knows GLFW's
+    // bit values (C7).
+    click_shift: bool,
+    click_alt:   bool,
 }
 
 // Claim the pending click. Clearing it here is what makes a press have exactly ONE noun:
@@ -275,6 +285,8 @@ mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mo
     near := abs(m.x - m.click_x) <= DOUBLE_CLICK_PX && abs(m.y - m.click_y) <= DOUBLE_CLICK_PX
     m.click_count = near && now - m.click_at < DOUBLE_CLICK_S ? m.click_count + 1 : 1
     m.click_at, m.click_x, m.click_y = now, m.x, m.y
+    m.click_shift = mods & glfw.MOD_SHIFT != 0
+    m.click_alt = mods & glfw.MOD_ALT != 0
     m.click = true
 }
 

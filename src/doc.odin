@@ -102,6 +102,72 @@ doc_drop_anchor :: proc(d: ^Doc) {
     append(&d.cursors, Cursor{anchor = p, head = p, goal = p.col})
 }
 
+// --- pointer-placed cursors (C7) ---
+//
+// The four below are the Doc half of click-to-caret. They exist because every cursor op
+// above answers "where next, from where I am" — a motion — while a pointer names an
+// absolute position outright. Nothing in the keyboard's vocabulary could express that, so
+// these are new verbs rather than a mouse path into old ones; each is still the same shape
+// as the keyboard verb it mirrors (place / extend / drop / select), so neither input path
+// grows behaviour the other lacks in kind.
+//
+// All of them clamp: a Pos derived from a pixel is only as good as the geometry that made
+// it, and a stale window (a resize between the press and the frame that claims it) must
+// cost a caret in the wrong place, never an index out of the buffer.
+
+// Clamp a position onto a real line and column. The single gate every pointer-derived Pos
+// passes through — the procs below take arbitrary Pos values and none of them may trust one.
+doc_clamp_pos :: proc(d: ^Doc, p: Pos) -> Pos {
+    line := clamp(p.line, 0, len(d.lines) - 1)
+    return Pos{line, clamp(p.col, 0, line_len(&d.lines[line]))}
+}
+
+// Move the primary cursor's head to `p`. select=true keeps the anchor, growing the
+// selection (shift-click); false collapses onto the new position (a plain click on an
+// existing selection). The keyboard twin is a motion with Shift held — this is the same
+// cursor_place, reached with a destination instead of a direction.
+doc_set_head :: proc(d: ^Doc, p: Pos, select: bool) {
+    q := doc_clamp_pos(d, p)
+    c := &d.cursors[d.primary]
+    cursor_place(c, q, select)
+    c.goal = q.col
+}
+
+// Add a cursor AT `p` and make it the roaming one (Alt+click). doc_drop_anchor leaves its
+// new cursor where the caret already is and keeps the old one roaming, because the keyboard
+// has to walk somewhere before the drop means anything; a pointer names the destination, so
+// the new cursor is the one that goes on to move.
+//
+// Deliberately no merge: a drop coincident with an existing cursor stays a coincident pair,
+// exactly as doc_drop_anchor's does, and collapses at the next edit.
+doc_add_cursor :: proc(d: ^Doc, p: Pos) {
+    q := doc_clamp_pos(d, p)
+    append(&d.cursors, Cursor{anchor = q, head = q, goal = q.col})
+    d.primary = len(d.cursors) - 1
+}
+
+// Collapse to one cursor selecting the run of one character class around `p` — the
+// double-click. The head is the run's END, so a following shift-click or Shift+Right
+// extends forward from where the eye is.
+doc_select_word :: proc(d: ^Doc, p: Pos) {
+    q := doc_clamp_pos(d, p)
+    lo, hi := word_span(d.lines[q.line].text[:], q.col)
+    clear(&d.cursors)
+    append(&d.cursors, Cursor{anchor = Pos{q.line, lo}, head = Pos{q.line, hi}, goal = hi})
+    d.primary = 0
+}
+
+// Collapse to one cursor selecting all of `line` — the triple-click. The span is the line's
+// TEXT, not the line plus its break: it is exactly what Home then Shift+End selects, so a
+// copy from either path yields the same string.
+doc_select_line :: proc(d: ^Doc, line: int) {
+    l := clamp(line, 0, len(d.lines) - 1)
+    end := line_len(&d.lines[l])
+    clear(&d.cursors)
+    append(&d.cursors, Cursor{anchor = Pos{l, 0}, head = Pos{l, end}, goal = end})
+    d.primary = 0
+}
+
 // Collapses to a single cursor at the very end of the document (history recall,
 // inject) — the command line's "park at end" after a text swap.
 doc_cursor_to_end :: proc(d: ^Doc) {

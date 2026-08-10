@@ -208,3 +208,50 @@ test_doc_coincident_edit :: proc(t: ^testing.T) {
     testing.expect_value(t, dline(&d, 0), "aXb")
     testing.expect_value(t, len(d.cursors), 1)
 }
+
+// The pointer-placed cursor ops (C7). Every other cursor op answers "where next, from where
+// I am"; these take an absolute position, which is the one thing a pointer knows and no
+// keystroke can say. The clamp is the load-bearing part: a Pos derived from a pixel is only
+// as good as the geometry that made it, and a stale window must cost a caret in the wrong
+// place, never an index off the end of the buffer.
+@(test)
+test_doc_pointer_cursors :: proc(t: ^testing.T) {
+    d := mkdoc("alpha bravo\ncharlie")
+    defer app.doc_destroy(&d)
+
+    // Set head, extending: the anchor stays put, so a shift-click grows the selection.
+    app.doc_set_head(&d, app.Pos{0, 2}, false)
+    testing.expect_value(t, d.cursors[0].anchor, app.Pos{0, 2})
+    app.doc_set_head(&d, app.Pos{1, 3}, true)
+    testing.expect_value(t, d.cursors[0].anchor, app.Pos{0, 2})
+    testing.expect_value(t, d.cursors[0].head, app.Pos{1, 3})
+    testing.expect_value(t, d.cursors[0].goal, 3) // the sticky column follows the head
+
+    // Out of range in both axes, from every entry point.
+    app.doc_set_head(&d, app.Pos{99, 99}, false)
+    testing.expect_value(t, d.cursors[0].head, app.Pos{1, 7}) // last line, its length
+    app.doc_set_head(&d, app.Pos{-4, -4}, false)
+    testing.expect_value(t, d.cursors[0].head, app.Pos{0, 0})
+
+    // A dropped cursor becomes the ROAMING one — the pointer named where it goes, so it is
+    // the one that moves on. (doc_drop_anchor is the other way round: the keyboard has to
+    // walk somewhere before a drop means anything, so the OLD cursor keeps roaming.)
+    app.doc_add_cursor(&d, app.Pos{1, 2})
+    testing.expect_value(t, len(d.cursors), 2)
+    testing.expect_value(t, d.cursors[d.primary].head, app.Pos{1, 2})
+
+    // Word: the run containing the position, head at its end so a following extend grows
+    // forward from where the eye is.
+    app.doc_select_word(&d, app.Pos{0, 8}) // inside "bravo"
+    testing.expect_value(t, len(d.cursors), 1)
+    testing.expect_value(t, d.cursors[0].anchor, app.Pos{0, 6})
+    testing.expect_value(t, d.cursors[0].head, app.Pos{0, 11})
+
+    // Line: exactly what Home then Shift+End selects, so a copy from either path is the
+    // same string — the break is NOT included.
+    app.doc_select_line(&d, 1)
+    testing.expect_value(t, d.cursors[0].anchor, app.Pos{1, 0})
+    testing.expect_value(t, d.cursors[0].head, app.Pos{1, 7})
+    app.doc_select_line(&d, 99) // clamped, not out of bounds
+    testing.expect_value(t, d.cursors[0].head.line, 1)
+}
