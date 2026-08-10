@@ -1,10 +1,7 @@
 package main
 
 import "core:fmt"
-import "core:os"
-import "core:path/filepath"
 import "core:strconv"
-import "core:strings"
 import gl "vendor:OpenGL"
 
 // Rendering: solid-colour quads (fill/caret) plus glyph text, both batched per pane
@@ -21,10 +18,10 @@ import gl "vendor:OpenGL"
 // background and the pane chrome first, then hands the panes to window_frame
 // (window_ui.odin), which declares them all into ONE Clay tree and paints it in one pass.
 //
-// What is LEFT here is what has not been declared yet: the media surface, the two overlays
-// and the status strip, each still hand-drawn and each with a C8 sub-checkpoint of its own
-// (C8b the strip, C8c the overlays, C8d the media surface). They paint after window_frame,
-// which is the order they were drawn in before.
+// What is LEFT here is what has not been declared yet: the media surface and the two overlays,
+// each still hand-drawn and each with a C8 sub-checkpoint of its own (C8c the overlays, C8d the
+// media surface). They paint after window_frame, which is the order they were drawn in before.
+// The status strip went in C8b and lives in strip_ui.odin.
 
 aux_mode_name :: proc(m: AuxMode) -> string {
     switch m {
@@ -90,10 +87,11 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
     // as it opens the tree, so it is not repeated here.
     mouse_feed_clay(a)
 
-    // Chrome: both pane backgrounds/rings + the status strip, composited in one flush.
+    // Chrome: both pane backgrounds and their focus rings, composited in one flush. The
+    // strip's own fill went with it into the tree (C8b): there is no panel() down there, so
+    // the element that owns the region paints it.
     panel(t, lay.editor, th.bg, th.accent, focus_ring(a, lay.vis, .Editor), a.scale)
     panel(t, lay.aux, th.bg, th.accent, focus_ring(a, lay.vis, .Aux), a.scale)
-    fill(t, lay.strip, th.border_light)
     flush_pane(t, Rect{0, 0, win_w, win_h}, win_w, win_h)
 
     // Every live pane claims its click, moves its viewport and declares itself into ONE
@@ -122,18 +120,6 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
     if a.aux_mode == .FileTree && a.ctrl_held && a.focus == .Aux {
         draw_filetree_overlay(t, lay.aux, win_w, win_h, a, now)
     }
-
-    // Bottom status / command strip: the command line while active, else an
-    // emacs-style modeline for the editor buffer. (The filetree chord bar is NOT
-    // here — it overlays the filetree pane itself, see above.)
-    if a.cl_active {
-        draw_command_line(t, lay.strip, a, now)
-    } else if a.focus == .Editor && a.main == .Text && editor_current(&a.editor).conflict {
-        draw_conflict_prompt(t, lay.strip, a) // disk changed under unsaved edits: reload-vs-keep
-    } else {
-        draw_status(t, lay.strip, a)
-    }
-    flush_pane(t, lay.strip, win_w, win_h)
 
     // A press nobody claimed dies here. Clicks are offered to the panes as they draw
     // (mouse_take_click), and one that hit nothing must not survive into the next frame,
@@ -208,50 +194,11 @@ hover_bg :: proc(th: ^Theme) -> [3]f32 {
 // "unmigrated pane" placeholder render used to fall through to, and every aux mode is
 // declared now, so the fall-through and its one caller are both gone.
 
-// The command line as it lives in the status strip: prompt, the editable runes,
-// a selection highlight, and a caret. Monospace makes every x pure arithmetic.
-// The caller flushes the strip region after this returns.
-draw_command_line :: proc(t: ^Text, strip: Rect, a: ^App, now: f64) {
-    PROMPT :: "> "
-    th := &a.theme
-    l := &a.cl.lines[0] // the command line is one line
-    cw := t.font.cell_w
-    lh := t.font.line_height
-    pad := i32(8 * a.scale)
-    y := f32(strip.y) + (f32(strip.h) - lh) / 2
-
-    // A pristine injected (staged, not user-typed) line rings the strip in the alert
-    // colour — "review this before Enter". Any edit bumps doc.version past the mark and
-    // the ring clears itself, so no per-edit hook is needed.
-    if a.cl.injected && a.cl.doc.version == a.cl.inject_ver {
-        outline(t, strip, th.cl_inject, i32(2 * a.scale))
-    }
-
-    text_draw(t, PROMPT, f32(strip.x + pad), y, th.muted)
-    ox := f32(strip.x + pad) + cw * f32(len(PROMPT)) // text origin, after the prompt
-
-    // Selection spans, then text, then a caret per cursor (single-cursor = one).
-    for c in a.cl.cursors {
-        if cursor_has_selection(c) {
-            lo, hi := cursor_range(c)
-            fill(t, Rect{i32(ox + cw * f32(lo.col)), i32(y), i32(cw * f32(hi.col - lo.col)), i32(lh)}, th.selection)
-        }
-    }
-
-    text_draw_runes(t, l.text[:], ox, y, th.fg)
-
-    // Ghosted per-command argument hint (e.g. `reload` -> "(y/n)"), one cell past the typed
-    // text, until an argument is entered. cl_ghost_hint is the extensible registry.
-    if hint := cl_ghost_hint(line_string(l, context.temp_allocator)); hint != "" {
-        text_draw(t, hint, ox + cw * f32(len(l.text) + 1), y, th.muted)
-    }
-
-    if caret_blink_on(a, now) {
-        for c in a.cl.cursors {
-            caret(t, Rect{i32(ox + cw * f32(c.head.col)), i32(y), i32(2 * a.scale), i32(lh)}, th.fg)
-        }
-    }
-}
+// The command line, the idle modeline and the conflict prompt all moved to strip_ui.odin in
+// C8b, with `home_abbrev`, `status_lang` and `scroll_label`, which only the modeline used. The
+// strip is declared in Clay now — the last surface in the program that was not, and the one
+// that had to wait for C8a's single tree, since a strip declared while every pane held its own
+// would have ended each frame holding the tree the panes hit-test against.
 
 // The media viewer: the decoded image fit into the pane (contain letterbox), zoomable
 // and pannable. The pane bg + focus ring are already laid down by render's chrome pass,
@@ -275,68 +222,6 @@ draw_media :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     flush_pane(t, area, win_w, win_h)
 }
 
-// The idle strip: an emacs-style modeline for the editor buffer. File name + a
-// modified marker on the left (brighter when dirty); language, caret line:col, line
-// count, any multi-cursor count, and a scroll indicator right-aligned. Monospace
-// makes the right-alignment pure arithmetic. The caller flushes the strip region.
-@(private = "file")
-draw_status :: proc(t: ^Text, strip: Rect, a: ^App) {
-    th := &a.theme
-    cw := t.font.cell_w
-    pad := i32(8 * a.scale)
-    y := f32(strip.y) + (f32(strip.h) - t.font.line_height) / 2
-
-    // No editor on screen (Full on the aux surface); just name the aux pane there.
-    if !panes_visible(a).editor {
-        text_draw(t, aux_mode_name(a.aux_mode), f32(strip.x + pad), y, th.muted)
-        return
-    }
-
-    // Image surface: the main pane shows media, not a buffer — so the modeline reports
-    // the image (name, pixel dimensions, zoom%) instead of line:col / language.
-    if a.main == .Image {
-        m := &a.media
-        name := m.path == "" ? "(no image)" : filepath.base(m.path)
-        text_draw(t, fmt.tprintf("  %s", name), f32(strip.x + pad), y, th.muted)
-        right := fmt.tprintf("image   %dx%d   %d%%", m.w, m.h, int(m.zoom * 100 + 0.5))
-        rx := f32(strip.x + strip.w - pad) - cw * f32(len(right))
-        text_draw(t, right, rx, y, th.muted)
-        root := home_abbrev(a.project_root, context.temp_allocator)
-        if root != "" {
-            rootx := f32(strip.x) + (f32(strip.w) - cw * f32(len(root))) / 2
-            text_draw(t, root, rootx, y, th.muted)
-        }
-        return
-    }
-
-    b := editor_current(&a.editor)
-
-    // Left: modified marker + file name (basename; "untitled" when unnamed).
-    name := b.path == "" ? "untitled" : filepath.base(b.path)
-    left := fmt.tprintf("%s %s", b.dirty ? "*" : " ", name)
-    text_draw(t, left, f32(strip.x + pad), y, b.dirty ? th.fg : th.muted)
-
-    // Right (right-aligned): lang   Lline:col   N lines   [N cursors]   scroll. All
-    // ASCII, so the byte length is the cell count for placement.
-    head := b.cursors[b.primary].head
-    nlines := len(b.lines)
-    pos := fmt.tprintf("L%d:%d", head.line + 1, head.col + 1)
-    cursors := len(b.cursors) > 1 ? fmt.tprintf("   %d cursors", len(b.cursors)) : ""
-    right := fmt.tprintf(
-        "%s   %s   %d lines%s   %s",
-        status_lang(a, b.path), pos, nlines, cursors, scroll_label(head.line, nlines),
-    )
-    rx := f32(strip.x + strip.w - pad) - cw * f32(len(right))
-    text_draw(t, right, rx, y, th.muted)
-
-    // Center: the project root (~-abbreviated), so the `cd`-captured root the tools
-    // and `tu` use is always visible while the command line is idle.
-    root := home_abbrev(a.project_root, context.temp_allocator)
-    if root != "" {
-        rootx := f32(strip.x) + (f32(strip.w) - cw * f32(len(root))) / 2
-        text_draw(t, root, rootx, y, th.muted)
-    }
-}
 
 // The filetree's bottom overlay, sitting INSIDE the filetree pane (never the command
 // strip): the Ctrl-held chord cheat-sheet. A filled bar anchored to the pane bottom; the
@@ -418,69 +303,9 @@ draw_filetree_overlay :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, 
     flush_pane(t, area, win_w, win_h)
 }
 
-// The unsaved-edits-vs-disk-change hint, shown IN the command strip (taking the place of
-// the idle modeline) when the conflict is pending but the CL is closed — e.g. you cancelled
-// the auto-staged `reload ` line. Rung in the alert colour, it reminds you the answer is a
-// command: run `reload y` (re-read, losing edits) or `reload n` (keep + cache, stops asking
-// until the file changes again). It stays up until answered or the file is saved. The caller
-// flushes the strip region.
-@(private = "file")
-draw_conflict_prompt :: proc(t: ^Text, strip: Rect, a: ^App) {
-    th := &a.theme
-    cw := t.font.cell_w
-    lh := t.font.line_height
-    pad := i32(8 * a.scale)
-    y := f32(strip.y) + (f32(strip.h) - lh) / 2
 
-    outline(t, strip, th.cl_inject, i32(2 * a.scale)) // ring it like a staged line — needs a decision
 
-    name := filepath.base(editor_current(&a.editor).path)
-    msg := fmt.tprintf("%s changed on disk - ", name) // ASCII only: byte length == cell count for placement
-    keys := "run: reload y (lose edits) / reload n (keep mine)"
-    text_draw(t, msg, f32(strip.x + pad), y, th.urgent)
-    text_draw(t, keys, f32(strip.x + pad) + cw * f32(len(msg)), y, th.muted)
-}
 
-// Abbreviate a leading $HOME to ~ for display (e.g. /home/me/src -> ~/src). Returns a
-// borrowed slice of `path` when nothing changes, else a fresh string in `alloc`.
-@(private = "file")
-home_abbrev :: proc(path: string, alloc := context.allocator) -> string {
-    home := os.get_env("HOME", context.temp_allocator)
-    if home != "" && strings.has_prefix(path, home) {
-        return strings.concatenate({"~", path[len(home):]}, alloc)
-    }
-    return path
-}
-
-// Modeline language label: the registry's name for the file's extension, else the
-// bare extension, else "text" (unnamed/extension-less buffers).
-@(private = "file")
-status_lang :: proc(a: ^App, path: string) -> string {
-    ext := strings.trim_prefix(filepath.ext(path), ".")
-    if ext == "" {
-        return "text"
-    }
-    if name, ok := grammar_for_ext(a.grammars, ext); ok {
-        return name
-    }
-    return ext
-}
-
-// Emacs-style scroll indicator from the caret line: Top / Bot / All, else percent
-// through the buffer.
-@(private = "file")
-scroll_label :: proc(line, nlines: int) -> string {
-    if nlines <= 1 {
-        return "All"
-    }
-    if line == 0 {
-        return "Top"
-    }
-    if line >= nlines - 1 {
-        return "Bot"
-    }
-    return fmt.tprintf("%d%%", line * 100 / (nlines - 1))
-}
 
 // filetree_frame lives in filetree_ui.odin: the filetree is declared in Clay (C3), so its
 // geometry, its hit-testing and its paint are one tree rather than three copies of the
