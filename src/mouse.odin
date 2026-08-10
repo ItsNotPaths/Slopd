@@ -81,7 +81,14 @@ Mouse :: struct {
     // keys this window received, while `mods` is the state the window system reports with
     // the event itself. Stored as bools so this file stays the only one that knows GLFW's
     // bit values (C7).
+    //
+    // Ctrl is here for ONE client: the terminal forwards it to a mouse-tracking TUI as
+    // MOD_CTRL (C7b), which is the only place in Slopd where a modified click means
+    // something to somebody else's program. Shift never reaches a TUI — it is the override
+    // that keeps the click local — and Alt never does either, for the same reason the
+    // keyboard's Alt-chords never reach the shell.
     click_shift: bool,
+    click_ctrl:  bool,
     click_alt:   bool,
 }
 
@@ -367,6 +374,7 @@ mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mo
     m.click_count = near && now - m.click_at < DOUBLE_CLICK_S ? m.click_count + 1 : 1
     m.click_at, m.click_x, m.click_y = now, m.x, m.y
     m.click_shift = mods & glfw.MOD_SHIFT != 0
+    m.click_ctrl = mods & glfw.MOD_CONTROL != 0
     m.click_alt = mods & glfw.MOD_ALT != 0
     m.click = true
 }

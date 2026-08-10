@@ -470,91 +470,9 @@ scroll_label :: proc(line, nlines: int) -> string {
 // with its graph band and its live filter bar as the first Custom surfaces outside the
 // editor and the terminal.
 
-// The terminal: the active session's libvterm cell grid. Snap the pane to whole
-// cells, resize the session to match (no-op when unchanged), fill the default
-// background once, then paint each cell — a per-cell bg fill only when it differs
-// from the default (terminals are mostly default-bg, so that stays cheap), the
-// glyph on top, and a reverse-video block at the cursor. Colours come from the
-// session (theme fg/bg for default cells); reverse attr swaps fg/bg.
-draw_terminal :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
-    th := &a.theme
-    area := inset(pane, i32(2 * a.scale))
-    if area.w <= 0 || area.h <= 0 {
-        return
-    }
-    term := term_current(a)
-    if term == nil { // pane shown before a session exists (shouldn't happen — lazy spawn)
-        flush_pane(t, area, win_w, win_h)
-        return
-    }
-
-    cw := t.font.cell_w
-    rh := max(i32(1), i32(t.font.line_height))
-    cols := max(1, int(f32(area.w) / cw))
-    rows := max(1, int(area.h / rh))
-    terminal_resize(term, rows, cols)
-    terminal_set_default_colors(term, th.fg, th.bg) // follow theme/font changes
-
-    fill(t, area, th.bg) // default background for the whole grid in one quad
-    cur_row, cur_col := terminal_cursor(term)
-
-    // Scroll-aware view: each on-screen row maps to an absolute line (top + row),
-    // pulling from the live grid or scrollback. While selecting, the block cursor is
-    // suppressed and the selected line range tints with th.selection.
-    top := terminal_view_top(term)
-    sel_lo, sel_hi := terminal_sel_range(term)
-    selecting := term.sel_active && sel_lo != sel_hi
-
-    glyph: [1]rune
-    for row in 0 ..< rows {
-        n := top + row
-        row_sel := selecting && n >= sel_lo && n <= sel_hi
-        cy := area.y + i32(row) * rh
-        for col in 0 ..< cols {
-            cell := terminal_view_cell(term, n, col) or_continue
-
-            fg, fdef := terminal_color(term, cell.fg)
-            if fdef {
-                fg = th.fg
-            }
-            bg, bdef := terminal_color(term, cell.bg)
-            if bdef {
-                bg = th.bg
-            }
-            // The block cursor is reverse video (live grid only, not while scrolling);
-            // XOR with the cell's own reverse attr.
-            is_cursor := !term.sel_active && n == term.sb_total + cur_row && col == cur_col
-            if cell.attrs.reverse != is_cursor {
-                fg, bg = bg, fg
-            }
-            if row_sel { // selected lines tint uniformly; the glyph stays on top
-                bg = th.selection
-            }
-
-            // Tile cell x-edges off the same fractional grid as the glyphs so the bg
-            // fills meet exactly (no seams, no overlap).
-            x0 := i32(f32(area.x) + cw * f32(col))
-            x1 := i32(f32(area.x) + cw * f32(col + 1))
-            if bg != th.bg {
-                fill(t, Rect{x0, cy, x1 - x0, rh}, bg)
-            }
-            if r := rune(cell.chars[0]); r >= 0x20 {
-                glyph[0] = r
-                text_draw_runes(t, glyph[:], f32(x0), f32(cy), fg)
-            }
-        }
-    }
-
-    // The copy cursor: a thin line drawn at the top edge of its line (sitting between
-    // it and the line above), marking where a copy reads from. Hidden at the bottom
-    // input line (sel_active off).
-    if term.sel_active {
-        if sr := term.sel_head - top; sr >= 0 && sr < rows {
-            caret(t, Rect{area.x, area.y + i32(sr) * rh, area.w, max(1, i32(2 * a.scale))}, th.accent)
-        }
-    }
-    flush_pane(t, area, win_w, win_h)
-}
+// draw_terminal lives in terminal_ui.odin: the cell grid is declared in Clay (C7b) as one
+// Custom, with the pointer either forwarded to a mouse-tracking TUI or driving our own copy
+// cursor. Its Alt-held switcher overlay is still hand-drawn and stays here until C8.
 
 // The terminal switcher: a slim i3-style numbered column shown while Alt is held.
 // It is inset within the pane's focus outline (so it sits seamlessly inside the

@@ -301,6 +301,48 @@ terminal_sel_move :: proc(t: ^Terminal, delta: int, extend: bool) {
     t.view_top = clamp(t.view_top, floor, t.sb_total)
 }
 
+// Put the copy cursor ON absolute line `n` — the POINTER's verb, where terminal_sel_move
+// above is the keyboard's. A click names a destination outright, which no keystroke can
+// say, so this is a new verb rather than a mouse path into the old one (C7a found the same
+// thing about the editor's five new Doc verbs, and for the same reason).
+//
+// SUPERSEDED BY C7d, and kept only until it lands. The copy cursor is ROW-granular because
+// the keyboard built it — arrows address lines cheaply — and a pointer addresses a
+// character, so answering a click with a whole line is not what a terminal does. What
+// carries forward is everything below the first line: a pointer verb is still a NEW verb,
+// the position still has to be clamped, and the view still must not be re-aimed.
+//
+// It is the same SHAPE as the motion it mirrors — enter select mode off the live bottom,
+// `extend` keeps the anchor to grow a span, and returning to the bottom with nothing
+// selected drops back to plain input mode — so the two paths cannot grow behaviour the
+// other lacks. Two deliberate differences:
+//
+//   - `n` is CLAMPED rather than trusted. A line derived from a pixel is only as good as
+//     the geometry that made it, and a resize between the press and the frame that claims
+//     it must cost a copy cursor on the wrong line, never an index off the end of the
+//     scrollback.
+//   - The view is NOT re-aimed. terminal_sel_move scrolls to keep the cursor on screen
+//     because a motion can walk off an edge; a clicked line is on screen by definition.
+//     (And it does not drive a TUI at the edge either — you cannot click past one.)
+terminal_sel_at :: proc(t: ^Terminal, n: int, extend: bool) {
+    if !t.sel_active {
+        t.sel_active = true
+        t.sel_head = terminal_bottom(t)
+        t.sel_anchor = t.sel_head
+        t.view_top = t.sb_total
+    }
+    // On the alt screen the off-screen history is the TUI's, not ours, so the selection
+    // stays within the live grid — the same floor terminal_sel_move uses.
+    floor := t.on_altscreen ? t.sb_total : terminal_oldest(t)
+    t.sel_head = clamp(n, floor, terminal_bottom(t))
+    if !extend {
+        t.sel_anchor = t.sel_head
+    }
+    if t.sel_head == terminal_bottom(t) && t.sel_anchor == terminal_bottom(t) {
+        t.sel_active = false // nothing to copy: clicking the input line dismisses the cursor
+    }
+}
+
 // Leave select/scroll mode: hide the cursor and snap the view back to the live
 // bottom (Esc, or any real keystroke to the shell).
 terminal_sel_reset :: proc(t: ^Terminal) {
@@ -309,6 +351,24 @@ terminal_sel_reset :: proc(t: ^Terminal) {
 
 // The selected lines as text: each line's cells up to its last non-blank, joined by
 // newlines. Caller owns the result. Empty when there is no live selection.
+//
+// KNOWN BUG, and it is the keyboard's, not the mouse's: **a soft-wrapped line comes back in
+// two pieces.** A shell line longer than the grid occupies two rows, this joins every row
+// with a newline, and Ctrl+Shift+C therefore hands you a command you cannot paste back. It
+// has been wrong since the copy cursor shipped; the terminal integration pass found it.
+//
+// libvterm knows the answer and Slopd throws it away twice:
+//
+//   - `sb_pushline4(cols, cells, continuation, user)` is a TENTH slot in the same
+//     VTermScreenCallbacks struct, opted into with vterm_screen_callbacks_has_pushline4().
+//     bindings/libvterm declares the nine-slot version, so ScrollLine loses the flag as the
+//     row is captured.
+//   - `vterm_state_get_lineinfo(state, row)->continuation` answers it for LIVE rows, and is
+//     not bound either.
+//
+// The fix is a binding addition, one bool on ScrollLine, and skipping the newline when the
+// NEXT line continues this one — alacritty spells the same condition with its WRAPLINE flag.
+// Scheduled with C7d, because the range → text walk is being rewritten there anyway.
 terminal_selection_text :: proc(t: ^Terminal, alloc := context.allocator) -> string {
     if !t.sel_active {
         return ""
@@ -892,6 +952,38 @@ terminal_input_key :: proc(t: ^Terminal, key, mods: i32) {
         return
     }
     vt.keyboard_key(t.term, vk, term_mods(mods))
+}
+
+// Point the TUI's mouse at a live grid cell (0-based, as libvterm counts them; it adds
+// the protocol's +1 itself). Safe to call every frame: libvterm returns immediately when
+// the cell is unchanged, and emits nothing at all unless the TUI asked for motion — either
+// outright (MOUSE_WANT_MOVE) or while a button is down (MOUSE_WANT_DRAG). Nothing here has
+// to know which mode is up, which is why C7b forwards position unconditionally rather than
+// tracking the mode bits itself.
+//
+// It is also the state a button report reads its coordinates from (vterm_mouse_button uses
+// state->mouse_col/row, not its own arguments), so every tap below moves first.
+terminal_mouse_at :: proc(t: ^Terminal, row, col: int) {
+    vt.mouse_move(t.term, c.int(row), c.int(col), vt.MOD_NONE)
+}
+
+// One left click at a live grid cell: move there, press, release. A press with no release
+// is what a naive port sends, and it is a bug rather than a shortcut — libvterm tracks the
+// button state, so the TUI would go on believing the button is held and every later motion
+// would arrive as a DRAG. Slopd acts on press everywhere (mouse.odin: release is not a
+// verb), so the honest encoding of that is a tap.
+//
+// Which means real dragging — press, move, release as three separate events — is exactly
+// what C7c's capture machine adds, and this is the seam it will replace.
+//
+// The click COUNT is not forwarded and there is nothing to forward it as: xterm sends one
+// press per physical press and the application does its own double-click timing, so a
+// double click is two taps close together, which is what the TUI already receives.
+terminal_mouse_tap :: proc(t: ^Terminal, row, col: int, ctrl: bool) {
+    terminal_mouse_at(t, row, col)
+    mod := ctrl ? vt.MOD_CTRL : vt.MOD_NONE
+    vt.mouse_button(t.term, 1, true, mod)
+    vt.mouse_button(t.term, 1, false, mod)
 }
 
 // GLFW modifier bits -> libvterm modifier (Shift/Ctrl only; Alt stays global).

@@ -111,6 +111,42 @@ test_terminal_line_selection :: proc(t: ^testing.T) {
     testing.expect_value(t, text, "l1\nl2")
 }
 
+// The POINTER's verb (C7b): put the copy cursor ON a line, where terminal_sel_move walks
+// to one. Same shape as the motion it mirrors — enter off the bottom, Shift keeps the
+// anchor, the bottom with no span drops out — plus the clamp, which the motion does not
+// need because a keystroke can only ever step one line at a time.
+//
+// SUPERSEDED BY C7d along with the verb: a pointer addresses a character, not a line. The
+// CLAMP is the part to carry over — a position derived from a pixel is only as good as the
+// geometry that made it, whatever its granularity — and it is the assertion that was missing
+// until a mutation went looking for it.
+@(test)
+test_terminal_sel_at_absolute :: proc(t: ^testing.T) {
+    term := mkterm(4, 20)
+    defer app.terminal_vt_destroy(&term)
+    feed(&term, "l0\r\nl1\r\nl2") // rows 0..2; row 3 is the empty bottom
+
+    app.terminal_sel_at(&term, 1, false)
+    testing.expect(t, term.sel_active, "a placement enters select mode")
+    testing.expect_value(t, term.sel_head, 1)
+    testing.expect_value(t, term.sel_anchor, 1)
+
+    app.terminal_sel_at(&term, 2, true) // Shift: grow the span, anchor pinned
+    lo, hi := app.terminal_sel_range(&term)
+    testing.expect_value(t, lo, 1)
+    testing.expect_value(t, hi, 2)
+
+    // A line derived from a pixel is only as good as the geometry that made it: a stale
+    // view (a resize between the press and the frame that claims it) must cost a cursor on
+    // the wrong line, never an index off the end of the buffer.
+    app.terminal_sel_at(&term, 999, false)
+    testing.expect_value(t, term.sel_head, 3) // clamped to the bottom...
+    testing.expect(t, !term.sel_active, "... which is the bottom with no span, so select mode ends")
+
+    app.terminal_sel_at(&term, -999, false)
+    testing.expect_value(t, term.sel_head, 0) // ... and to the oldest retained line
+}
+
 // Moving back down to the bottom with no span drops out of select mode (the hidden
 // "inputting stuff" line).
 @(test)
