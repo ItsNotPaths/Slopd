@@ -195,6 +195,10 @@ App :: struct {
     // Layout is all zero rects, so hit-testing before then simply finds nothing.
     mouse:    Mouse,
     mouse_on: bool,
+    // What the left button captured when it went down (drag.odin, C7c). Held between the
+    // press and the release, so every motion in between belongs to whatever the press
+    // resolved to rather than to whatever the pointer is over now.
+    drag:     Drag,
     // Whether a pane tints the row under the pointer. Separate from `mouse_on` because it
     // is a taste question, not a capability one: hover costs a repaint per motion event and
     // the editor is keyboard-first, so it is worth being able to keep the pointer working

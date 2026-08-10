@@ -146,15 +146,31 @@ doc_add_cursor :: proc(d: ^Doc, p: Pos) {
     d.primary = len(d.cursors) - 1
 }
 
+// Collapse to one cursor spanning anchor..head, in that order (C7c). The verb a DRAG needs
+// and the one no keyboard gesture does: a keystroke either moves a head or drops an anchor,
+// and can never name BOTH ends at once — but a word-grade drag re-derives both every frame,
+// because crossing back over the press point moves the anchor from one end of the pressed
+// word to the other.
+//
+// The order is the gesture's and is deliberately not normalised: the head stays the end the
+// eye is at, so a following Shift+click or Shift+Right extends from the right place.
+// cursor_range orders it on READ, which is where both reference terminals put the same
+// decision (alacritty's to_range, ghostty's Order).
+doc_select_span :: proc(d: ^Doc, anchor, head: Pos) {
+    a := doc_clamp_pos(d, anchor)
+    h := doc_clamp_pos(d, head)
+    clear(&d.cursors)
+    append(&d.cursors, Cursor{anchor = a, head = h, goal = h.col})
+    d.primary = 0
+}
+
 // Collapse to one cursor selecting the run of one character class around `p` — the
 // double-click. The head is the run's END, so a following shift-click or Shift+Right
 // extends forward from where the eye is.
 doc_select_word :: proc(d: ^Doc, p: Pos) {
     q := doc_clamp_pos(d, p)
     lo, hi := word_span(d.lines[q.line].text[:], q.col)
-    clear(&d.cursors)
-    append(&d.cursors, Cursor{anchor = Pos{q.line, lo}, head = Pos{q.line, hi}, goal = hi})
-    d.primary = 0
+    doc_select_span(d, Pos{q.line, lo}, Pos{q.line, hi})
 }
 
 // Collapse to one cursor selecting all of `line` — the triple-click. The span is the line's
@@ -162,10 +178,38 @@ doc_select_word :: proc(d: ^Doc, p: Pos) {
 // copy from either path yields the same string.
 doc_select_line :: proc(d: ^Doc, line: int) {
     l := clamp(line, 0, len(d.lines) - 1)
-    end := line_len(&d.lines[l])
-    clear(&d.cursors)
-    append(&d.cursors, Cursor{anchor = Pos{l, 0}, head = Pos{l, end}, goal = end})
-    d.primary = 0
+    doc_select_span(d, Pos{l, 0}, Pos{l, line_len(&d.lines[l])})
+}
+
+// The span a drag covers at its fixed GRADE (C7c) — word (2) or line (3+). Grade 1 is
+// deliberately not here: a character drag is doc_set_head, which keeps whatever anchor the
+// click established, and a Shift+click's anchor is not the press position.
+//
+// `press` and `at` carry GLYPH columns, not caret boundaries, for C7a's reason: a word names
+// the character being pointed at, and the boundary rounded off the same pixel sits one past
+// the end of the run at every word ending in the file.
+//
+// The expansion happens HERE, per frame, rather than being baked in when the button went
+// down. That is what makes a double-click-drag keep growing by whole words: alacritty stores
+// the type on the Selection and expands when the range is read, and this is that, with the
+// type living in Drag.grade.
+doc_drag_span :: proc(d: ^Doc, grade: int, press, at: Pos) -> (anchor, head: Pos) {
+    p := doc_clamp_pos(d, press)
+    q := doc_clamp_pos(d, at)
+    if grade >= 3 {
+        // Line grade compares LINES, not positions: dragging left within the pressed line
+        // has not reversed the gesture, it has not left the line.
+        if q.line >= p.line {
+            return Pos{p.line, 0}, Pos{q.line, line_len(&d.lines[q.line])}
+        }
+        return Pos{p.line, line_len(&d.lines[p.line])}, Pos{q.line, 0}
+    }
+    plo, phi := word_span(d.lines[p.line].text[:], p.col)
+    qlo, qhi := word_span(d.lines[q.line].text[:], q.col)
+    if !pos_less(q, p) {
+        return Pos{p.line, plo}, Pos{q.line, qhi}
+    }
+    return Pos{p.line, phi}, Pos{q.line, qlo}
 }
 
 // Collapses to a single cursor at the very end of the document (history recall,

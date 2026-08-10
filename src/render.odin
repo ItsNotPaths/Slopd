@@ -146,6 +146,12 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
     // where the pointer may be over something else entirely — a click is an event at a
     // place, not a mode.
     a.mouse.click = false
+
+    // And a drag whose button has come up has now had the extra frame it was owed, so it is
+    // buried here for the same reason (drag.odin). Also the one place a capture can end
+    // without a release: a pane that stopped drawing mid-gesture never sees its last frame,
+    // and this still reaps it once the button is up.
+    drag_sweep(a)
 }
 
 // Package-level, not file-private: the *_ui.odin panes declare their own chrome and need

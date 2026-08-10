@@ -343,7 +343,8 @@ cursor_pos_callback :: proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
 // two presses were in time and space) rather than of whatever they landed on.
 //
 // Release is deliberately not a verb: a click acts on press, the way every list does, so a
-// row is selected the moment the button goes down.
+// row is selected the moment the button goes down. It IS the end of a capture, though — see
+// below.
 mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mods: i32) {
     context = runtime.default_context()
     a := (^App)(glfw.GetWindowUserPointer(window))
@@ -351,7 +352,17 @@ mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mo
         return
     }
     a.mouse.down = action != glfw.RELEASE
-    if !a.mouse.down || !a.mouse_on {
+    if !a.mouse.down {
+        // A release still commands no verb, but it ends whatever the press captured (C7c).
+        // Reported before the mouse_on gate on purpose: a drag begun and then switched off
+        // mid-gesture must still be told the button came up, or the capture outlives the
+        // toggle that was meant to have stopped it. drag_release only PARKS the end — the
+        // owning pane is owed one more frame at the position the pointer stopped at, since
+        // WaitEvents drains a motion and its release together (drag.odin).
+        drag_release(a)
+        return
+    }
+    if !a.mouse_on {
         return
     }
     // A press is the hand back on the mouse, so it wakes BEFORE it is parked for a pane to

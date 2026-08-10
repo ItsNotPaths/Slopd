@@ -83,6 +83,14 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     if a.focus == .Editor { // wake to re-stat the focused view pane for external edits
         wake = sched_min(wake, max(0, a.disk_poll_at - now))
     }
+    // A drag held past a pane edge (drag.odin). The only pointer path that needs a wake at
+    // all: a click and a wheel notch each ARRIVE as an event, so the loop is already up for
+    // them, while a drag parked off the bottom of the pane produces no events and must keep
+    // scrolling anyway. Not VSYNC_PACED — the tick is DRAG_SCROLL_S, and the wake is what
+    // paces the autoscroll rather than the frame rate.
+    if w := drag_next_wake(a, now); w >= 0 {
+        wake = sched_min(wake, w)
+    }
     // Bell flash reports here once libvterm gives us a bell to flash on.
     return wake
 }

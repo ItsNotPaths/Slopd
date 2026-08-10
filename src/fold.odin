@@ -169,6 +169,23 @@ buffer_back_visible :: proc(b: ^Buffer, line, n: int) -> int {
     return i
 }
 
+// Step `n` visible lines DOWN from `line` (clamped to the last line) — the twin of
+// buffer_back_visible, which C7c's drag autoscroll walks the selection past the bottom edge
+// with. It ends on buffer_prev_visible because the far end is the asymmetric one: line 0 can
+// never be hidden (a fold hides `line > f.line`), but the LAST line can, so a walk that runs
+// out of buffer inside a collapsed block has to back out of it.
+buffer_fwd_visible :: proc(b: ^Buffer, line, n: int) -> int {
+    i := clamp(line, 0, len(b.lines) - 1)
+    left := n
+    for left > 0 && i < len(b.lines) - 1 {
+        i += 1
+        if !buffer_line_hidden(b, i) {
+            left -= 1
+        }
+    }
+    return buffer_prev_visible(b, i)
+}
+
 // --- lifecycle / invalidation ---
 
 // Drops folds when the line count changed (an insert/delete moved every index below

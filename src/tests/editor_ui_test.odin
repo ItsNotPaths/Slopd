@@ -478,3 +478,312 @@ test_editor_click_fold_expands :: proc(t: ^testing.T) {
     testing.expect_value(t, b.cursors[0].head, app.Pos{2, 1}) // the caret did not move
     testing.expect(t, !a.mouse.click, "a click on the marker must be claimed")
 }
+
+// --- C7c: the drag ---
+//
+// The press is where the noun is resolved, so it is also where the CAPTURE is made. Every
+// text click begins one, including the plain single one, because the difference between a
+// click and a drag is not something the press can know — it is whether the pointer moves
+// before the release. A press with the button already up is a completed click and captures
+// nothing (drag_test.odin holds that half).
+@(test)
+test_editor_click_begins_a_drag :: proc(t: ^testing.T) {
+    a: app.App
+    fake_editor(&a, "alpha bravo\ncharlie")
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+    a.mouse.down = true
+
+    a.mouse.click, a.mouse.click_count = true, 2
+    app.editor_click(&a, app.Editor_Hit{kind = .Text, pos = app.Pos{0, 5}, glyph = 4}, 100)
+    testing.expect(t, app.drag_live(&a, .Editor_Text, 0), "a text press captures")
+    testing.expect_value(t, a.drag.grade, 2) // the GRANULARITY, fixed for the whole gesture
+    testing.expect_value(t, a.drag.anchor, app.Pos{0, 5}) // the caret boundary
+    testing.expect_value(t, a.drag.anchor_glyph, 4) // and the glyph beside it
+
+    // A fold marker is a BUTTON, and a button is not something you drag out of.
+    a.drag = {}
+    append(&b.folds, app.Fold{line = 0, end = 0})
+    b.fold_nlines = len(b.lines)
+    a.mouse.click, a.mouse.click_count = true, 1
+    app.editor_click(&a, app.Editor_Hit{kind = .Fold, pos = app.Pos{0, 11}}, 101)
+    testing.expect_value(t, a.drag.kind, app.Drag_Kind.None)
+}
+
+// Where a drag POINTS, which is not where a hit lands. A hit off the pane is refused,
+// because a press there belongs to somebody else; a drag under capture must answer wherever
+// the pointer went, because the gesture is already this pane's.
+//
+// The clamp is on the ROW, not on the pixel, and that is the assertion with teeth: the pane
+// is 196px of 18px rows, so its bottom 16px is a row the painter never fills, and a pixel
+// clamp would aim the drag at a line that is not on screen.
+@(test)
+test_editor_drag_pos_past_the_edges :: proc(t: ^testing.T) {
+    a: app.App
+    fake_editor(&a, "alpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\ngolf\nhotel\nindia\njuliet\nkilo\nlima")
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+    v := mkview(0, 0)
+
+    // Above the window: the first visible row, not a refusal and not a negative row.
+    p, glyph := app.editor_drag_pos(b, v, TEXT_X + 22, AREA.y - 400)
+    testing.expect_value(t, p, app.Pos{0, 2})
+    testing.expect_value(t, glyph, 2)
+
+    // Below it: the last DRAWN row, which is row 9 (ROWS = 10) and not the part-drawn tenth.
+    p, _ = app.editor_drag_pos(b, v, TEXT_X + 5, AREA.y + 4000)
+    testing.expect_value(t, p.line, 9)
+
+    // Left of the text column — the gutter, or off the window entirely — is column 0, the
+    // same rule a click in the gutter already follows.
+    p, glyph = app.editor_drag_pos(b, v, 0, AREA.y + ROW_H + 4)
+    testing.expect_value(t, p, app.Pos{1, 0})
+    testing.expect_value(t, glyph, 0)
+
+    // Past the end of a line clamps to its length, per line, as the pointer travels.
+    p, _ = app.editor_drag_pos(b, v, TEXT_X + 900, AREA.y + ROW_H + 4)
+    testing.expect_value(t, p, app.Pos{1, 5})
+
+    // A buffer SHORTER than its pane: below the last line is the end of the text, never
+    // "nothing" — dragging off the bottom of a three-line file selects to the end of it.
+    short: app.App
+    fake_editor(&short, "one\ntwo\nthree")
+    defer app.editor_destroy(&short.editor)
+    sb := app.editor_current(&short.editor)
+    p, _ = app.editor_drag_pos(sb, v, TEXT_X + 900, AREA.y + 4000)
+    testing.expect_value(t, p, app.Pos{2, 5})
+}
+
+// A character drag moves the HEAD and leaves the anchor alone — which is what makes it
+// compose with the click that began it: a Shift+click's anchor is not the press position,
+// and an Alt+click's cursor is the new one, and neither wants re-anchoring per frame.
+@(test)
+test_editor_drag_extends_by_character :: proc(t: ^testing.T) {
+    a: app.App
+    fake_editor(&a, "alpha bravo\ncharlie delta")
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+    v := mkview(0, 0)
+    a.mouse.down = true
+
+    // Press at line 0 column 2.
+    a.mouse.x, a.mouse.y = TEXT_X + 20, AREA.y + 4
+    a.mouse.click, a.mouse.click_count = true, 1
+    app.editor_click(&a, app.editor_hit(&a, b, v), 100)
+    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 2})
+
+    // Drag down and right: one cursor, the anchor pinned at the press.
+    a.mouse.x, a.mouse.y = TEXT_X + 70, AREA.y + ROW_H + 4
+    app.editor_drag(&a, b, v, 101)
+    testing.expect_value(t, len(b.cursors), 1)
+    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 2})
+    testing.expect_value(t, b.cursors[0].head, app.Pos{1, 7})
+
+    // Back over the press point: the selection reverses rather than collapsing, and the
+    // anchor still has not moved.
+    a.mouse.x, a.mouse.y = TEXT_X, AREA.y + 4
+    app.editor_drag(&a, b, v, 102)
+    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 2})
+    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 0})
+
+    // The capture is a buffer's, not the editor's: another buffer current means the drag is
+    // held but inert, rather than writing into somebody else's text.
+    second: app.Buffer
+    app.doc_init(&second.doc)
+    append(&a.editor.buffers, second)
+    a.editor.active = 1
+    b2 := app.editor_current(&a.editor)
+    app.buffer_set_text(b2, "second buffer")
+    a.mouse.x, a.mouse.y = TEXT_X + 40, AREA.y + 4
+    app.editor_drag(&a, b2, v, 103)
+    testing.expect_value(t, b2.cursors[0].head, app.Pos{0, 0})
+    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 0}) // and the original stands
+}
+
+// A word drag re-derives BOTH ends every frame, which is the difference between "double
+// click selects a word" and word-grade dragging: crossing back over the press point has to
+// move the ANCHOR from one end of the pressed word to the other, and a machine holding a
+// fixed anchor cannot express that.
+@(test)
+test_editor_drag_word_and_line_grades :: proc(t: ^testing.T) {
+    a: app.App
+    fake_editor(&a, "alpha bravo\ncharlie delta")
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+    v := mkview(0, 0)
+    a.mouse.down = true
+
+    // Double press inside "bravo" (columns 6..11), pointing at the 'r'.
+    a.mouse.x, a.mouse.y = TEXT_X + 72, AREA.y + 4
+    a.mouse.click, a.mouse.click_count = true, 2
+    app.editor_click(&a, app.editor_hit(&a, b, v), 100)
+    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 6})
+    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 11})
+
+    // Drag forward into "delta" on the next line: whole words at both ends.
+    a.mouse.x, a.mouse.y = TEXT_X + 100, AREA.y + ROW_H + 4
+    app.editor_drag(&a, b, v, 101)
+    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 6}) // still the start of "bravo"
+    testing.expect_value(t, b.cursors[0].head, app.Pos{1, 13}) // the end of "delta"
+
+    // Drag backward past the press, into "alpha": the anchor flips to the END of "bravo"
+    // and the head takes the START of "alpha".
+    a.mouse.x, a.mouse.y = TEXT_X + 22, AREA.y + 4
+    app.editor_drag(&a, b, v, 102)
+    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 11})
+    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 0})
+
+    // Line grade: whole lines at both ends, in the direction of travel.
+    a.drag.grade = 3
+    a.mouse.x, a.mouse.y = TEXT_X + 30, AREA.y + ROW_H + 4
+    app.editor_drag(&a, b, v, 103)
+    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 0})
+    testing.expect_value(t, b.cursors[0].head, app.Pos{1, 13})
+}
+
+// Autoscroll: past an edge, the drag walks the SELECTION further and the existing viewport
+// policy follows it. **Nothing here writes b.scroll.** That is the whole design, and it is
+// why the drag scrolls correctly in either scroll_mode without knowing there are two.
+//
+// The second frame is the assertion that matters, and it is the one that found the bug this
+// proc was rebuilt around: a drag past the edge is redrawn many times per tick, and an
+// implementation that re-resolves the pointer each frame snaps the selection back to the
+// edge row in between — which re-aims the viewport policy at the line it just left, so the
+// scroll and the selection cancel each other at the frame rate. Hence Drag.over.
+@(test)
+test_editor_drag_autoscrolls_past_the_edge :: proc(t: ^testing.T) {
+    a: app.App
+    fake_editor(&a, "l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14")
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+    v := mkview(0, 0)
+    a.mouse.down = true
+
+    a.mouse.x, a.mouse.y = TEXT_X, AREA.y + 4
+    a.mouse.click, a.mouse.click_count = true, 1
+    app.editor_click(&a, app.editor_hit(&a, b, v), 100)
+
+    // One row-height below the bottom edge: seeded at the last DRAWN row (9), then two lines
+    // of walk on the first tick — one for the edge, one for the row height beyond it.
+    a.mouse.y = AREA.y + AREA.h + ROW_H
+    app.editor_drag(&a, b, v, 100)
+    testing.expect_value(t, b.cursors[0].head.line, 11)
+    testing.expect_value(t, b.scroll, 0) // the SELECTION moved; the view is the policy's job
+
+    // Another frame inside the same tick — a motion event, a caret blink, anything — must
+    // hold the line rather than snapping back to row 9.
+    app.editor_drag(&a, b, v, 100)
+    testing.expect_value(t, b.cursors[0].head.line, 11)
+
+    // The next interval walks on from where the drag GOT to, not from the edge again.
+    app.editor_drag(&a, b, v, 100 + app.DRAG_SCROLL_S)
+    testing.expect_value(t, b.cursors[0].head.line, 13)
+
+    // And it is an absolute line, so the view catching up underneath it changes nothing —
+    // which is exactly what stops the walk double-counting its own scrolling.
+    v2 := mkview(3, 0)
+    app.editor_drag(&a, b, v2, 100 + 2 * app.DRAG_SCROLL_S)
+    testing.expect_value(t, b.cursors[0].head.line, 14) // the last line: the buffer ran out
+
+    // Back inside the pane and the pointer names its own line again, from the scrolled view.
+    a.mouse.y = AREA.y + ROW_H + 4
+    app.editor_drag(&a, b, v2, 100 + 3 * app.DRAG_SCROLL_S)
+    testing.expect(t, !a.drag.over_on, "the walk is dropped the moment the pointer is back")
+    testing.expect_value(t, b.cursors[0].head.line, 4) // top 3, second row
+
+    // Above the top edge it walks the other way, and the anchor still holds throughout.
+    a.mouse.y = AREA.y - ROW_H
+    app.editor_drag(&a, b, v2, 100 + 4 * app.DRAG_SCROLL_S)
+    testing.expect_value(t, b.cursors[0].head.line, 1)
+    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 0})
+    testing.expect_value(t, b.scroll, 0)
+
+    // The wheel may detach the view mid-drag while the pointer is still inside the pane —
+    // scroll with one hand, extend with the other — but a detached view does not chase the
+    // caret. So walking past an edge re-attaches it, or the selection would go on extending
+    // somewhere nobody can see.
+    app.buffer_scroll_by(b, 2, 100) // the wheel, mid-gesture
+    testing.expect(t, b.scroll_detached > 0)
+    a.mouse.y = AREA.y + AREA.h + ROW_H
+    app.editor_drag(&a, b, v2, 100 + 5 * app.DRAG_SCROLL_S)
+    testing.expect_value(t, b.scroll_detached, 0)
+}
+
+// A character drag composes with the modifier that began it, and that is why it is
+// doc_set_head rather than a span from the press. Both cases here are ones where the press
+// position is NOT the anchor:
+//
+//   Shift+click   the anchor is wherever the previous click left it, and the press is the
+//                 far end — so anchoring the drag at the press throws the extend away
+//   Alt+click     there is a cursor trail, and the drag moves the new roaming cursor; a
+//                 span verb would collapse the trail on the first pixel of movement
+//
+// The mutation both bite: replacing doc_set_head with doc_select_span(a.drag.anchor, p),
+// which is indistinguishable on a plain click and wrong on either of these.
+@(test)
+test_editor_drag_composes_with_the_click_that_began_it :: proc(t: ^testing.T) {
+    a: app.App
+    fake_editor(&a, "alpha bravo\ncharlie delta")
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+    v := mkview(0, 0)
+    a.mouse.down = true
+
+    // A plain click at column 2, then a Shift+click at column 8: anchor 2, head 8.
+    a.mouse.x, a.mouse.y = TEXT_X + 20, AREA.y + 4
+    a.mouse.click, a.mouse.click_count, a.mouse.click_shift = true, 1, false
+    app.editor_click(&a, app.editor_hit(&a, b, v), 100)
+    a.mouse.x = TEXT_X + 80
+    a.mouse.click, a.mouse.click_shift = true, true
+    app.editor_click(&a, app.editor_hit(&a, b, v), 101)
+    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 2})
+
+    // Dragging on from the Shift+click keeps THAT anchor, not the press it came from.
+    a.mouse.x = TEXT_X + 100
+    app.editor_drag(&a, b, v, 102)
+    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 2})
+    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 10})
+
+    // Alt+click drops a cursor and the drag moves that one, leaving the trail intact.
+    a.mouse.x, a.mouse.click, a.mouse.click_shift, a.mouse.click_alt = TEXT_X + 30, true, false, true
+    app.editor_click(&a, app.editor_hit(&a, b, v), 103)
+    testing.expect_value(t, len(b.cursors), 2)
+
+    a.mouse.x = TEXT_X + 60
+    app.editor_drag(&a, b, v, 104)
+    testing.expect_value(t, len(b.cursors), 2) // the trail survives the drag
+    testing.expect_value(t, b.cursors[b.primary].anchor, app.Pos{0, 3})
+    testing.expect_value(t, b.cursors[b.primary].head, app.Pos{0, 6})
+}
+
+// C7a's one-pixel-two-questions split, arriving on the DRAG path — and it had to be pinned
+// separately, because a press taken anywhere but the last cell of a word gives the same
+// answer either way and hides the bug completely.
+//
+// Pressing the right half of the last 'a' of "alpha" rounds the caret BOUNDARY to column 5,
+// which is the space. A word-grade drag anchored on that boundary expands the whitespace run
+// instead of the word, at every word ending in the file; anchored on the GLYPH it expands
+// "alpha", which is the word the pointer is on.
+@(test)
+test_editor_drag_word_grade_uses_the_glyph :: proc(t: ^testing.T) {
+    a: app.App
+    fake_editor(&a, "alpha bravo\ncharlie delta")
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+    v := mkview(0, 0)
+    a.mouse.down = true
+
+    a.mouse.x, a.mouse.y = TEXT_X + 46, AREA.y + 4 // 4.6 cells: boundary 5, glyph 4
+    a.mouse.click, a.mouse.click_count = true, 2
+    hit := app.editor_hit(&a, b, v)
+    testing.expect_value(t, hit.pos.col, 5) // the premise: the two columns disagree here
+    testing.expect_value(t, hit.glyph, 4)
+    app.editor_click(&a, hit, 100)
+
+    // Drag forward into "bravo". The anchor is the start of "alpha", not the start of the
+    // space that the rounded boundary sits in.
+    a.mouse.x = TEXT_X + 75
+    app.editor_drag(&a, b, v, 101)
+    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 0})
+    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 11})
+}

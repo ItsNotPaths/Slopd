@@ -95,6 +95,19 @@ test_fold_visibility_helpers :: proc(t: ^testing.T) {
     testing.expect_value(t, app.buffer_prev_visible(&b, 2), 0)
     testing.expect_value(t, app.buffer_visible_count(&b, 0, 3), 2)
     testing.expect_value(t, app.buffer_back_visible(&b, 3, 1), 0)
+
+    // Its forward twin (C7c, which walks a drag past the bottom edge with it). The two ends
+    // are not symmetric and that is the whole reason this proc is not a mirror image: line 0
+    // can never be hidden (a fold hides `line > f.line`), but the LAST line can, so a walk
+    // that runs out of buffer INSIDE a collapsed block has to back out of it.
+    testing.expect_value(t, app.buffer_fwd_visible(&b, 0, 1), 3)
+    testing.expect_value(t, app.buffer_fwd_visible(&b, 0, 9), 3) // past the end clamps
+    testing.expect_value(t, app.buffer_fwd_visible(&b, 3, 1), 3)
+
+    tail := mkbuf("x = 0\ndef f():\n    a = 1\n    b = 2")
+    defer app.buffer_destroy(&tail)
+    append(&tail.folds, app.Fold{line = 1, end = 3})
+    testing.expect_value(t, app.buffer_fwd_visible(&tail, 0, 5), 1) // the header, not line 3
 }
 
 // --- the Ctrl+Enter toggle + fold-aware motion + edit invalidation ---

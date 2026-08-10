@@ -164,20 +164,39 @@ editor_pos_at :: proc(b: ^Buffer, v: Editor_View, x, y: i32) -> (p: Pos, ok: boo
     if v.row_h <= 0 || len(b.lines) == 0 {
         return {}, false
     }
-    // The window is shifted up by `off`, so the point moves down by it to compensate.
-    dy := int(y - v.area.y + v.off)
-    if dy < 0 {
-        return {}, false
-    }
-    line, got := editor_line_at_row(b, v.top, dy / int(v.row_h))
+    line, got := editor_line_at_row(b, v.top, editor_row_at(v, y))
     if !got {
         return {}, false
     }
-    col := 0
-    if v.cw > 0 {
-        col = int(math.round((f32(x) - v.text_x) / v.cw))
+    return Pos{line, clamp(editor_caret_col(v, x), 0, line_len(&b.lines[line]))}, true
+}
+
+// The visible ROW a framebuffer y falls on, or -1 above the window. The one place the row
+// grid is divided out, so editor_pos_at (which refuses a row past the last line) and
+// editor_drag_pos (which clamps to the last DRAWN row) cannot come to different views about
+// where a row is.
+//
+// The window is shifted up by `off`, so the point moves down by it to compensate.
+editor_row_at :: proc(v: Editor_View, y: i32) -> int {
+    if v.row_h <= 0 {
+        return -1
     }
-    return Pos{line, clamp(col, 0, line_len(&b.lines[line]))}, true
+    dy := int(y - v.area.y + v.off)
+    if dy < 0 {
+        return -1
+    }
+    return dy / int(v.row_h)
+}
+
+// The caret BOUNDARY column under x — rounded, and unclamped to any line, so the two callers
+// that need it (editor_pos_at inside the pane, editor_drag_pos past its edges) round it the
+// one way. Its twin is editor_glyph_col below, and the pair is the whole of C7a's
+// one-pixel-two-questions finding in two procs.
+editor_caret_col :: proc(v: Editor_View, x: i32) -> int {
+    if v.cw <= 0 {
+        return 0
+    }
+    return int(math.round((f32(x) - v.text_x) / v.cw))
 }
 
 // The column of the GLYPH under the pointer — floored, where editor_pos_at rounds.
@@ -303,8 +322,19 @@ editor_click :: proc(a: ^App, hit: Editor_Hit, now: f64) {
         if i := buffer_fold_index(b, hit.pos.line); i >= 0 {
             unordered_remove(&b.folds, i)
         }
-        return
+        return // a marker is a BUTTON, and a button is not something you drag out of
     }
+
+    // The press is now a CAPTURE (C7c): until the button comes up, every motion belongs to
+    // this buffer's selection whatever pane the pointer wanders over. The grade goes in with
+    // it and is not re-read per frame — that is the whole reason the machine stores it, and
+    // it is what makes a double-click-drag keep growing by whole words (drag.odin).
+    //
+    // Begun for EVERY text click, including the plain single one, because the difference
+    // between a click and a drag is not something the press can know: it is whether the
+    // pointer moves before the release. A drag that never moves re-derives the position the
+    // click already set, which is why the machine needs no motion threshold.
+    drag_begin(a, .Editor_Text, a.editor.active, count, hit.pos, hit.glyph)
 
     d := &b.doc
     switch {
@@ -320,6 +350,119 @@ editor_click :: proc(a: ^App, hit: Editor_Hit, now: f64) {
     case:
         doc_reset_cursor(d, doc_clamp_pos(d, hit.pos))
     }
+}
+
+// Where a DRAG points, which is a different question from the one editor_hit answers and
+// must be answered differently. A hit is REFUSED outside the pane, because a press there
+// belongs to somebody else. A drag under capture must resolve a position wherever the
+// pointer went, because the gesture already belongs to this pane (drag.odin) — and the
+// moment it is most obviously still in use is the moment it leaves.
+//
+// So the ROW is clamped into the window and a point below the last DRAWN row (a buffer
+// shorter than its pane) resolves to the last visible line rather than to "no line":
+// dragging off the bottom means "to the end", never "nothing".
+//
+// The clamp is on the row and not on the pixel, because the pane's bottom edge sits in the
+// MIDDLE of a row — 196px of 18px rows leaves a 16px strip the painter never fills — and a
+// drag must not aim at a line that was never put on screen. x needs no clamp at all:
+// editor_caret_col rounds a negative offset to a negative column and the line length clamps
+// it, which is the same "the gutter means column 0" rule editor_pos_at already has.
+//
+// Both columns come back, exactly as Editor_Hit carries both: the caret boundary a
+// character-grade drag extends to, and the glyph a word-grade drag expands around.
+editor_drag_pos :: proc(b: ^Buffer, v: Editor_View, x, y: i32) -> (p: Pos, glyph: int) {
+    if v.row_h <= 0 || v.rows <= 0 || len(b.lines) == 0 {
+        return {}, 0
+    }
+    glyph = editor_glyph_col(v, x)
+    line, ok := editor_line_at_row(b, v.top, clamp(editor_row_at(v, y), 0, v.rows - 1))
+    if !ok {
+        line = buffer_prev_visible(b, len(b.lines) - 1)
+    }
+    return Pos{line, clamp(editor_caret_col(v, x), 0, line_len(&b.lines[line]))}, glyph
+}
+
+// The line a drag should be extending to, given the one the pointer resolved to — the same
+// line while the pointer is inside the pane, and the autoscroll's own walk while it is past
+// an edge.
+//
+// Past an edge the pointer has stopped naming a line, so Drag.over does (see the field for
+// why it must be state rather than a per-frame derivation). It is SEEDED from the edge row
+// the pointer left over, so a drag that runs off the bottom continues from the last line the
+// user could see rather than from wherever it happened to press.
+//
+// The tick is spent only once the pointer is established as being outside, which is what
+// makes leaving the pane act on the very next frame rather than up to DRAG_SCROLL_S later.
+editor_drag_line :: proc(a: ^App, b: ^Buffer, v: Editor_View, line: int, now: f64) -> int {
+    past, dir := 0, 0
+    switch {
+    case a.mouse.y < v.area.y:
+        past, dir = int(v.area.y - a.mouse.y), -1
+    case a.mouse.y >= v.area.y + v.area.h:
+        past, dir = int(a.mouse.y - (v.area.y + v.area.h) + 1), 1
+    }
+    if dir == 0 {
+        a.drag.over_on = false // back inside: the pointer names its own line again
+        return line
+    }
+    if !a.drag.over_on {
+        a.drag.over, a.drag.over_on = line, true
+    }
+    // Walking past an edge is a request for the VIEWPORT POLICY to follow, so it re-attaches
+    // the view the way a click does (and directly, for the same reason: last_input_at is
+    // global and the aux panes re-attach off it). The wheel is free to detach the view
+    // mid-drag while the pointer is still inside the pane — scroll with one hand, extend with
+    // the other — but a detached view does not chase the caret, so a drag off the bottom edge
+    // would otherwise extend the selection somewhere nobody can see.
+    b.scroll_detached = 0
+    if drag_tick(a, now) {
+        step := drag_scroll_step(past, int(v.row_h))
+        a.drag.over =
+            dir < 0 \
+            ? buffer_back_visible(b, a.drag.over, step) \
+            : buffer_fwd_visible(b, a.drag.over, step)
+    }
+    return a.drag.over
+}
+
+// Extend a live text drag to wherever the pointer is now — the pointer's per-frame verb and
+// the sibling of editor_click, run right beside it and for its reason: a gesture that walks
+// the caret off-screen has to scroll in the frame that moved it, and buffer_scroll_apply
+// comes after both.
+//
+// **Nothing here writes b.scroll.** Autoscroll walks the SELECTION past the visible window
+// and the existing viewport policy follows it, which is the difference between adding a
+// feature and adding a second thing that moves the view. It also means the drag scrolls in
+// whichever scroll_mode the user chose, without this proc knowing there are two.
+//
+// The grades split where doc.odin splits them: a character drag is doc_set_head, which keeps
+// whatever anchor the click established (a Shift+click's anchor is not the press position,
+// and an Alt+click's cursor is the new one), while word and line re-derive BOTH ends every
+// frame through doc_drag_span, because crossing back over the press point moves the anchor
+// from one end of the pressed run to the other.
+editor_drag :: proc(a: ^App, b: ^Buffer, v: Editor_View, now: f64) {
+    if !a.mouse_on || !a.mouse.known || a.main != .Text || len(b.lines) == 0 {
+        return
+    }
+    // The target comparison is the capture invariant: a buffer switched with the button
+    // still down leaves the drag held but inert, rather than pointing it at another file's
+    // text (drag.odin).
+    if !drag_live(a, .Editor_Text, a.editor.active) {
+        return
+    }
+    p, glyph := editor_drag_pos(b, v, a.mouse.x, a.mouse.y)
+    if line := editor_drag_line(a, b, v, p.line, now); line != p.line {
+        p = Pos{line, clamp(p.col, 0, line_len(&b.lines[line]))}
+    }
+    a.blink_base = now // the caret stays solid through the gesture, as it does through typing
+
+    d := &b.doc
+    if a.drag.grade >= 2 {
+        anchor, head := doc_drag_span(d, a.drag.grade, Pos{a.drag.anchor.line, a.drag.anchor_glyph}, Pos{p.line, glyph})
+        doc_select_span(d, anchor, head)
+        return
+    }
+    doc_set_head(d, p, true)
 }
 
 // What the body's Custom needs to paint itself. Handed to the bridge as `customData`, so it
@@ -523,6 +666,7 @@ draw_editor :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) 
     // against a view built before this frame's scroll policy runs.
     v := editor_view(b, &t.font, area, row_h, rows, now)
     editor_click(a, editor_hit(a, b, v), now)
+    editor_drag(a, b, v, now) // and extend a capture the press already made (C7c)
 
     // Then move the viewport, so a click that put the caret off-screen scrolls in the same
     // frame it was made, and rebuild the view over the result.

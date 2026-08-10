@@ -255,3 +255,63 @@ test_doc_pointer_cursors :: proc(t: ^testing.T) {
     app.doc_select_line(&d, 99) // clamped, not out of bounds
     testing.expect_value(t, d.cursors[0].head.line, 1)
 }
+
+// C7c's drag algebra, which is a Doc question rather than a pixel one and is pinned here
+// because C7d reuses it over a terminal grid.
+//
+// The property under test is that BOTH ends are re-derived every frame. A double click
+// selects a word and then holds still; a double-click-DRAG has to keep expanding by whole
+// words, and crossing back over the press point has to move the ANCHOR from one end of the
+// pressed word to the other. An implementation that fixes the anchor when the button goes
+// down cannot express the second half at all.
+@(test)
+test_doc_drag_span :: proc(t: ^testing.T) {
+    d: app.Doc
+    app.doc_init(&d)
+    defer app.doc_destroy(&d)
+    app.doc_set_text(&d, "alpha bravo\ncharlie delta")
+
+    // Word grade, forward: the start of the pressed run to the end of the pointed-at one.
+    anchor, head := app.doc_drag_span(&d, 2, app.Pos{0, 7}, app.Pos{1, 10}) // in "bravo" -> in "delta"
+    testing.expect_value(t, anchor, app.Pos{0, 6})
+    testing.expect_value(t, head, app.Pos{1, 13})
+
+    // Word grade, backward past the press: the anchor flips to the far END of "bravo".
+    anchor, head = app.doc_drag_span(&d, 2, app.Pos{0, 7}, app.Pos{0, 2}) // -> in "alpha"
+    testing.expect_value(t, anchor, app.Pos{0, 11})
+    testing.expect_value(t, head, app.Pos{0, 0})
+
+    // Held still inside the pressed word, it is exactly what the double click alone gives.
+    anchor, head = app.doc_drag_span(&d, 2, app.Pos{0, 7}, app.Pos{0, 8})
+    testing.expect_value(t, anchor, app.Pos{0, 6})
+    testing.expect_value(t, head, app.Pos{0, 11})
+
+    // Line grade compares LINES: dragging left within the pressed line has not reversed the
+    // gesture, it has not left the line — so this stays forward and selects the whole line.
+    anchor, head = app.doc_drag_span(&d, 3, app.Pos{1, 9}, app.Pos{1, 1})
+    testing.expect_value(t, anchor, app.Pos{1, 0})
+    testing.expect_value(t, head, app.Pos{1, 13})
+
+    // ... and upward it is whole lines the other way about.
+    anchor, head = app.doc_drag_span(&d, 3, app.Pos{1, 9}, app.Pos{0, 3})
+    testing.expect_value(t, anchor, app.Pos{1, 13})
+    testing.expect_value(t, head, app.Pos{0, 0})
+
+    // Both ends are clamped, the twin of doc_clamp_pos everywhere else a pixel becomes a
+    // Pos: a resize between the press and the frame that applies it costs a selection end in
+    // the wrong place, never an index off the end of the buffer.
+    anchor, head = app.doc_drag_span(&d, 3, app.Pos{99, 99}, app.Pos{-5, -5})
+    testing.expect_value(t, anchor, app.Pos{1, 13})
+    testing.expect_value(t, head, app.Pos{0, 0})
+
+    // doc_select_span keeps the gesture's order rather than normalising it, so the head
+    // stays the end the eye is at and a later Shift+click extends from the right place.
+    app.doc_select_span(&d, app.Pos{1, 5}, app.Pos{0, 2})
+    testing.expect_value(t, len(d.cursors), 1)
+    testing.expect_value(t, d.cursors[0].anchor, app.Pos{1, 5})
+    testing.expect_value(t, d.cursors[0].head, app.Pos{0, 2})
+    testing.expect_value(t, d.cursors[0].goal, 2) // the goal follows the HEAD
+    lo, hi := app.cursor_range(d.cursors[0])
+    testing.expect_value(t, lo, app.Pos{0, 2}) // ordered on READ, as both references do
+    testing.expect_value(t, hi, app.Pos{1, 5})
+}
