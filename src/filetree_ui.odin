@@ -129,9 +129,13 @@ filetree_click :: proc(a: ^App, row: int) {
 //       ft_row/i   one per visible entry, keyed by ENTRY index so a hit names an entry
 //         ft_pre/i   the two-cell prefix column, so names start on a fixed cell
 //
+//     ch_bar     the Ctrl-held chord cheat-sheet (C8c, overlay_ui.odin), when it is up: a
+//                floating child of the pane, so it inherits the pane's clip and covers the
+//                rows rather than being laid out under them
+//
 // Row indices are the entry's own, not the visible row's: that is what makes filetree_hit
 // return something meaningful without a second mapping to maintain.
-filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect) {
+filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, now: f64 = 0) {
     ft := &a.tree
     th := &a.theme
     area, row_h, rows := filetree_geom(pane, a.scale, f.line_height)
@@ -214,6 +218,15 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect) {
                 }
             }
         }
+
+        // The chord bar goes LAST and inside the pane, which is the whole of what makes it an
+        // overlay: `attachTo = .Parent` takes ft_pane off the open clip stack, so the bar is
+        // clipped to the pane and gets a scissor group of its own — without which its backdrop
+        // would be an under-quad in the rows' own batch and would paint BEHIND the names it is
+        // supposed to be covering (C1, property 1). See overlay_ui.odin.
+        if chord_shown(a) {
+            chord_declare(a, f, area, now)
+        }
     }
 }
 
@@ -222,10 +235,16 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect) {
 // app never calls it; tests/filetree_ui_test.odin does, because a pane's boxes are the same
 // whether or not another pane is declared beside it, and asserting them one pane at a time is
 // what keeps a pane test about the pane.
-filetree_layout :: proc(a: ^App, f: ^Font, pane: Rect, win_w, win_h: i32) -> clay.ClayArray(clay.RenderCommand) {
+filetree_layout :: proc(
+    a: ^App,
+    f: ^Font,
+    pane: Rect,
+    win_w, win_h: i32,
+    now: f64 = 0,
+) -> clay.ClayArray(clay.RenderCommand) {
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        filetree_declare(a, f, pane)
+        filetree_declare(a, f, pane, now)
     }
     return clay.EndLayout(0)
 }
@@ -239,7 +258,7 @@ filetree_layout :: proc(a: ^App, f: ^Font, pane: Rect, win_w, win_h: i32) -> cla
 // paints it once (window_ui.odin), so a pane's frame ends at its declaration. Everything
 // before that is unchanged and deliberately so — the phases and their order ARE the pane
 // template, and the only thing the single tree took away was the pane's own clay_paint.
-filetree_frame :: proc(t: ^Text, a: ^App, pane: Rect) {
+filetree_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     area, _, rows := filetree_geom(pane, a.scale, t.font.line_height)
     if area.w <= 0 || area.h <= 0 {
         return
@@ -249,5 +268,6 @@ filetree_frame :: proc(t: ^Text, a: ^App, pane: Rect) {
     filetree_click(a, hit)
     filetree_scroll_apply(&a.tree, rows, a.scroll_mode == .Middle, pane_input_at(a))
 
-    filetree_declare(a, &t.font, pane)
+    // `now` is the chord bar's fade and nothing else — the listing itself does not animate.
+    filetree_declare(a, &t.font, pane, now)
 }

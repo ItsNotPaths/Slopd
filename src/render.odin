@@ -1,7 +1,5 @@
 package main
 
-import "core:fmt"
-import "core:strconv"
 import gl "vendor:OpenGL"
 
 // Rendering: solid-colour quads (fill/caret) plus glyph text, both batched per pane
@@ -18,10 +16,12 @@ import gl "vendor:OpenGL"
 // background and the pane chrome first, then hands the panes to window_frame
 // (window_ui.odin), which declares them all into ONE Clay tree and paints it in one pass.
 //
-// What is LEFT here is what has not been declared yet: the media surface and the two overlays,
-// each still hand-drawn and each with a C8 sub-checkpoint of its own (C8c the overlays, C8d the
-// media surface). They paint after window_frame, which is the order they were drawn in before.
-// The status strip went in C8b and lives in strip_ui.odin.
+// What is LEFT here is the media surface, the only thing in the program still hand-drawn: a
+// panned and zoomed image sits at an arbitrary rect inside its pane, which is a floating child
+// rather than a laid-out one, and that is C8d's decision to make. It paints after window_frame,
+// which is the order it was drawn in before. The status strip went in C8b (strip_ui.odin) and
+// the terminal switcher and filetree chord bar in C8c (overlay_ui.odin), where they are
+// declared by the panes they cover rather than painted over the top of them.
 
 aux_mode_name :: proc(m: AuxMode) -> string {
     switch m {
@@ -109,17 +109,10 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
         draw_media(t, lay.editor, win_w, win_h, a)
     }
 
-    // Switcher overlay: plain Alt only. Alt+Ctrl / Alt+Shift drive the terminal
-    // copy-cursor, so the switcher stays hidden then.
-    if a.alt_held && !a.ctrl_held && !a.shift_held && a.aux_mode == .Terminal {
-        draw_term_overlay(t, lay.aux, win_w, win_h, a, now)
-    }
-
-    // Filetree bottom overlay: the Ctrl-held chord cheat-sheet, inside the filetree pane
-    // so the command-line strip is never co-opted.
-    if a.aux_mode == .FileTree && a.ctrl_held && a.focus == .Aux {
-        draw_filetree_overlay(t, lay.aux, win_w, win_h, a, now)
-    }
+    // The two overlays went into the tree in C8c (overlay_ui.odin): each is declared by the
+    // pane it covers, so the switcher and the chord bar are painted by window_frame above,
+    // above their pane and inside its clip. Nothing is drawn after it here any more except
+    // the media surface, which overlaps nothing.
 
     // A press nobody claimed dies here. Clicks are offered to the panes as they draw
     // (mouse_take_click), and one that hit nothing must not survive into the next frame,
@@ -222,94 +215,9 @@ draw_media :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App) {
     flush_pane(t, area, win_w, win_h)
 }
 
-
-// The filetree's bottom overlay, sitting INSIDE the filetree pane (never the command
-// strip): the Ctrl-held chord cheat-sheet. A filled bar anchored to the pane bottom; the
-// chord list left-flows and wraps to as many rows as the (possibly narrow) pane needs.
-// Colours fade up from the pane bg via chord_anim, the Ctrl-hold analogue of the terminal
-// switcher fade.
-@(private = "file")
-draw_filetree_overlay :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) {
-    th := &a.theme
-    area := inset(pane, i32(2 * a.scale)) // sit inside the focus outline
-    if area.w <= 0 || area.h <= 0 {
-        return
-    }
-    cw := t.font.cell_w
-    lh := t.font.line_height
-    row_h := i32(lh) + i32(6 * a.scale)
-    pad := i32(8 * a.scale)
-
-    // Opaque lerp out of the pane bg (so no alpha is needed) as Ctrl is held.
-    f := clamp(anim_value(&a.chord_anim, now), 0, 1)
-    bar_bg := lerp3(th.bg, th.border_dark, f)
-    key_col := lerp3(th.bg, th.accent, f)
-    lbl_col := lerp3(th.bg, th.muted, f)
-
-    // Keys carry a "^" so the bar reads as the Ctrl menu; the state readout (paste mode +
-    // marked count) is the final flow item, so it wraps with everything else.
-    hints := [?][2]string {
-        {"^y", "yank"},
-        {"^u", "reset"},
-        {"^c", "copy"},
-        {"^x", "cut"},
-        {"^p", "paste"},
-        {"^d", "del"},
-        {"^D", "del-set"},
-        {"^w", "path"},
-        {"^W", "dir"},
-    }
-    mode := a.tree.yank_mode == .Cut ? "cut" : "copy"
-    state := fmt.tprintf("[%s · %d marked]", mode, len(a.tree.yanked))
-
-    // Pack items (each "key label", plus the state) into rows of the available width,
-    // recording each item's row + start column. cur_x in cells; GAP cells between items.
-    GAP :: 2
-    maxw := max(1, int(f32(area.w - 2 * pad) / cw))
-    item_w: [len(hints) + 1]int
-    for h, i in hints {
-        item_w[i] = len(h[0]) + 1 + len(h[1]) // key + space + label (ASCII: bytes == cells)
-    }
-    item_w[len(hints)] = len(state) // "·" is multi-byte but renders one cell — close enough for layout
-    row_of: [len(hints) + 1]int
-    x_of: [len(hints) + 1]int
-    cur_row, cur_x := 0, 0
-    for w, i in item_w {
-        if cur_x > 0 && cur_x + w > maxw {
-            cur_row += 1
-            cur_x = 0
-        }
-        row_of[i] = cur_row
-        x_of[i] = cur_x
-        cur_x += w + GAP
-    }
-    nrows := cur_row + 1
-
-    bar_h := i32(nrows) * row_h
-    by := area.y + area.h - bar_h
-    fill(t, Rect{area.x, by, area.w, bar_h}, bar_bg)
-
-    item_xy :: proc(area: Rect, by, row_h, pad: i32, cw, lh: f32, col, row: int) -> (x, y: f32) {
-        return f32(area.x + pad) + cw * f32(col), f32(by + i32(row) * row_h) + (f32(row_h) - lh) / 2
-    }
-    for h, i in hints {
-        x, y := item_xy(area, by, row_h, pad, cw, lh, x_of[i], row_of[i])
-        text_draw(t, h[0], x, y, key_col)
-        text_draw(t, h[1], x + cw * f32(len(h[0]) + 1), y, lbl_col)
-    }
-    sx, sy := item_xy(area, by, row_h, pad, cw, lh, x_of[len(hints)], row_of[len(hints)])
-    text_draw(t, state, sx, sy, lbl_col)
-
-    flush_pane(t, area, win_w, win_h)
-}
-
-
-
-
-
 // filetree_frame lives in filetree_ui.odin: the filetree is declared in Clay (C3), so its
 // geometry, its hit-testing and its paint are one tree rather than three copies of the
-// same arithmetic. Its Ctrl-chord overlay is still hand-drawn and stays here until C8c.
+// same arithmetic. Its Ctrl-chord overlay went with C8c and is declared by the pane itself.
 
 // grep_frame lives in grep_ui.odin: the results pane is declared in Clay (C5a), and its
 // display-row flattening moved to grep.odin, where the model it flattens already lives.
@@ -320,51 +228,10 @@ draw_filetree_overlay :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, 
 
 // terminal_frame lives in terminal_ui.odin: the cell grid is declared in Clay (C7b) as one
 // Custom, with the pointer either forwarded to a mouse-tracking TUI or driving our own copy
-// cursor. Its Alt-held switcher overlay is still hand-drawn and stays here until C8c.
+// cursor. Its Alt-held switcher overlay went with C8c and is declared by the pane itself.
 
-// The terminal switcher: a slim i3-style numbered column shown while Alt is held.
-// It is inset within the pane's focus outline (so it sits seamlessly inside the
-// highlight rather than covering it), two digits wide, and scrolls to keep the
-// active session visible. Drawn as its own flush, on top of the aux content.
-draw_term_overlay :: proc(t: ^Text, pane: Rect, win_w, win_h: i32, a: ^App, now: f64) {
-    th := &a.theme
-    area := inset(pane, i32(2 * a.scale)) // sit inside the focus outline
-    if area.w <= 0 || area.h <= 0 {
-        return
-    }
-    cw := t.font.cell_w
-    lh := t.font.line_height
-    colw := min(i32(cw * 2) + i32(12 * a.scale), area.w) // two digits + padding
-    row_h := i32(lh) + i32(6 * a.scale)
-
-    // Fade in from the pane background (opaque lerp, so no alpha needed): every colour
-    // tweens out of th.bg as the switcher appears while Alt is held.
-    f := clamp(anim_value(&a.switcher_anim, now), 0, 1)
-    col_bg := lerp3(th.bg, th.border_dark, f)
-    col_active := lerp3(th.bg, th.accent, f)
-    col_fg := lerp3(th.bg, th.fg, f)
-    col_lock := lerp3(th.bg, th.muted, f) // a locked session's number is greyed (Alt+L)
-
-    // Scroll so the active session stays centered, clamped at the list ends.
-    n := term_count(a)
-    max_rows := max(1, int(area.h / row_h))
-    first := clamp(a.term_active - max_rows / 2, 0, max(0, n - max_rows))
-    visible := min(n - first, max_rows)
-
-    fill(t, Rect{area.x, area.y, colw, i32(visible) * row_h}, col_bg)
-
-    for k in 0 ..< visible {
-        i := first + k
-        y := area.y + i32(k) * row_h
-        if i == a.term_active {
-            fill(t, Rect{area.x, y, colw, row_h}, col_active)
-        }
-        buf: [8]u8
-        s := strconv.write_int(buf[:], i64(i + 1), 10)
-        tx := f32(area.x) + (f32(colw) - cw * f32(len(s))) / 2 // centered
-        ty := f32(y) + (f32(row_h) - lh) / 2
-        text_draw(t, s, tx, ty, a.terminals[i].locked ? col_lock : col_fg)
-    }
-
-    flush_pane(t, area, win_w, win_h)
-}
+// draw_term_overlay and draw_filetree_overlay are overlay_ui.odin's `switcher_declare` and
+// `chord_declare` since C8c — the last two hand-drawn surfaces that were not the media
+// viewer. Both are declared INSIDE the pane they cover, which is what gives them the pane's
+// clip and a scissor group of their own; see that file's header for why a clip group is what
+// an overlay is, in a renderer where quads paint under glyphs within one.

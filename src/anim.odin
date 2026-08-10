@@ -65,10 +65,14 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     if a.view == .Split && anim_active(&a.split_anim, now) { // the split widen/narrow
         wake = sched_min(wake, VSYNC_PACED)
     }
-    if a.alt_held && a.aux_mode == .Terminal && anim_active(&a.switcher_anim, now) { // switcher fade
+    // The two overlay fades, gated on the SAME predicates the declarations are (C8c,
+    // overlay_ui.odin). They used to be spelled out here, and the switcher's copy had drifted:
+    // it asked only `alt_held && aux_mode == .Terminal`, so the loop woke at vsync to animate a
+    // switcher render was refusing to draw for the whole of an Alt+Ctrl or Alt+Shift chord.
+    if switcher_shown(a) && anim_active(&a.switcher_anim, now) {
         wake = sched_min(wake, VSYNC_PACED)
     }
-    if a.ctrl_held && a.focus == .Aux && a.aux_mode == .FileTree && anim_active(&a.chord_anim, now) { // chord bar fade
+    if chord_shown(a) && anim_active(&a.chord_anim, now) {
         wake = sched_min(wake, VSYNC_PACED)
     }
     if a.aux_mode == .Procmon && anim_active(&a.procmon.scroll_anim, now) { // list smooth scroll

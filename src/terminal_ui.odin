@@ -380,12 +380,18 @@ Terminal_Body :: struct {
 //   term_pane  the content area inside the focus ring, floating at the pane's own rect and
 //              clipping its own content (painted by panel(), not here)
 //     term_grid  the cell grid, as a Custom — and the element terminal_hit points at
+//     sw_col     the Alt-held session switcher (C8c, overlay_ui.odin), when it is up: a
+//                floating child, so it inherits the pane's clip and covers the grid
 //
 // The Custom covers the whole content area rather than the whole-cell grid inside it, so
 // the box the painter is handed is the box the hit test sized itself from. The sub-cell
 // remainder is inside that box, painted with the default background like every other blank
 // cell, and rejected by the hit test rather than by the geometry.
-terminal_declare :: proc(a: ^App, term: ^Terminal, pane: Rect, v: Terminal_View) {
+//
+// It took the `pane` rect it never read until C8c and takes the FONT instead: the grid sizes
+// itself from the view, but the switcher measures in cells like every other piece of chrome,
+// and `(a, f, …)` is the shape the other five declares already have.
+terminal_declare :: proc(a: ^App, f: ^Font, term: ^Terminal, v: Terminal_View, now: f64 = 0) {
     area := v.area
 
     body := new(Terminal_Body, context.temp_allocator)
@@ -403,6 +409,15 @@ terminal_declare :: proc(a: ^App, term: ^Terminal, pane: Rect, v: Terminal_View)
                 custom = {customData = cu},
             },
         ) {}
+
+        // The switcher after the grid, inside the pane: a floating child, so it inherits the
+        // pane's clip and paints in a group of its own (overlay_ui.odin). It would have
+        // survived being declared without one HERE — the grid is a Custom and a Custom flushes
+        // on the way out — but that is an accident of this pane's shape, and the chord bar over
+        // the filetree's rows is the case it does not hold for.
+        if switcher_shown(a) {
+            switcher_declare(a, f, area, now)
+        }
     }
 }
 
@@ -542,7 +557,7 @@ terminal_paint_grid :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App,
 // are on screen: clicking the live bottom line leaves select mode, and terminal_view_top
 // reports the live bottom rather than the scrolled top the moment it does. Declaring from
 // the pre-click view would paint one frame of the state the user just left.
-terminal_frame :: proc(t: ^Text, a: ^App, pane: Rect) {
+terminal_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     area, row_h, cols, rows := terminal_geom(pane, a.scale, t.font.line_height, t.font.cell_w)
     if cols == 0 || rows == 0 {
         return
@@ -563,21 +578,23 @@ terminal_frame :: proc(t: ^Text, a: ^App, pane: Rect) {
     terminal_sync(term, &a.theme, cols, rows)
     v = terminal_view(term, area, row_h, t.font.cell_w, cols, rows)
 
-    terminal_declare(a, term, pane, v)
+    // `now` is the switcher's fade and nothing else — the grid does not animate.
+    terminal_declare(a, &t.font, term, v, now)
 }
 
 // The pane alone in a window, as a command list: the test-facing wrapper (see
 // filetree_layout for why every pane keeps one).
 terminal_layout :: proc(
     a: ^App,
+    f: ^Font,
     term: ^Terminal,
-    pane: Rect,
     win_w, win_h: i32,
     v: Terminal_View,
+    now: f64 = 0,
 ) -> clay.ClayArray(clay.RenderCommand) {
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        terminal_declare(a, term, pane, v)
+        terminal_declare(a, f, term, v, now)
     }
     return clay.EndLayout(0)
 }

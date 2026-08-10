@@ -277,7 +277,7 @@ test_terminal_command_list :: proc(t: ^testing.T) {
 
     area, row_h, cols, rows := app.terminal_geom(PANE, 1, f.line_height, f.cell_w)
     v := app.terminal_view(term, area, row_h, f.cell_w, cols, rows)
-    cmds := app.terminal_layout(&a, term, PANE, 500, 300, v)
+    cmds := app.terminal_layout(&a, &f, term, 500, 300, v)
 
     customs, others, scissors := 0, 0, 0
     box, clip: app.Rect

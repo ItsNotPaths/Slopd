@@ -30,8 +30,9 @@ import clay "../bindings/clay"
 //      declared per frame anyway — but it is now a property to keep rather than a freebie.
 //   3. **Paint order is declaration order.** Floating elements sort by zIndex and then by
 //      declaration, so the editor is declared before the aux pane and both before anything
-//      at a higher z. The panes never overlap, so this buys nothing today; it is what the
-//      overlays (C8c) are going to spend.
+//      at a higher z. The panes never overlap, so this buys nothing between THEM — it is
+//      what C8c's overlays spend: each is a floating child of the pane it covers, at
+//      OVERLAY_Z, so it outranks the strip declared after it as well (overlay_ui.odin).
 //
 // What did NOT move: compute_layout. The window's ARITHMETIC is still layout.odin's, because
 // `a.lay` has to exist before the frame is declared — the wheel, the drag machine and the
@@ -115,11 +116,11 @@ window_frame :: proc(t: ^Text, a: ^App, lay: Layout, win_w, win_h: i32, now: f64
         }
         switch a.aux_mode {
         case .FileTree:
-            filetree_frame(t, a, lay.aux)
+            filetree_frame(t, a, lay.aux, now)
         case .Config:
             config_frame(t, a, lay.aux, now)
         case .Terminal:
-            terminal_frame(t, a, lay.aux)
+            terminal_frame(t, a, lay.aux, now)
         case .Grep:
             grep_frame(t, a, lay.aux)
         case .Procmon:
