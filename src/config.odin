@@ -57,26 +57,36 @@ Config :: struct {
     hover:             bool, // tint the row under the pointer; needs `mouse` to mean anything
 }
 
-// A config line with its trailing `# comment` removed, trimmed; "" for a blank or
-// comment-only line.
+// Splits a config line at its trailing comment: `body` is everything before the '#'
+// (untrimmed, so its length is the comment's column) and `comment` runs from the '#' to
+// the end of the line, "" when there is none.
 //
-// This is not cosmetic. The header promises "simple `key: value`, '#' comments" and every
-// shipped line uses a trailing one, but the parser only ever skipped lines that STARTED
-// with '#' — so `mouse: on   # on | off` handed parse_on_off the string
-// "on   # on | off", which matches nothing, and the setting silently fell back to its
-// default. It went unnoticed because every commented line in slopd.config happens to
-// carry the value that is already the default, so the fallback and the intent agreed.
-// The first setting where they would not is git_tool, whose value is free text: without
-// this, `git_tool:   # e.g. lazygit` configures a tool literally named "# e.g. lazygit".
-//
-// A '#' inside a value is therefore not supported, which is the same bargain the file's
-// own header already struck.
-config_strip_comment :: proc(line: string) -> string {
-    s := line
-    if h := strings.index_byte(s, '#'); h >= 0 {
-        s = s[:h]
+// A '#' opens a comment only at the start of the line or after a space/tab — the same
+// rule ini and git-config use. That keeps a '#' that is glued to a token inside the
+// value, which is the only place one can plausibly be meant: git_tool is free text
+// (`git_tool: sh -c foo#bar`) and a theme name is arbitrary. A '#' that follows
+// whitespace is always a comment, with no escape for it; the file's header promises
+// trailing comments and every shipped line uses one, so that is the side to err on.
+config_split_comment :: proc(line: string) -> (body: string, comment: string) {
+    for i in 0 ..< len(line) {
+        if line[i] != '#' {
+            continue
+        }
+        if i == 0 || line[i - 1] == ' ' || line[i - 1] == '\t' {
+            return line[:i], line[i:]
+        }
     }
-    return strings.trim_space(s)
+    return line, ""
+}
+
+// A config line with its comment removed and trimmed; "" for a blank or comment-only
+// line. Every read goes through this: the shipped config documents each setting with a
+// trailing comment, so a parser that kept it would hand parse_on_off "on   # on | off",
+// match nothing, and silently fall back to the default. Where the value is free text —
+// git_tool — the comment would instead become the value, naming a tool "# e.g. lazygit".
+config_strip_comment :: proc(line: string) -> string {
+    body, _ := config_split_comment(line)
+    return strings.trim_space(body)
 }
 
 load_config :: proc() -> Config {
@@ -191,6 +201,7 @@ parse_indent :: proc(s: string) -> (Indent, bool) {
 
 config_destroy :: proc(cfg: ^Config) {
     delete(cfg.theme_path)
+    delete(cfg.git_tool) // App borrows this one rather than cloning it — see main
 }
 
 @(private = "file")
@@ -447,22 +458,27 @@ on_off :: proc(b: bool) -> string {
 }
 
 // Persists `key: value` to the config file via read-modify-write: the matching key
-// line is replaced in place and every other line — comments, unknown keys, the
-// hidden per-language path lines — is preserved verbatim; a new key is appended.
+// line is replaced in place and every other line — comments, unknown keys, anything
+// this build doesn't know about — is preserved verbatim; a new key is appended.
+//
+// The replaced line keeps its own trailing comment, re-aligned to the column it sat at.
+// That comment documents the setting ("# on | off"), not its current value, so rewriting
+// `mouse: on   # on | off` as a bare `mouse: off` would erase the shipped config's
+// documentation one setting at a time as the Config pane is used.
 config_set :: proc(key, val: string) -> bool {
     path := config_write_path()
-    line := fmt.tprintf("%s: %s", key, val)
 
     b := strings.builder_make(context.temp_allocator)
     replaced := false
     if src := os.read_entire_file_from_path(path, context.temp_allocator) or_else nil; src != nil {
         rest := string(src)
         for raw in strings.split_lines_iterator(&rest) {
-            s := strings.trim_space(raw)
-            if !replaced && len(s) > 0 && s[0] != '#' {
+            if !replaced {
+                // A comment-only line leaves body blank, so it can never match a key.
+                body, comment := config_split_comment(raw)
+                s := strings.trim_space(body)
                 if colon := strings.index_byte(s, ':'); colon > 0 && strings.trim_space(s[:colon]) == key {
-                    strings.write_string(&b, line)
-                    strings.write_byte(&b, '\n')
+                    config_write_line(&b, key, val, comment, len(body))
                     replaced = true
                     continue
                 }
@@ -472,11 +488,31 @@ config_set :: proc(key, val: string) -> bool {
         }
     }
     if !replaced {
-        strings.write_string(&b, line)
-        strings.write_byte(&b, '\n')
+        config_write_line(&b, key, val, "", 0)
     }
     err := os.write_entire_file(path, transmute([]byte)strings.to_string(b))
     return err == nil
+}
+
+// Writes one `key: value` line, followed by `comment` (already including its '#') when
+// there is one, padded out to `col` — where the comment sat on the line being replaced —
+// so the file's comment column survives an edit. A longer value just pushes the comment
+// right, keeping one space. An empty value writes a bare `key:`, like the shipped file.
+@(private = "file")
+config_write_line :: proc(b: ^strings.Builder, key, val, comment: string, col: int) {
+    n := strings.write_string(b, key)
+    n += strings.write_byte(b, ':')
+    if val != "" {
+        n += strings.write_byte(b, ' ')
+        n += strings.write_string(b, val)
+    }
+    if comment != "" {
+        for _ in 0 ..< max(col - n, 1) {
+            strings.write_byte(b, ' ')
+        }
+        strings.write_string(b, comment)
+    }
+    strings.write_byte(b, '\n')
 }
 
 // Where settings are written: the existing config if one was found, else a local

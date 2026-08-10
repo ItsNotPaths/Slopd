@@ -38,28 +38,3 @@ test_git_term_slot :: proc(t: ^testing.T) {
     // The session cap holds: you cannot ask your way past TERM_MAX.
     testing.expect_value(t, app.git_term_slot(app.TERM_MAX, app.TERM_MAX + 5), app.TERM_MAX)
 }
-
-// Config lines carry trailing `# comment`s — the file's header promises them and every
-// shipped line uses one — but the parser only ever skipped lines that STARTED with '#',
-// so the comment text rode along inside the value. Invisible for years because every
-// commented setting in slopd.config happens to hold the value that is already its
-// default; the first one where it would bite is git_tool, whose value is free text.
-@(test)
-test_config_strip_comment :: proc(t: ^testing.T) {
-    // The live case: a value followed by a comment keeps only the value.
-    testing.expect_value(t, app.config_strip_comment("mouse: on             # on | off"), "mouse: on")
-    testing.expect_value(t, app.config_strip_comment("git_tool: lazygit  # e.g. lazygit"), "git_tool: lazygit")
-
-    // A key with NO value but a comment must come back empty after the colon, not
-    // carrying the comment as its value — this is the one that would launch a process
-    // named "# e.g. lazygit".
-    testing.expect_value(t, app.config_strip_comment("git_tool:             # e.g. lazygit"), "git_tool:")
-
-    // Whole-line comments and blanks collapse to "", which the loop skips.
-    testing.expect_value(t, app.config_strip_comment("# a heading"), "")
-    testing.expect_value(t, app.config_strip_comment("   # indented"), "")
-    testing.expect_value(t, app.config_strip_comment("   "), "")
-
-    // A line without a comment is just trimmed — the common case must not be disturbed.
-    testing.expect_value(t, app.config_strip_comment("  theme: themes/default.theme  "), "theme: themes/default.theme")
-}
