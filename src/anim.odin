@@ -75,9 +75,6 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     if chord_shown(a) && anim_active(&a.chord_anim, now) {
         wake = sched_min(wake, VSYNC_PACED)
     }
-    if a.aux_mode == .Procmon && anim_active(&a.procmon.scroll_anim, now) { // list smooth scroll
-        wake = sched_min(wake, VSYNC_PACED)
-    }
     if caret_shown(a) { // a blinking caret must wake at its next on/off edge
         wake = sched_min(wake, blink_next_edge(a, now))
     }
@@ -129,9 +126,6 @@ caret_shown :: proc(a: ^App) -> bool {
         // Only the search box carries a caret now (settings are dropdowns); and not
         // while a dropdown is open over it.
         return config_pane_is_search(cp.sel) && cp.open == .None
-    }
-    if a.focus == .Aux && a.aux_mode == .Procmon {
-        return a.procmon.filtering // only the filter bar carries a caret
     }
     return panes_visible(a).editor // the editor and its caret are on screen
 }

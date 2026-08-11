@@ -473,7 +473,7 @@ test_cl_chain_first_failure_stops_all :: proc(t: ^testing.T) {
     a: app.App
     tm := fake_live(&a)
     defer free_live(&a, tm)
-    a.aux_mode = app.AuxMode.Procmon // a known starting pane
+    a.aux_mode = app.AuxMode.Grep // a known starting pane
 
     app.cl_exec(&a, "build && cf && ls")
     feed_exit(&a, tm, 1) // build fails immediately -> no builtin runs

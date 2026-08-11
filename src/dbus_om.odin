@@ -110,7 +110,7 @@ dbus_om_clear :: proc(om: ^Dbus_Om) {
 }
 
 // Is the service on the bus at all? False means the pane draws "unavailable" rather than
-// an empty list — the procmon GPU-row precedent.
+// an empty list.
 dbus_om_present :: proc(om: ^Dbus_Om) -> bool {
     return om.owner != ""
 }

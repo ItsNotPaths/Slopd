@@ -27,8 +27,8 @@ Line_Numbers :: enum {
 // How a viewport tracks what it is following: Follow moves the view only when the target
 // would leave it; Middle pins the target to the pane's middle row, so Up/Down always move
 // the content instead. One policy across every line-oriented view — the editor follows its
-// caret (buffer_scroll_target, which also walks folds), while the filetree / procmon / grep /
-// config lists follow their selection (list_scroll_target).
+// caret (buffer_scroll_target, which also walks folds), while the filetree / grep / config
+// lists follow their selection (list_scroll_target).
 Scroll_Mode :: enum {
     Follow,
     Middle,
@@ -51,7 +51,6 @@ Config :: struct {
     git_tool:         string, // external git tool Alt+G hands the project root to (owned); "" = none
     git_term:         int, // which terminal session to run it in; 0 = spawn it detached
     grep_pane_always: bool, // CL grep: always open the results pane vs jump straight on a lone hit
-    kill_confirm:     bool, // procmon `k`: arm a confirm row vs SIGKILL immediately
     conflict_prompt:  bool, // disk changed under unsaved edits: prompt (y/n in the CL) vs silently keep my edits
     mouse:            bool, // pointer input (wheel, and the clicks that follow it) on/off
     hover:            bool, // tint the row under the pointer; needs `mouse` to mean anything
@@ -102,7 +101,6 @@ load_config :: proc() -> Config {
         folder_cd_run   = false, // stage the cd in the CL by default (reviewable)
         git_term        = 0, // detached by default: a GUI tool wants its own window, not a PTY
         grep_pane_always = true, // always show the results pane (no auto-jump on a lone hit)
-        kill_confirm    = true, // confirm a procmon kill before it fires
         conflict_prompt = true, // ask before a disk change is reconciled against unsaved edits
         mouse           = true, // pointer input on; it is purely additive to the keyboard
         hover           = true, // the tint is deliberately faint — see HOVER_MIX (render.odin)
@@ -172,8 +170,6 @@ load_config :: proc() -> Config {
             if v, ok := strconv.parse_int(val); ok {cfg.git_term = max(0, v)}
         case "grep_pane":
             if v, ok := parse_on_off(val); ok {cfg.grep_pane_always = v}
-        case "kill_confirm":
-            if v, ok := parse_on_off(val); ok {cfg.kill_confirm = v}
         case "disk_conflict":
             if v, ok := parse_prompt_keep(val); ok {cfg.conflict_prompt = v}
         case "mouse":
@@ -260,7 +256,7 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return INDENT_OPTS[:]
     case .Theme:
         return theme_options(context.temp_allocator)
-    case .Folding, .IndentGuides, .Whitespace, .GrepPane, .KillConfirm, .Mouse, .Hover:
+    case .Folding, .IndentGuides, .Whitespace, .GrepPane, .Mouse, .Hover:
         return ON_OFF_OPTS[:]
     case .FolderCd:
         return STAGE_RUN_OPTS[:]
@@ -319,7 +315,6 @@ Setting :: enum {
     Whitespace,
     FolderCd,
     GrepPane,
-    KillConfirm,
     DiskConflict,
     Mouse,
     Hover,
@@ -336,7 +331,6 @@ setting_key :: proc(s: Setting) -> string {
     case .Whitespace:   return "whitespace"
     case .FolderCd:     return "folder_cd"
     case .GrepPane:     return "grep_pane"
-    case .KillConfirm:  return "kill_confirm"
     case .DiskConflict: return "disk_conflict"
     case .Mouse:        return "mouse"
     case .Hover:        return "hover"
@@ -358,7 +352,6 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .Whitespace:   return on_off(a.show_whitespace)
     case .FolderCd:     return a.folder_cd_run ? "run" : "stage"
     case .GrepPane:     return on_off(a.grep_pane_always)
-    case .KillConfirm:  return on_off(a.kill_confirm)
     case .DiskConflict: return a.conflict_prompt ? "prompt" : "keep"
     case .Mouse:        return on_off(a.mouse_on)
     case .Hover:        return on_off(a.hover_on)
@@ -398,8 +391,6 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.folder_cd_run = parse_stage_run(val) or_return
     case .GrepPane:
         a.grep_pane_always = parse_on_off(val) or_return
-    case .KillConfirm:
-        a.kill_confirm = parse_on_off(val) or_return
     case .DiskConflict:
         a.conflict_prompt = parse_prompt_keep(val) or_return
     case .Mouse:

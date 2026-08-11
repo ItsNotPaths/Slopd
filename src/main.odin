@@ -78,7 +78,6 @@ main :: proc() {
     app.git_tool = cfg.git_tool
     app.git_term = cfg.git_term
     app.grep_pane_always = cfg.grep_pane_always
-    app.kill_confirm = cfg.kill_confirm
     app.conflict_prompt = cfg.conflict_prompt
     app.mouse_on = cfg.mouse
     app.hover_on = cfg.hover
@@ -92,8 +91,6 @@ main :: proc() {
     defer grammars_destroy(app.grammars)
     config_pane_init(&app.config_pane, app.grammars)
     defer config_pane_destroy(&app.config_pane)
-    procmon_init(&app.procmon)
-    defer procmon_destroy(&app.procmon)
     highlighter_init(&app.hl)
     defer highlighter_destroy(&app.hl)
     if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {
@@ -149,7 +146,6 @@ main :: proc() {
         for term in app.terminals {
             terminal_drain(term)
         }
-        procmon_drain(&app) // install a freshly sampled process snapshot (procmon.odin)
         cl_chain_pump(&app) // advance a pending && chain once its exit code arrives
 
         now := glfw.GetTime()

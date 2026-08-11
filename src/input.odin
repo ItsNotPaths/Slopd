@@ -19,7 +19,7 @@ import "vendor:glfw"
 //                             filetree: cd to the selected folder (stage in CL, or run; config)
 //   Shift+Enter               filetree: open the entry in the OS default app (xdg-open); a
 //                             binary/script instead stages its run command in the CL
-//   Alt+F/T/P/R               aux mode: FileTree / Terminal / Procmon / gRep results
+//   Alt+F/T/R                 aux mode: FileTree / Terminal / gRep results
 //   Alt+G                     open the configured git tool at the project root (git_tool.odin)
 //   Alt+1..9                  jump to terminal session N (i3-style)
 //   Alt+N / Alt+Q             terminal: new / close session (max 99)
@@ -137,10 +137,6 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
             doc_insert_rune(&cp.search, codepoint)
             config_pane_filter(cp) // live filter as you type
         }
-    } else if a.focus == .Aux && a.aux_mode == .Procmon && a.procmon.filtering && codepoint >= 32 {
-        // Only the filter bar takes text; the list and graph band navigate with arrows.
-        doc_insert_rune(&a.procmon.filter, codepoint)
-        procmon_view_rebuild(&a.procmon) // live filter as you type
     } else if a.focus == .Editor && a.main == .Text && codepoint >= 32 {
         b := editor_current(&a.editor)
         if !buffer_autopair(b, codepoint) {
@@ -304,9 +300,6 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             term_ensure(a) // spawn t1 on first reveal of the terminal pane
         case glfw.KEY_G:
             git_tool_open(a) // hand the project root to the configured external git tool
-        case glfw.KEY_P:
-            set_aux(a, .Procmon)
-            procmon_resort(&a.procmon) // (re)opening refreshes the sort; the live list never reorders itself
         case glfw.KEY_R:
             set_aux(a, .Grep) // re-focus the grep results pane (last search)
 
@@ -421,8 +414,6 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         config_key(a, key, mods)
     } else if a.focus == .Aux && a.aux_mode == .Grep {
         grep_key(a, key, mods)
-    } else if a.focus == .Aux && a.aux_mode == .Procmon {
-        procmon_key(a, key, mods)
     }
 }
 
@@ -443,8 +434,8 @@ grep_key :: proc(a: ^App, key, mods: i32) {
 // Editing keys shared by the command line and the buffer (the CL is a one-line
 // buffer): horizontal motion (Ctrl = word), Home/End, and readline Ctrl+A/Ctrl+E,
 // with Shift extending the selection and `all` (the Alt+M prefix) moving every
-// cursor. Returns true if the key was a motion it handled. (Package-level: the
-// procmon filter bar reuses it too.)
+// cursor. Returns true if the key was a motion it handled. (Package-level: the aux
+// panes' text boxes reuse it too.)
 edit_motion :: proc(d: ^Doc, key, mods: i32, all: bool) -> bool {
     shift := mods & glfw.MOD_SHIFT != 0
     ctrl := mods & glfw.MOD_CONTROL != 0

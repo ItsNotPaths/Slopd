@@ -13,25 +13,24 @@ import "vendor:glfw"
 // It owns both bus connections and every ObjectManager tree, and the main thread never
 // touches a socket.
 //
-// Threading model (procmon.odin's sampler and terminal.odin's reader, plus one thing):
+// Threading model (terminal.odin's reader, plus one thing):
 //   - The worker blocks in poll() on [wake pipe, system fd, session fd]. D-Bus is
-//     signal-driven, so unlike procmon there is NO poll loop: the panes are live and the
-//     app still idles at 0%. The only timer is a 1s tick, armed only while a pane wanting
-//     a live graph is on screen (sysbus_set_ticking).
+//     signal-driven, so there is NO sampling loop: the panes are live and the app still
+//     idles at 0%. The only timer is a 1s tick, armed only while a pane wanting a live
+//     graph is on screen (sysbus_set_ticking).
 //   - Incoming signals update the worker's authoritative trees. Anything that moves is
 //     snapshotted heap-owned, handed off as `pending` under `lock`, and PostEmptyEvent
 //     wakes the main loop. sysbus_drain installs it into `cur` each frame. `cur` is
 //     MAIN-THREAD-ONLY, so draw needs no lock.
 //
-// THE ONE ADDITION — a REQUEST QUEUE the other way. procmon's single action (posix.kill)
-// is instant, so it runs on the main thread. A D-Bus Connect() can block for thirty
-// seconds, so actions cannot: the main thread pushes a request and writes a wake byte, and
+// THE ONE ADDITION — a REQUEST QUEUE the other way. A D-Bus Connect() can block for thirty
+// seconds, so an action cannot run on the main thread the way an instant syscall could:
+// the main thread pushes a request and writes a wake byte, and
 // the worker performs the call and reports the outcome in the next snapshot. The row
 // renders in-flight in the meantime — the worker publishes a snapshot as soon as it picks
 // a request up, BEFORE it blocks on the call, precisely so that state is visible. A
 // permission failure (the polkit-gated ops on iwd and BlueZ) is carried as an error name
-// ON THE RESULT, because the user asked for this action and, unlike procmon's silent
-// EPERM no-op, it has to be legible.
+// ON THE RESULT, because the user asked for this action and it has to be legible.
 //
 // Requests are performed one at a time, in order. A hung daemon therefore delays the
 // requests queued behind it (bounded by DBUS_CALL_TIMEOUT) but never the UI, which is
@@ -347,9 +346,8 @@ sysbus_service :: proc(sb: ^Sysbus, service: string) -> (svc: Sys_Service, ok: b
     return {}, false
 }
 
-// Arms or disarms the 1s tick. On only while a pane wanting a live graph is visible —
-// procmon's `wanted` gating, and the reason an idle Slopd stays at 0% with four live
-// panes registered.
+// Arms or disarms the 1s tick. On only while a pane wanting a live graph is visible — the
+// reason an idle Slopd stays at 0% with four live panes registered.
 sysbus_set_ticking :: proc(sb: ^Sysbus, on: bool) {
     sync.mutex_lock(&sb.lock)
     changed := sb.ticking != on
@@ -668,7 +666,7 @@ sysbus_result_set :: proc(sb: ^Sysbus, id: u64, state: Sys_Req_State, name, text
 }
 
 // Clones the worker's state into a fresh snapshot and hands it off, dropping any the main
-// thread hasn't consumed yet (the newer one supersedes it — procmon's rule).
+// thread hasn't consumed yet (the newer one supersedes it).
 @(private = "file")
 sysbus_publish :: proc(sb: ^Sysbus) {
     snap: Sys_Snapshot

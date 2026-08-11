@@ -304,8 +304,6 @@ window_frame :: proc(t: ^Text, a: ^App, lay: Layout, win_w, win_h: i32, now: f64
             terminal_frame(t, a, lay.aux, now)
         case .Grep:
             grep_frame(t, a, lay.aux)
-        case .Procmon:
-            procmon_frame(t, a, lay.aux, now)
         }
         // The strip declares LAST, which since C8a is an ordering and not a hazard — see
         // strip_ui.odin's header for what it was before.

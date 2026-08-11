@@ -127,8 +127,7 @@ test_view_normal_names_the_arrangement :: proc(t: ^testing.T) {
     testing.expect_value(t, a.view, app.View.Split)
 
     // Both panes are on screen afterwards, whichever one holds the arrows — which is the
-    // thing "normal" actually promises, and what the aux pane's own liveness reads off
-    // (set_focus re-asks whether procmon is visible).
+    // thing "normal" actually promises.
     v := app.panes_visible(&a)
     testing.expect(t, v.editor && v.aux, "normal mode must show both panes")
 }

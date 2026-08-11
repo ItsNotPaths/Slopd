@@ -315,10 +315,10 @@ test_strip_status_without_an_editor :: proc(t: ^testing.T) {
     defer teardown(&a)
     a.view = .Full
     a.focus = .Aux
-    a.aux_mode = .Procmon
+    a.aux_mode = .Config
 
     cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
-    testing.expect_value(t, text_box(&cmds, "procmon"), app.Rect{PAD, TEXT_Y, 70, 16})
+    testing.expect_value(t, text_box(&cmds, "config"), app.Rect{PAD, TEXT_Y, 60, 16})
     testing.expect_value(t, text_box(&cmds, "/zz/proj"), app.Rect{}) // no document, no root
     testing.expect_value(t, count_of(&cmds, .Text), 1)
 }

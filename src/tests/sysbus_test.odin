@@ -361,8 +361,8 @@ test_sysbus_request_carries_args :: proc(t: ^testing.T) {
 
 @(test)
 test_sysbus_request_failure_is_legible :: proc(t: ^testing.T) {
-    // The polkit case. The user asked for this, so — unlike procmon's silent EPERM no-op —
-    // the refusal has to survive all the way to the row.
+    // The polkit case. The user asked for this, so the refusal has to survive all the way
+    // to the row.
     sb, conn := fake_sysbus()
     defer fake_sysbus_free(sb)
 

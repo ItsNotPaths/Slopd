@@ -10,9 +10,8 @@ import clay "../bindings/clay"
 // Slopd has exactly two surfaces that COVER another one: the terminal switcher (a slim
 // i3-style numbered column, shown while plain Alt is held) and the filetree chord bar (the
 // Ctrl-held cheat-sheet along the bottom of the pane). The config dropdown turned out to
-// splice rows inline rather than float over them, and procmon's signal panel REPLACES the
-// graph band, so those two were never occlusion cases at all — which left the question C1
-// property 1 raises unanswered for five checkpoints:
+// splice rows inline rather than float over them, so it was never an occlusion case at
+// all — which left the question C1 property 1 raises unanswered for five checkpoints:
 //
 //     within one scissor group quads paint UNDER glyphs, so how does an element that must
 //     paint OVER a pane's text get a group of its own?

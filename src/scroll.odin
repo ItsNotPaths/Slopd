@@ -81,7 +81,7 @@ pane_input_at :: proc(a: ^App) -> f64 {
 // How long a scroll step takes to settle (seconds). Short by design — spartan.
 SCROLL_DUR :: 0.09
 
-// Smooth-scroll bookkeeping shared by the editor, the diff viewer and the procmon list:
+// Smooth-scroll bookkeeping shared by the editor and the diff viewer:
 // re-aim `anim` at the integer target `to` when it changes, then return the floored top
 // row + the sub-row pixel offset to shift drawing by (the partial top row is clipped by
 // the pane scissor). `top` may be negative when over-scrolled past the first row — the

@@ -58,7 +58,7 @@ test_wheel_target_main_surface :: proc(t: ^testing.T) {
     testing.expect_value(t, app.wheel_target(&a, LAY, 100, 100), app.Wheel_Target.Media)
 }
 
-// Every aux mode routes to exactly one target, and the four list panes share one.
+// Every aux mode routes to exactly one target, and the three list panes share one.
 @(test)
 test_wheel_target_aux_modes :: proc(t: ^testing.T) {
     AUX_X :: 800 // comfortably inside the aux pane
@@ -69,7 +69,6 @@ test_wheel_target_aux_modes :: proc(t: ^testing.T) {
         {.FileTree, .List},
         {.Grep, .List},
         {.Config, .List},
-        {.Procmon, .List},
         {.Terminal, .Terminal},
     }
     for c in cases {

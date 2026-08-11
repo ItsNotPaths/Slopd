@@ -126,7 +126,7 @@ clay_resize :: proc(w, h: i32) {
 }
 
 // A surface Clay lays out but does not paint: the editor text body, the terminal cell
-// grid, the media surface, procmon's graph band. Clay reserves the box, we paint inside
+// grid, the media surface. Clay reserves the box, we paint inside
 // it with the existing per-glyph painters. The declaring pane owns the struct and passes
 // it as `custom.customData` — it must outlive EndLayout, so it lives on App or in the
 // frame's temp arena, never on a stack frame that has already returned.

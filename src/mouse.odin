@@ -117,8 +117,9 @@ Mouse :: struct {
 // callback, before any pane gets a chance to claim it, so there is no state in which a
 // deliberate click is swallowed — which is why the gate lives at the four places hover is
 // PAINTED (hover_shown) and not in any pane's hit test. Clay is still fed the real pointer
-// for the same reason: wheel routing asks it where a notch landed (procmon's band, C5c),
-// and parking the pointer off-screen to kill hover would quietly break that instead.
+// for the same reason: the list panes ask it which row the pointer is over (`ft_row` /
+// `gp_row` / `cf_row`), and parking the pointer off-screen to kill hover would quietly
+// break that instead.
 
 // A key that does something: hide the pointer and stop it answering.
 mouse_stand_down :: proc(a: ^App) {
@@ -174,7 +175,7 @@ Wheel_Target :: enum {
     Editor, // editor pane, Text surface: the buffer's viewport
     Media, // editor pane, Image surface: the zoom (C8d) — the one target that is not a scroll
     Terminal,
-    List, // filetree / grep / config / procmon
+    List, // filetree / grep / config
 }
 
 // Which target a wheel notch at (mx, my) belongs to. Pure: no mutation, no GL, no window
@@ -193,7 +194,7 @@ wheel_target :: proc(a: ^App, lay: Layout, mx, my: i32) -> Wheel_Target {
     switch a.aux_mode {
     case .Terminal:
         return .Terminal
-    case .FileTree, .Grep, .Config, .Procmon:
+    case .FileTree, .Grep, .Config:
         return .List
     }
     return .None
@@ -293,28 +294,6 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
             // config_dropdown_move stays the KEYBOARD's, where moving a selection is the
             // point. (That branch was a refusal until C5b and a selection move until now.)
             list_scroll_by(&a.config_pane.scroll, &a.config_pane.scroll_detached, d, now)
-        case .Procmon:
-            // The one aux mode whose regions stack vertically, so where the notch landed
-            // decides what it moves. That question goes to the tree CLAY is holding — the
-            // one the last frame painted — rather than to a recomputed procmon_geom, which
-            // would be a second copy of the band's height, drifting from the first the
-            // moment either changed. It also needs no font: the element knows its own box.
-            //
-            //   over the band, selector open   walks the 1..31 grid (procmon_sig_move)
-            //   over the band, graphs showing  nothing; a graph is a picture, not a view
-            //   over the list                  scrolls the list, like every other pane
-            //
-            // The list stays scrollable while the selector is up or a kill is armed, which
-            // the selection-moving version could not allow: a view scroll cannot arm, send
-            // or confirm anything, so there is nothing for the capture to protect.
-            pm := &a.procmon
-            if clay.PointerOver(clay.ID("pm_band")) {
-                if pm.sig_open {
-                    procmon_sig_move(pm, d)
-                }
-            } else {
-                list_scroll_by(&pm.scroll, &pm.scroll_detached, d, now)
-            }
         case .Terminal:
         // Not a list pane; wheel_target never routes it here.
         }

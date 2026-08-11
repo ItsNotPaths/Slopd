@@ -24,7 +24,8 @@ import clay "../bindings/clay"
 // The frame order is the template's, and the editor adds one wrinkle to it (see
 // editor_view): the window is computed TWICE, either side of the click, because a click
 // that moves the caret re-aims the scroll animation and that re-aim has to happen in the
-// frame that caused it — C5c's rule 9, arriving here for the same reason procmon hit it.
+// frame that caused it — C5c's rule 9 (docs/clay-refactor.md), which every pane that tweens
+// its viewport hits.
 
 // Extra vertical padding per row, in logical pixels — the twin of FT_ROW_PAD and
 // GREP_ROW_PAD, and the value draw_editor has always used.
@@ -97,8 +98,8 @@ Editor_View :: struct {
 // off exactly that (scroll.odin). The loop is WaitEvents-driven, so a frame that moves
 // b.scroll — which is any frame a click lands a caret off-screen — and does not reach here
 // again leaves nothing to wake the loop, and the view sits frozen part-scrolled until an
-// unrelated event arrives. C5c found this with procmon's list; the editor tweens the same
-// way, so it inherits the same rule rather than a special case.
+// unrelated event arrives. C5c found this in a list pane; the editor tweens the same way,
+// so it inherits the same rule rather than a special case.
 editor_view :: proc(b: ^Buffer, f: ^Font, area: Rect, row_h: i32, rows: int, now: f64) -> Editor_View {
     top, off := smooth_scroll(&b.scroll_anim, b.scroll, now, row_h)
     gutter := editor_gutter_w(b)

@@ -29,8 +29,6 @@ aux_mode_name :: proc(m: AuxMode) -> string {
         return "filetree"
     case .Terminal:
         return "terminal"
-    case .Procmon:
-        return "procmon"
     case .Config:
         return "config"
     case .Grep:
@@ -170,8 +168,8 @@ hover_bg :: proc(th: ^Theme) -> [3]f32 {
     return th.bg + (th.separator - th.bg) * HOVER_MIX
 }
 
-// smooth_scroll lives in scroll.odin, beside the list viewport policy it animates: C5c's
-// procmon pane needs it from procmon_ui.odin, and a layout proc cannot call something
+// smooth_scroll lives in scroll.odin, beside the viewport policy it animates: the panes that
+// tween need it from their own *_ui.odin files, and a layout proc cannot call something
 // file-private to render.odin.
 
 // draw_editor and its painters (the indent guides, the whitespace markers, the fold marker,
@@ -202,10 +200,6 @@ hover_bg :: proc(th: ^Theme) -> [3]f32 {
 
 // grep_frame lives in grep_ui.odin: the results pane is declared in Clay (C5a), and its
 // display-row flattening moved to grep.odin, where the model it flattens already lives.
-
-// procmon_frame lives in procmon_ui.odin: the process monitor is declared in Clay (C5c),
-// with its graph band and its live filter bar as the first Custom surfaces outside the
-// editor and the terminal.
 
 // terminal_frame lives in terminal_ui.odin: the cell grid is declared in Clay (C7b) as one
 // Custom, with the pointer either forwarded to a mouse-tracking TUI or driving our own copy

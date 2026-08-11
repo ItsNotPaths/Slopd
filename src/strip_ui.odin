@@ -15,9 +15,9 @@ import clay "../bindings/clay"
 //
 // **This is the surface invariant 11 was in the way of, and that is why it waited for C8a.**
 // The strip draws LAST. While every pane declared its own tree, a strip declared in Clay
-// would have ended the frame holding it — and the filetree, grep, config and procmon would
-// all have gone blind on the following frame, because their `PointerOver` resolves against
-// whatever the last EndLayout produced. Those four panes only ever worked because the aux
+// would have ended the frame holding it — and the filetree, grep and config would all have
+// gone blind on the following frame, because their `PointerOver` resolves against
+// whatever the last EndLayout produced. Those three panes only ever worked because the aux
 // pane happened to be the last declaration. So porting the strip was never a matter of
 // writing this file; it was gated on the window frame, and now it is a normal port.
 //

@@ -35,7 +35,6 @@ FONT_SAVE_DELAY :: 5.0 // seconds the size must sit unchanged before it persists
 AuxMode :: enum {
     FileTree,
     Terminal,
-    Procmon,
     Config,
     Grep,
 }
@@ -115,7 +114,6 @@ App :: struct {
 
     tree:        FileTree, // filetree aux mode (initialised in main, needs IO)
     config_pane: ConfigPane, // config / syntax aux mode (initialised in main, needs IO)
-    procmon:     ProcmonPane, // procmon aux mode (btop-lite; sampler thread, initialised in main)
 
     // The main (document) pane. `main` selects the surface; `editor` holds the text
     // buffers, `media` the one image currently viewed (Image surface). Opening an image
@@ -187,10 +185,6 @@ App :: struct {
     // tool that wants its own window. See git_tool.odin.
     git_tool: string,
     git_term: int,
-
-    // Procmon `k`: when on (default) a kill arms a one-key confirm row first; off kills
-    // (SIGKILL) immediately.
-    kill_confirm: bool,
 
     // Mouse (mouse.odin). `mouse` mirrors the GLFW pointer callbacks; `mouse_on` is the
     // config toggle. `lay` is the layout the LAST FRAME PAINTED — cached by render because
@@ -312,10 +306,6 @@ set_focus :: proc(a: ^App, who: Focus) {
     // or another editor rewriting the open file) flows in at once rather than waiting for
     // the poll — and can't be silently overwritten by a later save.
     view_refresh(a)
-    // Procmon only samples /proc while its pane is on screen, so the loop returns to
-    // 0% idle otherwise. In Split both panes are always visible (so it keeps updating
-    // even when the editor holds focus); in Zen it shows only while focused.
-    a.procmon.wanted = a.aux_mode == .Procmon && panes_visible(a).aux
 }
 
 // Toggle zen on/off (the `zen` / `zm` command line builtin). Works from any view —
@@ -344,8 +334,8 @@ view_toggle_full :: proc(a: ^App) {
 // Focus is KEPT rather than forced to the editor, unlike view_toggle_zen's exit: in Split both
 // panes are on screen whichever one holds the arrows, so there is nothing an arrangement
 // change has to resolve. set_focus is still the way it lands, because leaving Zen has to
-// re-aim that view's reveal and re-ask whether procmon is on screen — both of which Split
-// answers differently and neither of which is this proc's business to know.
+// re-aim that view's reveal — which Split answers differently, and which is not this
+// proc's business to know.
 view_normal :: proc(a: ^App) {
     a.view = .Split
     set_focus(a, a.focus)
