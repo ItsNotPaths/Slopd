@@ -44,15 +44,17 @@ jobs:
       - name: Install fontTools
         run: python3 -m pip install --user fonttools
 
-      - name: Download deps
-        run: |
-          chmod +x ./download-deps.sh
-          ./download-deps.sh
-
+      # Must precede Download deps: the script's glfw step shells out to `odin root`
+      # to install libglfw3.a into the Odin tree, where the stock bindings look.
       - name: Install toolchain
         uses: laytan/setup-odin@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download deps
+        run: |
+          chmod +x ./download-deps.sh
+          ./download-deps.sh
 
       - name: Build
         run: |
