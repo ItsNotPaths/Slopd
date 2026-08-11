@@ -69,9 +69,8 @@ git_tool:             # e.g. lazygit
     testing.expect(t, os.write_entire_file(path, transmute([]byte)src) == nil)
     defer os.remove(path)
 
-    old := os.get_env("SLOPD_CONFIG", context.temp_allocator)
-    os.set_env("SLOPD_CONFIG", path)
-    defer os.set_env("SLOPD_CONFIG", old)
+    app.config_path_override = path
+    defer app.config_path_override = ""
 
     testing.expect(t, app.config_set("mouse", "off"))
     testing.expect(t, app.config_set("git_tool", "lazygit"))
@@ -107,9 +106,8 @@ test_config_set_empty_value :: proc(t: ^testing.T) {
     testing.expect(t, os.write_entire_file(path, transmute([]byte)string("git_tool: lazygit  # e.g. lazygit\n")) == nil)
     defer os.remove(path)
 
-    old := os.get_env("SLOPD_CONFIG", context.temp_allocator)
-    os.set_env("SLOPD_CONFIG", path)
-    defer os.set_env("SLOPD_CONFIG", old)
+    app.config_path_override = path
+    defer app.config_path_override = ""
 
     testing.expect(t, app.config_set("git_tool", ""))
 
@@ -132,9 +130,8 @@ test_config_git_detached_token :: proc(t: ^testing.T) {
     testing.expect(t, os.write_entire_file(path, transmute([]byte)src) == nil)
     defer os.remove(path)
 
-    old := os.get_env("SLOPD_CONFIG", context.temp_allocator)
-    os.set_env("SLOPD_CONFIG", path)
-    defer os.set_env("SLOPD_CONFIG", old)
+    app.config_path_override = path
+    defer app.config_path_override = ""
 
     cfg := app.load_config()
     defer app.config_destroy(&cfg)

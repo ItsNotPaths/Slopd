@@ -32,9 +32,9 @@ Scroll_Mode :: enum {
     Middle,
 }
 
-// Config — Slopd's own simple `key: value` file. Points at a theme file and holds
-// a few editor settings. Search order: $SLOPD_CONFIG, ~/.config/slopd/slopd.config,
-// ./slopd.config. Anything missing keeps the defaults below.
+// Config — Slopd's own simple `key: value` file. Points at a theme file and holds a few
+// editor settings. It lives beside the binary and nowhere else (see config_file), like
+// themes/ and grammars/. Anything missing keeps the defaults below.
 Config :: struct {
     theme_path:       string, // absolute (owned), or "" for the baked-in default
     indent:           Indent,
@@ -94,11 +94,7 @@ load_config :: proc() -> Config {
         mouse           = true, // pointer input on; it is purely additive to the keyboard
         hover           = true, // the tint is deliberately faint — see HOVER_MIX (render.odin)
     }
-    path := find_config()
-    if path == "" {
-        return cfg
-    }
-    src, _ := os.read_entire_file_from_path(path, context.temp_allocator)
+    src, _ := os.read_entire_file_from_path(config_file(), context.temp_allocator)
     if src == nil {
         return cfg
     }
@@ -116,8 +112,8 @@ load_config :: proc() -> Config {
         val := strings.trim_space(s[colon + 1:])
         switch key {
         case "theme":
-            // Stored as a raw token (a themes/ name, "global", or "default"); it's
-            // resolved to a file path at load time by theme_resolve.
+            // Stored as a raw token (a themes/ name, or "default"); it's resolved
+            // to a file path at load time by theme_resolve.
             cfg.theme_path = strings.clone(val)
         case "indent":
             if ind, ok := parse_indent(val); ok {
@@ -190,41 +186,33 @@ config_destroy :: proc(cfg: ^Config) {
     delete(cfg.git_tool)
 }
 
-@(private = "file")
-find_config :: proc() -> string {
-    if p := os.get_env("SLOPD_CONFIG", context.temp_allocator); p != "" && os.exists(p) {
-        return p
+// TEST SEAM, empty in a real run: the config file to use instead of the one beside the
+// binary. Only the suite sets it — a settings write PERSISTS, and a test must never land
+// on the shipped file. Not reachable from a config value, a flag, or the environment.
+config_path_override: string
+
+// The config file: slopd.config beside the binary (asset_path falls back to ./slopd.config
+// for `odin run`). Returned whether or not it exists, since it is also the WRITE target —
+// config_set creates it on the first settings change. Temp-allocated.
+//
+// There is deliberately no search path. Slopd reads and writes its own files in one
+// directory, its own; nothing of ours lives in ~/.config, and no value in the config can
+// point the config, a theme, or a grammar anywhere else.
+config_file :: proc() -> string {
+    if config_path_override != "" {
+        return strings.clone(config_path_override, context.temp_allocator)
     }
-    if home := os.get_env("HOME", context.temp_allocator); home != "" {
-        if p, jerr := filepath.join({home, ".config", "slopd", "slopd.config"}, context.temp_allocator);
-           jerr == nil && os.exists(p) {
-            return p
-        }
-    }
-    if os.exists("slopd.config") {
-        return "slopd.config"
-    }
-    return ""
+    return asset_path("slopd.config", context.temp_allocator)
 }
 
 // Resolves a theme config token (from the Config pane's dropdown) to a file path for load_theme:
-//   "" / "default"        -> themes/default.theme beside the binary (else baked-in)
-//   "global"              -> ~/.config/unrawk/active.theme, the universal Thrawk theme
-//                            (github.com/ItsNotPaths/Thrawk); falls back to default
-//   "<name>"              -> themes/<name>.theme beside the binary
-//   a value containing '/' -> taken literally (back-compat with hand-edited configs)
-// Result is temp-allocated; load_theme falls back to the baked-in default for "".
+//   "" / "default"  -> themes/default.theme beside the binary (else baked-in)
+//   "<name>"        -> themes/<name>.theme beside the binary
+// A token is a NAME, never a path: a '/' in it would reach outside themes/, so it is refused
+// and the baked-in default stands. Result is temp-allocated; "" means the baked-in default.
 theme_resolve :: proc(token: string) -> string {
     if strings.contains(token, "/") {
-        return strings.clone(token, context.temp_allocator) // literal path, as-is
-    }
-    if token == "global" {
-        home := os.get_env("HOME", context.temp_allocator)
-        if home == "" {
-            return ""
-        }
-        p := filepath.join({home, ".config", "unrawk", "active.theme"}, context.temp_allocator) or_else ""
-        return os.exists(p) ? p : ""
+        return "" // not a name — no theme lives outside themes/
     }
     name := token == "" ? "default" : token
     file := fmt.tprintf("%s.theme", name)
@@ -232,9 +220,9 @@ theme_resolve :: proc(token: string) -> string {
     return os.exists(p) ? p : ""
 }
 
-// The dropdown choices for a setting. Theme is derived (themes/ beside the binary,
-// plus the "default" baked-in and "global" Thrawk-follow options); the others are
-// fixed presets. The theme list is temp-allocated; the fixed ones are static.
+// The dropdown choices for a setting. Theme is derived (themes/ beside the binary, plus
+// the "default" baked-in palette); the others are fixed presets. The theme list is
+// temp-allocated; the fixed ones are static.
 setting_options :: proc(a: ^App, s: Setting) -> []string {
     switch s {
     case .LineNumbers:
@@ -266,12 +254,12 @@ ON_OFF_OPTS := [?]string{"on", "off"}
 STAGE_RUN_OPTS := [?]string{"stage", "run"}
 PROMPT_KEEP_OPTS := [?]string{"prompt", "keep"}
 
-// "default" + "global" first, then every themes/<name>.theme beside the binary,
-// sorted. Names are cloned into `allocator`; the returned slice is too.
+// "default" first, then every themes/<name>.theme beside the binary, sorted.
+// Names are cloned into `allocator`; the returned slice is too.
 @(private = "file")
 theme_options :: proc(allocator := context.allocator) -> []string {
     out := make([dynamic]string, 0, 16, allocator)
-    append(&out, "default", "global") // baked-in default + the Thrawk universal theme
+    append(&out, "default") // the baked-in palette
     dir := asset_path("themes", context.temp_allocator)
     if f, oerr := os.open(dir); oerr == nil {
         defer os.close(f)
@@ -288,7 +276,7 @@ theme_options :: proc(allocator := context.allocator) -> []string {
             append(&out, strings.clone(base, allocator))
         }
     }
-    slice.sort(out[2:]) // keep default/global pinned; sort the discovered themes
+    slice.sort(out[1:]) // keep default pinned first; sort the discovered themes
     return out[:]
 }
 
@@ -392,7 +380,7 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
     switch s {
     case .Theme:
         delete(a.theme_path)
-        a.theme_path = strings.clone(val) // store the raw token (name / "global" / "default")
+        a.theme_path = strings.clone(val) // store the raw token (a themes/ name, or "default")
         a.theme = load_theme(theme_resolve(val)) // resolve to a path; "" -> baked-in default
     case .LineNumbers:
         switch val {
@@ -497,7 +485,7 @@ on_off :: proc(b: bool) -> string {
 // line — comments, unknown keys — preserved verbatim, a new key appended. The replaced line keeps
 // its trailing comment, re-aligned: it documents the setting ("# on | off"), not its value.
 config_set :: proc(key, val: string) -> bool {
-    path := config_write_path()
+    path := config_file()
 
     b := strings.builder_make(context.temp_allocator)
     replaced := false
@@ -543,15 +531,4 @@ config_write_line :: proc(b: ^strings.Builder, key, val, comment: string, col: i
         strings.write_string(b, comment)
     }
     strings.write_byte(b, '\n')
-}
-
-// Where settings are written: the existing config if one was found, else a local
-// slopd.config (so we never need to create ~/.config on first write).
-// TODO: honour XDG and create ~/.config/slopd when that's the only sensible target.
-@(private = "file")
-config_write_path :: proc() -> string {
-    if p := find_config(); p != "" {
-        return p
-    }
-    return "slopd.config"
 }

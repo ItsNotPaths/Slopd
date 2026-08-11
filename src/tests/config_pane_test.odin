@@ -90,12 +90,14 @@ test_setting_options :: proc(t: ^testing.T) {
     testing.expect_value(t, ln[0], "global")
     testing.expect_value(t, ln[1], "relative")
 
-    // Theme always offers the baked-in default and the Thrawk "global" follow option,
-    // in that order, ahead of any discovered themes/ files.
+    // Theme always offers the baked-in default first, ahead of any discovered themes/
+    // files. Every other option is a file name from that one directory.
     theme := app.setting_options(&a, .Theme)
-    testing.expect(t, len(theme) >= 2)
+    testing.expect(t, len(theme) >= 1)
     testing.expect_value(t, theme[0], "default")
-    testing.expect_value(t, theme[1], "global")
+    for name in theme {
+        testing.expect(t, !strings.contains(name, "/"))
+    }
 }
 
 // The on/off reading-aid settings: each offers on/off, reflects the App flag as its
@@ -199,9 +201,8 @@ test_config_text_setting_edit :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_text_edit_test.config"
     testing.expect(t, os.write_entire_file(path, transmute([]byte)string("git_tool: tig\n")) == nil)
     defer os.remove(path)
-    old := os.get_env("SLOPD_CONFIG", context.temp_allocator)
-    os.set_env("SLOPD_CONFIG", path) // a commit PERSISTS; keep it off the real config
-    defer os.set_env("SLOPD_CONFIG", old)
+    app.config_path_override = path // a commit PERSISTS; keep it off the real config
+    defer app.config_path_override = ""
 
     a: app.App
     a.git_tool = strings.clone("tig") // owned, as main's clone makes it
@@ -254,9 +255,8 @@ test_config_text_setting_rejects_comment :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_text_reject_test.config"
     testing.expect(t, os.write_entire_file(path, transmute([]byte)string("git_tool: tig\n")) == nil)
     defer os.remove(path)
-    old := os.get_env("SLOPD_CONFIG", context.temp_allocator)
-    os.set_env("SLOPD_CONFIG", path)
-    defer os.set_env("SLOPD_CONFIG", old)
+    app.config_path_override = path
+    defer app.config_path_override = ""
 
     a: app.App
     a.git_tool = strings.clone("tig")
@@ -310,32 +310,14 @@ test_config_caret_live :: proc(t: ^testing.T) {
     testing.expect(t, !app.config_caret_live(&a))
 }
 
-// The "global" theme token resolves to ~/.config/unrawk/active.theme when that file
-// exists (the universal Thrawk theme), and to "" (baked-in default) when it doesn't.
+// A theme token is a NAME, never a path. Anything with a '/' in it would reach outside
+// themes/ beside the binary, so it resolves to "" and the baked-in default stands.
 @(test)
-test_theme_resolve_global :: proc(t: ^testing.T) {
-    home := "/tmp/slopd_home_test"
-    unrawk := "/tmp/slopd_home_test/.config/unrawk"
-    active := "/tmp/slopd_home_test/.config/unrawk/active.theme"
-    for d in ([]string{home, "/tmp/slopd_home_test/.config", unrawk}) {
-        os.make_directory(d)
-    }
-    defer {
-        os.remove(active)
-        os.remove(unrawk)
-        os.remove("/tmp/slopd_home_test/.config")
-        os.remove(home)
-    }
-
-    old := os.get_env("HOME", context.temp_allocator)
-    os.set_env("HOME", home)
-    defer os.set_env("HOME", old)
-
-    os.remove(active) // ensure absent first
-    testing.expect_value(t, app.theme_resolve("global"), "") // missing -> baked-in default
-
-    testing.expect(t, os.write_entire_file(active, transmute([]byte)string("bg: #000000\n")) == nil)
-    testing.expect_value(t, app.theme_resolve("global"), active)
+test_theme_resolve_refuses_paths :: proc(t: ^testing.T) {
+    testing.expect_value(t, app.theme_resolve("/etc/passwd"), "")
+    testing.expect_value(t, app.theme_resolve("../../secret.theme"), "")
+    testing.expect_value(t, app.theme_resolve("~/.config/unrawk/active.theme"), "")
+    testing.expect_value(t, app.theme_resolve("no_such_theme"), "") // a name, but no such file
 }
 
 @(test)
@@ -377,8 +359,8 @@ test_config_writeback :: proc(t: ^testing.T) {
     testing.expect(t, os.write_entire_file(path, transmute([]byte)seed) == nil)
     defer os.remove(path)
 
-    os.set_env("SLOPD_CONFIG", path)
-    defer os.unset_env("SLOPD_CONFIG")
+    app.config_path_override = path
+    defer app.config_path_override = ""
 
     testing.expect(t, app.config_set("line_numbers", "relative")) // replace in place
     testing.expect(t, app.config_set("indent", "spaces2")) // append (was absent)

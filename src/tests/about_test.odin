@@ -71,8 +71,22 @@ test_embedded_doc_reopens_in_place :: proc(t: ^testing.T) {
     testing.expect_value(t, app.editor_current(&a.editor).path, "README.md")
 }
 
-// End-to-end through the command line: `license` must route as a BUILTIN. Were it missing
-// from the builtin set it would be parsed as a shell command and silently do nothing here.
+// Both spellings of both doc commands must be classified as BUILTIN steps by cl_parse. A
+// missing one does not fail loudly — it runs the name in t1 and leaves the editor alone,
+// which is how the upper-case pair was found. Same guarantee as the view commands' test.
+@(test)
+test_doc_commands_never_reach_the_shell :: proc(t: ^testing.T) {
+    for name in ([]string{"readme", "license", "README", "LICENSE"}) {
+        a: app.App
+        defer app.cl_chain_clear(&a)
+        app.cl_parse(&a, name)
+        steps := a.cl_chain.steps[:]
+        testing.expect_value(t, len(steps), 1)
+        testing.expectf(t, !steps[0].shell, "%s reached the shell instead of the editor", name)
+    }
+}
+
+// End-to-end: the command actually lands the document in the editor ring.
 @(test)
 test_license_command_opens_the_doc :: proc(t: ^testing.T) {
     a: app.App
@@ -85,6 +99,11 @@ test_license_command_opens_the_doc :: proc(t: ^testing.T) {
     testing.expect_value(t, b.path, "LICENSE")
     testing.expect_value(t, a.focus, app.Focus.Editor)
 
-    app.cl_exec(&a, "readme")
+    app.cl_exec(&a, "README")
+    testing.expect_value(t, app.editor_current(&a.editor).path, "README.md")
+
+    n := len(a.editor.buffers)
+    app.cl_exec(&a, "readme") // the other spelling must reach that buffer, not a second one
+    testing.expect_value(t, len(a.editor.buffers), n)
     testing.expect_value(t, app.editor_current(&a.editor).path, "README.md")
 }
