@@ -187,7 +187,14 @@ if [ -f "$STB_TT_A" ]; then
     echo "  already present: stb_truetype.a"
 else
     echo "  building stb static libs..."
-    make -C "${ODIN_ROOT%/}/vendor/stb/src" >/dev/null
+    # Odin replaced src/Makefile with build_stb.sh; older installs still ship the
+    # Makefile, so take whichever this tree has. Both write ../lib/stb_truetype.a.
+    STB_SRC="${ODIN_ROOT%/}/vendor/stb/src"
+    if [ -f "$STB_SRC/build_stb.sh" ]; then
+        sh "$STB_SRC/build_stb.sh" unix >/dev/null
+    else
+        make -C "$STB_SRC" >/dev/null
+    fi
     echo "  done."
 fi
 
