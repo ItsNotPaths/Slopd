@@ -38,6 +38,12 @@ jobs:
           path: vendor
           key: vendor-linux-${{ hashFiles('download-deps.sh') }}
 
+      # download-deps.sh needs fontTools to subset the bundled Iosevka face; without it
+      # it embeds the full ~8.9MB font and the release binary ships at ~10.5MB instead
+      # of ~1.9MB. The runner has no fontTools by default, so install it BEFORE deps.
+      - name: Install fontTools
+        run: python3 -m pip install --user fonttools
+
       - name: Download deps
         run: |
           chmod +x ./download-deps.sh
@@ -50,8 +56,10 @@ jobs:
 
       - name: Build
         run: |
-          # TODO: tune for your project (extra collections, vendor includes, etc.)
-          odin build src -out:"$PROJECT_NAME" -o:speed
+          # -define:GLFW_SHARED=false links vendor/glfw/lib/libglfw3.a, so the release
+          # binary uses the GLFW we vendor rather than whatever libglfw the runner has
+          # (and users then need at run time). Matches release.sh --local.
+          odin build src -out:"$PROJECT_NAME" -o:speed -define:GLFW_SHARED=false
           strip --strip-all "$PROJECT_NAME"
 
       - name: Stage artifacts

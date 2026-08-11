@@ -52,6 +52,10 @@ if [ $DO_LOCAL -eq 1 ]; then
     # Requires ./download-deps.sh to have built the static archive first.
     odin build "$PROJECT_DIR/src" -out:"$RELEASE_DIR/$PROJECT_NAME" \
         -o:speed -define:GLFW_SHARED=false
+    # ~150KB of a ~1.9MB binary is .symtab/.strtab. A -o:speed build carries no .debug_*
+    # sections to begin with, so --strip-all costs no debuggability that this build had.
+    # release.yml already strips; do it here too so a local build matches the download.
+    strip --strip-all "$RELEASE_DIR/$PROJECT_NAME"
     [ -f "$PROJECT_DIR/README.md" ]     && cp "$PROJECT_DIR/README.md"     "$RELEASE_DIR/" || true
     [ -f "$PROJECT_DIR/LICENSE" ]       && cp "$PROJECT_DIR/LICENSE"       "$RELEASE_DIR/" || true
     # Self-contained runtime assets, resolved next to the binary at run time

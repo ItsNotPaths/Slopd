@@ -2,6 +2,7 @@ package main
 
 import "core:strings"
 import "core:unicode"
+import "core:unicode/utf8"
 
 // Line — one line of text: just a run of runes. Pure storage with position-
 // parameterized ops; it has no cursor and no rendering. Cursors live in Doc
@@ -30,11 +31,22 @@ line_remove_range :: proc(l: ^Line, lo, hi: int) {
 }
 
 line_string :: proc(l: ^Line, allocator := context.allocator) -> string {
-    b := strings.builder_make(allocator)
+    b := strings.builder_make_len_cap(0, runes_byte_len(l.text[:]), allocator)
     for r in l.text {
         strings.write_rune(&b, r)
     }
     return strings.to_string(b)
+}
+
+// The UTF-8 byte length of a rune span — the exact capacity for a builder that will hold
+// it. One cheap read-only pass buys a single right-sized allocation instead of a regrow
+// chain, which matters on the whole-buffer capture the highlighter does per reparse.
+runes_byte_len :: proc(runes: []rune) -> int {
+    n := 0
+    for r in runes {
+        n += utf8.rune_size(r)
+    }
+    return n
 }
 
 // --- word boundaries (used by Doc for word motions/deletes) ---

@@ -315,3 +315,29 @@ test_doc_drag_span :: proc(t: ^testing.T) {
     testing.expect_value(t, lo, app.Pos{0, 2}) // ordered on READ, as both references do
     testing.expect_value(t, hi, app.Pos{1, 5})
 }
+
+// Multi-byte runes. Columns are RUNE indices while the capture that backs copy/undo/reparse
+// sizes itself in BYTES, so a confusion between the two shows up here as a truncated or
+// mis-joined string. Exercises the single-line splice and the cross-line capture together.
+@(test)
+test_doc_multibyte_roundtrip :: proc(t: ^testing.T) {
+    d := mkdoc("héllo → wörld\nsecond ✓ line")
+    defer app.doc_destroy(&d)
+
+    // The whole document joined with '\n' — the capture the highlighter reparses from.
+    testing.expect_value(t, app.doc_string(&d, context.temp_allocator), "héllo → wörld\nsecond ✓ line")
+
+    // A one-line span landing on a 3-byte rune.
+    testing.expect_value(t, app.doc_text(&d, app.Pos{0, 6}, app.Pos{0, 7}, context.temp_allocator), "→")
+
+    // A span crossing the break: tail of line 0, the newline, head of line 1.
+    testing.expect_value(t, app.doc_text(&d, app.Pos{0, 8}, app.Pos{1, 6}, context.temp_allocator), "wörld\nsecond")
+
+    // Typing and deleting within the line, where the splice replaces the rebuild.
+    app.doc_reset_cursor(&d, app.Pos{0, 1})
+    app.doc_insert_rune(&d, 'ü')
+    testing.expect_value(t, dline(&d, 0), "hüéllo → wörld")
+    app.doc_backspace(&d)
+    testing.expect_value(t, dline(&d, 0), "héllo → wörld")
+    testing.expect_value(t, len(d.lines), 2) // a same-line edit never touches the line array
+}

@@ -155,20 +155,31 @@ grammar_find :: proc(grammars: []Grammar, name: string) -> (^Grammar, bool) {
     return nil, false
 }
 
-// The registry language whose file extensions include `ext` (no leading dot), or
-// ("", false). Used to pick a buffer's grammar for highlighting.
-grammar_for_ext :: proc(grammars: []Grammar, ext: string) -> (name: string, ok: bool) {
-    if ext == "" {
-        return "", false
-    }
+// ext (no leading dot) -> language name, over the whole registry. Built once at load and
+// kept beside the registry: the lookup below runs on every editor paint and every modeline,
+// and the registry is 300 languages / 700 extensions to scan linearly. First entry wins, as
+// the linear scan did. Keys and values BORROW the registry's strings, so this must not
+// outlive it; free it with a plain `delete`.
+grammar_ext_index :: proc(grammars: []Grammar) -> map[string]string {
+    index := make(map[string]string)
     for g in grammars {
         for e in g.exts {
-            if e == ext {
-                return g.name, true
+            if e not_in index {
+                index[e] = g.name
             }
         }
     }
-    return "", false
+    return index
+}
+
+// The registry language whose file extensions include `ext` (no leading dot), or
+// ("", false). Used to pick a buffer's grammar for highlighting.
+grammar_for_ext :: proc(index: map[string]string, ext: string) -> (name: string, ok: bool) {
+    if ext == "" {
+        return "", false
+    }
+    name, ok = index[ext]
+    return
 }
 
 // --- install actions (msg is temp-allocated, for printing / surfacing) ---

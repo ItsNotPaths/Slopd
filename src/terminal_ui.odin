@@ -3,6 +3,7 @@ package main
 import "core:math"
 import "vendor:glfw"
 import clay "../bindings/clay"
+import vt "../bindings/libvterm"
 
 // The terminal pane's UI half. **Clay owns the frame, we own the body:** a 200x60 grid is 12k
 // cells, so the pane declares ONE `Custom` and the painter fills the box Clay reserves.
@@ -314,6 +315,28 @@ terminal_msel_row_span :: proc(term: ^Terminal, n, cols: int) -> (lo, hi: int) {
     return clamp(lo, 0, cols), clamp(hi, 0, cols)
 }
 
+// A one-entry memo over terminal_color. Every miss crosses into libvterm to convert an
+// indexed colour through its palette, and a grid does that twice per cell — 24k FFI calls a
+// repaint at 200x60. Terminal output comes in runs of one colour, so remembering just the
+// last answer skips nearly all of them.
+@(private = "file")
+Color_Memo :: struct {
+    key:        vt.Color,
+    rgb:        [3]f32,
+    is_default: bool,
+    valid:      bool, // a zeroed key is a legitimate colour (RGB black), so this is needed
+}
+
+@(private = "file")
+memo_color :: proc(m: ^Color_Memo, term: ^Terminal, col: vt.Color) -> (rgb: [3]f32, is_default: bool) {
+    if m.valid && m.key == col {
+        return m.rgb, m.is_default
+    }
+    rgb, is_default = terminal_color(term, col)
+    m^ = {key = col, rgb = rgb, is_default = is_default, valid = true}
+    return
+}
+
 // The cell grid: the default background in one quad, then per cell a fill only where it
 // differs, the glyph, and a reverse-video block at the cursor. Positions come from `r`, the
 // box the solver resolved, not v.area — tests/terminal_ui_test.odin pins the equality.
@@ -336,6 +359,7 @@ terminal_paint_grid :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App,
     // suppressed and the selected line range tints with th.selection.
 
     glyph: [1]rune
+    fg_memo, bg_memo: Color_Memo
     for row in 0 ..< v.rows {
         n := v.top + row
         row_sel := terminal_sel_row_shown(term, n)
@@ -344,11 +368,11 @@ terminal_paint_grid :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App,
         for col in 0 ..< v.cols {
             cell := terminal_view_cell(term, n, col) or_continue
 
-            fg, fdef := terminal_color(term, cell.fg)
+            fg, fdef := memo_color(&fg_memo, term, cell.fg)
             if fdef {
                 fg = th.fg
             }
-            bg, bdef := terminal_color(term, cell.bg)
+            bg, bdef := memo_color(&bg_memo, term, cell.bg)
             if bdef {
                 bg = th.bg
             }

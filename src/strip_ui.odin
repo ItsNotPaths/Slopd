@@ -304,7 +304,7 @@ status_lang :: proc(a: ^App, path: string) -> string {
     if ext == "" {
         return "text"
     }
-    if name, ok := grammar_for_ext(a.grammars, ext); ok {
+    if name, ok := grammar_for_ext(a.gram_ext, ext); ok {
         return name
     }
     return ext

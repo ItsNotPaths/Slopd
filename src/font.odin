@@ -31,6 +31,11 @@ Font :: struct {
     ttf:    []u8,                      // borrowed font bytes (owned by Text); needed to bake on demand
     pixels: []byte,                    // CPU mirror of the atlas; PackFontRange writes here
     cache:  map[rune]Glyph,            // codepoint -> baked quad (or absent marker)
+    // Printable ASCII (32..=126), direct-indexed — valid only when `ascii_ok`, i.e. the
+    // batch bake below succeeded. Nearly every glyph drawn is one of these (a terminal grid
+    // is ~12k a frame), and this spares each of them the map hash.
+    ascii:    [95]Glyph,
+    ascii_ok: bool,
     px:     f32,                       // bake size, physical px
     dirty:  bool,                      // pixels changed since last GPU upload
     dy0, dy1:    int,                       // dirty row band [dy0, dy1) to re-upload (valid when dirty)
@@ -80,8 +85,9 @@ font_load :: proc(f: ^Font, ttf: []u8, px: f32) -> bool {
     ascii: [95]stbtt.packedchar
     if stbtt.PackFontRange(&f.pc, raw_data(ttf), 0, px, 32, 95, &ascii[0]) != 0 {
         for i in 0 ..< 95 {
-            f.cache[rune(32 + i)] = {pc = ascii[i], present = true}
+            f.ascii[i] = {pc = ascii[i], present = true}
         }
+        f.ascii_ok = true
     }
 
     scale := stbtt.ScaleForPixelHeight(&f.info, px)
@@ -123,6 +129,7 @@ font_teardown :: proc(f: ^Font) {
     delete(f.cache)
     f.pixels = nil
     f.cache = nil
+    f.ascii_ok = false
     f.dirty = false
     f.ready = false
 }
@@ -133,6 +140,10 @@ font_teardown :: proc(f: ^Font) {
 font_glyph :: proc(f: ^Font, r: rune) -> (pc: stbtt.packedchar, ok: bool) {
     if r < 32 {
         return {}, false
+    }
+    if f.ascii_ok && r < 127 {
+        g := f.ascii[r - 32]
+        return g.pc, g.present
     }
     if g, found := f.cache[r]; found {
         return g.pc, g.present

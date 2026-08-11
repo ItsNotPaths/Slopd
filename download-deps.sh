@@ -199,28 +199,39 @@ echo "==> Iosevka Fixed font (bundled default, SIL OFL 1.1)"
 #   - The PkgTTF asset is a .zip (not .tar.gz, so the tar-based fetch() can't take it)
 #     and bundles every weight; we pull out just the Regular face with python3's
 #     zipfile (already required for the language registry; avoids depending on unzip).
-#   - The upstream TTF carries thousands of glyphs (~9MB), most of them CJK we never
-#     show. We subset to the symbol set a terminal actually needs — Latin, punctuation,
-#     arrows, math, box-drawing, block elements, geometric shapes, Braille, technical
-#     and Powerline glyphs — so any TUI (Claude Code, Helix, …) draws its borders,
-#     cursors and spinners. The renderer bakes these lazily (font.odin), so the subset
-#     only governs which codepoints EXIST, not binary/atlas cost of unused ones. Ranges
-#     are generous: fontTools keeps only codepoints the font actually has. fontTools is
-#     optional: without it we fall back to the full font (the build still works, just a
-#     far larger binary) and print how to get it.
+#   - The upstream TTF carries ~38k glyphs (~8.9MB), most of them CJK and unreachable
+#     stylistic variants we never show. We subset to the symbol set a terminal actually
+#     needs — Latin, punctuation, arrows, math, box-drawing, block elements, geometric
+#     shapes, Braille, technical and Powerline glyphs — so any TUI (Claude Code, Helix,
+#     …) draws its borders, cursors and spinners. That is ~220KB, and since font.odin
+#     `#load`s this file the difference is the binary's: 10.5MB full vs 1.9MB subset.
+#     Ranges are generous; fontTools keeps only codepoints the font actually has.
+# fontTools stays optional — without it we embed the full face and the build still works
+# — but the fallback must not be STICKY, which is the bug this shape fixes: the presence
+# check now tests for the SUBSET (by size), not merely for a file, and the full face is
+# cached beside it, so installing fontTools and re-running subsets in place instead of
+# silently keeping a 10.5MB binary forever. src/tests/font_test.odin asserts the ceiling.
 IOSEVKA_VERSION="34.6.1"
 IOSEVKA_TTF="$VENDOR/fonts/IosevkaFixed-Latin.ttf"
-if [ -f "$IOSEVKA_TTF" ]; then
-    echo "  already present: IosevkaFixed-Latin.ttf"
+IOSEVKA_FULL="$VENDOR/fonts/IosevkaFixed-Regular-full.ttf" # kept only while still un-subset
+IOSEVKA_SUBSET_MAX=1048576                                 # subset ~220KB, full ~8.9MB
+if [ -f "$IOSEVKA_TTF" ] && [ "$(wc -c <"$IOSEVKA_TTF")" -lt "$IOSEVKA_SUBSET_MAX" ]; then
+    echo "  already present: IosevkaFixed-Latin.ttf (subset)"
 else
-    echo "  downloading Iosevka Fixed (large: the PkgTTF zip is ~130MB)..."
     mkdir -p "$VENDOR/fonts"
-    iosevka_zip="$(mktemp --suffix=.zip)"
-    iosevka_full="$(mktemp --suffix=.ttf)"
-    curl -fsSL \
-        "https://github.com/be5invis/Iosevka/releases/download/v${IOSEVKA_VERSION}/PkgTTF-IosevkaFixed-${IOSEVKA_VERSION}.zip" \
-        -o "$iosevka_zip"
-    python3 - "$iosevka_zip" "$iosevka_full" <<'PY'
+    # Get the full face: reuse the cache, or promote an earlier un-subset embed, before
+    # paying for the 130MB download again.
+    if [ ! -f "$IOSEVKA_FULL" ]; then
+        if [ -f "$IOSEVKA_TTF" ]; then
+            echo "  found a full (un-subset) font from an earlier run — re-subsetting it"
+            mv "$IOSEVKA_TTF" "$IOSEVKA_FULL"
+        else
+            echo "  downloading Iosevka Fixed (large: the PkgTTF zip is ~130MB)..."
+            iosevka_zip="$(mktemp --suffix=.zip)"
+            curl -fsSL \
+                "https://github.com/be5invis/Iosevka/releases/download/v${IOSEVKA_VERSION}/PkgTTF-IosevkaFixed-${IOSEVKA_VERSION}.zip" \
+                -o "$iosevka_zip"
+            python3 - "$iosevka_zip" "$IOSEVKA_FULL" <<'PY'
 import sys, zipfile
 src, dst = sys.argv[1], sys.argv[2]
 z = zipfile.ZipFile(src)
@@ -230,27 +241,30 @@ if len(matches) != 1:
 with open(dst, "wb") as f:
     f.write(z.read(matches[0]))
 PY
-    rm -f "$iosevka_zip"
-    # Subset to the terminal symbol set if fontTools is available; else ship the full font.
+            rm -f "$iosevka_zip"
+        fi
+    fi
     if python3 -c "import fontTools.subset" 2>/dev/null; then
         echo "  subsetting to the terminal symbol set (fontTools)..."
         # Latin + punctuation + Greek; superscripts/currency/letterlike/number-forms;
         # arrows, math, technical, control pictures; box-drawing, blocks, geometric
         # shapes; misc symbols, dingbats, math-A, supplemental arrows; Braille; misc
         # symbols-and-arrows; Powerline (PUA). Generous — subset keeps only what exists.
-        python3 -m fontTools.subset "$iosevka_full" \
+        python3 -m fontTools.subset "$IOSEVKA_FULL" \
             --unicodes=U+0020-007E,U+00A0-024F,U+0370-03FF,U+2000-206F,U+2070-209F,U+20A0-20BF,U+2100-218F,U+2190-21FF,U+2200-22FF,U+2300-23FF,U+2400-243F,U+2500-257F,U+2580-259F,U+25A0-25FF,U+2600-26FF,U+2700-27BF,U+27C0-27EF,U+27F0-27FF,U+2800-28FF,U+2900-297F,U+2B00-2BFF,U+E0A0-E0D4 \
             --layout-features='' \
             --no-hinting \
             --name-IDs='*' \
             --recommended-glyphs \
             --output-file="$IOSEVKA_TTF"
-        rm -f "$iosevka_full"
+        echo "  subset: $(wc -c <"$IOSEVKA_FULL") -> $(wc -c <"$IOSEVKA_TTF") bytes"
+        rm -f "$IOSEVKA_FULL" # subset succeeded: nothing left to re-subset from
     else
-        echo "  WARNING: fontTools not found — embedding the FULL ~9MB font (the binary" >&2
-        echo "  will be much larger). Install it and re-run to get the ~12KB subset:" >&2
+        cp "$IOSEVKA_FULL" "$IOSEVKA_TTF" # keep the cache: re-running is then free
+        echo "  WARNING: fontTools not found — embedding the FULL ~8.9MB font, which makes" >&2
+        echo "  the binary ~10.5MB instead of ~1.9MB. Install it and re-run this script to" >&2
+        echo "  subset in place (no re-download):" >&2
         echo "    python3 -m pip install fonttools   # or your distro's python3-fonttools" >&2
-        mv "$iosevka_full" "$IOSEVKA_TTF"
     fi
     echo "  done."
 fi

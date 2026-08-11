@@ -119,7 +119,8 @@ App :: struct {
 
     grammars: []Grammar, // language registry (owned; loaded in main), shared by the
     // config pane (lang list) and the highlighter (ext -> grammar)
-    hl: Highlighter, // tree-sitter syntax highlighting (loaded grammars, cached)
+    gram_ext: map[string]string, // ext -> language name over `grammars`; borrows its strings
+    hl:       Highlighter, // tree-sitter syntax highlighting (loaded grammars, cached)
 
     // Multi-cursor drop chord (no mode/toggle): Alt+A held + a direction drops a
     // cursor and steps that way, so holding Alt+A and tapping arrows lays a trail.

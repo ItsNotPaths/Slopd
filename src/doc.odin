@@ -570,6 +570,21 @@ doc_apply :: proc(d: ^Doc, edits_in: []Edit, rec: ^Batch = nil) -> bool {
 // d.lines only; cursor fixup is the caller's job.
 @(private = "file")
 doc_replace_range :: proc(d: ^Doc, start, end: Pos, runes: []rune) -> (Pos, string) {
+    // Fast path: one line in, one line out — every keystroke, backspace and word-delete.
+    // Splices the line's own rune array, so d.lines is not touched: no memmove of the
+    // tail, no Line freed and rebuilt. The general path below handles the rest.
+    if start.line == end.line && !slice.contains(runes, '\n') {
+        removed := capture_range(d, start, end, context.temp_allocator)
+        text := &d.lines[start.line].text
+        if end.col > start.col {
+            remove_range(text, start.col, end.col)
+        }
+        if len(runes) > 0 {
+            inject_at(text, start.col, ..runes)
+        }
+        return Pos{start.line, start.col + len(runes)}, removed
+    }
+
     // Clone the surviving fragments before the line storage is mutated.
     prefix := slice.clone(d.lines[start.line].text[:start.col], context.temp_allocator)
     suffix := slice.clone(d.lines[end.line].text[end.col:], context.temp_allocator)
@@ -609,7 +624,7 @@ doc_replace_range :: proc(d: ^Doc, start, end: Pos, runes: []rune) -> (Pos, stri
 // record what an edit removed (undo) and to gather copied text.
 @(private = "file")
 capture_range :: proc(d: ^Doc, start, end: Pos, alloc := context.allocator) -> string {
-    b := strings.builder_make(alloc)
+    b := strings.builder_make_len_cap(0, capture_bytes(d, start, end), alloc)
     if start.line == end.line {
         for r in d.lines[start.line].text[start.col:end.col] {
             strings.write_rune(&b, r)
@@ -630,6 +645,20 @@ capture_range :: proc(d: ^Doc, start, end: Pos, alloc := context.allocator) -> s
         }
     }
     return strings.to_string(b)
+}
+
+// The exact byte length capture_range will write, including the joining '\n's — so the
+// builder is sized once. Mirrors the branch structure above.
+@(private = "file")
+capture_bytes :: proc(d: ^Doc, start, end: Pos) -> int {
+    if start.line == end.line {
+        return runes_byte_len(d.lines[start.line].text[start.col:end.col])
+    }
+    n := runes_byte_len(d.lines[start.line].text[start.col:]) + 1
+    for li in start.line + 1 ..< end.line {
+        n += runes_byte_len(d.lines[li].text[:]) + 1
+    }
+    return n + runes_byte_len(d.lines[end.line].text[:end.col])
 }
 
 // Cursor indices in document order (cursors aren't kept globally sorted, only

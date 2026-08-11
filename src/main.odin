@@ -88,6 +88,8 @@ main :: proc() {
     defer filetree_destroy(&app.tree)
     app.grammars = load_grammars() // shared by the config pane + the highlighter
     defer grammars_destroy(app.grammars)
+    app.gram_ext = grammar_ext_index(app.grammars)
+    defer delete(app.gram_ext) // borrowed keys/values; freed above with the registry
     config_pane_init(&app.config_pane, app.grammars)
     defer config_pane_destroy(&app.config_pane)
     highlighter_init(&app.hl)

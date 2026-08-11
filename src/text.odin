@@ -34,6 +34,11 @@ Text :: struct {
     under:       [dynamic]f32, // scratch, 5 floats/vertex: x y r g b
     over:        [dynamic]f32, // scratch, same layout as `under`
     images:      [dynamic]ImageQuad, // queued image blits, drawn per-pane between under-quads and glyphs
+    // Bytes currently allocated in each VBO's store. Grown by doubling and never shrunk, so
+    // a steady frame re-uses the same allocation (see vbo_upload).
+    glyph_cap:   int,
+    quad_cap:    int,
+    image_cap:   int,
     ttf:         []u8, // retained so the atlas can re-bake on DPI change
     logical_px:  f32, // atlas is baked at logical_px * scale physical pixels
     scale:       f32, // DPI scale the atlas is currently baked for
@@ -311,7 +316,7 @@ image_flush :: proc(t: ^Text, win_w, win_h: i32) {
             x0, y0, 0, 0,  x1, y1, 1, 1,  x0, y1, 0, 1,
         }
         gl.BindTexture(gl.TEXTURE_2D, im.tex)
-        gl.BufferData(gl.ARRAY_BUFFER, size_of(verts), &verts[0], gl.DYNAMIC_DRAW)
+        vbo_upload(&t.image_cap, &verts[0], size_of(verts))
         gl.DrawArrays(gl.TRIANGLES, 0, 6)
         t.frame_verts += 6
     }
@@ -326,7 +331,7 @@ quad_flush :: proc(t: ^Text, buf: ^[dynamic]f32, win_w, win_h: i32) {
     gl.Uniform2f(t.quad_us, f32(win_w), f32(win_h))
     gl.BindVertexArray(t.quad_vao)
     gl.BindBuffer(gl.ARRAY_BUFFER, t.quad_vbo)
-    gl.BufferData(gl.ARRAY_BUFFER, len(buf) * size_of(f32), raw_data(buf^), gl.DYNAMIC_DRAW)
+    vbo_upload(&t.quad_cap, raw_data(buf^), len(buf) * size_of(f32))
     gl.DrawArrays(gl.TRIANGLES, 0, i32(len(buf) / 5))
     t.frame_verts += len(buf) / 5
 }
@@ -343,7 +348,24 @@ glyph_flush :: proc(t: ^Text, win_w, win_h: i32) {
     gl.BindTexture(gl.TEXTURE_2D, t.font.tex)
     gl.BindVertexArray(t.glyph_vao)
     gl.BindBuffer(gl.ARRAY_BUFFER, t.glyph_vbo)
-    gl.BufferData(gl.ARRAY_BUFFER, len(t.glyphs) * size_of(f32), raw_data(t.glyphs), gl.DYNAMIC_DRAW)
+    vbo_upload(&t.glyph_cap, raw_data(t.glyphs), len(t.glyphs) * size_of(f32))
     gl.DrawArrays(gl.TRIANGLES, 0, i32(len(t.glyphs) / 7))
     t.frame_verts += len(t.glyphs) / 7
+}
+
+// Writes `bytes` from `data` into the bound ARRAY_BUFFER. The store is grown by doubling and
+// kept, so a steady frame stops reallocating it; the BufferData(nil) is the orphan hint that
+// lets the driver hand back a fresh block from its pool instead of stalling on the one the
+// previous draw is still reading.
+@(private = "file")
+vbo_upload :: proc(store: ^int, data: rawptr, bytes: int) {
+    if bytes > store^ {
+        n := max(store^, 4096)
+        for n < bytes {
+            n *= 2
+        }
+        store^ = n
+    }
+    gl.BufferData(gl.ARRAY_BUFFER, store^, nil, gl.DYNAMIC_DRAW)
+    gl.BufferSubData(gl.ARRAY_BUFFER, 0, bytes, data)
 }

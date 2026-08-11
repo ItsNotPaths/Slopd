@@ -429,7 +429,7 @@ highlighter_grammar :: proc(a: ^App, path: string) -> (Loaded_Grammar, bool) {
         return {}, false
     }
     ext := strings.trim_prefix(filepath.ext(path), ".")
-    name, found := grammar_for_ext(a.grammars, ext)
+    name, found := grammar_for_ext(a.gram_ext, ext)
     if !found {
         return {}, false
     }
@@ -876,21 +876,26 @@ is_ident_byte :: proc(b: u8) -> bool {
 }
 
 // Drop hits that repeat a (path, line) — one definition can be reached by more than one
-// occurrence on its line, or by both a construct and its nested declarator.
+// occurrence on its line, or by both a construct and its nested declarator. Keyed through a
+// set rather than rescanning the output: Alt+Enter on a common identifier reaches thousands
+// of hits, and comparing every path string against every kept one is quadratic there.
+@(private = "file")
+Hit_Key :: struct {
+    path: string,
+    line: int,
+}
+
 @(private = "file")
 dedup_hits :: proc(hits: []GrepHit) -> []GrepHit {
     out := make([dynamic]GrepHit, 0, len(hits), context.temp_allocator)
+    seen := make(map[Hit_Key]bool, len(hits), context.temp_allocator)
     for h in hits {
-        dup := false
-        for e in out {
-            if e.line == h.line && e.path == h.path {
-                dup = true
-                break
-            }
+        key := Hit_Key{h.path, h.line}
+        if key in seen {
+            continue
         }
-        if !dup {
-            append(&out, h)
-        }
+        seen[key] = true
+        append(&out, h)
     }
     return out[:]
 }
