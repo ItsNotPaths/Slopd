@@ -75,7 +75,7 @@ main :: proc() {
     app.show_guides = cfg.show_guides
     app.folding = cfg.folding
     app.folder_cd_run = cfg.folder_cd_run
-    app.git_tool = cfg.git_tool
+    app.git_tool = strings.clone(cfg.git_tool) // owned: the Config pane can rewrite it
     app.git_term = cfg.git_term
     app.grep_pane_always = cfg.grep_pane_always
     app.conflict_prompt = cfg.conflict_prompt

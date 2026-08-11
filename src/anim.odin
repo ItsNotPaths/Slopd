@@ -122,10 +122,7 @@ caret_shown :: proc(a: ^App) -> bool {
         return true
     }
     if a.focus == .Aux && a.aux_mode == .Config {
-        cp := &a.config_pane
-        // Only the search box carries a caret now (settings are dropdowns); and not
-        // while a dropdown is open over it.
-        return config_pane_is_search(cp.sel) && cp.open == .None
+        return config_caret_live(a)
     }
     return panes_visible(a).editor // the editor and its caret are on screen
 }

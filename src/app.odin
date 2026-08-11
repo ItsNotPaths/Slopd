@@ -414,6 +414,7 @@ app_destroy :: proc(a: ^App) {
     grep_destroy(&a.grep) // frees any stashed jump-to-definition results
     delete(a.project_root)
     delete(a.theme_path)
+    delete(a.git_tool)
     delete(a.clip_joined)
     for p in a.clip_pieces {
         delete(p)

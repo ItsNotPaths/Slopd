@@ -22,8 +22,14 @@ import sys
 import tomllib
 import urllib.request
 
-# Pinned Helix release — bump to refresh the registry (re-run via download-deps.sh).
-HELIX_REF = "25.07.1"
+# Pinned Helix ref — bump to refresh the registry (re-run via download-deps.sh).
+#
+# A COMMIT rather than a release tag, and deliberately: Helix cuts releases roughly twice a
+# year, and its languages.toml gains grammars continuously between them. Pinning 25.07.1 left
+# us 56 grammars behind its own master. A commit sha is exactly as reproducible as a tag — it
+# just isn't as readable, which is what HELIX_LABEL is for.
+HELIX_REF = "079a789e8cb08ead67f19e1971a1b7438b37354b"
+HELIX_LABEL = "master @ 2026-07-23"  # what HELIX_REF is, for the generated file's header
 LANGUAGES_TOML_URL = (
     f"https://raw.githubusercontent.com/helix-editor/helix/{HELIX_REF}/languages.toml"
 )
@@ -73,7 +79,8 @@ def build_registry(doc: dict) -> list[dict]:
 def write_registry(path: str, registry: list[dict]) -> None:
     lines = [
         "# Slopd language registry — GENERATED, do not edit.",
-        f"# Parsed down from helix-editor/helix languages.toml @ {HELIX_REF} (MPL-2.0).",
+        f"# Parsed down from helix-editor/helix languages.toml @ {HELIX_REF[:12]}"
+        f" ({HELIX_LABEL}, MPL-2.0).",
         "# Refresh by re-running tools/gen-languages.py (via download-deps.sh).",
         "# fields: name<TAB>repo<TAB>rev<TAB>subpath<TAB>ext,ext,...   ('-' = empty)",
     ]
@@ -97,7 +104,7 @@ def main() -> int:
     out_path = sys.argv[1] if len(sys.argv) > 1 else "languages"
     registry = build_registry(fetch_languages_toml())
     write_registry(out_path, registry)
-    print(f"  wrote {len(registry)} grammars -> {out_path} (helix {HELIX_REF})")
+    print(f"  wrote {len(registry)} grammars -> {out_path} (helix {HELIX_LABEL})")
     return 0
 
 

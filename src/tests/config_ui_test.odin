@@ -310,6 +310,64 @@ test_config_search_is_custom :: proc(t: ^testing.T) {
     )
 }
 
+// The free-text setting is an editor only while it is HIGHLIGHTED: selected, it declares the
+// same Custom the search box does (the live Doc, with a caret); unselected, it is the stored
+// value as ordinary text. That split is decided at declaration time rather than in the
+// flattening, because a click moves the selection mid-frame — so this is the assertion that
+// the row list stayed selection-free while the pane still paints two different things.
+@(test)
+test_config_text_setting_is_custom_when_selected :: proc(t: ^testing.T) {
+    raw := clay_test_context(500, 300)
+    defer clay_test_context_free(raw)
+    f := clay_test_font()
+    app.clay_use_font(&f)
+
+    a: app.App
+    fixture(&a)
+    defer app.config_pane_destroy(&a.config_pane)
+    cp := &a.config_pane
+    a.git_tool = "lazygit"
+
+    // Frame the git_tool row (display row 11: three chrome rows, then one per setting) with
+    // the selection elsewhere. The search row is far below the fold, so any Custom seen here
+    // is this row's.
+    cp.scroll = 5
+    cp.sel = 0
+    customs, x := text_field_probe(&a, &f, "lazygit")
+    testing.expect_value(t, customs, 0)
+    testing.expect_value(t, x, i32(X_VALUE)) // the stored value, at the shared column
+
+    // Select it and the same row becomes the live field instead: one Custom, and the value
+    // is no longer drawn as text (the Doc holds it now).
+    cp.sel = int(app.Setting.GitTool)
+    app.config_edit_sync(&a)
+    customs, x = text_field_probe(&a, &f, "lazygit")
+    testing.expect_value(t, customs, 1)
+    testing.expect_value(t, x, i32(-1)) // not drawn as text anywhere
+}
+
+// Lays the pane out and reports how many Customs it declared plus the x of `want` if it was
+// drawn as text (-1 when it wasn't) — the two halves of "is this row a field or a label".
+@(private = "file")
+text_field_probe :: proc(a: ^app.App, f: ^app.Font, want: string) -> (customs: int, x: i32) {
+    x = -1
+    rows := app.config_rows(&a.config_pane, a, COLS, context.temp_allocator)
+    cmds := app.config_layout(a, f, PANE, rows, 500, 300)
+    for i in 0 ..< cmds.length {
+        c := clay.RenderCommandArray_Get(&cmds, i)
+        #partial switch c.commandType {
+        case .Custom:
+            customs += 1
+        case .Text:
+            d := c.renderData.text
+            if string(d.stringContents.chars[:d.stringContents.length]) == want {
+                x = app.clay_rect(c.boundingBox).x
+            }
+        }
+    }
+    return
+}
+
 // Hover is a config toggle (open decision 5, settled here): off, the pointer changes
 // nothing; on, the row under it takes a band that is NOT the selection's.
 @(test)

@@ -15,11 +15,14 @@ import clay "../bindings/clay"
 //   2. **Two coordinates per row.** A click has to resolve to a row AND, inside an open
 //      dropdown, to a choice — so config_hit returns the DISPLAY row index and config_click
 //      reads `item` / `opt` off it, rather than resolving to an item the way grep_hit does.
-//   3. **A Custom for the search field.** The language filter is a live one-line Doc with
-//      selection spans and carets, and a caret is an OVER-quad (text.odin) — it must land
-//      above the glyphs, which a Clay Rectangle cannot do, since the bridge maps those to
-//      `fill` and everything in a scissor group paints under the text. So it takes the
-//      escape hatch the boundary reserves for per-glyph surfaces.
+//   3. **A Custom for the text fields.** The language filter and the free-text setting are
+//      live one-line Docs with selection spans and carets, and a caret is an OVER-quad
+//      (text.odin) — it must land above the glyphs, which a Clay Rectangle cannot do, since
+//      the bridge maps those to `fill` and everything in a scissor group paints under the
+//      text. So they take the escape hatch the boundary reserves for per-glyph surfaces.
+//      The setting is a field only while HIGHLIGHTED and a plain label otherwise, and that
+//      choice is made in config_declare rather than in the flattening — see ConfigRow for
+//      why a row list that encoded selectedness would have to be built twice.
 //
 // The dropdown is NOT an overlay, and this is worth stating because docs/clay-refactor.md
 // billed C5b as the refactor's first occlusion case. It is not one: draw_config spliced an
@@ -157,8 +160,10 @@ config_click :: proc(a: ^App, rows: []ConfigRow, row: int) {
         } else {
             config_pane_open_lang(a)
         }
-    case .Search:
-    // The filter box has no Enter verb: it is live as you type (config_pane_filter).
+    case .Search, .Text:
+    // Neither text row has a double-click verb: selecting one already makes it the editor.
+    // The filter is live as you type (config_pane_filter); a setting commits on Enter or
+    // when the selection leaves it (config_edit_sync).
     }
 }
 
@@ -174,14 +179,15 @@ config_row_color :: proc(th: ^Theme, r: ConfigRow, sel: bool) -> [3]f32 {
         return th.accent
     case .Lang:
         return r.present ? th.code_return_type : th.fg
-    case .Setting, .Search, .Option:
+    case .Setting, .Text, .Search, .Option:
         return sel ? th.fg : th.muted
     }
     return th.fg
 }
 
-// What the search row's Custom element needs in order to paint itself. Handed to the bridge
-// as `customData`, so it must outlive EndLayout — it lives in the frame's temp arena.
+// What a text row's Custom element needs in order to paint itself — which Doc, and whether
+// it may carry a caret. Handed to the bridge as `customData`, so it must outlive EndLayout —
+// it lives in the frame's temp arena.
 //
 // It used to carry the body clip too: this pane found that the bridge handed a painter its
 // BOX and a box is not a clip, so a search row half off the bottom of the pane would have
@@ -189,13 +195,14 @@ config_row_color :: proc(th: ^Theme, r: ConfigRow, sel: bool) -> [3]f32 {
 // ClayCustom contract rather than a quirk of this pane, and C5c closed it — `paint` now
 // takes the live clip as a parameter, so there is nothing left here but the field's data.
 Config_Edit :: struct {
-    doc: ^Doc,
-    now: f64,
+    doc:   ^Doc,
+    now:   f64,
+    caret: bool, // config_caret_live: the row owns the keys, so it may show a blinking caret
 }
 
-// The inline settings editor: the edit buffer's runes at the value column, with per-cursor
-// selection spans and carets — the command-line treatment, reused, and unchanged from the
-// config_draw_edit that used to live in render.odin beyond taking its box from Clay.
+// One text row's field: the Doc's runes at the value column, with per-cursor selection spans
+// and carets — the command-line treatment, reused. Shared by the language filter and the
+// free-text setting, which differ in what they edit and in nothing this proc can see.
 config_paint_edit :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
     e := (^Config_Edit)(user)
     if e == nil || e.doc == nil || len(e.doc.lines) == 0 {
@@ -216,7 +223,9 @@ config_paint_edit :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
         }
     }
     text_draw_runes(t, line.text[:], ex, ty, th.fg)
-    if caret_blink_on(a, e.now) {
+    // `caret` is the gate the blink phase alone cannot be: a pane that is not being typed
+    // into stops redrawing, so a caret drawn there would freeze mid-blink rather than go out.
+    if e.caret && caret_blink_on(a, e.now) {
         for c in e.doc.cursors {
             caret(t, Rect{i32(ex + cw * f32(c.head.col)), y, i32(2 * a.scale), i32(lh)}, th.fg)
         }
@@ -237,7 +246,7 @@ config_paint_edit :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
 //     cf_body   the clip group
 //       cf_row/i    one per visible DISPLAY row, keyed by row index
 //         cf_key/i    the fixed key column, so every value starts on the same cell
-//         cf_edit/i   the search field's Custom (that row only)
+//         cf_edit/i   a text field's Custom (the search row; a highlighted text setting)
 config_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []ConfigRow, now: f64 = 0) {
     cp := &a.config_pane
     th := &a.theme
@@ -300,13 +309,17 @@ config_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []ConfigRow, now: f6
                         ) {
                             clay.Text(r.text, clay_text_config(col, lh))
                         }
-                        if r.kind == .Search {
-                            // The live filter box: a Custom, because carets are
-                            // over-quads (see the header). The struct outlives
-                            // EndLayout in the frame's temp arena.
+                        // A live text field: a Custom, because carets are over-quads (see
+                        // the header). The filter box always is one; a free-text setting is
+                        // one only while it is highlighted, and shows its stored value the
+                        // rest of the time — which is why this is decided HERE, where
+                        // selectedness is already derived, rather than in the flattening.
+                        if r.kind == .Search || (r.kind == .Text && sel) {
+                            // The struct outlives EndLayout in the frame's temp arena.
                             cu := new(ClayCustom, context.temp_allocator)
                             ed := new(Config_Edit, context.temp_allocator)
-                            ed^ = {doc = &cp.search, now = now}
+                            d := r.kind == .Search ? &cp.search : &cp.edit
+                            ed^ = {doc = d, now = now, caret = sel && config_caret_live(a)}
                             cu^ = {paint = config_paint_edit, user = ed}
                             if clay.UI(clay.ID("cf_edit", u32(i)))(
                                 {
@@ -325,12 +338,13 @@ config_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []ConfigRow, now: f6
 }
 
 // The config / syntax pane: a "settings" block (key: value rows, each choosing from a
-// dropdown) then a "syntax" block listing every known language with its grammar status
-// (✓/✗) and, when a row is opened, its install-options dropdown nested under it. Section
-// headers are flanked by rules; setting values share one column; the search row filters the
-// language list live as you type. One selection highlight, centre-scrolled like the
-// filetree. Up/Down move, Right/Enter open a dropdown, Enter chooses; a click selects a row,
-// a double click opens its dropdown, and a click on an option chooses it.
+// dropdown — except a free-text one, which is typed into) then a "syntax" block listing every
+// known language with its grammar status (✓/✗) and, when a row is opened, its install-options
+// dropdown nested under it. Section headers are flanked by rules; setting values share one
+// column; the search row filters the language list live as you type. One selection highlight,
+// centre-scrolled like the filetree. Up/Down move, Right/Enter open a dropdown, Enter chooses
+// (or, on a text setting, saves); a click selects a row, a double click opens its dropdown,
+// and a click on an option chooses it.
 config_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     area, _, max_rows, cols := config_geom(pane, a.scale, t.font.line_height, t.font.cell_w)
     if area.w <= 0 || area.h <= 0 {
@@ -352,6 +366,11 @@ config_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     // frame's hit test corrects.
     cp.hover = hit
     config_click(a, rows, hit)
+    // A click is the one thing that can move the selection off a text row without going
+    // through the keyboard, so the reconcile sits here, between the click and the re-flatten:
+    // the row that was left commits, the row that was entered seeds, and the rows this frame
+    // paints already show the result.
+    config_edit_sync(a)
 
     rows = config_rows(cp, a, cols, context.temp_allocator)
     config_scroll_apply(cp, config_anchor(cp, rows), max_rows, len(rows), a.scroll_mode == .Middle, pane_input_at(a))

@@ -121,3 +121,23 @@ test_config_set_empty_value :: proc(t: ^testing.T) {
     defer app.config_destroy(&cfg)
     testing.expect_value(t, cfg.git_tool, "")
 }
+
+// git_term is a dropdown and a dropdown cannot offer a blank row, so the pane writes
+// "detached" where this file leaves the value empty; it has to read back as 0. (git_tool
+// needs no such token — it is a text field, and an empty one writes an empty value.)
+@(test)
+test_config_git_detached_token :: proc(t: ^testing.T) {
+    path := "/tmp/slopd_config_git_test.config"
+    src := "git_tool:\ngit_term: detached\n"
+    testing.expect(t, os.write_entire_file(path, transmute([]byte)src) == nil)
+    defer os.remove(path)
+
+    old := os.get_env("SLOPD_CONFIG", context.temp_allocator)
+    os.set_env("SLOPD_CONFIG", path)
+    defer os.set_env("SLOPD_CONFIG", old)
+
+    cfg := app.load_config()
+    defer app.config_destroy(&cfg)
+    testing.expect_value(t, cfg.git_tool, "")
+    testing.expect_value(t, cfg.git_term, 0)
+}

@@ -130,12 +130,18 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     } else if tf := term_focused(a); tf != nil {
         terminal_input_rune(tf, codepoint)
     } else if a.focus == .Aux && a.aux_mode == .Config && codepoint >= 32 {
-        // Only the search box takes text (filtering live); setting and language rows
-        // are dropdowns, navigated with the arrows.
+        // Two kinds of row take text — the search box (filtering live) and a free-text
+        // setting; the rest are dropdowns, navigated with the arrows.
         cp := &a.config_pane
-        if config_pane_is_search(cp.sel) && cp.open == .None {
+        config_edit_sync(a) // the highlighted row owns the Doc before it owns the keystroke
+        if cp.open != .None {
+            // An open dropdown swallows typing: it is a closed list, navigated with
+            // the arrows, and there is nothing here for a character to mean.
+        } else if config_pane_is_search(cp.sel) {
             doc_insert_rune(&cp.search, codepoint)
             config_pane_filter(cp) // live filter as you type
+        } else if cp.edit_row == cp.sel {
+            doc_insert_rune(&cp.edit, codepoint)
         }
     } else if a.focus == .Editor && a.main == .Text && codepoint >= 32 {
         b := editor_current(&a.editor)
@@ -730,11 +736,16 @@ filetree_rm_selected :: proc(a: ^App, marked: bool) {
 }
 
 // Config aux pane key handling (bare keys, when the Config pane is focused). Non-modal,
-// arrow-keys-only: Up/Down move between rows; the highlighted row owns the rest. A
-// setting or language row opens a dropdown on Right/Enter (choices for a setting, grammar
-// actions for a language); the search box edits in place (typed chars via char_callback).
+// arrow-keys-only: Up/Down move between rows; the highlighted row owns the rest. A setting
+// or language row opens a dropdown on Right/Enter (choices for a setting, grammar actions
+// for a language); the search box and a free-text setting edit in place (typed chars via
+// char_callback), the setting committing on Enter or when the selection leaves it.
 config_key :: proc(a: ^App, key, mods: i32) {
     cp := &a.config_pane
+    // Settle the selection as it STANDS before acting on this key — whatever moved it here
+    // may have left a text row, and the Doc below must match the highlighted row before
+    // anything reads it. The move this key makes is settled the same way, by config_frame.
+    config_edit_sync(a)
 
     if cp.open != .None {
         config_dropdown_key(a, key)
@@ -750,8 +761,13 @@ config_key :: proc(a: ^App, key, mods: i32) {
         return
     }
 
-    // A setting row: Right / Enter opens its choice dropdown.
+    // A setting row: Right / Enter opens its choice dropdown — unless the setting is free
+    // text, in which case the row IS an editor and owns these keys itself.
     if s, ok := config_pane_setting(cp.sel); ok {
+        if setting_is_text(s) {
+            config_text_key(a, &cp.edit, key, mods, false)
+            return
+        }
         switch key {
         case glfw.KEY_RIGHT, glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
             config_pane_open_setting(a, s)
@@ -768,9 +784,19 @@ config_key :: proc(a: ^App, key, mods: i32) {
         return
     }
 
-    // The search box (the only text-input row): Left/Right move the caret;
-    // Backspace/Delete edit and refilter the language list live.
-    d := &cp.search
+    // The search box.
+    config_text_key(a, &cp.search, key, mods, true)
+}
+
+// The editing keys shared by the pane's two text rows: Left/Right (and Ctrl+, Home/End) move
+// the caret, Backspace/Delete edit. They differ only in what an edit MEANS afterwards, which
+// is what `filter` picks: the language filter re-runs live on every change and has nothing to
+// submit, so Enter is not its key; a setting accumulates and Enter commits it (as does moving
+// off the row — see config_edit_sync). One proc because the two rows are the same field with
+// different consequences, and a divergence between them would only ever be an oversight.
+@(private = "file")
+config_text_key :: proc(a: ^App, d: ^Doc, key, mods: i32, filter: bool) {
+    cp := &a.config_pane
     if edit_motion(d, key, mods, false) {
         return
     }
@@ -778,9 +804,15 @@ config_key :: proc(a: ^App, key, mods: i32) {
     switch key {
     case glfw.KEY_BACKSPACE:
         if ctrl {doc_delete_word_back(d)} else {doc_backspace(d)}
-        config_pane_filter(cp)
     case glfw.KEY_DELETE:
         if ctrl {doc_delete_word_forward(d)} else {doc_delete(d)}
+    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
+        if !filter {config_edit_commit(a)}
+        return
+    case:
+        return
+    }
+    if filter {
         config_pane_filter(cp)
     }
 }

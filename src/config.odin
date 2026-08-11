@@ -165,8 +165,9 @@ load_config :: proc() -> Config {
             delete(cfg.git_tool)
             cfg.git_tool = strings.clone(val)
         case "git_term":
-            // Empty (or unparseable) stays 0 — detached. A number names a terminal
-            // session; git_tool_open clamps it to the sessions that can exist.
+            // Empty (or unparseable) stays 0 — detached, which is also what the pane's
+            // GIT_TERM_DETACHED writes. A number names a terminal session; git_tool_open
+            // clamps it to the sessions that can exist.
             if v, ok := strconv.parse_int(val); ok {cfg.git_term = max(0, v)}
         case "grep_pane":
             if v, ok := parse_on_off(val); ok {cfg.grep_pane_always = v}
@@ -197,7 +198,7 @@ parse_indent :: proc(s: string) -> (Indent, bool) {
 
 config_destroy :: proc(cfg: ^Config) {
     delete(cfg.theme_path)
-    delete(cfg.git_tool) // App borrows this one rather than cloning it — see main
+    delete(cfg.git_tool)
 }
 
 @(private = "file")
@@ -256,6 +257,10 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return INDENT_OPTS[:]
     case .Theme:
         return theme_options(context.temp_allocator)
+    case .GitTool:
+        return nil // free text, not a choice — see setting_is_text
+    case .GitTerm:
+        return git_term_options(a, context.temp_allocator)
     case .Folding, .IndentGuides, .Whitespace, .GrepPane, .Mouse, .Hover:
         return ON_OFF_OPTS[:]
     case .FolderCd:
@@ -299,11 +304,36 @@ theme_options :: proc(allocator := context.allocator) -> []string {
     return out[:]
 }
 
+// git_term's token for "no terminal at all". Unlike git_tool, git_term is a CLOSED choice —
+// a session number, or its own window — so it stays a dropdown, and a dropdown needs a row
+// to point at for the empty case. load_config maps this straight back to 0.
+GIT_TERM_DETACHED :: "detached"
+
+// "detached", then every session number a launch can actually land on: the open ones plus
+// the next (git_term_slot's rule — a number past the end opens one more, and only one). A
+// configured number beyond that is appended as well, because config_pane_open_setting
+// pre-selects by MATCHING the current value: a hand-written `git_term: 7` that was missing
+// from the list would leave the dropdown pointing at "detached", and the first Enter would
+// quietly change a setting the user came to look at.
+@(private = "file")
+git_term_options :: proc(a: ^App, allocator := context.allocator) -> []string {
+    top := git_term_slot(term_count(a), TERM_MAX) // the highest slot that names a session
+    out := make([dynamic]string, 0, top + 2, allocator)
+    append(&out, GIT_TERM_DETACHED)
+    for n in 1 ..= top {
+        append(&out, fmt.aprintf("%d", n, allocator = allocator))
+    }
+    if a.git_term > top {
+        append(&out, fmt.aprintf("%d", a.git_term, allocator = allocator))
+    }
+    return out[:]
+}
+
 // --- the editable settings shown in the Config aux pane ---
-// config.odin owns config, so the Setting model + writeback live here. The pane
-// edits these three keys; per-language grammar paths also live in the config file
-// but are intentionally NOT here — they're data for the syntax list, not knobs — so
-// the settings list stays small.
+// config.odin owns config, so the Setting model + writeback live here. The pane edits these
+// keys and no others; per-language grammar paths also live in the config file but are
+// intentionally NOT here — they're data for the syntax list, not knobs — so the settings
+// list stays small. Order is the pane's row order, and follows the shipped slopd.config's.
 
 Setting :: enum {
     Theme,
@@ -314,10 +344,23 @@ Setting :: enum {
     IndentGuides,
     Whitespace,
     FolderCd,
+    GitTool,
+    GitTerm,
     GrepPane,
     DiskConflict,
     Mouse,
     Hover,
+}
+
+// Whether a setting is FREE TEXT rather than a choice — the row is an editor you type into,
+// not a dropdown you pick from. Only git_tool: it is a command line, so the set of legal
+// values is "whatever launches your git tool", including flags (`sublime_merge -n`) and
+// wrapper scripts. A menu here could only ever be a guess at what you meant.
+//
+// Everything else is genuinely closed (on/off, a theme file that exists, a terminal session
+// that can exist) and stays a dropdown, because for those a menu is the whole answer.
+setting_is_text :: proc(s: Setting) -> bool {
+    return s == .GitTool
 }
 
 setting_key :: proc(s: Setting) -> string {
@@ -330,6 +373,8 @@ setting_key :: proc(s: Setting) -> string {
     case .IndentGuides: return "indent_guides"
     case .Whitespace:   return "whitespace"
     case .FolderCd:     return "folder_cd"
+    case .GitTool:      return "git_tool"
+    case .GitTerm:      return "git_term"
     case .GrepPane:     return "grep_pane"
     case .DiskConflict: return "disk_conflict"
     case .Mouse:        return "mouse"
@@ -351,6 +396,8 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .IndentGuides: return on_off(a.show_guides)
     case .Whitespace:   return on_off(a.show_whitespace)
     case .FolderCd:     return a.folder_cd_run ? "run" : "stage"
+    case .GitTool:      return a.git_tool // free text; "" is unset (Alt+G opens a shell)
+    case .GitTerm:      return a.git_term <= 0 ? GIT_TERM_DETACHED : fmt.tprintf("%d", a.git_term)
     case .GrepPane:     return on_off(a.grep_pane_always)
     case .DiskConflict: return a.conflict_prompt ? "prompt" : "keep"
     case .Mouse:        return on_off(a.mouse_on)
@@ -389,6 +436,27 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.show_whitespace = parse_on_off(val) or_return
     case .FolderCd:
         a.folder_cd_run = parse_stage_run(val) or_return
+    case .GitTool:
+        // Free text, so this is the one setting a user can type something UNREADABLE into:
+        // a value carrying a comment-opening '#' would be written whole and then read back
+        // truncated (config_split_comment), and the pane would show a value the file does
+        // not hold. Refusing it keeps the old tool, which is this proc's contract for an
+        // invalid value — and the config file stays the place to write anything exotic.
+        if _, comment := config_split_comment(val); comment != "" {
+            return false
+        }
+        delete(a.git_tool) // App owns its copy (main clones the Config's) — see app_destroy
+        a.git_tool = strings.clone(val)
+    case .GitTerm:
+        if val == GIT_TERM_DETACHED {
+            a.git_term = 0 // its own window, no PTY — see git_tool.odin
+        } else {
+            n := strconv.parse_int(val) or_return
+            if n < 0 {
+                return false
+            }
+            a.git_term = n
+        }
     case .GrepPane:
         a.grep_pane_always = parse_on_off(val) or_return
     case .DiskConflict:

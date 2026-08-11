@@ -148,6 +148,168 @@ test_config_open_setting :: proc(t: ^testing.T) {
     testing.expect_value(t, a.config_pane.opt_sel, 2)
 }
 
+// The two git rows are deliberately different kinds of row. git_tool is a COMMAND LINE, so
+// it is free text with no dropdown at all and no menu guessing at what you meant; git_term
+// is a closed choice (a session, or its own window) and stays a dropdown, which needs a
+// token for the empty case.
+@(test)
+test_git_settings :: proc(t: ^testing.T) {
+    a: app.App
+
+    // git_tool: text, so no options, and its value is whatever is set — "" when unset.
+    testing.expect(t, app.setting_is_text(.GitTool))
+    testing.expect(t, app.setting_options(&a, .GitTool) == nil)
+    testing.expect_value(t, app.setting_value(&a, .GitTool), "")
+    a.git_tool = "sublime_merge -n"
+    testing.expect_value(t, app.setting_value(&a, .GitTool), "sublime_merge -n")
+
+    // Opening a dropdown on it is a no-op rather than an empty menu.
+    app.config_pane_init(&a.config_pane, nil)
+    defer app.config_pane_destroy(&a.config_pane)
+    app.config_pane_open_setting(&a, .GitTool)
+    testing.expect_value(t, a.config_pane.open, app.Open_Kind.None)
+
+    // git_term: a dropdown, and no other setting is text.
+    testing.expect(t, !app.setting_is_text(.GitTerm))
+    testing.expect(t, !app.setting_is_text(.Theme))
+    testing.expect_value(t, app.setting_value(&a, .GitTerm), "detached")
+
+    // No sessions open: "detached" plus the one slot a launch can reach (git_term_slot's
+    // "a number past the end opens the next one, and only one").
+    terms := app.setting_options(&a, .GitTerm)
+    testing.expect_value(t, len(terms), 2)
+    testing.expect_value(t, terms[0], "detached")
+    testing.expect_value(t, terms[1], "1")
+
+    // A configured session past that is still offered, so opening the dropdown lands on the
+    // value that is actually set rather than silently pointing at "detached".
+    a.git_term = 7
+    testing.expect_value(t, app.setting_value(&a, .GitTerm), "7")
+    terms = app.setting_options(&a, .GitTerm)
+    testing.expect_value(t, terms[len(terms) - 1], "7")
+    app.config_pane_open_setting(&a, .GitTerm)
+    testing.expect_value(t, a.config_pane.opt_sel, len(terms) - 1)
+}
+
+// The free-text row is an editor while it is highlighted: landing on it seeds the Doc from
+// the stored value, and leaving it commits what was typed. Both halves run through
+// config_edit_sync, so a click reaches them exactly as the arrows do.
+@(test)
+test_config_text_setting_edit :: proc(t: ^testing.T) {
+    path := "/tmp/slopd_config_text_edit_test.config"
+    testing.expect(t, os.write_entire_file(path, transmute([]byte)string("git_tool: tig\n")) == nil)
+    defer os.remove(path)
+    old := os.get_env("SLOPD_CONFIG", context.temp_allocator)
+    os.set_env("SLOPD_CONFIG", path) // a commit PERSISTS; keep it off the real config
+    defer os.set_env("SLOPD_CONFIG", old)
+
+    a: app.App
+    a.git_tool = strings.clone("tig") // owned, as main's clone makes it
+    defer delete(a.git_tool)
+    app.config_pane_init(&a.config_pane, nil)
+    defer app.config_pane_destroy(&a.config_pane)
+    cp := &a.config_pane
+    row := int(app.Setting.GitTool)
+
+    // Off the row: no Doc is live, and nothing is committed.
+    app.config_edit_sync(&a)
+    testing.expect_value(t, cp.edit_row, -1)
+
+    // On it: seeded with the stored value, caret at the end.
+    cp.sel = row
+    app.config_edit_sync(&a)
+    testing.expect_value(t, cp.edit_row, row)
+    testing.expect_value(t, app.doc_string(&cp.edit, context.temp_allocator), "tig")
+
+    // A visit that changes nothing must not rewrite the file — the mtime would churn and
+    // every "did I edit this?" answer would be yes.
+    cp.sel = 0
+    testing.expect(t, !app.config_edit_commit(&a))
+    app.config_edit_sync(&a)
+    testing.expect_value(t, cp.edit_row, -1)
+    out, _ := os.read_entire_file_from_path(path, context.temp_allocator)
+    testing.expect_value(t, string(out), "git_tool: tig\n")
+
+    // Type a full command line — spaces, flags and all — and leave the row.
+    cp.sel = row
+    app.config_edit_sync(&a)
+    app.doc_set_text(&cp.edit, "sublime_merge -n")
+    cp.sel = 0
+    app.config_edit_sync(&a)
+    testing.expect_value(t, a.git_tool, "sublime_merge -n")
+    out, _ = os.read_entire_file_from_path(path, context.temp_allocator)
+    testing.expect_value(t, string(out), "git_tool: sublime_merge -n\n")
+
+    // And it reads back as itself: the value the pane shows is the value the file holds.
+    cfg := app.load_config()
+    defer app.config_destroy(&cfg)
+    testing.expect_value(t, cfg.git_tool, "sublime_merge -n")
+}
+
+// Free text is the one setting a user can type an unreadable value into: a '#' after a space
+// opens a comment, so the file would read back short. setting_commit refuses it and the row
+// keeps the tool it had — its stated contract for an invalid value.
+@(test)
+test_config_text_setting_rejects_comment :: proc(t: ^testing.T) {
+    path := "/tmp/slopd_config_text_reject_test.config"
+    testing.expect(t, os.write_entire_file(path, transmute([]byte)string("git_tool: tig\n")) == nil)
+    defer os.remove(path)
+    old := os.get_env("SLOPD_CONFIG", context.temp_allocator)
+    os.set_env("SLOPD_CONFIG", path)
+    defer os.set_env("SLOPD_CONFIG", old)
+
+    a: app.App
+    a.git_tool = strings.clone("tig")
+    defer delete(a.git_tool)
+    app.config_pane_init(&a.config_pane, nil)
+    defer app.config_pane_destroy(&a.config_pane)
+    cp := &a.config_pane
+
+    cp.sel = int(app.Setting.GitTool)
+    app.config_edit_sync(&a)
+    app.doc_set_text(&cp.edit, "sh -c foo # bar")
+    testing.expect(t, !app.config_edit_commit(&a))
+    testing.expect_value(t, a.git_tool, "tig") // unchanged
+    out, _ := os.read_entire_file_from_path(path, context.temp_allocator)
+    testing.expect_value(t, string(out), "git_tool: tig\n") // and unwritten
+
+    // A '#' glued to a token is part of the value, not a comment, so it commits.
+    app.doc_set_text(&cp.edit, "sh -c foo#bar")
+    testing.expect(t, app.config_edit_commit(&a))
+    testing.expect_value(t, a.git_tool, "sh -c foo#bar")
+}
+
+// A caret is live only while a row that edits text owns the keystrokes. The painter and the
+// frame scheduler both ask this one proc, because a pane that stops redrawing leaves a caret
+// frozen in whatever blink phase it was last painted in.
+@(test)
+test_config_caret_live :: proc(t: ^testing.T) {
+    a: app.App
+    app.config_pane_init(&a.config_pane, nil)
+    defer app.config_pane_destroy(&a.config_pane)
+    cp := &a.config_pane
+    cp.sel = app.SETTING_COUNT // the search row
+
+    a.focus = .Aux
+    a.aux_mode = .Config
+    testing.expect(t, app.config_caret_live(&a))
+    testing.expect(t, app.caret_shown(&a))
+
+    cp.open = .Setting // a dropdown is over it
+    testing.expect(t, !app.config_caret_live(&a))
+    cp.open = .None
+
+    cp.sel = 0 // a settings row: a dropdown, nothing to type into
+    testing.expect(t, !app.config_caret_live(&a))
+
+    cp.sel = int(app.Setting.GitTool) // the free-text setting is an editor too
+    testing.expect(t, app.config_caret_live(&a))
+    cp.sel = app.SETTING_COUNT
+
+    a.focus = .Editor // the pane is on screen but not taking keys
+    testing.expect(t, !app.config_caret_live(&a))
+}
+
 // The "global" theme token resolves to ~/.config/unrawk/active.theme when that file
 // exists (the universal Thrawk theme), and to "" (baked-in default) when it doesn't.
 @(test)
