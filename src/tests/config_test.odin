@@ -139,6 +139,31 @@ test_config_git_detached_token :: proc(t: ^testing.T) {
     testing.expect_value(t, cfg.git_term, 0)
 }
 
+// run_term names a SESSION and only a session — there is no detached case, because a program
+// you double-clicked has output you want to see. A junk value keeps t1 rather than resolving
+// to 0, which term_slot would read as "the session before the first".
+@(test)
+test_config_run_term :: proc(t: ^testing.T) {
+    path := "/tmp/slopd_config_run_term_test.config"
+    testing.expect(t, os.write_entire_file(path, transmute([]byte)string("run_term: 3\n")) == nil)
+    defer os.remove(path)
+
+    app.config_path_override = path
+    defer app.config_path_override = ""
+
+    cfg := app.load_config()
+    defer app.config_destroy(&cfg)
+    testing.expect_value(t, cfg.run_term, 3)
+
+    // Junk, and a zero, both keep the default.
+    for bad in ([]string{"run_term: detached\n", "run_term: 0\n", "run_term:\n"}) {
+        testing.expect(t, os.write_entire_file(path, transmute([]byte)bad) == nil)
+        junk := app.load_config()
+        defer app.config_destroy(&junk)
+        testing.expectf(t, junk.run_term == 1, "%q must keep t1, got t%d", bad, junk.run_term)
+    }
+}
+
 // --- the [places] block --- The file browser's sidebar lives in the config file, in the one
 // section it has. Everything below a `[section]` header is DATA, not settings, and the three
 // readers all have to agree on that — the loader stops there, config_set refuses to rewrite a

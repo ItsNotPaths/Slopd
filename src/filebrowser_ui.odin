@@ -36,6 +36,7 @@ FB_BAR_PAD :: 5
 // (FB_TILE_CELLS, filebrowser.odin) so it scales with the font zoom; these are chrome, and
 // chrome scales with the DPI only.
 FB_TILE_PAD :: 4
+FB_TILE_GAP :: 6
 
 // The top bar's glyphs. Box-drawing and arrows are in the bundled subset (download-deps.sh keeps
 // U+2190-21FF, U+25A0-25FF and U+27F0-27FF), so these are real glyphs rather than ASCII stand-ins.
@@ -110,6 +111,13 @@ filebrowser_tile_bands :: proc(line_h: f32) -> (icon_h, name_h: f32) {
     return math.round(line_h * FB_TILE_ICON_ROWS), math.round(line_h * FB_TILE_NAME_SCALE)
 }
 
+// The gap BETWEEN tiles, both ways. Whole pixels, and asked for here rather than inlined at each
+// use: the column count, the scroll unit and the declaration all have to space the grid by the
+// same number or the tween would land a few pixels off the row it is easing to.
+filebrowser_tile_gap :: proc(scale: f32) -> f32 {
+    return math.round(max(0, FB_TILE_GAP * scale))
+}
+
 // How many runes of a caption fit across a tile at the caption's size. Smaller text means MORE
 // characters in the same width, which is the one thing shrinking it buys back.
 filebrowser_tile_name_cells :: proc() -> int {
@@ -134,10 +142,13 @@ filebrowser_rows :: proc(
         return row_h > 0 ? max(0, int(content.h / row_h)) : 0, 1
     }
     tw, th := filebrowser_tile(scale, line_h, cell_w, content.w)
+    gap := filebrowser_tile_gap(scale)
     if th <= 0 {
         return 0, 1
     }
-    return max(0, int(f32(content.h) / th)), filebrowser_grid_cols(content.w, tw)
+    // In PITCH, not in tile heights: a row of tiles occupies its own height plus the gap under
+    // it, and counting bare tiles would claim room for one more row than the grid has.
+    return max(0, int(f32(content.h) / (th + gap))), filebrowser_grid_cols(content.w, tw, gap)
 }
 
 // The height of one CONTENT ROW — a list row, or a row of tiles — which is the unit both the
@@ -151,7 +162,7 @@ filebrowser_row_h :: proc(view: Browse_View, row_h: i32, scale, line_h, cell_w: 
     // the caller's content width is not in scope at every call site, and asking for it would
     // make three procs take a parameter one of them ignores.
     _, tile_h := filebrowser_tile(scale, line_h, cell_w, max(i32))
-    return i32(tile_h)
+    return i32(tile_h + filebrowser_tile_gap(scale)) // the PITCH: the tile and the gap under it
 }
 
 // Move the viewport to follow the selection, under the shared `scroll_mode` policy. The unit is
@@ -246,25 +257,41 @@ filebrowser_click :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit) {
     }
 }
 
-// Apply a pending RIGHT press: select what is under it, then open the context menu there. A
-// press on the contents' empty space is not a miss — it opens the DIRECTORY's menu (paste, add
-// to places, reload), which is the gesture every file manager gives you for "act on where I am".
-filebrowser_rclick :: proc(a: ^App, hit: FB_Hit) {
+// Apply a pending RIGHT press: work out WHAT it landed on, select it if it is a row, then open
+// the menu for that. **All four kinds of target get a menu of their own** — a segment's and a
+// place's name a directory, and a press on the contents' empty space is not a miss but the
+// DIRECTORY's menu (paste, add to places, reload), the gesture every file manager gives you for
+// "act on where I am".
+filebrowser_rclick :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit) {
     if !rect_hit(a.lay.aux, a.mouse.rclick_x, a.mouse.rclick_y) {
         return // not our pane; whoever owns that region may claim it
     }
     if !mouse_take_rclick(a) {
         return
     }
+    br := &a.filebrowser
     ft := &a.tree
-    on_row := hit.kind == .Row && hit.index >= 0 && hit.index < len(ft.entries)
-    if on_row {
-        ft.selected = hit.index
+    on := Menu_Target{ft.dir, .Dir} // a button's press, and a miss, both act on where you are
+    switch hit.kind {
+    case .None, .Button:
+    case .Row:
+        if hit.index >= 0 && hit.index < len(ft.entries) {
+            ft.selected = hit.index
+            if e := filetree_selected(ft); e != nil {
+                on = {e.path, .Entry}
+            }
+        }
+    case .Segment:
+        if hit.index >= 0 && hit.index < len(segs) {
+            on = {segs[hit.index].path, .Path}
+        }
+    case .Place:
+        if hit.index >= 0 && hit.index < len(br.places) {
+            on = {br.places[hit.index].path, .Path}
+        }
     }
-    e := filetree_selected(ft)
-    target := on_row && e != nil ? e.path : ft.dir
-    items := ctxmenu_file_items(a, on_row, true, context.temp_allocator)
-    ctxmenu_open(a, .FileOps, items, a.mouse.rclick_x, a.mouse.rclick_y, target)
+    items := ctxmenu_file_items(a, on, true, context.temp_allocator)
+    ctxmenu_open(a, .FileOps, items, a.mouse.rclick_x, a.mouse.rclick_y, on)
 }
 
 // The top bar's verbs. Package-level and switch-shaped because both the pointer and the keyboard
@@ -298,7 +325,7 @@ filebrowser_activate :: proc(a: ^App) {
         filebrowser_navigate(&a.filebrowser, &a.tree, e.path)
         return
     }
-    open_file(a, e.path)
+    open_or_run(a, e.path, e.exec)
 }
 
 // Up to the parent directory, through the history. `filepath.dir` slices ft.dir, which the load
@@ -405,6 +432,9 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32) {
                         // must not stretch the clip group it is inside (rule 8).
                         sizing          = {clay.SizingGrow(), clay.SizingFixed(f32(max(0, content.h)))},
                         layoutDirection = .TopToBottom,
+                        // The grid's rows are spaced by the solver, which is what makes the
+                        // PITCH filebrowser_row_h reports the real one. A list has no gap.
+                        childGap        = br.view == .Grid ? u16(filebrowser_tile_gap(a.scale)) : 0,
                     },
                     // The tween's remainder rides on the clip, not on each row's y (rule 9).
                     clip = {horizontal = true, vertical = true, childOffset = {0, -f32(off)}},
@@ -624,6 +654,7 @@ filebrowser_declare_grid :: proc(a: ^App, f: ^Font, top, visible, cols: int, lh:
                 layout = {
                     sizing          = {clay.SizingGrow(), clay.SizingFixed(thh)},
                     layoutDirection = .LeftToRight,
+                    childGap        = u16(filebrowser_tile_gap(a.scale)),
                 },
             },
         ) {
@@ -759,7 +790,7 @@ filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     br.hover_btn = hit.kind == .Button ? hit.btn : .None
 
     filebrowser_click(a, segs, hit)
-    filebrowser_rclick(a, hit)
+    filebrowser_rclick(a, segs, hit)
     filebrowser_scroll_apply(a, rows, cols, a.scroll_mode == .Middle)
 
     off: i32

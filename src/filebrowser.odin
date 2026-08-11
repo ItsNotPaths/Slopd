@@ -222,11 +222,14 @@ filebrowser_seg_first :: proc(segs: []Path_Seg, maxw: int) -> int {
 
 // How many tiles fit across `width` pixels, at least one. Below one tile's width the grid becomes
 // a single clipped column rather than dividing by zero or reflowing to nothing.
-filebrowser_grid_cols :: proc(width: i32, tile_w: f32) -> int {
+//
+// `gap` goes BETWEEN tiles and not after the last one, so the width to divide is one gap wider
+// than the region: n tiles need n*(tile+gap) - gap, which is the same test as (width+gap) / pitch.
+filebrowser_grid_cols :: proc(width: i32, tile_w: f32, gap: f32 = 0) -> int {
     if tile_w <= 0 || width <= 0 {
         return 1
     }
-    return max(1, int(f32(width) / tile_w))
+    return max(1, int((f32(width) + gap) / (tile_w + gap)))
 }
 
 // How many tile ROWS `n` entries take. The grid's scroll unit is this row, not the entry, so the

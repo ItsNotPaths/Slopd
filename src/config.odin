@@ -61,6 +61,7 @@ Config :: struct {
     folder_cd_run:    bool, // filetree Alt+Enter: run the `cd` at once vs stage it in the CL
     git_tool:         string, // external git tool Alt+G hands the project root to (owned); "" = none
     git_term:         int, // which terminal session to run it in; 0 = spawn it detached
+    run_term:         int, // which terminal session an activated executable runs in
     grep_pane_always: bool, // CL grep: always open the results pane vs jump straight on a lone hit
     conflict_prompt:  bool, // disk changed under unsaved edits: prompt (y/n in the CL) vs silently keep my edits
     mouse:            bool, // pointer input (wheel, and the clicks that follow it) on/off
@@ -116,6 +117,7 @@ load_config :: proc() -> Config {
         folding         = true,
         folder_cd_run   = false, // stage the cd in the CL by default (reviewable)
         git_term        = 0, // detached by default: a GUI tool wants its own window, not a PTY
+        run_term        = 1, // t1, the master CL terminal, unless you point it elsewhere
         grep_pane_always = true, // always show the results pane (no auto-jump on a lone hit)
         conflict_prompt = true, // ask before a disk change is reconciled against unsaved edits
         mouse           = true, // pointer input on; it is purely additive to the keyboard
@@ -187,6 +189,10 @@ load_config :: proc() -> Config {
             // GIT_TERM_DETACHED writes. A number names a terminal session; git_tool_open
             // clamps it to the sessions that can exist.
             if v, ok := strconv.parse_int(val); ok {cfg.git_term = max(0, v)}
+        case "run_term":
+            // A session number and nothing else — unlike git_term there is no detached case,
+            // because a program you double-click has output you want to SEE. Junk keeps t1.
+            if v, ok := strconv.parse_int(val); ok && v > 0 {cfg.run_term = v}
         case "grep_pane":
             if v, ok := parse_on_off(val); ok {cfg.grep_pane_always = v}
         case "disk_conflict":
@@ -275,7 +281,9 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
     case .GitTool:
         return nil // free text, not a choice — see setting_is_text
     case .GitTerm:
-        return git_term_options(a, context.temp_allocator)
+        return term_options(a.git_term, true, term_count(a), context.temp_allocator)
+    case .RunTerm:
+        return term_options(a.run_term, false, term_count(a), context.temp_allocator)
     case .Folding, .IndentGuides, .Whitespace, .GrepPane, .Mouse, .Hover, .FileIcons:
         return ON_OFF_OPTS[:]
     case .FilePane:
@@ -327,19 +335,23 @@ theme_options :: proc(allocator := context.allocator) -> []string {
 // to point at for the empty case. load_config maps this straight back to 0.
 GIT_TERM_DETACHED :: "detached"
 
-// "detached", then every session number a launch can land on: the open ones plus the next
-// (git_term_slot's rule). A configured number beyond that is appended too, because the pane
-// pre-selects by MATCHING the current value — a missing `git_term: 7` would silently reset it.
+// Every session number a launch can land on: the open ones plus the next (term_slot's rule),
+// optionally led by "detached". A configured number beyond that is appended too, because the
+// pane pre-selects by MATCHING the current value — a missing `git_term: 7` would silently
+// reset it. Shared by the two settings that name a session, which differ only in that one of
+// them can also mean "no session at all".
 @(private = "file")
-git_term_options :: proc(a: ^App, allocator := context.allocator) -> []string {
-    top := git_term_slot(term_count(a), TERM_MAX) // the highest slot that names a session
+term_options :: proc(current: int, detached: bool, count: int, allocator := context.allocator) -> []string {
+    top := term_slot(count, TERM_MAX) // the highest slot that names a session
     out := make([dynamic]string, 0, top + 2, allocator)
-    append(&out, GIT_TERM_DETACHED)
+    if detached {
+        append(&out, GIT_TERM_DETACHED)
+    }
     for n in 1 ..= top {
         append(&out, fmt.aprintf("%d", n, allocator = allocator))
     }
-    if a.git_term > top {
-        append(&out, fmt.aprintf("%d", a.git_term, allocator = allocator))
+    if current > top {
+        append(&out, fmt.aprintf("%d", current, allocator = allocator))
     }
     return out[:]
 }
@@ -357,6 +369,7 @@ Setting :: enum {
     IndentGuides,
     Whitespace,
     FolderCd,
+    RunTerm,
     GitTool,
     GitTerm,
     GrepPane,
@@ -384,6 +397,7 @@ setting_key :: proc(s: Setting) -> string {
     case .IndentGuides: return "indent_guides"
     case .Whitespace:   return "whitespace"
     case .FolderCd:     return "folder_cd"
+    case .RunTerm:      return "run_term"
     case .GitTool:      return "git_tool"
     case .GitTerm:      return "git_term"
     case .GrepPane:     return "grep_pane"
@@ -409,6 +423,7 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .IndentGuides: return on_off(a.show_guides)
     case .Whitespace:   return on_off(a.show_whitespace)
     case .FolderCd:     return a.folder_cd_run ? "run" : "stage"
+    case .RunTerm:      return fmt.tprintf("%d", max(1, a.run_term))
     case .GitTool:      return a.git_tool // free text; "" is unset (Alt+G opens a shell)
     case .GitTerm:      return a.git_term <= 0 ? GIT_TERM_DETACHED : fmt.tprintf("%d", a.git_term)
     case .GrepPane:     return on_off(a.grep_pane_always)
@@ -451,6 +466,12 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.show_whitespace = parse_on_off(val) or_return
     case .FolderCd:
         a.folder_cd_run = parse_stage_run(val) or_return
+    case .RunTerm:
+        n := strconv.parse_int(val) or_return
+        if n < 1 {
+            return false // every value is a session; there is no detached case here
+        }
+        a.run_term = n
     case .GitTool:
         // Free text, so this is the one setting that can be typed UNREADABLE: a value carrying a
         // comment-opening '#' writes whole but reads back truncated, and the pane would show a

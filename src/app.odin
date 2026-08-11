@@ -178,6 +178,11 @@ App :: struct {
     git_tool: string,
     git_term: int,
 
+    // Which terminal session an ACTIVATED executable runs in (Enter / double click on a binary
+    // or a script). A session number by term_slot's rule — never detached, since a program you
+    // double-click has output you want to see. See open_or_run.
+    run_term: int,
+
     // Mouse (mouse.odin). `mouse` mirrors the GLFW pointer callbacks; `mouse_on` is the config
     // toggle. `lay` is the layout the LAST FRAME PAINTED, cached by render: pointer events
     // arrive between frames and must resolve against what is on screen. Zero rects until then.

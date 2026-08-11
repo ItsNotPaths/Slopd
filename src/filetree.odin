@@ -235,6 +235,18 @@ filetree_clip_take :: proc(ft: ^FileTree, mode: Clip_Mode) {
     ft.clip_mode = mode
 }
 
+// Stage ONE named path, for the caller that says what to act on instead of pointing at it — the
+// context menu opened on a path-bar segment or a places row, which name directories the listing
+// need not contain and the cursor is not on.
+filetree_clip_one :: proc(ft: ^FileTree, path: string, mode: Clip_Mode) {
+    if path == "" {
+        return
+    }
+    filetree_clip_clear(ft)
+    append(&ft.clip, strings.clone(path))
+    ft.clip_mode = mode
+}
+
 // Paste the clipboard into the current dir: Copy duplicates, Cut moves. Each destination name is
 // made unique so an existing file is never clobbered. A CUT is spent by its paste — the sources
 // are gone, so the clipboard and any marks naming them would dangle; a COPY stays, so the same

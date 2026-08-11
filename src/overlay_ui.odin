@@ -175,7 +175,7 @@ CHORD_GAP :: 2
 // after the rule are the BROWSER's, and chord_hints drops them for the dired listing, where
 // there is no top bar or sidebar for them to drive.
 @(rodata)
-CHORD_HINTS := [14][2]string {
+CHORD_HINTS := [17][2]string {
     {"^y", "mark"},
     {"^u", "unmark"},
     {"^c", "copy"},
@@ -185,6 +185,9 @@ CHORD_HINTS := [14][2]string {
     {"^D", "del-set"},
     {"^w", "path"},
     {"^W", "dir"},
+    {"^o", "edit"},
+    {"^i", "props"},
+    {"^I", "dir-props"},
     {"^←", "back"},
     {"^→", "fwd"},
     {"^r", "reload"},
@@ -193,7 +196,7 @@ CHORD_HINTS := [14][2]string {
 }
 
 // How many of the hints above apply to the dired listing — the file ops, and no navigation.
-CHORD_OPS :: 9
+CHORD_OPS :: 12
 
 chord_hints :: proc(a: ^App) -> [][2]string {
     return a.file_pane == .Browser ? CHORD_HINTS[:] : CHORD_HINTS[:CHORD_OPS]

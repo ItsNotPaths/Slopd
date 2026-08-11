@@ -508,6 +508,25 @@ test_rm_command :: proc(t: ^testing.T) {
     testing.expect_value(t, app.rm_command(nil, context.temp_allocator), "")
 }
 
+// Properties is one `stat` run in t1, quoted like any other staged path. **--printf, not -c**:
+// only --printf interprets the `\n`s, so a -c here would print four literal backslash-n's and
+// one very long line — which is a mutation nothing else in the program would catch.
+@(test)
+test_properties_command :: proc(t: ^testing.T) {
+    cmd := app.properties_command("/tmp/a b.txt", context.temp_allocator)
+    testing.expect(t, strings.has_prefix(cmd, "stat --printf '"), "properties must use --printf")
+    testing.expect(t, strings.contains(cmd, `\n`), "the format lost its newline escapes")
+    testing.expect(t, strings.has_suffix(cmd, " -- '/tmp/a b.txt'"), "the path must be quoted last")
+
+    // Every field the gesture promises: mode, size, owner, mtime and birth time.
+    verbs := [?]string{"%A", "%s", "%U:%G", "%y", "%w"}
+    for verb in verbs {
+        testing.expectf(t, strings.contains(cmd, verb), "the format dropped %s", verb)
+    }
+
+    testing.expect_value(t, app.properties_command("", context.temp_allocator), "")
+}
+
 // Shift+Enter's run-vs-open split: an executable runs by its own path, a non-executable
 // shell script runs under bash, and anything else has no run command (it goes to the
 // desktop's default application instead).

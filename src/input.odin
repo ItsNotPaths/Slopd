@@ -16,8 +16,11 @@ import "vendor:glfw"
 //   Alt+W                     open the command line pre-filled for a line jump ("j ")
 //   Alt+Enter                 editor: follow the token under the caret (def / URL / [[file]] / colour);
 //                             filetree: cd to the selected folder (stage in CL, or run; config)
+//   Enter                     filetree: open the entry — or RUN it, when it is a binary or a
+//                             script, in the `run_term` session (Ctrl+O opens one anyway)
 //   Shift+Enter               filetree: open the entry in the OS default app (xdg-open); a
-//                             binary/script instead stages its run command in the CL
+//                             binary/script instead stages its run command in the CL, for a
+//                             run you want to type arguments onto
 //   Alt+F/T/R                 aux mode: FileTree / Terminal / gRep results
 //                             (FileTree wears one of two faces — the dired listing or the
 //                             file browser — per the `file_pane` config; same model, same
@@ -49,6 +52,11 @@ import "vendor:glfw"
 //                             a cut is spent by its paste, a copy is not
 //   Ctrl+D / Ctrl+Shift+D     delete the entry / the marked set, by staging an `rm -rf`
 //   Ctrl+W / Ctrl+Shift+W     copy the entry's path / the browsed directory's
+//   Ctrl+O                    open the entry in the EDITOR whatever it is — the way back to a
+//                             script that plain Enter now runs
+//   Ctrl+I / Ctrl+Shift+I     print the entry's / the browsed directory's properties (mode,
+//                             size, owner, mtime, birth) in t1, surfacing it — a `stat` run,
+//                             not a dialog, so it lands in scrollback like any other output
 // The browser adds its top bar and sidebar on top of those, and nothing else:
 //   Ctrl+Left / Ctrl+Right    history back / forward       Ctrl+R  reload
 //   Ctrl+G                    list <-> grid                Ctrl+1..9  open place N
@@ -65,7 +73,7 @@ import "vendor:glfw"
 //   click                     place the caret / select a row     a motion key, Up / Down
 //   Shift+click               extend the selection               Shift + a motion
 //   Alt+click                 drop a cursor there                Alt+A, then walk it
-//   double click              select the word / open the row     Ctrl+Left, Shift+Ctrl+Right / Enter
+//   double click              select the word / open or run it   Ctrl+Left, Shift+Ctrl+Right / Enter
 //   triple click              select the line                    Home, Shift+End
 //   click a fold marker       expand the block                   Ctrl+Enter
 //   right click               open the file-ops menu             hold Ctrl (the chord bar)
@@ -700,6 +708,17 @@ filetree_ops_key :: proc(a: ^App, key: i32, shift: bool) -> bool {
         } else if e := filetree_selected(ft); e != nil {
             clipboard_set(a, strings.clone(e.path), nil)
         }
+    case glfw.KEY_O:
+        filetree_edit_selected(a) // open in the editor even when Enter would run it
+    case glfw.KEY_I:
+        // Ctrl+I describes the selected entry in t1, Ctrl+Shift+I the browsed directory — the
+        // same entry/directory pair Ctrl+W and Ctrl+Shift+W make of the path. (Not ^p: that was
+        // the old paste chord, and a stale reflex must not land on a different verb.)
+        if e := filetree_selected(ft); e != nil && !shift {
+            filetree_props(a, e.path)
+        } else {
+            filetree_props(a, ft.dir)
+        }
     case:
         return false
     }
@@ -739,8 +758,8 @@ filetree_key :: proc(a: ^App, key, mods: i32) {
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
         if shift {
             filetree_open_selected(a) // hand it to the desktop, or stage its run command
-        } else if path, is_file := filetree_activate(ft); is_file {
-            open_file(a, path)
+        } else {
+            filetree_activate_selected(a)
         }
     }
 }
@@ -822,9 +841,45 @@ filetree_cd_selected :: proc(a: ^App) {
     }
 }
 
+// What Enter (and its double-click twin) does with a FILE in either presentation: run it when it
+// is something we could run, open it otherwise. **A program is not a document** — loading a
+// binary into the text ring shows you its bytes, which is never what activating it meant.
+//
+// It runs in the `run_term` session, surfaced, so its output is in front of you. The trailing
+// space run_command leaves for typing arguments is trimmed off: that space is Shift+Enter's,
+// which STAGES the same line instead — the two halves of "run it" and "run it with flags".
+open_or_run :: proc(a: ^App, path: string, exec: bool) {
+    if cmd := run_command(path, exec, context.temp_allocator); cmd != "" {
+        run_in_term(a, strings.trim_space(cmd), a.run_term)
+        return
+    }
+    open_file(a, path)
+}
+
+// Enter in the dired listing: descend into the folder, or open/run the file. One proc because
+// three gestures do it — the chord, the double click and the menu's Open.
+filetree_activate_selected :: proc(a: ^App) {
+    ft := &a.tree
+    e := filetree_selected(ft)
+    exec := e != nil && e.exec
+    // filetree_activate reloads when it DESCENDS, which frees the listing `path` came from —
+    // but it only returns a path on the file branch, where nothing was reloaded.
+    if path, is_file := filetree_activate(ft); is_file {
+        open_or_run(a, path, exec)
+    }
+}
+
+// Ctrl+O: open the entry in the EDITOR whatever it is — the way back to a script that Enter now
+// runs. Everything else in the pane has a chord, and "edit my +x build script" needed one too.
+filetree_edit_selected :: proc(a: ^App) {
+    if e := filetree_selected(&a.tree); e != nil && !e.is_dir && e.name != ".." {
+        open_file(a, e.path)
+    }
+}
+
 // Shift+Enter: open the entry the way the DESKTOP would, via xdg-open. The exception is
 // anything we could RUN — a binary or script STAGES its run command in the CL instead, since
-// running is a decision that usually wants arguments. Plain Enter opens it here.
+// running WITH ARGUMENTS is a decision worth reading first. Plain Enter runs it outright.
 filetree_open_selected :: proc(a: ^App) {
     e := filetree_selected(&a.tree)
     if e == nil || e.name == ".." {
@@ -846,6 +901,16 @@ filetree_rm_selected :: proc(a: ^App, marked: bool) {
     paths := filetree_targets(&a.tree, marked, context.temp_allocator)
     if cmd := rm_command(paths, context.temp_allocator); cmd != "" {
         cl_inject(a, cmd)
+    }
+}
+
+// Ctrl+P / Ctrl+Shift+P: print `path`'s properties in t1. It RUNS rather than staging (unlike the
+// delete above) because `stat` only reads — there is nothing here to review before it happens —
+// and it surfaces the terminal, since properties you cannot see were not sent anywhere. Alt+F
+// comes back to the browser with the listing where you left it.
+filetree_props :: proc(a: ^App, path: string) {
+    if cmd := properties_command(path, context.temp_allocator); cmd != "" {
+        run_in_t1(a, cmd)
     }
 }
 

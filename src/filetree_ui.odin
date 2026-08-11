@@ -79,12 +79,10 @@ filetree_click :: proc(a: ^App, row: int) {
     if count < 2 {
         return
     }
-    // Double click is Enter: descend into a directory (which reloads the listing, so the
-    // row index we just set no longer refers to anything — filetree_activate handles that)
-    // or open the file here, in Slopd's own editor.
-    if path, is_file := filetree_activate(ft); is_file {
-        open_file(a, path)
-    }
+    // Double click is Enter, through the same proc: descend into a directory (which reloads the
+    // listing, so the row index we just set no longer refers to anything), run the file if it is
+    // something we can run, or open it here in Slopd's own editor.
+    filetree_activate_selected(a)
 }
 
 // A right press: select what is under it, then open the file-ops menu there. The SAME menu the
@@ -98,14 +96,15 @@ filetree_rclick :: proc(a: ^App, row: int) {
         return
     }
     ft := &a.tree
-    on_row := row >= 0 && row < len(ft.entries)
-    if on_row {
+    on := Menu_Target{ft.dir, .Dir}
+    if row >= 0 && row < len(ft.entries) {
         ft.selected = row
+        if e := filetree_selected(ft); e != nil {
+            on = {e.path, .Entry}
+        }
     }
-    e := filetree_selected(ft)
-    target := on_row && e != nil ? e.path : ft.dir
-    items := ctxmenu_file_items(a, on_row, false, context.temp_allocator)
-    ctxmenu_open(a, .FileOps, items, a.mouse.rclick_x, a.mouse.rclick_y, target)
+    items := ctxmenu_file_items(a, on, false, context.temp_allocator)
+    ctxmenu_open(a, .FileOps, items, a.mouse.rclick_x, a.mouse.rclick_y, on)
 }
 
 // Declare the pane into the window's tree. Reads App, writes only Clay — no mutation,

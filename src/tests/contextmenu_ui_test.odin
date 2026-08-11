@@ -28,7 +28,7 @@ MENU :: app.Rect{10, 10, 136, 65}
 menu_app :: proc(a: ^app.App, x: i32 = 10, y: i32 = 10) {
     a.scale = 1
     a.mouse_on = true
-    app.ctxmenu_open(a, .FileOps, ITEMS[:], x, y, "/tmp")
+    app.ctxmenu_open(a, .FileOps, ITEMS[:], x, y, {"/tmp", .Dir})
 }
 
 // The box, the rows and the columns. The width comes from the WIDEST item because a popup is

@@ -33,6 +33,8 @@ Menu_Action :: enum {
     Mark,
     Delete,
     CopyPath,
+    OpenInEditor,
+    Properties,
     AddPlace,
     RemovePlace,
     Reload,
@@ -47,6 +49,21 @@ Menu_Item :: struct {
     hint:    string,
     action:  Menu_Action,
     enabled: bool,
+}
+
+// What the menu was opened ON, and what sort of thing that path is. The kind picks the item table
+// (a segment has no marks to toggle and nothing to unmark), and it decides which verbs act on
+// THIS path rather than on the listing's selection — a press on the path bar names a directory
+// the listing does not contain, so "act on the selection" would act on the wrong thing entirely.
+Menu_Target_Kind :: enum {
+    Dir, // the directory being browsed: the press hit the contents' background or a bar button
+    Entry, // a row of the listing; the right press has already moved the selection onto it
+    Path, // a directory named by chrome: a path-bar segment or a places row
+}
+
+Menu_Target :: struct {
+    path: string,
+    kind: Menu_Target_Kind,
 }
 
 ContextMenu :: struct {
@@ -65,10 +82,10 @@ ContextMenu :: struct {
     sel:   int,
     hover: int,
 
-    // What the menu was opened ON (owned): the entry's path, or the browsed directory when the
-    // press hit no row. The listing is freed and re-read by half the actions here, so this
-    // cannot be a borrow of an entry.
-    target: string,
+    // What the menu was opened ON — its `path` is OWNED. The listing, the places and the path
+    // bar's segments are all freed and re-read by half the actions here, so this cannot be a
+    // borrow of any of them.
+    target: Menu_Target,
 }
 
 ctxmenu_shown :: proc(a: ^App) -> bool {
@@ -78,7 +95,7 @@ ctxmenu_shown :: proc(a: ^App) -> bool {
 // Open `items` at the press position. The items are COPIED (the caller builds them in the frame's
 // temp arena), the target is cloned, and the keyboard lands on the first item that can actually
 // be chosen — never on a separator, and never on a disabled row.
-ctxmenu_open :: proc(a: ^App, kind: Menu_Kind, items: []Menu_Item, x, y: i32, target: string) {
+ctxmenu_open :: proc(a: ^App, kind: Menu_Kind, items: []Menu_Item, x, y: i32, target: Menu_Target) {
     ctxmenu_close(a)
     m := &a.ctxmenu
     m.kind = kind
@@ -87,7 +104,7 @@ ctxmenu_open :: proc(a: ^App, kind: Menu_Kind, items: []Menu_Item, x, y: i32, ta
     }
     m.x, m.y = x, y
     m.hover = -1
-    m.target = strings.clone(target)
+    m.target = {strings.clone(target.path), target.kind}
     m.sel = ctxmenu_next_selectable(m, -1, 1)
 }
 
@@ -95,15 +112,15 @@ ctxmenu_close :: proc(a: ^App) {
     m := &a.ctxmenu
     m.kind = .None
     clear(&m.items)
-    delete(m.target)
-    m.target = ""
+    delete(m.target.path)
+    m.target = {}
     m.rect = {}
     m.sel, m.hover = -1, -1
 }
 
 ctxmenu_destroy :: proc(a: ^App) {
     delete(a.ctxmenu.items)
-    delete(a.ctxmenu.target)
+    delete(a.ctxmenu.target.path)
 }
 
 // The next item the keyboard may land on, walking `dir` from `from`; `from` = -1 starts before
@@ -174,15 +191,14 @@ ctxmenu_choose :: proc(a: ^App) {
         return
     }
     kind := m.kind
-    // Only the two sidebar verbs act on the path the menu was opened over; the rest act on the
-    // selection, which the right press already moved. Cloned because the close below frees it.
-    on_place := it.action == .AddPlace || it.action == .RemovePlace
-    target := strings.clone(on_place ? m.target : "", context.temp_allocator)
+    // Cloned into the frame's arena because the close below frees the menu's copy, and the
+    // dispatch reads the path after it.
+    on := Menu_Target{strings.clone(m.target.path, context.temp_allocator), m.target.kind}
     ctxmenu_close(a) // close FIRST: the actions below reload listings and stage command lines
     switch kind {
     case .None:
     case .FileOps:
-        ctxmenu_file_action(a, it.action, target)
+        ctxmenu_file_action(a, it.action, on)
     }
 }
 
@@ -190,23 +206,30 @@ ctxmenu_choose :: proc(a: ^App) {
 // filetree_key), which is the property that keeps the menu discoverability rather than a second
 // implementation — a verb that behaved differently here would be a bug with two sources.
 @(private = "file")
-ctxmenu_file_action :: proc(a: ^App, action: Menu_Action, target: string) {
+ctxmenu_file_action :: proc(a: ^App, action: Menu_Action, on: Menu_Target) {
     ft := &a.tree
+    named := on.kind == .Path // chrome named a directory the selection is not on
     switch action {
     case .None:
     case .Open:
         // Each presentation's own Enter verb: the browser's descends THROUGH THE HISTORY (a
         // menu that pushed history the `ls` pane cannot show would leave [◀] pointing at
         // somewhere you never went), the listing's is the plain activate.
-        if a.file_pane == .Browser {
+        if named {
+            filebrowser_navigate(&a.filebrowser, ft, on.path)
+        } else if a.file_pane == .Browser {
             filebrowser_activate(a)
-        } else if path, is_file := filetree_activate(ft); is_file {
-            open_file(a, path)
+        } else {
+            filetree_activate_selected(a)
         }
     case .Cut:
         filetree_clip_take(ft, .Cut)
     case .Copy:
-        filetree_clip_take(ft, .Copy)
+        if named {
+            filetree_clip_one(ft, on.path, .Copy)
+        } else {
+            filetree_clip_take(ft, .Copy)
+        }
     case .Paste:
         filetree_paste(ft)
     case .Mark:
@@ -214,55 +237,89 @@ ctxmenu_file_action :: proc(a: ^App, action: Menu_Action, target: string) {
     case .Delete:
         filetree_rm_selected(a, len(ft.marks) > 0)
     case .CopyPath:
-        if e := filetree_selected(ft); e != nil {
-            clipboard_set(a, strings.clone(e.path), nil)
+        // Always the target: for an entry it IS the selection's path (the right press moved the
+        // selection there), and for the other two kinds the selection is the wrong thing.
+        if on.path != "" {
+            clipboard_set(a, strings.clone(on.path), nil)
         }
+    case .OpenInEditor:
+        filetree_edit_selected(a) // the entry the right press selected, bytes and all
+    case .Properties:
+        filetree_props(a, on.path) // the target's, for all three kinds — t1 prints it
     case .AddPlace:
-        filebrowser_place_add(&a.filebrowser, target)
+        filebrowser_place_add(&a.filebrowser, on.path)
     case .RemovePlace:
-        filebrowser_place_remove(&a.filebrowser, filebrowser_place_index(&a.filebrowser, target))
+        filebrowser_place_remove(&a.filebrowser, filebrowser_place_index(&a.filebrowser, on.path))
     case .Reload:
         filetree_reload(ft)
     }
 }
 
-// The file-ops menu's items, for a press on an entry (`on_row`) or on the background. Built by
-// the pane that opened the menu and copied into it, which is why the allocator defaults to the
-// frame's temp arena — and why every label here is a LITERAL, since the menu outlives the arena.
+// The file-ops menu's items for a press on `on`. Built by the pane that opened the menu and
+// copied into it, which is why the allocator defaults to the frame's temp arena — and why every
+// label here is a LITERAL, since the menu outlives the arena.
 //
-// **Nothing is left out, only disabled.** A paste with an empty clipboard, a delete with nothing
-// under the pointer: both stay on the menu, greyed, so the menu is the same shape every time you
-// open it and reading it teaches you the chords rather than the current state.
+// **A verb the target cannot have is left out; a verb it has but cannot do right now is
+// disabled.** Mark on a path-bar segment is the first — there is no row to mark, and a greyed
+// row that could never light up is furniture you read past. Paste with an empty clipboard is the
+// second: it stays, greyed, because a clipboard is a thing you can go and fill.
 ctxmenu_file_items :: proc(
     a: ^App,
-    on_row, in_places: bool,
+    on: Menu_Target,
+    in_places: bool,
     alloc := context.temp_allocator,
 ) -> []Menu_Item {
     ft := &a.tree
     e := filetree_selected(ft)
-    row := on_row && e != nil
+    row := on.kind == .Entry && e != nil
     marked := row && filetree_marked(ft, e.path)
-    // The sidebar shortcut acts on the entry when it is a directory, and on the directory being
-    // browsed when the press hit its background — a file cannot be a place.
-    place_path := row ? (e.is_dir ? e.path : "") : ft.dir
+    // The sidebar shortcut acts on a DIRECTORY: the entry when the press was on one, and the
+    // named path otherwise — a file cannot be a place.
+    place_path := row ? (e.is_dir ? e.path : "") : on.path
     is_place := place_path != "" && filebrowser_place_index(&a.filebrowser, place_path) >= 0
 
     out := make([dynamic]Menu_Item, 0, 12, alloc)
-    append(&out, Menu_Item{"Open", "Enter", .Open, row})
-    append(&out, Menu_Item{action = .None})
-    append(&out, Menu_Item{"Cut", "^x", .Cut, row || len(ft.marks) > 0})
-    append(&out, Menu_Item{"Copy", "^c", .Copy, row || len(ft.marks) > 0})
-    append(&out, Menu_Item{"Paste", "^v", .Paste, len(ft.clip) > 0})
-    append(&out, Menu_Item{action = .None})
-    append(&out, Menu_Item{marked ? "Unmark" : "Mark", "^y", .Mark, row})
-    append(&out, Menu_Item{"Delete", "^d", .Delete, row || len(ft.marks) > 0})
-    append(&out, Menu_Item{"Copy path", "^w", .CopyPath, row})
-    if in_places {
+    switch on.kind {
+    case .Entry:
+        // A runnable entry says what Enter will DO with it, and carries the way back to the
+        // editor beside it — Enter running a script is exactly when you need that route.
+        runnable := row && !e.is_dir && run_command(e.path, e.exec, context.temp_allocator) != ""
+        append(&out, Menu_Item{runnable ? "Run" : "Open", "Enter", .Open, row})
+        if runnable {
+            append(&out, Menu_Item{"Open in editor", "^o", .OpenInEditor, true})
+        }
+        append(&out, Menu_Item{action = .None})
+        append(&out, Menu_Item{"Cut", "^x", .Cut, row || len(ft.marks) > 0})
+        append(&out, Menu_Item{"Copy", "^c", .Copy, row || len(ft.marks) > 0})
+        append(&out, Menu_Item{"Paste", "^v", .Paste, len(ft.clip) > 0})
+        append(&out, Menu_Item{action = .None})
+        append(&out, Menu_Item{marked ? "Unmark" : "Mark", "^y", .Mark, row})
+        append(&out, Menu_Item{"Delete", "^d", .Delete, row || len(ft.marks) > 0})
+        append(&out, Menu_Item{"Copy path", "^w", .CopyPath, row})
+        append(&out, Menu_Item{"Properties", "^i", .Properties, row})
+    case .Path:
+        // A directory the chrome named: it can be gone to, staged for a paste and quoted, and
+        // that is the whole of what a segment or a places row IS. **No hints here** — ^c and ^w
+        // are the same verbs but on the SELECTION, and a column that named them would be naming
+        // a chord that acts somewhere else. The keyboard's route to these is to go there first.
+        append(&out, Menu_Item{"Open", "", .Open, on.path != ""})
+        append(&out, Menu_Item{action = .None})
+        append(&out, Menu_Item{"Copy", "", .Copy, on.path != ""})
+        append(&out, Menu_Item{"Copy path", "", .CopyPath, on.path != ""})
+        append(&out, Menu_Item{"Properties", "", .Properties, on.path != ""})
+    case .Dir:
+        // The background of the listing: the verbs that act on WHERE YOU ARE. Paste is the one
+        // that earns the gesture, and it is the reason this menu exists at all.
+        append(&out, Menu_Item{"Paste", "^v", .Paste, len(ft.clip) > 0})
+        append(&out, Menu_Item{"Copy path", "^W", .CopyPath, on.path != ""})
+        append(&out, Menu_Item{"Properties", "^I", .Properties, on.path != ""})
+    }
+    if in_places && place_path != "" {
         append(&out, Menu_Item{action = .None})
         if is_place {
             append(&out, Menu_Item{"Remove from places", "", .RemovePlace, true})
         } else {
-            append(&out, Menu_Item{"Add to places", "", .AddPlace, place_path != ""})
+            append(&out, Menu_Item{"Add to places", "", .AddPlace, true})
         }
     }
     append(&out, Menu_Item{"Reload", "^r", .Reload, true})

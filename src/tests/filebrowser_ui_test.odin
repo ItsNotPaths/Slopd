@@ -99,7 +99,12 @@ test_filebrowser_geom :: proc(t: ^testing.T) {
     // or a whole row of tiles. Getting this wrong scrolls a grid at a third of the distance it
     // paints, which is the kind of thing that looks like an easing bug and is not one.
     testing.expect_value(t, app.filebrowser_row_h(.List, ROW_H, 1, 16, 10), i32(ROW_H))
-    testing.expect_value(t, app.filebrowser_row_h(.Grid, ROW_H, 1, 16, 10), i32(59))
+    testing.expect_value(t, app.filebrowser_row_h(.Grid, ROW_H, 1, 16, 10), i32(59 + 6)) // + the gap
+
+    // The gap is BETWEEN tiles and never after the last one, so a region exactly three tiles and
+    // two gaps wide still fits three columns — and one tile narrower fits two.
+    testing.expect_value(t, app.filebrowser_grid_cols(3 * 140 + 2 * 6, 140, 6), 3)
+    testing.expect_value(t, app.filebrowser_grid_cols(3 * 140 + 2 * 6 - 1, 140, 6), 2)
 }
 
 // The viewport is in CONTENT ROWS, and that unit changes with the presentation: an entry in
@@ -200,10 +205,13 @@ test_filebrowser_grid_command_list :: proc(t: ^testing.T) {
 
     cmds := app.filebrowser_layout(&a, &f, PANE, 600, 300)
 
-    // Entry 4 is the second tile of the second row (cols = 3), and a tile is 140 by 59.
+    // Entry 4 is the second tile of the second row (cols = 3), and a tile is 140 by 59 — placed
+    // at one PITCH in each axis, since a 6px gap sits between tiles both ways. The tile itself
+    // does not grow: the gap is the solver's spacing, so a selected tile's highlight stops at
+    // its own edge instead of running into its neighbour's.
     tile, ok := box_of(&cmds, clay.ID("fb_item", 4), .Rectangle)
     testing.expect(t, ok, "the selected tile drew no background")
-    testing.expect_value(t, tile, app.Rect{CONTENT.x + 140, CONTENT.y + 59, 140, 59})
+    testing.expect_value(t, tile, app.Rect{CONTENT.x + 140 + 6, CONTENT.y + 59 + 6, 140, 59})
 
     // Every tile carries a swatch, selected or not — it is the tile's icon, not its highlight.
     sw, swok := box_of(&cmds, clay.ID("fb_swatch", 0), .Rectangle)

@@ -191,6 +191,17 @@ test_git_settings :: proc(t: ^testing.T) {
     testing.expect_value(t, terms[len(terms) - 1], "7")
     app.config_pane_open_setting(&a, .GitTerm)
     testing.expect_value(t, a.config_pane.opt_sel, len(terms) - 1)
+
+    // run_term names the same sessions MINUS the detached row: every value it can hold is a
+    // session, so a "detached" option would be one the setting cannot store.
+    a.run_term = 1
+    runs := app.setting_options(&a, .RunTerm)
+    testing.expect_value(t, len(runs), 1)
+    testing.expect_value(t, runs[0], "1")
+    testing.expect_value(t, app.setting_value(&a, .RunTerm), "1")
+    testing.expect(t, !app.setting_commit(&a, .RunTerm, "detached"), "run_term has no detached case")
+    testing.expect(t, !app.setting_commit(&a, .RunTerm, "0"), "t0 is not a session")
+    testing.expect_value(t, a.run_term, 1)
 }
 
 // The free-text row is an editor while it is highlighted: landing on it seeds the Doc from

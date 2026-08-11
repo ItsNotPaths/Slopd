@@ -20,7 +20,8 @@ import "core:sys/posix"
 // Which terminal session a launch should land in. Pure — takes the session COUNT, not the
 // App — so the clamping rule is a unit test: a number names a session, a number past the end
 // means "the next one", exactly one however far past you aimed. Never answers below 1.
-git_term_slot :: proc(count, want: int) -> int {
+// Shared with run_in_term: `run_term` names a session by the same rule git_term does.
+term_slot :: proc(count, want: int) -> int {
     return clamp(want, 1, min(count + 1, TERM_MAX))
 }
 
@@ -39,11 +40,8 @@ git_tool_open :: proc(a: ^App) {
 
     // Terminal-hosted (or the no-tool fallback): surface the session, creating it when the
     // configured number names one past the end.
-    slot := git_term_slot(term_count(a), a.git_term <= 0 ? term_count(a) + 1 : a.git_term)
-    if term_count(a) < slot {
-        term_new(a) // slot is at most count+1, so one session is always enough
-    }
-    term_focus(a, slot)
+    slot := term_slot(term_count(a), a.git_term <= 0 ? term_count(a) + 1 : a.git_term)
+    term_surface(a, slot)
 
     if a.git_tool == "" {
         return // no tool configured: the shell at the root IS the feature

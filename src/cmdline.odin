@@ -522,6 +522,20 @@ rm_command :: proc(paths: []string, alloc := context.allocator) -> string {
     return strings.to_string(b)
 }
 
+// The line a Properties gesture runs in t1: one `stat` cut to the fields a properties box shows —
+// mode, size, owner, and the two timestamps. **--printf, not -c**: only the former interprets the
+// `\n`s, and -c would print them literally on one long line.
+PROPS_FORMAT :: `stat --printf '%n\n  %A  %s bytes  %U:%G\n  modified %y\n  created  %w\n' -- `
+
+// That line for `path`, or "" when there is nothing to describe. A directory answers too — its
+// own entry, not a recursive size, which is what `stat` means by a directory's size.
+properties_command :: proc(path: string, alloc := context.allocator) -> string {
+    if path == "" {
+        return ""
+    }
+    return strings.concatenate({PROPS_FORMAT, sh_quote(path, context.temp_allocator)}, alloc)
+}
+
 // The staged line that RUNS a file, or "" when it isn't ours to run (the caller hands those to
 // desktop_open). Executables run by quoted path; a NON-executable shell script still runs under
 // `bash`, since chmod +x is the step people skip. The trailing space is so args type straight on.
@@ -551,7 +565,13 @@ cl_chain_clear :: proc(a: ^App) {
 
 // Run a command in t1, the master CL terminal: surfaces it and runs — no chaining.
 run_in_t1 :: proc(a: ^App, cmd: string) {
-    term_focus(a, 1)
+    run_in_term(a, cmd, 1)
+}
+
+// The same, in the session `n` names — the open ones plus the next, so a `run_term: 8` with
+// three sessions open opens the fourth rather than silently landing in the third (term_slot).
+run_in_term :: proc(a: ^App, cmd: string, n: int) {
+    term_surface(a, term_slot(term_count(a), n))
     if t := term_current(a); t != nil {
         terminal_write(t, transmute([]u8)strings.concatenate({cmd, "\n"}, context.temp_allocator))
     }
@@ -618,6 +638,16 @@ term_focus :: proc(a: ^App, n: int) {
     if term_count(a) > 0 {
         a.term_active = clamp(n - 1, 0, term_count(a) - 1)
     }
+}
+
+// Surface session `n`, CREATING it when the number names the one past the last — which is the
+// most term_slot can hand back, so one session is always enough. term_focus alone clamps into
+// the sessions that exist, which is how a launch aimed at t4 with three open lands in t3.
+term_surface :: proc(a: ^App, n: int) {
+    if term_count(a) < n {
+        term_new(a)
+    }
+    term_focus(a, n)
 }
 
 @(private = "file")
