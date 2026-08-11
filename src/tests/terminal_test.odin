@@ -1,6 +1,8 @@
 package tests
 
+import vt "../../bindings/libvterm"
 import app ".."
+import "core:c"
 import "core:testing"
 
 // Phase 1: prove the libvterm core wiring — bytes fed in (terminal_feed) land in
@@ -567,4 +569,97 @@ test_terminal_wheel_forwards_is_one_predicate :: proc(t: ^testing.T) {
     // No session at all: there is nothing to forward to, and the caller must not have to
     // check separately (wheel_apply already refuses a nil terminal, so this is belt to that).
     testing.expect(t, !app.terminal_wheel_forwards(nil, false), "no terminal forwards nothing")
+}
+
+// --- paste ---
+
+@(private = "file")
+sanitized :: proc(s: string) -> string {
+    return string(app.terminal_paste_sanitize(s, context.temp_allocator))
+}
+
+// What libvterm generated for the shell. In the app the output callback is the PTY master
+// (terminal.odin); here it is this buffer, which is how a PTY-less test reads the markers.
+@(private = "file")
+Out :: struct {
+    buf: [64]u8,
+    n:   int,
+}
+
+@(private = "file")
+out_cb :: proc "c" (s: [^]u8, n: c.size_t, user: rawptr) {
+    o := (^Out)(user)
+    for i in 0 ..< int(n) {
+        if o.n < len(o.buf) {
+            o.buf[o.n] = s[i]
+            o.n += 1
+        }
+    }
+}
+
+// Start capturing from a clean buffer, and return what has landed since.
+@(private = "file")
+out_capture :: proc(term: ^app.Terminal, o: ^Out) {
+    vt.output_set_callback(term.term, out_cb, o)
+    o.n = 0
+}
+
+@(private = "file")
+out_text :: proc(o: ^Out) -> string {
+    return string(o.buf[:o.n])
+}
+
+@(test)
+test_terminal_paste_sanitize :: proc(t: ^testing.T) {
+    // Every line ending becomes the CR that Enter sends, and CRLF is ONE ending: sending both
+    // bytes would submit a blank line after each real one.
+    testing.expect_value(t, sanitized("a\nb"), "a\rb")
+    testing.expect_value(t, sanitized("a\r\nb"), "a\rb")
+    testing.expect_value(t, sanitized("a\rb"), "a\rb")
+
+    // Tabs and UTF-8 pass through; the other C0 controls do not. The ESC is the one that
+    // matters — left in, it could close the bracket early and run the rest as commands.
+    testing.expect_value(t, sanitized("a\tb"), "a\tb")
+    testing.expect_value(t, sanitized("héllo→"), "héllo→")
+    testing.expect_value(t, sanitized("a\x1b[201~rm -rf /"), "a[201~rm -rf /")
+    testing.expect_value(t, sanitized("a\x03\x7fb"), "ab")
+}
+
+@(test)
+test_terminal_paste_brackets_only_when_asked :: proc(t: ^testing.T) {
+    term := mkterm(4, 20)
+    defer app.terminal_vt_destroy(&term)
+    o: Out
+    out_capture(&term, &o)
+
+    // A plain shell never enabled DECSET 2004, so the text goes over bare. (The text itself
+    // is written to the PTY, not through libvterm — there is no PTY here, so only the
+    // markers can show up, and the point is that none do.)
+    app.terminal_paste(&term, "ls\n")
+    testing.expect_value(t, out_text(&o), "")
+
+    // Once the app asks for bracketed paste, the same call wraps it.
+    feed(&term, "\x1b[?2004h")
+    out_capture(&term, &o)
+    app.terminal_paste(&term, "ls\n")
+    testing.expect_value(t, out_text(&o), "\x1b[200~\x1b[201~")
+
+    // And an empty clipboard is not a paste at all — no markers, nothing for the shell.
+    out_capture(&term, &o)
+    app.terminal_paste(&term, "")
+    testing.expect_value(t, out_text(&o), "")
+}
+
+@(test)
+test_terminal_paste_returns_to_the_live_bottom :: proc(t: ^testing.T) {
+    term := mkterm(4, 20)
+    defer app.terminal_vt_destroy(&term)
+
+    // Pasting is input, so it lands where typing does: a scrolled-back view snaps forward
+    // and the selection it was carrying goes with it.
+    term.sel_active = true
+    term.view_detached = true
+    app.terminal_paste(&term, "ls")
+    testing.expect(t, !term.sel_active, "a paste drops the selection, as typing does")
+    testing.expect(t, !term.view_detached, "and snaps the view back to the live bottom")
 }

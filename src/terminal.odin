@@ -652,6 +652,40 @@ terminal_write :: proc(t: ^Terminal, bytes: []u8) {
     posix.write(t.pty, raw_data(bytes), c.size_t(len(bytes)))
 }
 
+// Clipboard text on its way INTO the shell, made safe to send as keystrokes. Newlines become
+// CR (what Enter sends; readline turns it back into a newline inside a bracketed paste, and
+// CRLF is one ending, not two), tabs survive, and every other C0 control is dropped — an ESC
+// in the payload could otherwise forge the end marker and hand the shell the rest as commands.
+terminal_paste_sanitize :: proc(text: string, alloc := context.allocator) -> []u8 {
+    out := make([dynamic]u8, 0, len(text), alloc)
+    for i := 0; i < len(text); i += 1 {
+        switch b := text[i]; {
+        case b == '\r' || b == '\n':
+            append(&out, '\r')
+            if b == '\r' && i + 1 < len(text) && text[i + 1] == '\n' {
+                i += 1
+            }
+        case b == '\t' || b >= 0x20 && b != 0x7f: // >= 0x80 is UTF-8, and passes here
+            append(&out, b)
+        }
+    }
+    return out[:]
+}
+
+// Paste text into a shell: the sanitised bytes straight to the PTY, wrapped in libvterm's
+// bracketed-paste markers so a multi-line paste lands in the line editor instead of executing
+// line by line. No pty is not a special case — terminal_write already drops those bytes.
+terminal_paste :: proc(t: ^Terminal, text: string) {
+    bytes := terminal_paste_sanitize(text, context.temp_allocator)
+    if len(bytes) == 0 {
+        return
+    }
+    terminal_sel_reset(t) // a paste is input, so the view returns to the live bottom
+    vt.keyboard_start_paste(t.term)
+    terminal_write(t, bytes)
+    vt.keyboard_end_paste(t.term)
+}
+
 // Drain the reader thread's buffered bytes into the parser (main thread). The lock is held
 // across the SWAP ONLY: terminal_feed runs libvterm's whole state machine, and holding it
 // through that is real backpressure on the PTY under heavy output, for no gain.

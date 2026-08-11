@@ -397,6 +397,15 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         return
     }
 
+    // Ctrl+Shift+V pastes into the terminal, the mirror of the copy above. Gated on the PANE
+    // rather than on a live shell so a dead session swallows it: falling through would reach
+    // terminal_input_key, which sees only the Ctrl and sends ^V — readline's quoted-insert.
+    if ts := term_sel_target(a);
+       ts != nil && key == glfw.KEY_V && mods & glfw.MOD_CONTROL != 0 && mods & glfw.MOD_SHIFT != 0 {
+        term_paste(a, ts)
+        return
+    }
+
     // PageUp/PageDown alias the copy-cursor move, Shift extending. Only on the NORMAL screen:
     // a full-screen TUI owns its scrollback and must see the key. term_sel_target, not
     // term_focused, to match the selector it aliases — a dead shell scrolls too.
@@ -607,6 +616,15 @@ term_copy :: proc(a: ^App, t: ^Terminal) {
         return
     }
     clipboard_set(a, terminal_selection_text(t), nil)
+}
+
+// Paste the system clipboard into a terminal. Nothing of ours is remembered the way an editor
+// paste remembers pieces — the shell gets literal text, and a dead session gets nothing.
+term_paste :: proc(a: ^App, t: ^Terminal) {
+    if !t.alive {
+        return
+    }
+    terminal_paste(t, glfw.GetClipboardString(a.window))
 }
 
 editor_cut :: proc(a: ^App) {

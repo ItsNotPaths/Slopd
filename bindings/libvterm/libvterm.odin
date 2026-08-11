@@ -211,6 +211,11 @@ foreign vt {
     output_set_callback :: proc(term: VTerm, func: Output_Callback, user: rawptr) ---
     keyboard_unichar    :: proc(term: VTerm, cp: u32, mod: Modifier) ---
     keyboard_key        :: proc(term: VTerm, key: Key, mod: Modifier) ---
+    // Bracketed-paste markers (CSI 200~ / CSI 201~) around pasted text. libvterm tracks
+    // DECSET 2004 itself, so these emit NOTHING for a shell that never asked — which is
+    // why a paste wraps unconditionally rather than testing a mode flag of our own.
+    keyboard_start_paste :: proc(term: VTerm) ---
+    keyboard_end_paste   :: proc(term: VTerm) ---
     // Mouse input -> the app via the output callback, encoded to the TUI's active mouse
     // protocol. Wheel is button 4 (up) / 5 (down); Slopd uses only the wheel, to scroll
     // a focused full-screen TUI (its scrollback is its own — see the terminal selector).
