@@ -32,9 +32,22 @@ Scroll_Mode :: enum {
     Middle,
 }
 
+// Which presentation the filetree aux pane wears. `Ls` is the dired-style listing Slopd has
+// always had; `Browser` is the file-manager one (top bar, places sidebar, list or grid). Both
+// drive the SAME FileTree model, so this chooses pixels and pointer targets, never behaviour.
+File_Pane :: enum {
+    Ls,
+    Browser,
+}
+
 // Config — Slopd's own simple `key: value` file. Points at a theme file and holds a few
 // editor settings. It lives beside the binary and nowhere else (see config_file), like
 // themes/ and grammars/. Anything missing keeps the defaults below.
+//
+// **One `[section]` block exists, and it is not a setting**: `[places]` holds the file browser's
+// sidebar shortcuts, `Name: /path` per line. It is deliberately outside the key/value space the
+// Config pane edits — a list of directories is added to by pointing at one, not by typing into a
+// settings row — so every reader here STOPS at the first section header. See config_places.
 Config :: struct {
     theme_path:       string, // absolute (owned), or "" for the baked-in default
     indent:           Indent,
@@ -52,6 +65,20 @@ Config :: struct {
     conflict_prompt:  bool, // disk changed under unsaved edits: prompt (y/n in the CL) vs silently keep my edits
     mouse:            bool, // pointer input (wheel, and the clicks that follow it) on/off
     hover:            bool, // tint the row under the pointer; needs `mouse` to mean anything
+    file_pane:        File_Pane, // which presentation the filetree pane wears
+    file_view:        Browse_View, // the browser's contents: list or grid (its toggle writes this back)
+    file_icons:       bool, // per-type icons in the browser (needs the vendored icon face)
+}
+
+// The config file's one section header. Everything below it is data rather than settings, and
+// every key/value reader stops when it sees a line like this.
+CONFIG_SECTION_PLACES :: "[places]"
+
+// Whether a stripped line opens a `[section]` block. One proc because three readers ask it —
+// the loader, the setting writer and the places parser — and a section they disagreed about
+// would let a place named `theme` be rewritten as if it were the theme setting.
+config_is_section :: proc(s: string) -> bool {
+    return len(s) >= 2 && s[0] == '[' && s[len(s) - 1] == ']'
 }
 
 // Splits a config line at its trailing comment; `body` is untrimmed, so its length is the comment's
@@ -93,6 +120,9 @@ load_config :: proc() -> Config {
         conflict_prompt = true, // ask before a disk change is reconciled against unsaved edits
         mouse           = true, // pointer input on; it is purely additive to the keyboard
         hover           = true, // the tint is deliberately faint — see HOVER_MIX (render.odin)
+        file_pane       = .Ls, // the browser is opt-in: the dired listing is what Slopd has always been
+        file_view       = .List,
+        file_icons      = true, // free where the icon face was vendored, and inert where it wasn't
     }
     src, _ := os.read_entire_file_from_path(config_file(), context.temp_allocator)
     if src == nil {
@@ -103,6 +133,9 @@ load_config :: proc() -> Config {
         s := config_strip_comment(line)
         if len(s) == 0 {
             continue
+        }
+        if config_is_section(s) {
+            break // settings end here; what follows is block data (config_places reads it)
         }
         colon := strings.index_byte(s, ':')
         if colon <= 0 {
@@ -162,6 +195,12 @@ load_config :: proc() -> Config {
             if v, ok := parse_on_off(val); ok {cfg.mouse = v}
         case "hover":
             if v, ok := parse_on_off(val); ok {cfg.hover = v}
+        case "file_pane":
+            if v, ok := parse_file_pane(val); ok {cfg.file_pane = v}
+        case "file_view":
+            if v, ok := parse_file_view(val); ok {cfg.file_view = v}
+        case "file_icons":
+            if v, ok := parse_on_off(val); ok {cfg.file_icons = v}
         }
     }
     return cfg
@@ -237,8 +276,10 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return nil // free text, not a choice — see setting_is_text
     case .GitTerm:
         return git_term_options(a, context.temp_allocator)
-    case .Folding, .IndentGuides, .Whitespace, .GrepPane, .Mouse, .Hover:
+    case .Folding, .IndentGuides, .Whitespace, .GrepPane, .Mouse, .Hover, .FileIcons:
         return ON_OFF_OPTS[:]
+    case .FilePane:
+        return FILE_PANE_OPTS[:]
     case .FolderCd:
         return STAGE_RUN_OPTS[:]
     case .DiskConflict:
@@ -253,6 +294,7 @@ SCROLL_MODE_OPTS := [?]string{"follow", "middle"}
 ON_OFF_OPTS := [?]string{"on", "off"}
 STAGE_RUN_OPTS := [?]string{"stage", "run"}
 PROMPT_KEEP_OPTS := [?]string{"prompt", "keep"}
+FILE_PANE_OPTS := [?]string{"ls", "browser"}
 
 // "default" first, then every themes/<name>.theme beside the binary, sorted.
 // Names are cloned into `allocator`; the returned slice is too.
@@ -321,6 +363,8 @@ Setting :: enum {
     DiskConflict,
     Mouse,
     Hover,
+    FilePane,
+    FileIcons,
 }
 
 // Whether a setting is FREE TEXT rather than a choice — the row is an editor, not a dropdown.
@@ -346,6 +390,8 @@ setting_key :: proc(s: Setting) -> string {
     case .DiskConflict: return "disk_conflict"
     case .Mouse:        return "mouse"
     case .Hover:        return "hover"
+    case .FilePane:     return "file_pane"
+    case .FileIcons:    return "file_icons"
     }
     return ""
 }
@@ -369,6 +415,8 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .DiskConflict: return a.conflict_prompt ? "prompt" : "keep"
     case .Mouse:        return on_off(a.mouse_on)
     case .Hover:        return on_off(a.hover_on)
+    case .FilePane:     return a.file_pane == .Browser ? "browser" : "ls"
+    case .FileIcons:    return on_off(a.file_icons)
     }
     return ""
 }
@@ -430,9 +478,114 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.mouse_on = parse_on_off(val) or_return
     case .Hover:
         a.hover_on = parse_on_off(val) or_return
+    case .FilePane:
+        a.file_pane = parse_file_pane(val) or_return
+    case .FileIcons:
+        a.file_icons = parse_on_off(val) or_return
     }
     config_set(setting_key(s), val)
     return true
+}
+
+// Parses which presentation the filetree pane wears: "ls" is the dired-style listing, "browser"
+// the file manager. ok=false on anything else (an invalid edit keeps the old value).
+parse_file_pane :: proc(s: string) -> (pane: File_Pane, ok: bool) {
+    switch s {
+    case "ls":      return .Ls, true
+    case "browser": return .Browser, true
+    }
+    return .Ls, false
+}
+
+// Parses the browser's contents view. Written back by the pane's own toggle button rather than
+// typed, which is why it is not one of the Config pane's rows — but it is still a config line,
+// because a view you chose should survive a restart.
+parse_file_view :: proc(s: string) -> (view: Browse_View, ok: bool) {
+    switch s {
+    case "list": return .List, true
+    case "grid": return .Grid, true
+    }
+    return .List, false
+}
+
+// The `[places]` block, in file order: `Name: /path` lines between the header and the next
+// section (or the end). Both strings are cloned into `alloc`, and so is the slice — the caller
+// owns every one of them (filebrowser_init takes them straight onto the FileBrowser).
+//
+// An empty result means "no block", not "no places": the browser fills that with its defaults
+// rather than showing an empty sidebar, and the block is written the first time one is added.
+config_places :: proc(alloc := context.allocator) -> []Place {
+    out := make([dynamic]Place, 0, 8, alloc)
+    src, _ := os.read_entire_file_from_path(config_file(), context.temp_allocator)
+    if src == nil {
+        return out[:]
+    }
+    rest := string(src)
+    inside := false
+    for line in strings.split_lines_iterator(&rest) {
+        s := config_strip_comment(line)
+        if len(s) == 0 {
+            continue
+        }
+        if config_is_section(s) {
+            inside = s == CONFIG_SECTION_PLACES
+            continue
+        }
+        if !inside {
+            continue
+        }
+        colon := strings.index_byte(s, ':')
+        if colon <= 0 {
+            continue
+        }
+        name := strings.trim_space(s[:colon])
+        path := strings.trim_space(s[colon + 1:])
+        if name == "" || path == "" {
+            continue
+        }
+        append(&out, Place{strings.clone(name, alloc), strings.clone(path, alloc)})
+    }
+    return out[:]
+}
+
+// Rewrite the `[places]` block, keeping every other line of the file verbatim — settings, their
+// comments, and any other section. The block is dropped and re-emitted at the END rather than
+// edited in place: it is a LIST, so an add is an append and a remove is a hole, and neither is a
+// line-for-line replacement the way `config_set` does a setting.
+config_places_write :: proc(places: []Place) -> bool {
+    path := config_file()
+    b := strings.builder_make(context.temp_allocator)
+
+    if src := os.read_entire_file_from_path(path, context.temp_allocator) or_else nil; src != nil {
+        rest := string(src)
+        skipping := false
+        for raw in strings.split_lines_iterator(&rest) {
+            s := config_strip_comment(raw)
+            if config_is_section(s) {
+                skipping = s == CONFIG_SECTION_PLACES
+                if skipping {
+                    continue
+                }
+            }
+            if skipping {
+                continue // a line of the old block, header included
+            }
+            strings.write_string(&b, raw)
+            strings.write_byte(&b, '\n')
+        }
+    }
+    // Exactly one blank line before the header, whatever the file ended with: the trim is what
+    // stops a rewrite-per-add growing a run of blank lines at the end of the file.
+    out := strings.trim_right_space(strings.to_string(b))
+    b = strings.builder_make(context.temp_allocator)
+    strings.write_string(&b, out)
+    strings.write_string(&b, "\n\n")
+    strings.write_string(&b, CONFIG_SECTION_PLACES)
+    strings.write_string(&b, "  # file browser sidebar — add/remove by right-clicking a folder\n")
+    for p in places {
+        fmt.sbprintf(&b, "%s: %s\n", p.name, p.path)
+    }
+    return os.write_entire_file(path, transmute([]byte)strings.to_string(b)) == nil
 }
 
 // Parses the disk-conflict setting: "prompt" asks (y/n in the command line) before a disk
@@ -484,6 +637,11 @@ on_off :: proc(b: bool) -> string {
 // Persists `key: value` by read-modify-write: the matching line is replaced in place, every other
 // line — comments, unknown keys — preserved verbatim, a new key appended. The replaced line keeps
 // its trailing comment, re-aligned: it documents the setting ("# on | off"), not its value.
+//
+// **A `[section]` header ends the settings.** Nothing below one is a key this may rewrite (a
+// place named `theme` is a directory, not the theme), and a key this file does not already carry
+// is inserted ABOVE the block rather than appended after it — where load_config, which stops at
+// the same line, would never read it back.
 config_set :: proc(key, val: string) -> bool {
     path := config_file()
 
@@ -492,10 +650,15 @@ config_set :: proc(key, val: string) -> bool {
     if src := os.read_entire_file_from_path(path, context.temp_allocator) or_else nil; src != nil {
         rest := string(src)
         for raw in strings.split_lines_iterator(&rest) {
+            // A comment-only line leaves body blank, so it can never match a key.
+            body, comment := config_split_comment(raw)
+            s := strings.trim_space(body)
+            if !replaced && config_is_section(s) {
+                config_write_line(&b, key, val, "", 0)
+                strings.write_byte(&b, '\n') // keep the blank line that sets the block apart
+                replaced = true
+            }
             if !replaced {
-                // A comment-only line leaves body blank, so it can never match a key.
-                body, comment := config_split_comment(raw)
-                s := strings.trim_space(body)
                 if colon := strings.index_byte(s, ':'); colon > 0 && strings.trim_space(s[:colon]) == key {
                     config_write_line(&b, key, val, comment, len(body))
                     replaced = true

@@ -92,6 +92,7 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
     // (mouse_take_click), and one that hit nothing must not survive into the next frame, where
     // the pointer may be over something else — a click is an event at a place, not a mode.
     a.mouse.click = false
+    a.mouse.rclick = false // the right press is an event at a place too (contextmenu.odin)
 
     // A drag whose button has come up has now had the extra frame it was owed (drag.odin).
     // Also the one place a capture can end without a release: a pane that stopped drawing

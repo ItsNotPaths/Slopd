@@ -96,3 +96,21 @@ test_embedded_font_is_monospace :: proc(t: ^testing.T) {
 		testing.expectf(t, advance == want, "advance for %q is %d, want %d (not monospace)", r, advance, want)
 	}
 }
+
+// The icon face has the same regression as the text face — download-deps.sh can ship the full
+// 2.5MB Symbols Nerd Font instead of the ~178KB subset — with one difference: an ABSENT icon
+// face is legal and means "no icons", so the floor is zero and only the ceiling bites.
+@(private = "file")
+ICONS_SIZE_CEILING :: 256 * 1024
+
+@(test)
+test_embedded_icons_are_subset :: proc(t: ^testing.T) {
+	n := len(app.ICONS_TTF)
+	fmt.printfln("embedded icons: %d bytes (ceiling %d, 0 = none vendored)", n, ICONS_SIZE_CEILING)
+	testing.expectf(
+		t,
+		n < ICONS_SIZE_CEILING,
+		"embedded icon face is %d bytes: download-deps.sh shipped the un-subset face",
+		n,
+	)
+}

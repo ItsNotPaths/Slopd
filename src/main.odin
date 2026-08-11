@@ -80,12 +80,17 @@ main :: proc() {
     app.conflict_prompt = cfg.conflict_prompt
     app.mouse_on = cfg.mouse
     app.hover_on = cfg.hover
+    app.file_pane = cfg.file_pane
+    app.file_icons = cfg.file_icons
+    app.filebrowser.view = cfg.file_view
     app.font_px = cfg.font_px // persisted font zoom; text_init bakes the atlas at it
 
     editor_init(&app.editor)
     defer editor_destroy(&app.editor)
     filetree_init(&app.tree)
     defer filetree_destroy(&app.tree)
+    filebrowser_init(&app.filebrowser) // reads the config's [places] block; falls back to defaults
+    defer filebrowser_destroy(&app.filebrowser)
     app.grammars = load_grammars() // shared by the config pane + the highlighter
     defer grammars_destroy(app.grammars)
     app.gram_ext = grammar_ext_index(app.grammars)

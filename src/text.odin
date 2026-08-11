@@ -252,6 +252,76 @@ text_draw_runes :: proc(t: ^Text, runes: []rune, x, y: f32, color: [3]f32) {
     }
 }
 
+// Draws ONE icon glyph, baked at `px`, centred on its ink inside `box`. The browser's grid
+// tiles: an icon there is inches of pixels where a row's is one cell, and a glyph can only be
+// drawn at the size it was baked (there is no per-quad scale), so the tile size is baked as its
+// own cache — the same atlas, the same batch, the same draw call (font_icon_big).
+//
+// Centred on the INK rather than on the advance box: an icon face's glyphs are not uniformly
+// placed within their em, and a tile centres what you can see. Returns false when there is no
+// icon face, which is the browser's cue to draw its plain tile instead.
+icon_draw :: proc(t: ^Text, r: rune, box: Rect, px: f32, color: [3]f32) -> bool {
+    pc, ok := font_icon_big(&t.font, r, px)
+    if !ok {
+        return false
+    }
+    q: stbtt.aligned_quad
+    x, y: f32 = 0, 0
+    stbtt.GetPackedQuad(&pc, FONT_ATLAS, FONT_ATLAS, 0, &x, &y, &q, false)
+    dx := math.round(f32(box.x) + (f32(box.w) - (q.x1 - q.x0)) / 2 - q.x0)
+    dy := math.round(f32(box.y) + (f32(box.h) - (q.y1 - q.y0)) / 2 - q.y0)
+    c := color
+    x0, y0, x1, y1 := q.x0 + dx, q.y0 + dy, q.x1 + dx, q.y1 + dy
+    append(
+        &t.glyphs,
+        x0, y0, q.s0, q.t0, c.r, c.g, c.b,  x1, y0, q.s1, q.t0, c.r, c.g, c.b,
+        x1, y1, q.s1, q.t1, c.r, c.g, c.b,  x0, y0, q.s0, q.t0, c.r, c.g, c.b,
+        x1, y1, q.s1, q.t1, c.r, c.g, c.b,  x0, y1, q.s0, q.t1, c.r, c.g, c.b,
+    )
+    return true
+}
+
+// The advance of one cell at bake size `px` — the body cell scaled by the size ratio. Text at a
+// second bake size is still monospace, so a caller can centre a string without measuring it.
+text_sized_cell :: proc(t: ^Text, px: f32) -> f32 {
+    if t.font.px <= 0 {
+        return t.font.cell_w
+    }
+    return t.font.cell_w * (px / t.font.px)
+}
+
+// Draws `s` at bake size `px` with its top-left at (x, y) — the browser's tile captions, which
+// are deliberately smaller than the body text. The pen steps by the SCALED cell for the reason
+// the body text steps by the whole one: a fixed advance keeps the run on a predictable grid,
+// and it is what lets the caller centre the string from its rune count alone.
+text_draw_sized :: proc(t: ^Text, s: string, x, y, px: f32, color: [3]f32) {
+    cw := text_sized_cell(t, px)
+    // The baseline scales with the bake; ascent is the body's, so take it by the same ratio.
+    ratio := t.font.px > 0 ? px / t.font.px : 1
+    xpos := math.round(x)
+    ypos := y + t.font.ascent * ratio
+    for r in s {
+        pc, ok := font_text_small(&t.font, r, px)
+        if !ok {
+            xpos += cw
+            continue
+        }
+        q: stbtt.aligned_quad
+        pen := xpos
+        stbtt.GetPackedQuad(&pc, FONT_ATLAS, FONT_ATLAS, 0, &pen, &ypos, &q, false)
+        xpos += cw
+        append(
+            &t.glyphs,
+            q.x0, q.y0, q.s0, q.t0, color.r, color.g, color.b,
+            q.x1, q.y0, q.s1, q.t0, color.r, color.g, color.b,
+            q.x1, q.y1, q.s1, q.t1, color.r, color.g, color.b,
+            q.x0, q.y0, q.s0, q.t0, color.r, color.g, color.b,
+            q.x1, q.y1, q.s1, q.t1, color.r, color.g, color.b,
+            q.x0, q.y1, q.s0, q.t1, color.r, color.g, color.b,
+        )
+    }
+}
+
 // Appends one glyph's two triangles to the glyph batch and advances the pen.
 @(private = "file")
 glyph_push :: proc(t: ^Text, r: rune, xpos, ypos: ^f32, c: [3]f32) {

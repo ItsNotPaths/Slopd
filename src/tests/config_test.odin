@@ -138,3 +138,131 @@ test_config_git_detached_token :: proc(t: ^testing.T) {
     testing.expect_value(t, cfg.git_tool, "")
     testing.expect_value(t, cfg.git_term, 0)
 }
+
+// --- the [places] block --- The file browser's sidebar lives in the config file, in the one
+// section it has. Everything below a `[section]` header is DATA, not settings, and the three
+// readers all have to agree on that — the loader stops there, config_set refuses to rewrite a
+// line past it, and config_places reads only what is inside it.
+
+// A place named like a setting is the whole hazard: `theme: /home/me/themes` in the block is a
+// directory, and a loader that walked past the header would take it as the theme setting and
+// then a settings write would rewrite somebody's shortcut.
+@(test)
+test_config_places_are_not_settings :: proc(t: ^testing.T) {
+    path := "/tmp/slopd_config_places_test.config"
+    src := `theme: default
+mouse: on             # on | off
+
+[places]
+Home: /home/me
+theme: /home/me/themes
+`
+    testing.expect(t, os.write_entire_file(path, transmute([]byte)src) == nil)
+    defer os.remove(path)
+    app.config_path_override = path
+    defer app.config_path_override = ""
+
+    cfg := app.load_config()
+    defer app.config_destroy(&cfg)
+    testing.expect_value(t, cfg.theme_path, "default") // NOT the block's /home/me/themes
+
+    places := app.config_places(context.allocator)
+    defer {
+        for p in places {
+            delete(p.name);delete(p.path)
+        }
+        delete(places)
+    }
+    testing.expect_value(t, len(places), 2)
+    testing.expect_value(t, places[0].name, "Home")
+    testing.expect_value(t, places[0].path, "/home/me")
+    testing.expect_value(t, places[1].path, "/home/me/themes") // read as a place, not a theme
+
+    // A settings write must not reach into the block, and a key the file does not carry has to
+    // land ABOVE it — appended after the block, load_config would never read it back.
+    testing.expect(t, app.config_set("theme", "gruvbox"))
+    testing.expect(t, app.config_set("jump_lines", "20"))
+    out, _ := os.read_entire_file_from_path(path, context.temp_allocator)
+    got := string(out)
+    testing.expect(t, strings.contains(got, "theme: gruvbox\n"))
+    testing.expect(t, strings.contains(got, "theme: /home/me/themes\n"), "the block's line was rewritten")
+    testing.expect(
+        t,
+        strings.index(got, "jump_lines: 20") < strings.index(got, "[places]"),
+        "a new key was appended below the section, where the loader stops",
+    )
+
+    cfg2 := app.load_config()
+    defer app.config_destroy(&cfg2)
+    testing.expect_value(t, cfg2.jump_lines, 20)
+}
+
+// Writing the block replaces it wholesale and leaves every other line — settings, comments,
+// their alignment — alone. A rewrite per add must also not grow blank lines at the end of the
+// file, which is what the trim before the header is for.
+@(test)
+test_config_places_write :: proc(t: ^testing.T) {
+    path := "/tmp/slopd_config_places_write.config"
+    src := `theme: default        # a comment worth keeping
+
+[places]
+Old: /old
+`
+    testing.expect(t, os.write_entire_file(path, transmute([]byte)src) == nil)
+    defer os.remove(path)
+    app.config_path_override = path
+    defer app.config_path_override = ""
+
+    places := [?]app.Place{{"Home", "/home/me"}, {"Src", "/home/me/src"}}
+    testing.expect(t, app.config_places_write(places[:]))
+    testing.expect(t, app.config_places_write(places[:])) // twice: the shape must be stable
+
+    out, _ := os.read_entire_file_from_path(path, context.temp_allocator)
+    got := string(out)
+    testing.expect(t, strings.contains(got, "theme: default        # a comment worth keeping\n"))
+    testing.expect(t, !strings.contains(got, "Old: /old"), "the old block survived the rewrite")
+    testing.expect(t, strings.has_suffix(got, "Home: /home/me\nSrc: /home/me/src\n"))
+    testing.expect(t, !strings.contains(got, "\n\n\n"), "a rewrite grew a run of blank lines")
+
+    // The round trip is the point: what was written is what comes back, in order.
+    back := app.config_places(context.allocator)
+    defer {
+        for p in back {
+            delete(p.name);delete(p.path)
+        }
+        delete(back)
+    }
+    testing.expect_value(t, len(back), 2)
+    testing.expect_value(t, back[0].name, "Home")
+    testing.expect_value(t, back[1].path, "/home/me/src")
+
+    // A file with no block at all gets one appended rather than nothing happening.
+    testing.expect(t, os.write_entire_file(path, transmute([]byte)string("theme: default\n")) == nil)
+    testing.expect(t, app.config_places_write(places[:]))
+    out2, _ := os.read_entire_file_from_path(path, context.temp_allocator)
+    testing.expect(t, strings.contains(string(out2), "[places]"))
+}
+
+// The pane presentation is an enum, not a toggle, and an unreadable value keeps the default —
+// the same bargain every other setting strikes.
+@(test)
+test_config_file_pane :: proc(t: ^testing.T) {
+    path := "/tmp/slopd_config_filepane.config"
+    testing.expect(t, os.write_entire_file(path, transmute([]byte)string("file_pane: browser\nfile_view: grid\n")) == nil)
+    defer os.remove(path)
+    app.config_path_override = path
+    defer app.config_path_override = ""
+
+    cfg := app.load_config()
+    defer app.config_destroy(&cfg)
+    testing.expect_value(t, cfg.file_pane, app.File_Pane.Browser)
+    testing.expect_value(t, cfg.file_view, app.Browse_View.Grid)
+
+    _, ok := app.parse_file_pane("dolphin")
+    testing.expect(t, !ok, "an unknown presentation must not parse")
+
+    testing.expect(t, os.write_entire_file(path, transmute([]byte)string("file_pane: nonsense\n")) == nil)
+    bad := app.load_config()
+    defer app.config_destroy(&bad)
+    testing.expect_value(t, bad.file_pane, app.File_Pane.Ls) // the default stands
+}

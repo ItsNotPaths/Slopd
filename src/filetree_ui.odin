@@ -44,11 +44,13 @@ filetree_scroll_apply :: proc(ft: ^FileTree, rows: int, center: bool, last_input
 }
 
 // Which entry the pointer is over, or -1. Clay answers from the tree the LAST frame declared,
-// so this runs before this frame's, over the visible window only and reading `ft.scroll` as it
-// stood then. A stale id reports false: a resize costs a missed click, never a wrong row.
-filetree_hit :: proc(ft: ^FileTree, rows: int) -> int {
-    first := clamp(ft.scroll, 0, max(0, len(ft.entries)))
-    n := max(0, min(len(ft.entries) - first, rows))
+// so this runs before this frame's and over the window that was PAINTED — `top`, the animated
+// position, not `ft.scroll`, the target. Mid-scroll those differ by up to a screenful, and
+// probing the target would ask about rows the last frame never declared. A stale id reports
+// false: a resize costs a missed click, never a wrong row.
+filetree_hit :: proc(ft: ^FileTree, top, visible: int) -> int {
+    first := clamp(top, 0, max(0, len(ft.entries)))
+    n := max(0, min(len(ft.entries) - first, visible))
     for k in 0 ..< n {
         i := first + k
         if clay.PointerOver(clay.ID("ft_row", u32(i))) {
@@ -85,6 +87,27 @@ filetree_click :: proc(a: ^App, row: int) {
     }
 }
 
+// A right press: select what is under it, then open the file-ops menu there. The SAME menu the
+// browser opens, minus the places item — there is no sidebar here to add a shortcut to — which
+// is the reuse the popup was built for rather than a second implementation of one.
+filetree_rclick :: proc(a: ^App, row: int) {
+    if !rect_hit(a.lay.aux, a.mouse.rclick_x, a.mouse.rclick_y) {
+        return // not our pane; whoever owns that region may claim it
+    }
+    if !mouse_take_rclick(a) {
+        return
+    }
+    ft := &a.tree
+    on_row := row >= 0 && row < len(ft.entries)
+    if on_row {
+        ft.selected = row
+    }
+    e := filetree_selected(ft)
+    target := on_row && e != nil ? e.path : ft.dir
+    items := ctxmenu_file_items(a, on_row, false, context.temp_allocator)
+    ctxmenu_open(a, .FileOps, items, a.mouse.rclick_x, a.mouse.rclick_y, target)
+}
+
 // Declare the pane into the window's tree. Reads App, writes only Clay — no mutation,
 // no GL — which is what lets tests/filetree_ui_test.odin assert the resolved boxes for a
 // known listing and viewport without a window.
@@ -103,15 +126,22 @@ filetree_click :: proc(a: ^App, row: int) {
 //
 // Row indices are the entry's own, not the visible row's: that is what makes filetree_hit
 // return something meaningful without a second mapping to maintain.
-filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, now: f64 = 0) {
+filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now: f64 = 0) {
     ft := &a.tree
     th := &a.theme
     area, row_h, rows := filetree_geom(pane, a.scale, f.line_height)
     cw := f.cell_w
     lh := i32(f.line_height)
 
-    first := clamp(ft.scroll, 0, max(0, len(ft.entries)))
-    visible := max(0, min(len(ft.entries) - first, rows))
+    // The window is the TWEEN's top and the remainder is the clip's childOffset — never a term
+    // in each row's y, which would put the rows off the cell grid and leave the clip cutting
+    // the wrong pixels.
+    //
+    // The COUNT is the rows the body touches (list_visible_rows), not the whole rows that fit:
+    // the partial row at the bottom edge is on screen and has to be declared, whether the
+    // remainder comes from the body's height or from a scroll in progress.
+    first := clamp(top, 0, max(0, len(ft.entries)))
+    visible := max(0, min(len(ft.entries) - first, list_visible_rows(area.h - row_h, off, row_h)))
 
     // No backgroundColor: panel() already filled the pane, so the fills that do appear mean
     // something — a marked row, the selection.
@@ -131,16 +161,19 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, now: f64 = 0) {
         if clay.UI(clay.ID("ft_body"))(
             {
                 layout = {
-                    sizing          = {clay.SizingGrow(), clay.SizingGrow()},
+                    // FIXED height, not Grow: `SizingGrow` means "at least fit your content", so
+                    // the row scrolling into view would stretch the clip group past the pane and
+                    // take its scissor with it (rule 8, from the animation's side).
+                    sizing          = {clay.SizingGrow(), clay.SizingFixed(f32(max(0, area.h - row_h)))},
                     layoutDirection = .TopToBottom,
                 },
-                clip = {horizontal = true, vertical = true},
+                clip = {horizontal = true, vertical = true, childOffset = {0, -f32(off)}},
             },
         ) {
             for k in 0 ..< visible {
                 i := first + k
                 e := &ft.entries[i]
-                marked := filetree_yanked_contains(ft, e.path)
+                marked := filetree_marked(ft, e.path)
                 ringed := ring_contains(a, e.path)
 
                 // One background per element, so the precedence is stated rather than
@@ -164,7 +197,7 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, now: f64 = 0) {
                         backgroundColor = bg,
                     },
                 ) {
-                    // Marked-for-yank takes the prefix slot (accent '+'); else the
+                    // A marked entry takes the prefix slot (accent '+'); else the
                     // unsaved-ring star or a dash.
                     prefix := marked ? "+" : ringed ? "*" : "-"
                     pcol := marked ? th.accent : ringed ? th.urgent : th.muted
@@ -201,26 +234,37 @@ filetree_layout :: proc(
     win_w, win_h: i32,
     now: f64 = 0,
 ) -> clay.ClayArray(clay.RenderCommand) {
+    _, row_h, _ := filetree_geom(pane, a.scale, f.line_height)
+    top, off := smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, row_h)
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        filetree_declare(a, f, pane, now)
+        filetree_declare(a, f, pane, top, off, now)
     }
     return clay.EndLayout(0)
 }
 
 // The filetree listing: a dired-style header (current dir) then rows, each prefixed '+' (marked
-// for yank), '*' (in the unsaved ring) or '-'. The selection is highlighted and tracked under
+// marked), '*' (in the unsaved ring) or '-'. The selection is highlighted and tracked under
 // the shared `scroll_mode` policy. The phases and their order ARE the pane template.
 filetree_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
-    area, _, rows := filetree_geom(pane, a.scale, t.font.line_height)
+    area, row_h, rows := filetree_geom(pane, a.scale, t.font.line_height)
     if area.w <= 0 || area.h <= 0 {
         return
     }
-    hit := filetree_hit(&a.tree, rows)
+    // The window the LAST frame painted is what the pointer is over, so the click resolves
+    // against the ANIMATED top rather than the target — the editor's shape, and the reason the
+    // view is built twice here too. smooth_scroll re-aims the tween, which is what makes
+    // anim_active true and what app_next_wake schedules the next frame off.
+    top, off0 := smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, row_h)
+    hit := filetree_hit(&a.tree, top, list_visible_rows(area.h - row_h, off0, row_h))
     a.tree.hover = hit // resolved against the same (last) frame the click is
     filetree_click(a, hit)
+    filetree_rclick(a, hit)
     filetree_scroll_apply(&a.tree, rows, a.scroll_mode == .Middle, pane_input_at(a))
 
-    // `now` is the chord bar's fade and nothing else — the listing itself does not animate.
-    filetree_declare(a, &t.font, pane, now)
+    // Then re-read it over the moved target, so a click that scrolled the list starts easing
+    // in the frame it was made rather than a frame later.
+    off: i32
+    top, off = smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, row_h)
+    filetree_declare(a, &t.font, pane, top, off, now)
 }

@@ -112,26 +112,6 @@ switcher_app_free :: proc(a: ^app.App) {
     delete(a.terminals)
 }
 
-// Collect one command per element id, by type — the shape most of the assertions below want,
-// since an overlay is a handful of named boxes rather than a long list of rows.
-@(private = "file")
-box_of :: proc(
-    cmds: ^clay.ClayArray(clay.RenderCommand),
-    id: clay.ElementId,
-    kind: clay.RenderCommandType,
-) -> (
-    box: app.Rect,
-    found: bool,
-) {
-    for i in 0 ..< cmds.length {
-        c := clay.RenderCommandArray_Get(cmds, i)
-        if c.id == id.id && c.commandType == kind {
-            return app.clay_rect(c.boundingBox), true
-        }
-    }
-    return {}, false
-}
-
 // ---------------------------------------------------------------------------------------
 // When each overlay is up
 // ---------------------------------------------------------------------------------------
@@ -192,39 +172,40 @@ test_overlay_shown_predicates :: proc(t: ^testing.T) {
 // cells the two disagree about whether the readout fits on the first row at all.
 @(test)
 test_chord_pack_wraps :: proc(t: ^testing.T) {
-    state := "[copy · 0 marked]" // 17 runes, 18 bytes
+    state := "[0 marked · copy 0]" // 19 runes, 20 bytes
 
-    // 28 cells — the 296px pane below, less its two 8px margins. Item widths are 7, 8, 7, 6,
+    // 28 cells — the 296px pane below, less its two 8px margins. Item widths are 7, 9, 7, 6,
     // 8, 6, 10, 7, 6 and the gap is 2, so the rows break after the third, sixth and ninth.
     items, nrows := chord_items(state, 28)
     testing.expect_value(t, nrows, NROWS)
     testing.expect_value(t, items[0].row, 0)
     testing.expect_value(t, items[0].col, 0)
-    testing.expect_value(t, items[2].col, 19) // 7 + 2 + 8 + 2
+    testing.expect_value(t, items[2].col, 20) // 7 + 2 + 9 + 2
     testing.expect_value(t, items[3].row, 1) // 28 + 6 would overrun, so it wraps
     testing.expect_value(t, items[3].col, 0)
     testing.expect_value(t, items[6].row, 2)
     testing.expect_value(t, items[9].row, 3) // the state readout, last in the flow
     testing.expect_value(t, items[9].key, "") // and the only item with no key
 
-    // 100 cells is exactly the width at which the readout's last rune is the last cell of the
+    // 103 cells is exactly the width at which the readout's last rune is the last cell of the
     // row. Counted in bytes it does not fit and everything moves to a second row — which is
     // the mutation this line exists to fail.
-    wide, wide_rows := chord_items(state, 100)
+    wide, wide_rows := chord_items(state, 103)
     testing.expect_value(t, wide_rows, 1)
-    testing.expect_value(t, wide[9].col, 83)
+    testing.expect_value(t, wide[9].col, 84)
     testing.expect_value(t, wide[9].row, 0)
 
     // One cell narrower and it does wrap, so the boundary above is a boundary rather than an
     // accident of the numbers.
-    _, tight_rows := chord_items(state, 99)
+    _, tight_rows := chord_items(state, 102)
     testing.expect_value(t, tight_rows, 2)
 }
 
 // A shim so the test reads as arithmetic rather than as allocator plumbing.
 @(private = "file")
 chord_items :: proc(state: string, maxw: int) -> ([]app.Chord_Item, int) {
-    return app.chord_pack(state, maxw, context.temp_allocator)
+    // The `ls` presentation's hints: the file ops, without the browser's navigation chords.
+    return app.chord_pack(app.CHORD_HINTS[:app.CHORD_OPS], state, maxw, context.temp_allocator)
 }
 
 // The bar's geometry, resolved: anchored to the BOTTOM of the pane (which is what
@@ -265,12 +246,12 @@ test_chord_bar_command_list :: proc(t: ^testing.T) {
     }
     testing.expect_value(t, len(runs), 2 * 9 + 1) // nine chords of two runs, plus the readout
 
-    // "^y" on the margin, "yank" one cell past it (the key is two cells plus the space), then
-    // "^u" nine cells in — seven for the first item and two for the gap — and "^c" at 19.
+    // "^y" on the margin, "mark" one cell past it (the key is two cells plus the space), then
+    // "^u" nine cells in — seven for the first item and two for the gap — and "^c" at 20.
     testing.expect_value(t, runs[0].x, AREA.x + PAD)
     testing.expect_value(t, runs[1].x, AREA.x + PAD + 30)
     testing.expect_value(t, runs[2].x, AREA.x + PAD + 90)
-    testing.expect_value(t, runs[4].x, AREA.x + PAD + 190)
+    testing.expect_value(t, runs[4].x, AREA.x + PAD + 200)
     // Vertically centred in a 22px row by the solver, not by (row_h - lh) / 2.
     testing.expect_value(t, runs[0].y, BAR_Y + (ROW_H - 16) / 2)
 
@@ -381,7 +362,7 @@ test_chord_bar_captures_the_pointer :: proc(t: ^testing.T) {
     // The first entry row, well clear of the bar: the pane answers as it always did.
     clay.SetPointerState({f32(AREA.x + 50), f32(AREA.y + FT_ROW_H + 4)}, false)
     _ = app.filetree_layout(&a, &f, PANE, 500, 400)
-    testing.expect_value(t, app.filetree_hit(&a.tree, rows), 0)
+    testing.expect_value(t, app.filetree_hit(&a.tree, a.tree.scroll, rows), 0)
     testing.expect(t, !clay.PointerOver(clay.ID("ch_bar")), "the bar claimed a pointer above it")
 
     // And a row the bar is sitting on top of. Row 11 starts at 268, the bar at 260.
@@ -389,7 +370,7 @@ test_chord_bar_captures_the_pointer :: proc(t: ^testing.T) {
     _ = app.filetree_layout(&a, &f, PANE, 500, 400)
     testing.expect(t, clay.PointerOver(clay.ID("ch_bar")), "the bar did not answer for its own box")
     testing.expect(t, !clay.PointerOver(clay.ID("ft_row", 11)), "a row under the bar still answers")
-    testing.expect_value(t, app.filetree_hit(&a.tree, rows), -1)
+    testing.expect_value(t, app.filetree_hit(&a.tree, a.tree.scroll, rows), -1)
     // The pane itself stops answering too, which is what "capture" means and what a
     // Passthrough overlay would not do.
     testing.expect(t, !clay.PointerOver(clay.ID("ft_pane")), "the pane answered through the overlay")
@@ -590,7 +571,7 @@ test_overlay_outranks_everything_declared_after_it :: proc(t: ^testing.T) {
     app.clay_window_begin(500, 400)
     if clay.UI(clay.ID(app.WIN_ROOT))(app.clay_window_root(500, 400)) {
         app.editor_declare(&a, &f, ed_pane, v, 0)
-        app.filetree_declare(&a, &f, PANE, 0)
+        app.filetree_declare(&a, &f, AREA, a.tree.scroll, 0, 0)
         app.strip_declare(&a, &f, strip, 0)
     }
     cmds := clay.EndLayout(0)

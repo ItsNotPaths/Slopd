@@ -170,22 +170,38 @@ CHORD_GAP :: 2
 // The chords the bar advertises; each key carries a "^" so the bar reads as the Ctrl menu.
 // Package-level so the packing and the declaration cannot disagree about how many items there
 // are. `@(rodata)` rather than a constant: the packing indexes it with a loop variable.
+//
+// The file ops come first and are the same in both presentations (filetree_ops_key); the four
+// after the rule are the BROWSER's, and chord_hints drops them for the dired listing, where
+// there is no top bar or sidebar for them to drive.
 @(rodata)
-CHORD_HINTS := [9][2]string {
-    {"^y", "yank"},
-    {"^u", "reset"},
+CHORD_HINTS := [14][2]string {
+    {"^y", "mark"},
+    {"^u", "unmark"},
     {"^c", "copy"},
     {"^x", "cut"},
-    {"^p", "paste"},
+    {"^v", "paste"},
     {"^d", "del"},
     {"^D", "del-set"},
     {"^w", "path"},
     {"^W", "dir"},
+    {"^←", "back"},
+    {"^→", "fwd"},
+    {"^r", "reload"},
+    {"^g", "grid"},
+    {"^1-9", "place"},
 }
 
-// Whether the chord bar is up: the filetree, with Ctrl down, holding the arrows. It sits
-// INSIDE the pane rather than in the status strip, so the command line is never co-opted by
-// a cheat-sheet.
+// How many of the hints above apply to the dired listing — the file ops, and no navigation.
+CHORD_OPS :: 9
+
+chord_hints :: proc(a: ^App) -> [][2]string {
+    return a.file_pane == .Browser ? CHORD_HINTS[:] : CHORD_HINTS[:CHORD_OPS]
+}
+
+// Whether the chord bar is up: the filetree pane (either presentation), with Ctrl down, holding
+// the arrows. It sits INSIDE the pane rather than in the status strip, so the command line is
+// never co-opted by a cheat-sheet.
 chord_shown :: proc(a: ^App) -> bool {
     return a.aux_mode == .FileTree && a.ctrl_held && a.focus == .Aux
 }
@@ -216,14 +232,22 @@ chord_geom :: proc(area: Rect, scale, line_h, cell_w: f32) -> (row_h: i32, pad: 
 // Pack the chords plus the state readout into rows `maxw` cells wide, left-flowing with
 // CHORD_GAP cells between items. Clay has no flow-wrap, so the wrap stays arithmetic. **Widths
 // are counted in RUNES**, as clay_measure_dims does — bytes would wrap a narrow pane a row early.
-chord_pack :: proc(state: string, maxw: int, alloc := context.temp_allocator) -> (items: []Chord_Item, nrows: int) {
-    items = make([]Chord_Item, len(CHORD_HINTS) + 1, alloc)
+chord_pack :: proc(
+    hints: [][2]string,
+    state: string,
+    maxw: int,
+    alloc := context.temp_allocator,
+) -> (
+    items: []Chord_Item,
+    nrows: int,
+) {
+    items = make([]Chord_Item, len(hints) + 1, alloc)
     cur_row, cur_x := 0, 0
     for i in 0 ..< len(items) {
         it: Chord_Item
         w: int
-        if i < len(CHORD_HINTS) {
-            h := CHORD_HINTS[i]
+        if i < len(hints) {
+            h := hints[i]
             it = Chord_Item{key = h[0], label = h[1]}
             w = utf8.rune_count_in_string(h[0]) + 1 + utf8.rune_count_in_string(h[1]) // key + space + label
         } else {
@@ -248,7 +272,7 @@ chord_pack :: proc(state: string, maxw: int, alloc := context.temp_allocator) ->
 //     ch_row/r    one per packed row, the margin coming from the bar's padding and the
 //                 inter-item gap from childGap — cells, so the columns land where the
 //                 packing said they would (rule 5: the solver does the arithmetic)
-//       ch_item/i "^y yank": the key in accent, its label muted, one cell between them
+//       ch_item/i "^y mark": the key in accent, its label muted, one cell between them
 //       ch_state  the paste mode + marked count, the last item in the flow so it wraps with
 //                 everything else
 chord_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
@@ -257,8 +281,13 @@ chord_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
     if area.w <= 0 || row_h <= 0 {
         return
     }
-    mode := a.tree.yank_mode == .Cut ? "cut" : "copy"
-    items, nrows := chord_pack(fmt.tprintf("[%s · %d marked]", mode, len(a.tree.yanked)), maxw)
+    // The readout says both halves of the state the chords act on, and says the clipboard only
+    // when there IS one: "[2 marked]" until you copy something, "[2 marked · cut 3]" after.
+    ft := &a.tree
+    state := len(ft.clip) == 0 \
+        ? fmt.tprintf("[%d marked]", len(ft.marks)) \
+        : fmt.tprintf("[%d marked · %s %d]", len(ft.marks), ft.clip_mode == .Cut ? "cut" : "copy", len(ft.clip))
+    items, nrows := chord_pack(chord_hints(a), state, maxw)
 
     // Opaque lerp out of the pane bg (so no alpha is needed) as Ctrl is held — the Ctrl-hold
     // twin of the switcher's fade, and the same reason it is a lerp rather than an alpha.

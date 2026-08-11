@@ -97,6 +97,19 @@ App :: struct {
     tree:        FileTree, // filetree aux mode (initialised in main, needs IO)
     config_pane: ConfigPane, // config / syntax aux mode (initialised in main, needs IO)
 
+    // How the filetree aux mode PRESENTS that listing (config `file_pane`): the dired-style
+    // rows, or the file browser — top bar, places sidebar, list or grid. One model, two
+    // declarations; `filebrowser` holds only what the listing has no concept of (history,
+    // shortcuts, which view). Initialised in main: the places come off the config file.
+    file_pane:   File_Pane,
+    file_icons:  bool, // per-type icons in the browser; inert without the vendored icon face
+    filebrowser: FileBrowser,
+
+    // The one popup in the program (contextmenu.odin): a right-press opens a list of buttons for
+    // the chords, at the pointer, above everything. Owned here rather than by a pane because it
+    // outlives the frame that opened it and is meant to serve more than one of them.
+    ctxmenu:     ContextMenu,
+
     // The main (document) pane. `main` selects the surface; `editor` holds the text
     // buffers, `media` the one image currently viewed (Image surface). Opening an image
     // file flips main to .Image; opening a text file flips it back (see open_file).
@@ -367,6 +380,7 @@ app_destroy :: proc(a: ^App) {
     media_destroy(&a.media) // free the viewed image's texture + path
     cl_chain_clear(a) // frees any pending chain (incl. its backing array)
     cl_destroy(a)
+    ctxmenu_destroy(a) // the popup's item list + the path it was opened on
     grep_destroy(&a.grep) // frees any stashed jump-to-definition results
     delete(a.project_root)
     delete(a.theme_path)

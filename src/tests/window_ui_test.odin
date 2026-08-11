@@ -42,7 +42,7 @@ two_panes :: proc(a: ^app.App, f: ^app.Font, v: app.Editor_View) {
     app.clay_window_begin(WIN_W, WIN_H)
     if clay.UI(clay.ID(app.WIN_ROOT))(app.clay_window_root(WIN_W, WIN_H)) {
         app.editor_declare(a, f, ED_PANE, v, 0)
-        app.filetree_declare(a, f, AUX_PANE)
+        app.filetree_declare(a, f, AUX_PANE, a.tree.scroll, 0, 0)
     }
 }
 

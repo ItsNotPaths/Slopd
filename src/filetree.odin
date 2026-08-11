@@ -23,9 +23,9 @@ FileEntry :: struct {
     display: string, // owned "<mode>  <name>  <size>  <mtime>"; host adds the ring prefix
 }
 
-// What a paste does with the marked set: duplicate (Copy) or move (Cut, which also empties the
-// set). Copy is the default so paste works even if you never pressed a copy/cut chord.
-YankMode :: enum {
+// What a paste does with what the clipboard holds: duplicate (Copy) or move (Cut). The mode is
+// decided by the chord that FILLED the clipboard, not by a separate toggle — see the block below.
+Clip_Mode :: enum {
     Copy,
     Cut,
 }
@@ -40,10 +40,20 @@ FileTree :: struct {
     // Wheel-detached at this glfw time; 0 = following the selection. See list_scroll_apply.
     scroll_detached: f64,
 
-    // The yank set: paths marked for a pending copy/cut, OWNED and kept across dir navigation
-    // (yank here, walk elsewhere, paste there).
-    yanked:    [dynamic]string,
-    yank_mode: YankMode,
+    // The viewport's tween toward `scroll`, in ROWS (the editor's b.scroll_anim under another
+    // name). `scroll` is where the view is going; this is where it currently IS, and the two
+    // differ for SCROLL_DUR after every move. Shared by both presentations of the pane because
+    // both scroll this one field, and only one of them is ever on screen.
+    scroll_anim: Anim,
+
+    // Two sets, deliberately separate — the pane used to conflate them as one "yank set" plus a
+    // mode flag, which made "what will paste do" a question you had to reconstruct from two
+    // fields. `marks` is the MULTI-SELECTION: what a file op acts on instead of the one row under
+    // the cursor. `clip` is the CLIPBOARD: what copy/cut took, OWNED and kept across navigation
+    // (copy here, walk elsewhere, paste there), applied by `clip_mode`.
+    marks:     [dynamic]string,
+    clip:      [dynamic]string,
+    clip_mode: Clip_Mode,
 }
 
 filetree_init :: proc(ft: ^FileTree) {
@@ -59,8 +69,10 @@ filetree_init :: proc(ft: ^FileTree) {
 filetree_destroy :: proc(ft: ^FileTree) {
     filetree_clear(ft)
     delete(ft.entries)
-    filetree_yank_reset(ft)
-    delete(ft.yanked)
+    filetree_marks_reset(ft)
+    delete(ft.marks)
+    filetree_clip_clear(ft)
+    delete(ft.clip)
 }
 
 // (Re)reads dir. ".." is always the first entry (except at the filesystem root);
@@ -144,54 +156,55 @@ filetree_activate :: proc(ft: ^FileTree) -> (path: string, is_file: bool) {
     return e.path, true
 }
 
-// --- yank set + file operations --- Marked absolute paths plus a copy/cut mode. Marking is
-// toggle-on-toggle-off; paste applies the mode into the current dir; filetree_targets reports
-// what the host should delete. Every op reloads the listing, keeping the cursor row where it can.
+// --- marks, clipboard + file operations --- Marking is toggle-on-toggle-off and says WHAT an op
+// acts on; copy/cut fill the clipboard from that (or from the row under the cursor) and say what
+// paste will DO. filetree_targets reports what the host should delete. Every op that changes the
+// directory reloads the listing, keeping the cursor row where it can.
 
-// Toggle the highlighted entry in/out of the yank set. ".." is never marked.
-filetree_yank_toggle :: proc(ft: ^FileTree) {
+// Toggle the highlighted entry in/out of the marked set. ".." is never marked.
+filetree_mark_toggle :: proc(ft: ^FileTree) {
     e := filetree_selected(ft)
     if e == nil || e.name == ".." {
         return
     }
-    for p, i in ft.yanked {
+    for p, i in ft.marks {
         if p == e.path {
-            delete(ft.yanked[i])
-            ordered_remove(&ft.yanked, i)
+            delete(ft.marks[i])
+            ordered_remove(&ft.marks, i)
             return
         }
     }
-    append(&ft.yanked, strings.clone(e.path))
+    append(&ft.marks, strings.clone(e.path))
 }
 
-// Add the highlighted entry to the yank set if absent (idempotent — unlike the toggle).
+// Add the highlighted entry to the marked set if absent (idempotent — unlike the toggle).
 // ".." is never marked. Used by the sweep so re-crossing a row never un-marks it.
-filetree_yank_add :: proc(ft: ^FileTree) {
+filetree_mark_add :: proc(ft: ^FileTree) {
     e := filetree_selected(ft)
-    if e == nil || e.name == ".." || filetree_yanked_contains(ft, e.path) {
+    if e == nil || e.name == ".." || filetree_marked(ft, e.path) {
         return
     }
-    append(&ft.yanked, strings.clone(e.path))
+    append(&ft.marks, strings.clone(e.path))
 }
 
 // Sweep-mark: mark the current row, step the cursor, mark the row it lands on. Holding
 // Shift while pressing Up/Down thus paints a contiguous marked run as the cursor moves.
-filetree_yank_sweep :: proc(ft: ^FileTree, delta: int) {
-    filetree_yank_add(ft)
+filetree_mark_sweep :: proc(ft: ^FileTree, delta: int) {
+    filetree_mark_add(ft)
     filetree_move(ft, delta)
-    filetree_yank_add(ft)
+    filetree_mark_add(ft)
 }
 
-// Clear the whole yank set (the "reset" chord).
-filetree_yank_reset :: proc(ft: ^FileTree) {
-    for p in ft.yanked {
+// Clear the whole marked set (the "unmark" chord).
+filetree_marks_reset :: proc(ft: ^FileTree) {
+    for p in ft.marks {
         delete(p)
     }
-    clear(&ft.yanked)
+    clear(&ft.marks)
 }
 
-filetree_yanked_contains :: proc(ft: ^FileTree, path: string) -> bool {
-    for p in ft.yanked {
+filetree_marked :: proc(ft: ^FileTree, path: string) -> bool {
+    for p in ft.marks {
         if p == path {
             return true
         }
@@ -199,15 +212,40 @@ filetree_yanked_contains :: proc(ft: ^FileTree, path: string) -> bool {
     return false
 }
 
-// Apply the yank set to the current dir: Copy duplicates, Cut moves (then empties the
-// set). Each destination name is made unique so an existing file is never clobbered.
-filetree_paste :: proc(ft: ^FileTree) {
-    if len(ft.yanked) == 0 {
+filetree_clip_clear :: proc(ft: ^FileTree) {
+    for p in ft.clip {
+        delete(p)
+    }
+    clear(&ft.clip)
+}
+
+// Copy / cut: fill the clipboard from the marked set, or from the row under the cursor when
+// nothing is marked, and record which the paste will be. The paths are OWNED, because the
+// listing they came from is freed by the next navigation and the clipboard outlives it.
+// An empty take (".." alone, an empty listing) leaves the previous clipboard intact.
+filetree_clip_take :: proc(ft: ^FileTree, mode: Clip_Mode) {
+    src := filetree_targets(ft, len(ft.marks) > 0, context.temp_allocator)
+    if len(src) == 0 {
         return
     }
-    for src in ft.yanked {
+    filetree_clip_clear(ft)
+    for p in src {
+        append(&ft.clip, strings.clone(p))
+    }
+    ft.clip_mode = mode
+}
+
+// Paste the clipboard into the current dir: Copy duplicates, Cut moves. Each destination name is
+// made unique so an existing file is never clobbered. A CUT is spent by its paste — the sources
+// are gone, so the clipboard and any marks naming them would dangle; a COPY stays, so the same
+// set can be pasted into several directories.
+filetree_paste :: proc(ft: ^FileTree) {
+    if len(ft.clip) == 0 {
+        return
+    }
+    for src in ft.clip {
         dst := fs_unique_dest(ft.dir, filepath.base(src)) // base slices src; used at once
-        if ft.yank_mode == .Cut {
+        if ft.clip_mode == .Cut {
             // rename is an atomic move on one filesystem; fall back to copy+remove
             // across devices (EXDEV), where rename can't relink the inode.
             if os.rename(src, dst) != nil && fs_copy_path(src, dst) {
@@ -217,8 +255,9 @@ filetree_paste :: proc(ft: ^FileTree) {
             fs_copy_path(src, dst)
         }
     }
-    if ft.yank_mode == .Cut {
-        filetree_yank_reset(ft) // the sources are gone; the marks would dangle
+    if ft.clip_mode == .Cut {
+        filetree_clip_clear(ft)
+        filetree_marks_reset(ft)
     }
     filetree_reload(ft)
 }
@@ -228,7 +267,7 @@ filetree_paste :: proc(ft: ^FileTree) {
 // them. The host turns these into a staged `rm -rf` line, not a delete behind a modal prompt.
 filetree_targets :: proc(ft: ^FileTree, marked: bool, alloc := context.allocator) -> []string {
     if marked {
-        return slice.clone(ft.yanked[:], alloc)
+        return slice.clone(ft.marks[:], alloc)
     }
     e := filetree_selected(ft)
     if e == nil || e.name == ".." {

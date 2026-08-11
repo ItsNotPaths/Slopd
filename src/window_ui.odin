@@ -123,6 +123,11 @@ focus_follows_click :: proc(a: ^App, lay: Layout) {
 // before any pane can, moves the split, then whatever press is left decides which pane has the
 // arrows. **Called before compute_layout** — these act on the pane RECTS, which are its output.
 window_pointer :: proc(a: ^App, win_w: i32) {
+    // The popup gets first refusal on a press, and takes only the ones that MISS it: a click
+    // outside an open menu closes it and is spent doing so, or the same press would also select
+    // a row under a menu the user was only dismissing. Inside its box the press falls through to
+    // ctxmenu_click, which is declared last and hit-tests its own items.
+    ctxmenu_dismiss_click(a)
     divider_click(a, a.lay)
     divider_drag(a, win_w)
     focus_follows_click(a, a.lay)
@@ -188,7 +193,15 @@ window_frame :: proc(t: ^Text, a: ^App, lay: Layout, win_w, win_h: i32, now: f64
         }
         switch a.aux_mode {
         case .FileTree:
-            filetree_frame(t, a, lay.aux, now)
+            // One aux mode, two presentations (config `file_pane`) over the same FileTree —
+            // which is why this is a branch here rather than a fifth AuxMode: Alt+F, the `ls`
+            // builtin and --util all reach the pane without knowing which one is up.
+            switch a.file_pane {
+            case .Ls:
+                filetree_frame(t, a, lay.aux, now)
+            case .Browser:
+                filebrowser_frame(t, a, lay.aux, now)
+            }
         case .Config:
             config_frame(t, a, lay.aux, now)
         case .Terminal:
@@ -198,6 +211,10 @@ window_frame :: proc(t: ^Text, a: ^App, lay: Layout, win_w, win_h: i32, now: f64
         }
         // The strip declares last; the overlays outrank it by zIndex (overlay_ui.odin).
         strip_frame(t, a, lay.strip, now)
+        // Except the popup, which outranks the overlays in turn and is the only surface placed
+        // by the POINTER rather than by the layout — hence a window-level declaration with no
+        // pane rect to be handed (contextmenu_ui.odin).
+        ctxmenu_frame(t, a, win_w, win_h)
     }
 
     cmds := clay.EndLayout(0)

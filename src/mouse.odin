@@ -24,6 +24,12 @@ import clay "../bindings/clay"
 // consumes "lines" natively, so one constant rather than a per-pane table.
 WHEEL_LINES :: 3
 
+// …with one exception, because a "line" is not the same distance everywhere. In the file panes
+// a row is a whole ENTRY, and in the browser's grid it is a row of TILES — three of those a
+// notch throws the listing past what you were looking at. One row per notch there: the same
+// gesture, a quieter step, and the tween (tree.scroll_anim) carries it.
+WHEEL_LINES_FILE :: 1
+
 // What makes two presses a double-click: near enough in time AND in space. The slop is in
 // framebuffer pixels and deliberately small — a press that travelled is a drag, not a second
 // click — while 0.4s is the common desktop default.
@@ -62,6 +68,13 @@ Mouse :: struct {
     click_shift: bool,
     click_ctrl:  bool,
     click_alt:   bool,
+
+    // A RIGHT press waiting for a pane to open a context menu on. Parked like the left one and
+    // for the same reason, but it keeps its OWN position: a menu is placed where the press
+    // landed, and by the time a pane claims it the pointer has had a frame to move off.
+    rclick:   bool,
+    rclick_x: i32,
+    rclick_y: i32,
 }
 
 // --- standing the pointer down while the keyboard is in use ---
@@ -106,6 +119,17 @@ mouse_take_click :: proc(a: ^App) -> (count: int, ok: bool) {
     }
     a.mouse.click = false
     return a.mouse.click_count, true
+}
+
+// The right press's twin. No count: a right press has exactly one grade — there is no such
+// thing as a double right-click here, and a menu that re-opened on the second press of a run
+// would flicker rather than mean anything.
+mouse_take_rclick :: proc(a: ^App) -> bool {
+    if !a.mouse_on || !a.mouse.rclick {
+        return false
+    }
+    a.mouse.rclick = false
+    return true
 }
 
 // Where a wheel notch lands. The aux modes are split out rather than lumped as "the aux
@@ -180,7 +204,7 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
         now := glfw.GetTime()
         switch a.aux_mode {
         case .FileTree:
-            list_scroll_by(&a.tree.scroll, &a.tree.scroll_detached, d, now)
+            list_scroll_by(&a.tree.scroll, &a.tree.scroll_detached, notch * WHEEL_LINES_FILE, now)
         case .Grep:
             list_scroll_by(&a.grep.scroll, &a.grep.scroll_detached, d, now)
         case .Config:
@@ -191,6 +215,20 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
         // Not a list pane; wheel_target never routes it here.
         }
     }
+}
+
+// Fill in a position we never received. A press or a wheel can be the FIRST pointer event a
+// window ever sees — a cursor already sitting over a freshly opened window reports no motion —
+// so rather than route against (0, 0), which is a lie that lands in the editor pane, ask GLFW.
+// No-op once any motion has arrived.
+@(private = "file")
+mouse_locate :: proc(a: ^App, window: glfw.WindowHandle) {
+    if a.mouse.known {
+        return
+    }
+    x, y := glfw.GetCursorPos(window)
+    a.mouse.x, a.mouse.y = mouse_to_fb(window, x, y)
+    a.mouse.known = true
 }
 
 // GLFW cursor position (window coords) -> framebuffer pixels; see trap 1 in the header.
@@ -226,7 +264,22 @@ cursor_pos_callback :: proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
 mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mods: i32) {
     context = runtime.default_context()
     a := (^App)(glfw.GetWindowUserPointer(window))
-    if a == nil || button != glfw.MOUSE_BUTTON_LEFT {
+    if a == nil {
+        return
+    }
+    // The right button is a press and nothing else: no held state (nothing drags with it), no
+    // release verb, no run counting. It parks a position for a pane to open a menu at.
+    if button == glfw.MOUSE_BUTTON_RIGHT {
+        if action != glfw.PRESS || !a.mouse_on {
+            return
+        }
+        mouse_wake(a)
+        mouse_locate(a, window)
+        a.mouse.rclick = true
+        a.mouse.rclick_x, a.mouse.rclick_y = a.mouse.x, a.mouse.y
+        return
+    }
+    if button != glfw.MOUSE_BUTTON_LEFT {
         return
     }
     a.mouse.down = action != glfw.RELEASE
@@ -241,14 +294,7 @@ mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mo
         return
     }
     mouse_wake(a) // wake BEFORE parking it, so the click acts with the cursor visible
-    // A press can be the first pointer event the window ever sees (a cursor already over a
-    // freshly opened window reports no motion), so ask GLFW rather than routing against a
-    // position we never received.
-    if !a.mouse.known {
-        x, y := glfw.GetCursorPos(window)
-        a.mouse.x, a.mouse.y = mouse_to_fb(window, x, y)
-        a.mouse.known = true
-    }
+    mouse_locate(a, window)
     m := &a.mouse
     now := glfw.GetTime()
     near := abs(m.x - m.click_x) <= DOUBLE_CLICK_PX && abs(m.y - m.click_y) <= DOUBLE_CLICK_PX
@@ -284,14 +330,7 @@ scroll_callback :: proc "c" (window: glfw.WindowHandle, xoffset, yoffset: f64) {
     if a == nil || !a.mouse_on || yoffset == 0 {
         return
     }
-    // A wheel can be the first pointer event the window ever sees (the cursor may already
-    // be sitting over a freshly opened window, with no motion to report), so fall back to
-    // asking GLFW outright rather than routing against a position we never received.
-    if !a.mouse.known {
-        x, y := glfw.GetCursorPos(window)
-        a.mouse.x, a.mouse.y = mouse_to_fb(window, x, y)
-        a.mouse.known = true
-    }
+    mouse_locate(a, window)
     mouse_wheel(a, yoffset)
 }
 

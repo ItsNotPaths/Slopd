@@ -9,7 +9,7 @@ Linux, OpenGL 3.3.
 ## Build
 
 ```sh
-./download-deps.sh                 # vendors glfw, libvterm, tree-sitter, the font
+./download-deps.sh                 # vendors glfw, libvterm, tree-sitter, the font + icons
 odin build src -out:slopd -define:GLFW_SHARED=false
 ./release.sh --local               # or: stripped -o:speed build into ../Slopd-release/
 ```
@@ -17,7 +17,7 @@ odin build src -out:slopd -define:GLFW_SHARED=false
 | | |
 |---|---|
 | **main surfaces** | `Text` (the buffer ring) · `Image` (the media viewer) |
-| **aux modes** | `FileTree` · `Terminal` · `Config` · `Grep` |
+| **aux modes** | `FileTree` (as an `ls` listing or a file browser) · `Terminal` · `Config` · `Grep` |
 | **views** | `Split` both panes · `Zen` full-width editor, aux slides in while focused · `Full` one surface fills the window |
 
 Views are toggled from the command line: `zen`/`zm`, `full`/`fm`, `normal`/`nm`. `Esc` with
@@ -44,12 +44,45 @@ Non-modal / Alt-rooted: bare keys type, arrows navigate, chords live under Alt.
 | `Alt+[` `Alt+]` | nudge the split · `Ctrl+=` `Ctrl+-` `Ctrl+0` font zoom |
 | `Ctrl+S/Z/Y/C/X/V` | save, undo, redo, clipboard |
 
-Filetree file ops are dired-style `Ctrl` chords (`^y` yank, `^u` reset, `^c` copy, `^x` cut,
-`^p` paste, `^d` delete, `^w` path), hold `Ctrl` for the cheat-sheet bar.
+Filetree file ops are `Ctrl` chords (`^y` mark, `^u` unmark all, `^c` copy, `^x` cut, `^v`
+paste, `^d` delete, `^w` path); hold `Ctrl` for the cheat-sheet bar, or **right-click** for the
+same list as buttons. Copy and cut fill a clipboard from the marked set — or from the row under
+the cursor when nothing is marked — and paste applies it to the folder you are browsing; a cut
+is spent by its paste, a copy is not.
 
 The mouse is purely additive (`mouse: off` costs no capability). Wheel scrolls whatever is
 under the pointer and detaches the view; a click focuses the pane and does its own job;
 typing stands the pointer down.
+
+## File browser
+
+`file_pane: browser` gives the filetree pane a second face — a top bar of square buttons
+`[◀] [▶] [⟳]`, a path bar whose segments are buttons, a places sidebar, and contents as a list
+or a grid of tiles. **The listing underneath is the same one**: the same entries, marks,
+clipboard and `Ctrl` chords, so this is a choice of presentation and never of capability.
+
+| | |
+|---|---|
+| `^←` `^→` `^r` | history back / forward · reload — the three square buttons |
+| `^g` | list ⇄ grid (the toggle button; `file_view` persists it) |
+| `^1`..`^9` | open the sidebar's Nth place |
+| `Backspace` | up a directory — and the only way out of a grid, where `←`/`→` step a tile |
+| right-click | the file-ops menu, at the pointer; on empty space it acts on the folder |
+
+Grid or list is the toggle; **zoom is `Ctrl +/-`** and scales whichever is up, tiles included —
+a tile is measured in text cells, so it grows with the font rather than having a zoom of its own.
+
+Rows and tiles carry a per-type icon. They are **glyphs, not images**: a second face (Nerd
+Fonts' Seti-UI + Devicons, subset to ~178KB against 2.5MB for the whole thing) is baked into the
+same atlas as the text, so an icon costs a codepoint and nothing else — no decode, no cache, no
+second texture. The icon says the *type* and the colour still says the *state*, so a Rust file
+looks like a Rust file whether or not it has unsaved edits. `file_icons: off` removes the column
+outright, and a build without `fonttools` simply has no icon face and falls back to plain tiles.
+
+Places live in the config file's own `[places]` block (`Name: /path`, in sidebar order) and are
+added or removed by right-clicking a folder — not from the Config pane, which edits settings
+and stops reading at that block. Delete the block and Slopd refills it from your home directory,
+whichever standard folders exist under it, and `/`.
 
 ## Command line
 
@@ -108,6 +141,9 @@ and leaves the comment alone.
 | `grep_pane` | `on` \| `off` | always open the results pane vs jump straight on a lone hit |
 | `disk_conflict` | `prompt` \| `keep` | file changed on disk under unsaved edits |
 | `mouse`, `hover` | `on` \| `off` | pointer input; hover tints the row under it |
+| `file_pane` | `ls` \| `browser` | the filetree pane's face: the dired listing, or the file browser |
+| `file_view` | `list` \| `grid` | the browser's contents; its toggle button writes this back |
+| `file_icons` | `on` \| `off` | per-type icons in the browser (needs the vendored icon face) |
 
 ## Theme
 
@@ -149,3 +185,7 @@ slopd --health [lang]        # ✓/✗ table
 ## License
 
 GPL-3.0. `license` in the command line opens the embedded copy.
+
+Embedded fonts keep their own: **Iosevka Fixed** (SIL OFL 1.1) for text, and the file-browser
+icons from **Nerd Fonts**' Seti-UI and Devicons sets (both MIT) — the CC-BY and Apache icon sets
+are deliberately left out so the embed carries one licence note.

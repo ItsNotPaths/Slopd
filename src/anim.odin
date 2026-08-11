@@ -52,6 +52,13 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     if anim_active(&editor_current(&a.editor).scroll_anim, now) { // smooth scroll
         wake = sched_min(wake, VSYNC_PACED)
     }
+    // The filetree pane's viewport tween, under EITHER presentation — the listing and the
+    // browser share `tree.scroll_anim` because they share the viewport. Gated on the aux mode
+    // for the overlays' reason: a tween nothing is drawing must not spin the loop, and a target
+    // moved without a wake scheduled here leaves the view frozen part-scrolled (rule 9).
+    if a.aux_mode == .FileTree && anim_active(&a.tree.scroll_anim, now) {
+        wake = sched_min(wake, VSYNC_PACED)
+    }
     if a.view == .Zen && anim_active(&a.zen_anim, now) { // aux-pane slide
         wake = sched_min(wake, VSYNC_PACED)
     }

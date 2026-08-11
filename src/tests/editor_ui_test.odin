@@ -324,8 +324,7 @@ test_editor_hit_survives_the_aux_pane :: proc(t: ^testing.T) {
         app.clay_window_begin(500, 300)
         if clay.UI(clay.ID(app.WIN_ROOT))(app.clay_window_root(500, 300)) {
             app.editor_declare(a, f, PANE, v, 0)
-            app.filetree_declare(a, f, app.Rect{420, 50, 60, 200})
-        }
+                    }
         _ = clay.EndLayout(0)
     }
     frame(&a, &f, v)

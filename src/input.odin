@@ -19,6 +19,9 @@ import "vendor:glfw"
 //   Shift+Enter               filetree: open the entry in the OS default app (xdg-open); a
 //                             binary/script instead stages its run command in the CL
 //   Alt+F/T/R                 aux mode: FileTree / Terminal / gRep results
+//                             (FileTree wears one of two faces — the dired listing or the
+//                             file browser — per the `file_pane` config; same model, same
+//                             chords, different pixels and different pointer targets)
 //   Alt+G                     open the configured git tool at the project root (git_tool.odin)
 //   Alt+1..9                  jump to terminal session N (i3-style)
 //   Alt+N / Alt+Q             terminal: new / close session (max 99)
@@ -39,6 +42,19 @@ import "vendor:glfw"
 //   Esc                       cancel CL / move-all / multi-cursor, else Zen on + flip pane side
 //   Ctrl+= / Ctrl+- / Ctrl+0  font zoom: grow / shrink / reset text in every pane (global)
 //   Ctrl+Enter                editor: collapse / expand the block opening on the line
+// Filetree / file browser chords (filetree_ops_key — the SAME table under both faces):
+//   Ctrl+Y / Ctrl+U           mark or unmark the entry / clear every mark
+//   Ctrl+C / Ctrl+X / Ctrl+V  copy / cut / paste — the clipboard is filled from the marked
+//                             set, or from the row under the cursor when nothing is marked;
+//                             a cut is spent by its paste, a copy is not
+//   Ctrl+D / Ctrl+Shift+D     delete the entry / the marked set, by staging an `rm -rf`
+//   Ctrl+W / Ctrl+Shift+W     copy the entry's path / the browsed directory's
+// The browser adds its top bar and sidebar on top of those, and nothing else:
+//   Ctrl+Left / Ctrl+Right    history back / forward       Ctrl+R  reload
+//   Ctrl+G                    list <-> grid                Ctrl+1..9  open place N
+//   Backspace                 up a directory (the only way out of a grid, where Left/Right
+//                             step a tile rather than leaving the folder)
+//
 // Bare keys go to the focused editable (see cl_handle_key / buffer_key): typing,
 // motion, Tab, undo/redo (Ctrl+Z/Y), save (Ctrl+S), clipboard (Ctrl+C/X/V).
 //
@@ -52,6 +68,10 @@ import "vendor:glfw"
 //   double click              select the word / open the row     Ctrl+Left, Shift+Ctrl+Right / Enter
 //   triple click              select the line                    Home, Shift+End
 //   click a fold marker       expand the block                   Ctrl+Enter
+//   right click               open the file-ops menu             hold Ctrl (the chord bar)
+//   click a top-bar button    back / forward / reload / view     Ctrl+Left/Right, ^r, ^g
+//   click a path segment      go to that folder                  Left, or `cd`
+//   click a places row        go to that shortcut                Ctrl+1..9
 //   drag                      extend by the grade the press set  Shift + a motion
 //   drag the divider          nudge the split                    Alt+[ / Alt+]
 //   drag an image             pan the view                       the arrow keys
@@ -65,6 +85,10 @@ import "vendor:glfw"
 //   3. FOCUS FOLLOWS THE CLICK, and only the click — never a wheel, never the divider.
 //   4. THE KEYBOARD OUTRANKS THE POINTER: any key that does something stands it down. A BARE
 //      MODIFIER is excluded — Alt+click needs the cursor on screen to aim with.
+//
+// The context menu (contextmenu.odin) is the one pointer surface with no keyboard OPENER, and
+// it does not need one: every item on it is a chord above, with the chord printed beside it.
+// It is a way to read the table with a mouse in your hand, never a way to reach a verb.
 
 // Is this key a bare modifier — one that qualifies the next keystroke rather than being one?
 // Super and CapsLock are included: the question is "did the user ask for something". Alt is
@@ -189,6 +213,28 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     // An editable owns the keys: the command line, or the editor when the main pane is
     // showing text. An image surface has no doc, so caret/drop/move-all chords no-op there.
     editing := a.cl_active || (a.focus == .Editor && a.main == .Text)
+
+    // An open context menu owns the four keys that drive a list of buttons, and NOTHING else:
+    // any other key closes it and is then handled normally, so a menu opened by a stray press
+    // never swallows the keystroke you meant. A bare modifier leaves it up — Ctrl held is still
+    // the chord cheat-sheet, and the menu's hints are what it is advertising.
+    if ctxmenu_shown(a) && !key_is_modifier(key) {
+        switch key {
+        case glfw.KEY_ESCAPE:
+            ctxmenu_close(a)
+            return
+        case glfw.KEY_UP:
+            ctxmenu_move(a, -1)
+            return
+        case glfw.KEY_DOWN:
+            ctxmenu_move(a, 1)
+            return
+        case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
+            ctxmenu_choose(a)
+            return
+        }
+        ctxmenu_close(a)
+    }
 
     // Escape: a focused live terminal gets it first, so vim etc. see it. Otherwise cancel the
     // command line, a move-all prefix, or a multi-cursor set; with nothing to cancel it drives
@@ -384,7 +430,14 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             media_key(a, key, mods) // image surface: arrows pan, =/- zoom, 0/f fit
         }
     } else if a.focus == .Aux && a.aux_mode == .FileTree {
-        filetree_key(a, key, mods)
+        // The two presentations share every file-op chord (filetree_ops_key) and differ only in
+        // what the ARROWS mean — which is the difference between a list and a browser.
+        switch a.file_pane {
+        case .Ls:
+            filetree_key(a, key, mods)
+        case .Browser:
+            filebrowser_key(a, key, mods)
+        }
     } else if a.focus == .Aux && a.aux_mode == .Config {
         config_key(a, key, mods)
     } else if a.focus == .Aux && a.aux_mode == .Grep {
@@ -583,8 +636,8 @@ editor_paste :: proc(a: ^App) {
 }
 
 // Pushes text to the system clipboard and takes ownership of our copy of it (the
-// joined string + pieces), freeing the previous remembered copy.
-@(private = "file")
+// joined string + pieces), freeing the previous remembered copy. Package-level since the
+// context menu's "copy path" reaches it too (contextmenu.odin).
 clipboard_set :: proc(a: ^App, joined: string, pieces: []string) {
     glfw.SetClipboardString(a.window, strings.clone_to_cstring(joined, context.temp_allocator))
     delete(a.clip_joined)
@@ -596,54 +649,68 @@ clipboard_set :: proc(a: ^App, joined: string, pieces: []string) {
     a.clip_pieces = pieces
 }
 
-// Filetree keys. Arrows + Enter navigate (Shift+Enter opens in the OS app); Shift+Up/Down
-// sweep-mark a run; the dired-style file ops are CTRL chords, discoverable via the Ctrl-held
-// chord bar. The destructive one stages an `rm -rf` command line — the CL is the confirm.
+// The file-op Ctrl chords, shared by BOTH presentations of the pane — the dired listing and the
+// browser — which is what makes `file_pane` a choice of pixels rather than of capability.
+// Returns true when it handled the key, so a presentation can bind its own chords first.
+//
+// **Clear cut/copy/paste, no yank mode.** `^c` / `^x` FILL the clipboard from the marked set (or
+// the row under the cursor) and say which the paste will be; `^v` applies it here. Marking is
+// `^y` and is only ever "what does an op act on" — the pane no longer has a mode you can leave
+// set from an hour ago. The destructive chord still stages an `rm -rf` in the command line
+// rather than deleting behind a prompt: the CL is the confirm.
+filetree_ops_key :: proc(a: ^App, key: i32, shift: bool) -> bool {
+    ft := &a.tree
+    switch key {
+    case glfw.KEY_Y:
+        filetree_mark_toggle(ft) // mark/unmark the selected entry
+    case glfw.KEY_U:
+        filetree_marks_reset(ft) // clear the marked set
+    case glfw.KEY_C:
+        filetree_clip_take(ft, .Copy)
+    case glfw.KEY_X:
+        filetree_clip_take(ft, .Cut)
+    case glfw.KEY_V:
+        filetree_paste(ft) // apply the clipboard to the browsed dir
+    case glfw.KEY_D:
+        // Ctrl+D deletes the highlighted entry; Ctrl+Shift+D the whole marked set.
+        filetree_rm_selected(a, shift)
+    case glfw.KEY_W:
+        // Ctrl+W copies the selected entry's path; Ctrl+Shift+W the browsed dir's path (where
+        // the listing IS, not whatever row is hovered). Owned clone — clipboard_set takes it.
+        if shift {
+            clipboard_set(a, strings.clone(ft.dir), nil)
+        } else if e := filetree_selected(ft); e != nil {
+            clipboard_set(a, strings.clone(e.path), nil)
+        }
+    case:
+        return false
+    }
+    return true
+}
+
+// Filetree keys (the `ls` presentation). Arrows + Enter navigate (Shift+Enter opens in the OS
+// app); Shift+Up/Down sweep-mark a run; the file ops are the shared Ctrl chords above,
+// discoverable via the Ctrl-held chord bar.
 filetree_key :: proc(a: ^App, key, mods: i32) {
     ft := &a.tree
     ctrl := mods & glfw.MOD_CONTROL != 0
     shift := mods & glfw.MOD_SHIFT != 0
 
-    // Ctrl chords: the dired-style file ops.
     if ctrl {
-        switch key {
-        case glfw.KEY_Y:
-            filetree_yank_toggle(ft) // mark/unmark the selected entry
-        case glfw.KEY_U:
-            filetree_yank_reset(ft) // clear the marked set
-        case glfw.KEY_C:
-            ft.yank_mode = .Copy // paste duplicates
-        case glfw.KEY_X:
-            ft.yank_mode = .Cut // paste moves
-        case glfw.KEY_P:
-            filetree_paste(ft) // apply the set to the current dir
-        case glfw.KEY_D:
-            // Ctrl+D deletes the highlighted entry; Ctrl+Shift+D the whole marked set —
-            // both by staging the `rm -rf` in the command line (the CL is the confirm).
-            filetree_rm_selected(a, shift)
-        case glfw.KEY_W:
-            // Ctrl+W copies the selected entry's path; Ctrl+Shift+W the browsed dir's
-            // path (where the listing IS, not whatever row is hovered). Owned clone —
-            // clipboard_set takes ownership.
-            if shift {
-                clipboard_set(a, strings.clone(ft.dir), nil)
-            } else if e := filetree_selected(ft); e != nil {
-                clipboard_set(a, strings.clone(e.path), nil)
-            }
-        }
+        filetree_ops_key(a, key, shift)
         return
     }
 
     switch key {
     case glfw.KEY_DOWN:
         if shift {
-            filetree_yank_sweep(ft, 1) // mark as the cursor sweeps down
+            filetree_mark_sweep(ft, 1) // mark as the cursor sweeps down
         } else {
             filetree_move(ft, 1)
         }
     case glfw.KEY_UP:
         if shift {
-            filetree_yank_sweep(ft, -1)
+            filetree_mark_sweep(ft, -1)
         } else {
             filetree_move(ft, -1)
         }
@@ -656,6 +723,74 @@ filetree_key :: proc(a: ^App, key, mods: i32) {
             filetree_open_selected(a) // hand it to the desktop, or stage its run command
         } else if path, is_file := filetree_activate(ft); is_file {
             open_file(a, path)
+        }
+    }
+}
+
+// File browser keys. The file ops are the same chords as the listing's; what is new is the top
+// bar's four buttons and the sidebar, each with a chord of its own, and arrows that walk a GRID
+// when one is up — Left/Right step a tile there rather than leaving the directory, so Backspace
+// is the parent in both views and is the only route out of a grid.
+filebrowser_key :: proc(a: ^App, key, mods: i32) {
+    ft := &a.tree
+    br := &a.filebrowser
+    ctrl := mods & glfw.MOD_CONTROL != 0
+    shift := mods & glfw.MOD_SHIFT != 0
+    grid := br.view == .Grid
+
+    if ctrl {
+        switch key {
+        case glfw.KEY_LEFT:
+            filebrowser_button(a, .Back)
+        case glfw.KEY_RIGHT:
+            filebrowser_button(a, .Forward)
+        case glfw.KEY_R:
+            filebrowser_button(a, .Reload)
+        case glfw.KEY_G:
+            filebrowser_button(a, .View) // list <-> grid, the toggle's keyboard twin
+        case glfw.KEY_1 ..= glfw.KEY_9:
+            filebrowser_place_open(a, int(key - glfw.KEY_1) + 1) // the sidebar's twin
+        case:
+            filetree_ops_key(a, key, shift)
+        }
+        return
+    }
+
+    // A grid row is `br.cols` entries wide — written by filebrowser_frame, because only the
+    // geometry knows how many tiles fit and the keyboard has no pane rect to ask.
+    step := grid ? max(1, br.cols) : 1
+    switch key {
+    case glfw.KEY_DOWN:
+        if shift {
+            filetree_mark_sweep(ft, step)
+        } else {
+            filetree_move(ft, step)
+        }
+    case glfw.KEY_UP:
+        if shift {
+            filetree_mark_sweep(ft, -step)
+        } else {
+            filetree_move(ft, -step)
+        }
+    case glfw.KEY_RIGHT:
+        if grid {
+            filetree_move(ft, 1)
+        } else if e := filetree_selected(ft); e != nil && e.is_dir {
+            filebrowser_activate(a) // into the folder, through the history
+        }
+    case glfw.KEY_LEFT:
+        if grid {
+            filetree_move(ft, -1)
+        } else {
+            filebrowser_parent(a)
+        }
+    case glfw.KEY_BACKSPACE:
+        filebrowser_parent(a)
+    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
+        if shift {
+            filetree_open_selected(a)
+        } else {
+            filebrowser_activate(a)
         }
     }
 }

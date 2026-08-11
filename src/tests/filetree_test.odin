@@ -92,10 +92,10 @@ test_filetree_copy_paste :: proc(t: ^testing.T) {
     i := sel_by_name(&ft, "a.txt")
     testing.expect(t, i >= 0)
     ft.selected = i
-    app.filetree_yank_toggle(&ft)
-    testing.expect(t, app.filetree_yanked_contains(&ft, join(dir, "a.txt")))
+    app.filetree_mark_toggle(&ft)
+    testing.expect(t, app.filetree_marked(&ft, join(dir, "a.txt")))
 
-    ft.yank_mode = .Copy
+    app.filetree_clip_take(&ft, .Copy)
     app.filetree_paste(&ft)
     testing.expect(t, os.exists(join(dir, "a.txt"))) // original survives a copy
     dup := join(dir, "a_copy.txt")
@@ -131,8 +131,8 @@ test_filetree_cut_move :: proc(t: ^testing.T) {
     defer app.filetree_destroy(&ft)
 
     ft.selected = sel_by_name(&ft, "f.txt")
-    app.filetree_yank_toggle(&ft)
-    ft.yank_mode = .Cut
+    app.filetree_mark_toggle(&ft)
+    app.filetree_clip_take(&ft, .Cut)
 
     ft.selected = sel_by_name(&ft, "sub")
     app.filetree_enter(&ft) // descend into sub
@@ -140,7 +140,8 @@ test_filetree_cut_move :: proc(t: ^testing.T) {
 
     testing.expect(t, os.exists(join(sub, "f.txt"))) // moved in
     testing.expect(t, !os.exists(join(dir, "f.txt"))) // gone from source
-    testing.expect(t, len(ft.yanked) == 0) // cut clears the set
+    testing.expect(t, len(ft.clip) == 0) // a cut is spent by its paste
+    testing.expect(t, len(ft.marks) == 0) // and the marks naming the moved sources go with it
 }
 
 // Shift+Up/Down sweep marks a contiguous run as the cursor moves, idempotently (a row
@@ -164,13 +165,13 @@ test_filetree_sweep :: proc(t: ^testing.T) {
     defer app.filetree_destroy(&ft)
 
     ft.selected = sel_by_name(&ft, "a.txt")
-    app.filetree_yank_sweep(&ft, 1) // marks a + b, lands on b
-    app.filetree_yank_sweep(&ft, 1) // marks b + c, lands on c
-    testing.expect(t, len(ft.yanked) == 3) // a, b, c all marked
-    testing.expect(t, app.filetree_yanked_contains(&ft, join(dir, "b.txt")))
+    app.filetree_mark_sweep(&ft, 1) // marks a + b, lands on b
+    app.filetree_mark_sweep(&ft, 1) // marks b + c, lands on c
+    testing.expect(t, len(ft.marks) == 3) // a, b, c all marked
+    testing.expect(t, app.filetree_marked(&ft, join(dir, "b.txt")))
 
-    app.filetree_yank_sweep(&ft, -1) // re-cross b: idempotent, no un-mark
-    testing.expect(t, len(ft.yanked) == 3)
+    app.filetree_mark_sweep(&ft, -1) // re-cross b: idempotent, no un-mark
+    testing.expect(t, len(ft.marks) == 3)
 }
 
 // Reset clears marks without touching files; with a marked set, the delete targets are
@@ -192,16 +193,16 @@ test_filetree_reset_and_targets :: proc(t: ^testing.T) {
     app.filetree_load(&ft, dir)
     defer app.filetree_destroy(&ft)
 
-    ft.selected = sel_by_name(&ft, "x.txt");app.filetree_yank_toggle(&ft)
-    ft.selected = sel_by_name(&ft, "y.txt");app.filetree_yank_toggle(&ft)
-    testing.expect(t, len(ft.yanked) == 2)
+    ft.selected = sel_by_name(&ft, "x.txt");app.filetree_mark_toggle(&ft)
+    ft.selected = sel_by_name(&ft, "y.txt");app.filetree_mark_toggle(&ft)
+    testing.expect(t, len(ft.marks) == 2)
 
-    app.filetree_yank_reset(&ft)
-    testing.expect(t, len(ft.yanked) == 0)
+    app.filetree_marks_reset(&ft)
+    testing.expect(t, len(ft.marks) == 0)
     testing.expect(t, os.exists(join(dir, "x.txt"))) // reset is non-destructive
 
-    ft.selected = sel_by_name(&ft, "x.txt");app.filetree_yank_toggle(&ft)
-    ft.selected = sel_by_name(&ft, "y.txt");app.filetree_yank_toggle(&ft)
+    ft.selected = sel_by_name(&ft, "x.txt");app.filetree_mark_toggle(&ft)
+    ft.selected = sel_by_name(&ft, "y.txt");app.filetree_mark_toggle(&ft)
     marked := app.filetree_targets(&ft, true, context.temp_allocator)
     testing.expect_value(t, len(marked), 2)
     cmd := app.rm_command(marked, context.temp_allocator)

@@ -53,3 +53,27 @@ clay_test_context_free :: proc(raw: []u8) {
 clay_test_font :: proc() -> app.Font {
     return app.Font{cell_w = 10, line_height = 16}
 }
+
+// One command per element id, by type — what most declaration assertions want, since a surface
+// is a handful of named boxes rather than a long list of rows. Here rather than per file because
+// three of them wanted it; the fourth would have copied whichever one it read first.
+//
+// **Not every command carries the id of the element that asked for it.** Clay derives a clip
+// group's ScissorStart id, and a border command's, from the element's own — so a group or a
+// rail has to be found by containment or by box, not by this. See contextmenu_ui_test.odin.
+box_of :: proc(
+    cmds: ^clay.ClayArray(clay.RenderCommand),
+    id: clay.ElementId,
+    kind: clay.RenderCommandType,
+) -> (
+    box: app.Rect,
+    found: bool,
+) {
+    for i in 0 ..< cmds.length {
+        c := clay.RenderCommandArray_Get(cmds, i)
+        if c.id == id.id && c.commandType == kind {
+            return app.clay_rect(c.boundingBox), true
+        }
+    }
+    return {}, false
+}

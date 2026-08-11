@@ -144,6 +144,32 @@ test_wheel_apply_list_scrolls_view :: proc(t: ^testing.T) {
     testing.expect(t, a.grep.scroll < 0, "the callback does not clamp; the frame does")
 }
 
+// The file panes are the one exception to WHEEL_LINES, because a "line" is not the same
+// distance there: a row is a whole entry, and in the browser's grid a row is a row of TILES.
+// One row per notch, which is a third of what grep and config get.
+@(test)
+test_wheel_apply_file_pane_is_slower :: proc(t: ^testing.T) {
+    a := routing_app(.FileTree)
+    for i in 0 ..< 40 {
+        append(&a.tree.entries, app.FileEntry{name = "e", path = "/e", display = "e"})
+    }
+    defer delete(a.tree.entries)
+
+    app.wheel_apply(&a, .List, 1)
+    testing.expect_value(t, a.tree.scroll, app.WHEEL_LINES_FILE)
+    app.wheel_apply(&a, .List, 3)
+    testing.expect_value(t, a.tree.scroll, 4 * app.WHEEL_LINES_FILE)
+    app.wheel_apply(&a, .List, -2)
+    testing.expect_value(t, a.tree.scroll, 2 * app.WHEEL_LINES_FILE)
+
+    // Stated as a comparison rather than as a number, so the claim survives either constant
+    // being retuned: a notch here moves LESS than the same notch over any other list.
+    testing.expect(t, app.WHEEL_LINES_FILE < app.WHEEL_LINES, "the file panes lost their slower wheel")
+
+    // The selection does not move — a wheel scrolls the view, everywhere (rule 10).
+    testing.expect_value(t, a.tree.selected, 0)
+}
+
 // A zero notch is a no-op, and the targets with nothing wired yet must stay silent rather
 // than falling through to a neighbour's handler.
 @(test)

@@ -277,6 +277,77 @@ PY
 fi
 
 echo ""
+echo "==> file-type icons (Symbols Nerd Font Mono, subset — Seti-UI + Devicons)"
+# The file browser (`file_pane: browser`) draws a per-type icon per row and per tile. Those
+# icons are GLYPHS, baked into the same atlas as the text from a second embedded face, so
+# there is no icon cache, no image decode and no second texture — see font.odin.
+#
+# We take two whole PUA blocks rather than a curated list: Seti-UI (U+E5FA-E6B7, the file-type
+# set from the Seti editor theme, plus Nerd Fonts' own `custom-` folder/default glyphs) and
+# Devicons (U+E700-E7C5, the language and tool logos). BOTH ARE MIT — deliberately, so the
+# embed carries one licence note; Font Awesome, Material and Codicons are CC-BY/Apache and are
+# left out, as are Octicons, which would push this past the size line below for glyphs the
+# other two already cover. Taking whole blocks is what lets src/icons.odin's ext -> icon table
+# grow later without re-running this script.
+#
+# ~174KB for 391 glyphs, against 2.5MB for the full face. Unlike Iosevka, this font is
+# OPTIONAL: without fontTools we embed nothing at all and the browser falls back to its plain
+# coloured tiles, because a 2.5MB icon font in a 2.2MB binary is not a fallback anyone wants.
+NERD_VERSION="3.4.0"
+ICONS_TTF="$VENDOR/fonts/SymbolsNerdFont-Icons.ttf"
+ICONS_FULL="$VENDOR/fonts/SymbolsNerdFontMono-Regular-full.ttf"
+ICONS_SUBSET_MAX=262144 # 256KB: the subset is ~173KB, the full face 2.5MB
+# Seti-UI, then Devicons' first block, then three named Devicons glyphs from ABOVE it. The
+# rest of Devicons (U+E7C6-E8EF) is another ~300 brand logos — aws, bower, chrome — that no
+# file type maps to, and taking it would cost 344KB instead of 174KB. Adding a fourth
+# exception later is a one-line edit here plus a re-run.
+ICONS_RANGES="U+E5FA-E6B7,U+E700-E7C5,U+E80B,U+E843,U+E8EB" # +json, +nixos, +yaml
+if [ -f "$ICONS_TTF" ] && [ -s "$ICONS_TTF" ] && [ "$(wc -c <"$ICONS_TTF")" -lt "$ICONS_SUBSET_MAX" ]; then
+    echo "  already present: SymbolsNerdFont-Icons.ttf (subset)"
+else
+    mkdir -p "$VENDOR/fonts"
+    if [ ! -f "$ICONS_FULL" ]; then
+        echo "  downloading Symbols Nerd Font ($NERD_VERSION)..."
+        icons_zip="$(mktemp --suffix=.zip)"
+        curl -fsSL \
+            "https://github.com/ryanoasis/nerd-fonts/releases/download/v${NERD_VERSION}/NerdFontsSymbolsOnly.zip" \
+            -o "$icons_zip"
+        python3 - "$icons_zip" "$ICONS_FULL" <<'ICONPY'
+import sys, zipfile
+src, dst = sys.argv[1], sys.argv[2]
+z = zipfile.ZipFile(src)
+matches = [n for n in z.namelist() if n.endswith("SymbolsNerdFontMono-Regular.ttf")]
+if len(matches) != 1:
+    sys.exit(f"expected exactly one SymbolsNerdFontMono-Regular.ttf in the zip, found {matches}")
+with open(dst, "wb") as f:
+    f.write(z.read(matches[0]))
+ICONPY
+        rm -f "$icons_zip"
+    fi
+    if python3 -c "import fontTools.subset" 2>/dev/null; then
+        echo "  subsetting to Seti-UI + Devicons (fontTools)..."
+        python3 -m fontTools.subset "$ICONS_FULL" \
+            --unicodes="$ICONS_RANGES" \
+            --layout-features='' \
+            --no-hinting \
+            --name-IDs='*' \
+            --recommended-glyphs \
+            --output-file="$ICONS_TTF"
+        echo "  subset: $(wc -c <"$ICONS_FULL") -> $(wc -c <"$ICONS_TTF") bytes"
+        rm -f "$ICONS_FULL"
+    else
+        # An EMPTY file, not the full face: font.odin #loads this unconditionally, and an empty
+        # slice is exactly how it is told "there are no icons" (icons_ok stays false and the
+        # browser draws its plain tiles). src/tests/font_test.odin asserts the ceiling.
+        : >"$ICONS_TTF"
+        echo "  WARNING: fontTools not found — file-type icons are DISABLED (the browser falls" >&2
+        echo "  back to plain coloured tiles). Install it and re-run to enable them:" >&2
+        echo "    python3 -m pip install fonttools   # or your distro's python3-fonttools" >&2
+    fi
+    echo "  done."
+fi
+
+echo ""
 echo "==> language registry (parsed down from Helix's languages.toml)"
 # Slopd's tree-sitter language set follows Helix: tools/gen-languages.py fetches
 # Helix's languages.toml (pinned) and relabels it into our tiny `languages` file

@@ -28,6 +28,21 @@ list_scroll_target :: proc(top, sel, rows, total: int, center: bool) -> int {
     return t
 }
 
+// How many rows of `row_h` a viewport `view_h` tall actually SHOWS when its top sits `off`
+// pixels into the first one: ceil((off + view_h) / row_h).
+//
+// **Not the same number as the viewport policy's.** `list_scroll_apply` counts the WHOLE rows
+// that fit, because a selection has to be entirely visible to count as visible. The declaration
+// counts the rows the region touches, which is one or two more — and using the policy's number
+// there is a gap you can see: a region 270px tall showing 56px rows fits 4, leaving 46px of the
+// fifth on screen and undeclared. Every list pane wants this; the two file panes ask for it.
+list_visible_rows :: proc(view_h, off, row_h: i32) -> int {
+    if row_h <= 0 || view_h <= 0 {
+        return 0
+    }
+    return int((max(0, off) + view_h + row_h - 1) / row_h)
+}
+
 // Move a DETACHED list view by `delta` rows and stamp it — the wheel's entry point.
 // Deliberately takes no total: the caller is a GLFW callback with no font, pane rect or
 // row list, so `list_scroll_apply` clamps next frame, bounding overshoot at one notch.
