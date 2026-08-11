@@ -9,15 +9,13 @@ import gl "vendor:OpenGL"
 import "vendor:glfw"
 import stbi "vendor:stb/image"
 
-// The media viewer — the main (document) pane showing an image instead of a text
-// buffer. Slopd's left pane is "the document you opened"; MainSurface (app.odin) says
-// which KIND, and Text/Image are peers there, both distinct from the tool/aux pane.
-// Audio/Video are future MainSurface variants that slot in beside this with their own
-// load/draw/key (the decode deps differ wildly — images are a single stb_image call).
+// The media viewer — the main (document) pane showing an image instead of a text buffer.
+// MainSurface (app.odin) says which KIND; Text/Image are peers there, both distinct from
+// the tool/aux pane. Audio/Video would slot in beside this with their own load/draw/key.
 //
-// Self-contained on purpose (cf. filetree.odin / grammar.odin): the pure geometry
-// (media_fit_rect) and the extension table (is_media_path) are GL-free and unit-tested;
-// only media_load / media_destroy touch GL. One image is held at a time on App.media.
+// Self-contained on purpose: the pure geometry (media_fit_rect) and the extension table
+// (is_media_path) are GL-free and unit-tested; only media_load / media_destroy touch GL.
+// One image is held at a time, on App.media.
 
 Media :: struct {
     path: string, // owned; "" = nothing loaded
@@ -28,14 +26,13 @@ Media :: struct {
     mtime: time.Time, // file mtime when decoded; re-decodes when it changes (see media_reload_if_changed)
 }
 
-// The file extensions stb_image decodes that we route to the viewer. Lowercase;
-// is_media_path matches case-insensitively. (Animated GIF shows the first frame for
-// now — stb decodes one; multi-frame playback is deferred, see plan.txt.)
+// The stb_image extensions routed to the viewer. Lowercase; is_media_path matches
+// case-insensitively. Animated GIF shows the first frame — stb decodes only one.
 @(rodata)
 MEDIA_EXTS := []string{"png", "jpg", "jpeg", "gif", "bmp", "tga", "psd", "hdr", "ppm", "pgm", "pic"}
 
-// Does this path name an image the viewer handles? Mirrors grammar_for_ext's role for
-// the highlighter: the extension decides the surface. GL-free + allocation-free.
+// Does this path name an image the viewer handles? The extension decides the surface,
+// as grammar_for_ext does for the highlighter. GL-free + allocation-free.
 is_media_path :: proc(path: string) -> bool {
     ext := strings.trim_prefix(filepath.ext(path), ".")
     if ext == "" {
@@ -50,8 +47,8 @@ is_media_path :: proc(path: string) -> bool {
 }
 
 // Where the image draws inside `pane` (the inset content area). "Contain" letterbox at
-// zoom 1 — the largest size that fits whole, centred — then scaled by zoom and shifted
-// by pan. Pure: no GL, no App; the unit test pins the aspect-fit + zoom + pan math.
+// zoom 1 — the largest size that fits whole, centred — then scaled by zoom, shifted by
+// pan. Pure: no GL, no App.
 media_fit_rect :: proc(pane: Rect, iw, ih: i32, zoom: f32, pan: [2]f32) -> Rect {
     if iw <= 0 || ih <= 0 || pane.w <= 0 || pane.h <= 0 || zoom <= 0 {
         return Rect{pane.x, pane.y, 0, 0}
@@ -65,33 +62,20 @@ media_fit_rect :: proc(pane: Rect, iw, ih: i32, zoom: f32, pan: [2]f32) -> Rect 
     return Rect{dx, dy, dw, dh}
 }
 
-// View ops — clamped zoom about the centre, free pan, and reset-to-fit. Bound by
-// MEDIA_ZOOM_* so a stray key can't shrink the image to a dot or blow it up forever.
+// Zoom bounds, so a stray key can't shrink the image to a dot or blow it up forever.
 MEDIA_ZOOM_MIN :: f32(0.05)
 MEDIA_ZOOM_MAX :: f32(32)
 
-// One step of zoom, shared by the =/- keys and by a wheel notch (C8d) so the two cannot
-// drift apart about what "one step in" means.
+// One step of zoom, shared by the =/- keys and a wheel notch so the two can't drift apart.
 MEDIA_ZOOM_STEP :: f32(1.25)
 
 media_zoom :: proc(m: ^Media, factor: f32) {
     m.zoom = clampf(m.zoom * factor, MEDIA_ZOOM_MIN, MEDIA_ZOOM_MAX)
 }
 
-// Zoom about a POINT rather than about the pane centre: the image pixel under (mx, my)
-// stays under (mx, my). That is what makes a wheel zoom read as a lens over the picture
-// rather than as a slider beside it — you point at the thing you want bigger. The keyboard's
-// media_zoom keeps the centre fixed instead, because a key has no point to zoom about.
-//
-// The correction is one line of similar triangles and no new geometry: the fitted size
-// scales EXACTLY with the zoom, so after a zoom by r every pixel of the image has moved
-// away from the image's centre by a factor of r. Pinning the pointer therefore means moving
-// the pan by (r - 1) times the vector from the pointer to that centre — zero when they
-// coincide, which is why zooming about the middle needs no correction at all.
-//
-// `r` is derived from the zoom that actually landed rather than from `factor`, so a step
-// that hit MEDIA_ZOOM_MIN/MAX corrects by what the clamp allowed instead of drifting the
-// image sideways at the ends of the range.
+// Zoom about a POINT: the pixel under (mx, my) stays there (media_zoom fixes the centre — a key
+// has no point). Fitted size scales exactly with zoom, so pinning the pointer means shifting pan
+// by (r-1) times the pointer-to-centre vector; `r` is the landed zoom, so a clamped step can't drift.
 media_zoom_at :: proc(m: ^Media, factor: f32, pane: Rect, mx, my: i32) {
     before := m.zoom
     media_zoom(m, factor)
@@ -118,10 +102,9 @@ media_fit :: proc(m: ^Media) {
     m.pan = {0, 0}
 }
 
-// Decode `path` via stb_image (forced to RGBA) and upload it to a GL texture, returning
-// a fit-to-pane Media. CPU pixels are freed once uploaded; only the texture is retained.
-// Must run on the GL (main) thread — called synchronously from open_file like the other
-// file IO. ok=false on a decode failure (the caller leaves the surface unchanged).
+// Decode `path` via stb_image (forced RGBA) and upload to a GL texture. CPU pixels are freed
+// once uploaded. **Must run on the GL (main) thread** — called synchronously from open_file.
+// ok=false on a decode failure (the caller leaves the surface unchanged).
 media_load :: proc(path: string) -> (Media, bool) {
     cpath := strings.clone_to_cstring(path, context.temp_allocator)
     w, h, comp: c.int
@@ -177,9 +160,8 @@ media_destroy :: proc(m: ^Media) {
     m^ = {}
 }
 
-// Bare keys while the image pane is focused (the pane owns them, per the one input rule —
-// there's nothing to type into an image). Arrows pan, =/- zoom, 0/f reset to fit. Alt
-// chords stay global (pane nav etc.), handled before this in handle_key.
+// Bare keys while the image pane is focused — nothing to type into an image, so the pane
+// owns them all. Alt chords stay global and are handled before this in handle_key.
 media_key :: proc(a: ^App, key, mods: i32) {
     m := &a.media
     step := 40 * a.scale

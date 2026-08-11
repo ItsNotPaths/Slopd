@@ -4,66 +4,30 @@ import "core:fmt"
 import "core:unicode/utf8"
 import clay "../bindings/clay"
 
-// The two overlays — C8c, and the checkpoint that finally spends the mechanism C5b went
-// looking for and did not find.
+// The two overlays: the terminal switcher (a slim numbered column, while plain Alt is held)
+// and the filetree chord bar (the Ctrl-held cheat-sheet along the pane's bottom). The config
+// dropdown splices rows inline, so it is not an occlusion case.
 //
-// Slopd has exactly two surfaces that COVER another one: the terminal switcher (a slim
-// i3-style numbered column, shown while plain Alt is held) and the filetree chord bar (the
-// Ctrl-held cheat-sheet along the bottom of the pane). The config dropdown turned out to
-// splice rows inline rather than float over them, so it was never an occlusion case at
-// all — which left the question C1 property 1 raises unanswered for five checkpoints:
+// Within one scissor group quads paint UNDER glyphs, so an element that must cover a pane's
+// text needs a group of its own. **`floating.clipTo = .AttachedParent` does that and the
+// placement and the clipping at once**: a floating root with a clip element emits a
+// ScissorStart/End pair around its whole subtree (clay.h:2781, :3186) using the ATTACHED
+// PARENT's box — the pane's content area. A `clip` on the overlay would clip to its own box
+// (wrong for a bar that can outgrow a short pane) and open a second scissor.
 //
-//     within one scissor group quads paint UNDER glyphs, so how does an element that must
-//     paint OVER a pane's text get a group of its own?
-//
-// **The answer is one field, and it is not the one the plan predicted.** The plan said
-// three concerns on one element — `floating` to place it, `clip` to give it paint order,
-// `pointerCaptureMode` to stop what it covers answering the pointer. It is two:
-// `floating.clipTo = .AttachedParent` does the placement AND the group AND the clipping,
-// because a floating root with a clip element emits a ScissorStart/End pair around its whole
-// subtree (clay.h:2781, :3186) — using the ATTACHED PARENT's box, not its own. That is
-// exactly what the hand-drawn painters ended with (`flush_pane(t, area, …)`, the pane's
-// content area), and a `clip` on the overlay itself would have been wrong twice over: it
-// clips to the overlay's own box, which is not what a bar that can outgrow a short pane
-// wants, and it emits a second scissor for a group the float already opened.
-//
-// So the shape of an overlay here is:
-//
-//   floating  = clay_overlay_float(corner)   placement, paint order, clip, capture
-//   sizing    = fixed, from its own geom     it is a bar / a column, not a laid-out child
-//   declared  INSIDE the pane it covers      which is where `.AttachedParent` comes from
-//
-// **Declared inside the pane, and that is the load-bearing part.** `attachTo = .Parent`
-// takes the clip element off the open clip stack, so the overlay inherits the pane's box as
-// its clip without either side naming a rect. It also means the pane's own `<p>_declare` is
-// the only place that has to know an overlay exists, and the pane's test drives it — which
-// is where the occlusion question actually lives, since the thing being covered is the
-// filetree's rows.
-//
-// **Capture only reaches the panes that ASK THE TREE.** `pointerCaptureMode = .Capture`
-// makes Clay stop walking roots the moment a capturing one is hit (clay.h:4158), so
-// `filetree_hit`'s `PointerOver` goes quiet for every row under the chord bar — no hit, no
-// hover tint, no click. The terminal keeps `rect_hit` (C8a: one box, no tree lookup), so the
-// switcher's capture buys it nothing at all; what covers that hole is that the switcher is
-// only up while Alt is held and `terminal_click` already refuses an Alt press outright. That
-// asymmetry is a property of the hit tests, not of the overlays, and it is written down
-// rather than papered over.
+// **Capture only reaches the panes that ASK THE TREE.** `pointerCaptureMode = .Capture` stops
+// Clay walking roots (clay.h:4158), so `filetree_hit` goes quiet under the chord bar. The
+// terminal uses `rect_hit`, so the switcher's capture buys it nothing; what covers that is
+// that Alt is held and `terminal_click` already refuses an Alt press.
 
-// The z the overlays sit at, above every pane and the strip. Today this is belt and braces:
-// an overlay is declared inside the pane it covers, and Clay appends floating roots in
-// declaration order, so it already outranks everything that pane drew. What zIndex buys is
-// the panes and the strip declared AFTER it — window_frame declares the aux pane before the
-// strip, so without this a chord bar in a very short pane could be painted over by a strip it
-// overlapped. It is the one line that says "an overlay is on top of the window", not "on top
-// of its own pane".
+// The z the overlays sit at, above every pane and the strip. Belt and braces within a pane (an
+// overlay is declared inside the one it covers), but it is what outranks the panes and the
+// strip declared AFTER it — window_frame declares the aux pane before the strip.
 OVERLAY_Z :: 1
 
-// An overlay's placement: pinned to one corner of the pane it is declared in, out of the
-// flow, clipped to that pane, and swallowing the pointer over its own box.
-//
-// `clipTo = .AttachedParent` is doing three jobs and none of them are obvious — see the
-// header. `attachTo = .Parent` is what makes it available: the clip element comes off the
-// open clip stack at declaration time, which is the pane box every `<p>_declare` opens with.
+// An overlay's placement: pinned to one corner of the pane it is declared in, out of the flow,
+// clipped to that pane, swallowing the pointer over its own box. `attachTo = .Parent` is what
+// makes `clipTo = .AttachedParent` available — see the header.
 clay_overlay_float :: proc(at: clay.FloatingAttachPointType) -> clay.FloatingElementConfig {
     return {
         attachTo           = .Parent,
@@ -78,25 +42,20 @@ clay_overlay_float :: proc(at: clay.FloatingAttachPointType) -> clay.FloatingEle
 // The terminal switcher
 // ---------------------------------------------------------------------------------------
 
-// The column's width around two digits, and the extra height per row, both in logical
-// pixels — the values draw_term_overlay always used.
+// The column's width around two digits, and the extra height per row, in logical pixels.
 SWITCHER_COL_PAD :: 12
 SWITCHER_ROW_PAD :: 6
 
-// Whether the switcher is up. Plain Alt only: Alt+Ctrl and Alt+Shift drive the terminal's
-// copy cursor, so the switcher hides while either is down.
-//
-// Pulled out for C8b's reason (a decision with a precedence in it, buried in a GL proc, is a
-// decision nothing can assert) and immediately paid for itself: app_next_wake's fade clause
-// asked only `alt_held && aux_mode == .Terminal`, so the loop kept waking to animate an
-// overlay render was refusing to draw. One proc, two callers, no way to drift.
+// Whether the switcher is up. Plain Alt only: Alt+Ctrl and Alt+Shift drive the terminal's copy
+// cursor, so the switcher hides while either is down. One proc, so app_next_wake's fade clause
+// and the declaration cannot disagree about it.
 switcher_shown :: proc(a: ^App) -> bool {
     return a.aux_mode == .Terminal && a.alt_held && !a.ctrl_held && !a.shift_held
 }
 
 // The column's fixed geometry inside a pane's content area: two digits wide plus padding
-// (never wider than the pane), a row height, and how many rows fit. Pure, and the single
-// source every phase sizes itself from, exactly as a pane's `<p>_geom` is.
+// (never wider than the pane), a row height, and how many rows fit. Pure, and the one source
+// every phase sizes itself from.
 switcher_geom :: proc(area: Rect, scale, line_h, cell_w: f32) -> (colw, row_h: i32, rows: int) {
     colw = min(i32(cell_w * 2) + i32(SWITCHER_COL_PAD * scale), area.w)
     row_h = i32(line_h) + i32(SWITCHER_ROW_PAD * scale)
@@ -108,9 +67,8 @@ switcher_geom :: proc(area: Rect, scale, line_h, cell_w: f32) -> (colw, row_h: i
 }
 
 // The visible window: scroll so the active session stays centred, clamped at the list ends.
-// The twin of a list pane's scroll policy, except that there is no stored `.scroll` to write
-// — the switcher has no viewport of its own, so this is a derivation rather than a state
-// update, and it is pure for that reason rather than by discipline.
+// The twin of a list pane's scroll policy, except there is no stored `.scroll` to write — the
+// switcher has no viewport of its own, so this is a derivation rather than a state update.
 switcher_window :: proc(n, active, rows: int) -> (first, visible: int) {
     first = clamp(active - rows / 2, 0, max(0, n - rows))
     visible = min(n - first, rows)
@@ -168,10 +126,9 @@ switcher_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
                     backgroundColor = bg,
                 },
             ) {
-                // Centred by the solver, not by `(colw - cw * len) / 2` (rule 5). The
-                // string is temp-allocated, like every other formatted label in the
-                // chrome: Clay's command list points at it and the frame's arena outlives
-                // EndLayout.
+                // Centred by the solver, not by `(colw - cw * len) / 2` (rule 5). The string
+                // is temp-allocated like every other formatted label in the chrome: Clay's
+                // command list points at it and the frame's arena outlives EndLayout.
                 clay.Text(
                     fmt.tprintf("%d", i + 1),
                     clay_text_config(a.terminals[i].locked ? col_lock : col_fg, lh),
@@ -182,9 +139,8 @@ switcher_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
 }
 
 // The switcher alone in a window, as a command list: the test-facing wrapper every declared
-// surface keeps (see filetree_layout). It declares a stand-in pane box around it, because an
-// overlay attached to `.Parent` with `clipTo = .AttachedParent` is not the same element
-// without one — the clip it inherits IS the pane.
+// surface keeps (see filetree_layout). The stand-in pane box is not optional — an overlay
+// attached to `.Parent` inherits ITS clip from that pane.
 switcher_layout :: proc(
     a: ^App,
     f: ^Font,
@@ -206,16 +162,14 @@ switcher_layout :: proc(
 // ---------------------------------------------------------------------------------------
 
 // The bar's left/right margin, the extra height per row, and the gap between packed items
-// (in CELLS, not pixels — the packing counts columns) — draw_filetree_overlay's own values.
+// (in CELLS, not pixels — the packing counts columns).
 CHORD_PAD :: 8
 CHORD_ROW_PAD :: 6
 CHORD_GAP :: 2
 
-// The chords the bar advertises. Each key carries a "^" so the bar reads as the Ctrl menu.
-// Package-level rather than a local table, because the packing and the declaration are two
-// procs now and a cheat-sheet that disagreed with itself about how many items there are
-// would wrap in one and paint in the other. `@(rodata)` rather than a constant because the
-// packing indexes it with a loop variable, which a constant array cannot be.
+// The chords the bar advertises; each key carries a "^" so the bar reads as the Ctrl menu.
+// Package-level so the packing and the declaration cannot disagree about how many items there
+// are. `@(rodata)` rather than a constant: the packing indexes it with a loop variable.
 @(rodata)
 CHORD_HINTS := [9][2]string {
     {"^y", "yank"},
@@ -260,16 +214,8 @@ chord_geom :: proc(area: Rect, scale, line_h, cell_w: f32) -> (row_h: i32, pad: 
 }
 
 // Pack the chords plus the state readout into rows `maxw` cells wide, left-flowing with
-// CHORD_GAP cells between items. Clay has no flow-wrap, so this stays arithmetic — but it is
-// arithmetic OUT of the painter now, which is the point: the wrap is the only interesting
-// thing the bar does and it was previously unreachable from a test.
-//
-// **Widths are counted in RUNES, and the old code counted bytes.** That was written off as
-// "close enough" — the only non-ASCII character in the bar is the state readout's "·", which
-// spends two bytes on one cell — and it stops being close enough the moment Clay lays the
-// row out, because clay_measure_dims measures runes. A packing that thought an item was two
-// cells wider than the solver does would wrap a narrow pane one row early, with the two
-// disagreeing about a bar they are supposed to be describing together.
+// CHORD_GAP cells between items. Clay has no flow-wrap, so the wrap stays arithmetic. **Widths
+// are counted in RUNES**, as clay_measure_dims does — bytes would wrap a narrow pane a row early.
 chord_pack :: proc(state: string, maxw: int, alloc := context.temp_allocator) -> (items: []Chord_Item, nrows: int) {
     items = make([]Chord_Item, len(CHORD_HINTS) + 1, alloc)
     cur_row, cur_x := 0, 0

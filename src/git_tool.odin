@@ -5,45 +5,28 @@ import "core:fmt"
 import "core:strings"
 import "core:sys/posix"
 
-// Alt+G (and the `gs` command-line builtin): hand the project root to whatever git tool
-// the user already uses, and get out of the way.
-//
-// This replaced a built-in git pane — a Sublime-Merge-lite sidebar + diff viewer + commit
-// box, about 3,000 lines of it. The reasoning for the swap is worth keeping: everybody
-// already has a git workflow, and a second-best copy of one inside a text editor competes
-// with it rather than serving it. Two config keys now do the whole job:
+// Alt+G (and the `gs` command-line builtin): hand the project root to whatever git tool the
+// user already uses, and get out of the way. Nothing here parses git output, tracks repo
+// state, or draws anything — that is the point. Two config keys do the whole job:
 //
 //   git_tool: lazygit      the command; the project root is appended as its last argument
 //   git_term: 2            which terminal session to run it in — empty/0 spawns it detached
 //
-// The `git_term` split is what makes one setting cover both kinds of tool. A TUI (lazygit,
-// tig, gitui) wants a PTY and a pane to live in, which a Slopd terminal session already is.
-// A GUI (sublime_merge, gitkraken, gitg) wants its own window and no terminal at all, and
-// tying it to a PTY session would mean quitting Slopd kills it. Neither is the default for
-// the other, so the user says which.
-//
-// Nothing here parses git output, tracks repo state, or draws anything. That is the point.
+// The `git_term` split makes one setting cover both kinds of tool. A TUI (lazygit, tig,
+// gitui) wants a PTY and a pane to live in, which a terminal session already is. A GUI
+// (sublime_merge, gitkraken, gitg) wants its own window, and tying it to a PTY session
+// would mean quitting Slopd kills it.
 
-// Which terminal session a launch should land in. Pure — takes the session COUNT rather
-// than the App — so the clamping rule is a unit test rather than something you confirm by
-// opening terminals.
-//
-// The rule: a number names a session, and a number past the end means "the next one".
-// Asking for session 8 with three open opens the fourth rather than failing or silently
-// landing on the third — you asked for a session that was not there, so you get a new one,
-// and you get exactly one no matter how far past the end you aimed. Zero and below mean
-// the caller is not using the terminal path at all (see git_tool_open); this still answers
-// with a legal slot so callers cannot end up with a zero.
+// Which terminal session a launch should land in. Pure — takes the session COUNT, not the
+// App — so the clamping rule is a unit test: a number names a session, a number past the end
+// means "the next one", exactly one however far past you aimed. Never answers below 1.
 git_term_slot :: proc(count, want: int) -> int {
     return clamp(want, 1, min(count + 1, TERM_MAX))
 }
 
-// Launch the configured git tool at the project root.
-//
-// Three paths, and the empty-tool one is deliberate rather than an oversight: with nothing
-// configured, Alt+G opens a shell at the repo root. A key that does nothing at all teaches
-// you nothing about why, and "here is a terminal where your git lives" is the honest
-// fallback for a program whose answer to advanced git is the terminal pane.
+// Launch the configured git tool at the project root. The empty-tool path is deliberate: a
+// key that does nothing teaches you nothing, and "here is a terminal where your git lives"
+// is the honest fallback for a program whose answer to advanced git is the terminal pane.
 git_tool_open :: proc(a: ^App) {
     root := a.project_root
 
@@ -76,15 +59,9 @@ git_tool_open :: proc(a: ^App) {
     terminal_write(t, transmute([]u8)line)
 }
 
-// Spawn `cmd` detached, with `cwd` appended as its final argument and as its working
-// directory. DOUBLE fork: the grandchild is reparented to init, so nothing here has to reap
-// it later — a GUI tool may outlive the editor by hours, and a zombie per launch (or a
-// SIGCHLD handler competing with the terminal sessions' own children) is a worse trade than
-// one extra fork.
-//
-// Everything the child touches is built BEFORE the fork, for the reason terminal_spawn
-// spells out: in a multithreaded process the child may only use pre-allocated memory until
-// exec, because another thread may hold the allocator's lock at the moment we fork.
+// Spawn `cmd` detached, `cwd` appended as its final argument and used as its working dir.
+// DOUBLE fork so the grandchild reparents to init and needs no reaping (a GUI tool may
+// outlive us). Built BEFORE the fork: post-fork only pre-allocated memory is safe until exec.
 @(private = "file")
 git_tool_spawn :: proc(cmd, cwd: string) {
     fields := strings.fields(cmd, context.temp_allocator)

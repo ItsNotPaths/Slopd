@@ -48,9 +48,8 @@ main :: proc() {
     app_init(&app)
     defer app_destroy(&app)
 
-    // --util: launch into Full (full-window swap) mode on the aux pane — the mode an
-    // xdg-portal file picker would start in (the filetree fills the window). The editor
-    // is still reachable from here via Alt+E, unlike the old locked aux-only launch.
+    // --util: launch into Full (full-window swap) mode on the aux pane, so the filetree fills
+    // the window; the editor is still reachable via Alt+E.
     // --perflog: append a per-second frame-timing line to perf.log (off otherwise).
     perflog := false
     for arg in os.args[1:] {
@@ -97,10 +96,15 @@ main :: proc() {
         app.scale = sx
     }
 
-    // Glyph renderer. Atlas is baked at physical pixels (font_px logical * DPI
-    // scale); font_px is the user's zoom level, defaulting to FONT_BASE_PX.
+    // Glyph renderer. The atlas bakes at physical pixels (font_px logical * DPI scale).
+    // Text.ttf BORROWS these bytes for the program's life (it re-bakes from them on a
+    // zoom/DPI change), so the free waits for the end and only fires for a font we read.
+    ttf, ttf_owned := choose_font()
+    defer if ttf_owned {
+        delete(ttf)
+    }
     text: Text
-    if !text_init(&text, choose_font(), app.font_px, app.scale) {
+    if !text_init(&text, ttf, app.font_px, app.scale) {
         fmt.eprintln("text_init failed (font/shader)")
         return
     }

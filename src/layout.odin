@@ -4,14 +4,13 @@ package main
 // It knows nothing about fonts, cells, or rendering. Views that host a glyph
 // grid snap these rects to whole cells themselves.
 //
-// There is no maximize: the editor and aux panes are always both present, split
-// vertically, with the status strip along the bottom.
+// The status strip always spans the bottom; above it the editor and aux panes are split
+// vertically. A pane hidden by the view (Zen's retracted aux, Full's other surface) gets a
+// zero rect rather than any stored hidden state — see panes_visible.
 
-// How far the editor/aux split may be pushed either way. Named here, beside the arithmetic
-// that spends it, because there are two writers now: Alt+`[` / Alt+`]` step it (input.odin)
-// and the divider drag sets it outright (window_ui.odin, C8d). A pointer must not be able to
-// reach a width the keyboard cannot, and two copies of a pair of magic numbers is how that
-// stops being true.
+// How far the editor/aux split may be pushed either way. Named here because there are two
+// writers — Alt+`[` / Alt+`]` (input.odin) and the divider drag (window_ui.odin) — and a
+// pointer must not be able to reach a width the keyboard cannot.
 SPLIT_MIN :: 0.15
 SPLIT_MAX :: 0.85
 
@@ -46,10 +45,9 @@ compute_layout :: proc(win_w, win_h: i32, a: ^App, now: f64) -> Layout {
     }
     split := anim_value(&a.split_anim, now)
 
-    // Zen: the editor keeps the full width and the aux pane slides in over its right
-    // edge while it holds focus (the reveal is zen_anim, driven by set_focus). The
-    // editor rect just shrinks to the uncovered strip — there's no soft-wrap, so its
-    // glyphs keep their positions and only get clipped at the sliding edge, no reflow.
+    // Zen: the editor keeps the full width and the aux pane slides in over its right edge
+    // while it holds focus (zen_anim, driven by set_focus). The editor rect shrinks to the
+    // uncovered strip — with no soft-wrap its glyphs are clipped at that edge, never reflowed.
     if a.view == .Zen {
         r := anim_value(&a.zen_anim, now) // 0 hidden .. 1 docked
         // Use the animated `split` rather than the raw a.split so an adjustment EASES

@@ -22,10 +22,9 @@ Batch :: struct {
     ops: [dynamic]Op,
 }
 
-// One undo step: a sequence of batches applied while the step was open, plus the
-// cursor sets (and which was primary — the free caret) to restore. Undo replays
-// the batches' inverses last-to-first and restores `before`; redo replays them
-// forward and restores `after`.
+// One undo step: the batches applied while the step was open, plus the cursor sets (and which
+// was primary) to restore. Undo replays the batches' inverses last-to-first and restores
+// `before`; redo replays them forward and restores `after`.
 Undo_Step :: struct {
     batches:                       [dynamic]Batch,
     before, after:                 [dynamic]Cursor,
@@ -51,11 +50,9 @@ undo_destroy :: proc(d: ^Doc) {
     d.undo = {}
 }
 
-// Applies edits through doc_apply and journals them. A single-character insert
-// extends the most recent step as long as that step's last inserted char wasn't a
-// break char (whitespace/bracket/quote) and the caret is where the step left off;
-// a break char appends and ends the run, so the next char opens a fresh step.
-// Returns whether anything changed (callers set dirty).
+// Applies edits through doc_apply and journals them. A single-character insert extends the
+// most recent step while that step's last inserted char wasn't a break char and the caret is
+// where the step left off. Returns whether anything changed (callers set dirty).
 doc_commit :: proc(d: ^Doc, edits: []Edit) -> bool {
     before := clone_cursors(d.cursors[:])
     before_primary := d.primary

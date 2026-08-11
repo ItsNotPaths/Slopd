@@ -4,70 +4,30 @@ import "core:math"
 import "vendor:glfw"
 import clay "../bindings/clay"
 
-// The terminal pane's UI half — C7b, and the second surface on the far side of the boundary
-// docs/clay-refactor.md draws: **Clay owns the frame, we own the body.** A 200x60 grid is
-// 12k cells with per-cell foreground, background and reverse video; one widget per cell is
-// absurd, so the pane declares ONE `Custom` element and the existing painter fills the box
-// Clay reserves. Nothing about how a cell is drawn changed here; it is a straight port, the
-// same way C7a ported the editor.
+// The terminal pane's UI half. **Clay owns the frame, we own the body:** a 200x60 grid is 12k
+// cells, so the pane declares ONE `Custom` and the painter fills the box Clay reserves.
+// Everything the phases must agree about lives in `Terminal_View`; the two writes that are not
+// painting live in terminal_sync, before anything is declared.
 //
-// What the port buys is the same thing it bought there — the geometry. draw_terminal used
-// to compute the content area, the cell size, the column and row counts as locals and throw
-// them away, which is why a click had nothing to resolve against. All of it is
-// `Terminal_View` now, and the two things that must agree — where a cell is PAINTED and
-// which cell a pixel is READ BACK as — are derived from the same fields.
-//
-// It also moves a write out of the paint. draw_terminal called terminal_resize and
-// terminal_set_default_colors as a side effect of drawing, which is precisely the shape the
-// list panes' `.scroll` writes had; both live in terminal_sync now and run before anything
-// is declared.
-//
-// **The pane has two mouse behaviours, and which one is live is the TUI's choice, not
-// ours.** A full-screen application that has enabled mouse tracking (`t.mouse_on`, set from
-// libvterm's PROP_MOUSE) means the pointer is ITS input, so a click is encoded and written
-// to the PTY. Otherwise the click is ours. Shift is the override between them, which is
-// xterm's convention and the one every terminal user already has in their fingers.
-//
-// THE LOCAL HALF IS INTERIM AND KNOWN WRONG — see the click table below and C7d in
-// docs/clay-refactor.md. It drives the keyboard's row-granular copy cursor, and a pointer
-// addresses a CHARACTER; the replacement is per-character selection on top of C7c's drag
-// machine. It ships in the meantime because a coarse pointer beats a dead one.
-
-// Where a click goes, and why the modifiers are spent the way they are:
+// **Two mouse behaviours, and which is live is the TUI's choice.** A TUI with mouse tracking
+// on (`t.mouse_on`) means the pointer is ITS input; otherwise a click is ours, as a
+// per-character selection built on terminal.odin's msel verbs. Where a click goes:
 //
 //   plain, TUI has the mouse      forwarded — the TUI decides what a click there means
-//   plain, TUI does not           local  [interim: the copy cursor's line; C7d: a character]
-//   Shift, TUI has the mouse      LOCAL — Shift is the override (xterm)
-//   Shift, TUI does not           local, EXTENDING the selection from the anchor
+//   plain, TUI does not           local: place the selection at that character
+//   Shift, TUI has the mouse      LOCAL — Shift is the override (xterm's convention)
+//   Shift, TUI does not           local, EXTENDING the selection from its anchor
 //   Ctrl                          forwarded as MOD_CTRL on the forward path; ignored local
 //   Alt                           nothing at all
 //
-// **Shift is the override, and at C7d it extends as well — those are not rival meanings.**
-// This code spends Shift on ONE of the two jobs (`click_shift && !term.mouse_on` below), on
-// the reasoning that a modifier cannot mean two things at once. That reasoning is wrong, and
-// only looked right because a row-granular copy cursor has no anchor worth extending:
-// alacritty gates both jobs on one condition (`shift_key() || !mouse_mode()`), so Shift+click
-// over a mouse-tracking TUI keeps the click local AND extends. C7d composes them.
-//
-// What is right about the rule and survives: it is keyed on `t.mouse_on` alone, never on
-// whether this particular click COULD have been forwarded. The user can see which
-// application is running and cannot see whether the line under the pointer happens to have
-// scrolled into our history, so a Shift that behaved differently for that reason would be
-// unpredictable from something invisible on screen.
-//
-// **Alt is global here for the same reason it is global to the keyboard.** input.odin
-// handles Alt-chords before the shell ever sees them, so an Alt+click that reached the TUI
-// would be the one place the rule broke — and while Alt is held the switcher overlay is up
-// over this pane anyway, so a press belongs to whatever C8c makes of that. Until then it is
-// simply not claimed.
+// Shift does both jobs at once, which is one condition rather than two rival meanings
+// (alacritty: `shift_key() || !mouse_mode()`). Keyed on `t.mouse_on` alone, never on whether
+// this click COULD have been forwarded — the user cannot see what scrolled into history.
+// Alt is global here as it is to the keyboard.
 
-// Everything the pane's phases need to agree about: the box, the cell grid, and which
-// absolute line is drawn at the top row.
-//
-// `cols` and `rows` are the pane's, not the session's. They are the same number for the
-// whole frame after terminal_sync runs, and deliberately not before: the click resolves
-// against the grid the LAST frame painted, so the two can differ for exactly one frame
-// after a resize, and the hit test is the half that has to be careful about it.
+// The box, the cell grid, and which absolute line is drawn at the top row. `cols`/`rows` are
+// the PANE's, not the session's: they agree for the whole frame after terminal_sync, but not
+// before, so the two differ for exactly one frame after a resize and the hit test must care.
 Terminal_View :: struct {
     area:  Rect,
     cw:    f32,
@@ -77,17 +37,9 @@ Terminal_View :: struct {
     top:   int, // absolute line at the top row (terminal_view_top: live bottom, or scrolled)
 }
 
-// The pane's fixed geometry: the content area inside the focus ring, and the cell grid that
-// fits in it. Pure, and the same shape as every other pane's `_geom`.
-//
-// There is no row padding — the twin of EDITOR_ROW_PAD is deliberately absent. A terminal's
-// rows are the font's line height exactly, because the child process is drawing a grid and
-// box-drawing characters have to meet across it.
-//
-// A degenerate pane reports zero rows AND zero columns, where the list panes report at
-// least one row: `rows` here is a number Slopd hands to another process through TIOCSWINSZ,
-// so "one row so the clip has something to cut" would be a lie told to a shell rather than
-// a rounding convenience. terminal_frame bails instead.
+// The content area inside the focus ring and the cell grid that fits it. No row padding — a
+// terminal's rows are the line height exactly, so box-drawing characters meet. A degenerate
+// pane reports ZERO rows (unlike the list panes' one): `rows` goes out via TIOCSWINSZ.
 terminal_geom :: proc(pane: Rect, scale: f32, line_h: f32, cell_w: f32) -> (area: Rect, row_h: i32, cols, rows: int) {
     area = inset(pane, i32(2 * scale))
     row_h = max(1, i32(line_h))
@@ -99,19 +51,16 @@ terminal_geom :: proc(pane: Rect, scale: f32, line_h: f32, cell_w: f32) -> (area
     return
 }
 
-// The writes that used to be side effects of painting: tell the session how big the pane is
-// (a no-op when unchanged, and the ioctl the child watches for SIGWINCH) and re-seed the
-// default colours so a theme or font change follows. GL-free, and runs before anything is
-// declared — the same move C3/C5 made for each list pane's `.scroll`.
+// Tell the session how big the pane is (a no-op when unchanged, and the ioctl the child
+// watches for SIGWINCH) and re-seed the default colours so a theme or font change follows.
+// GL-free, and runs before anything is declared rather than as a side effect of painting.
 terminal_sync :: proc(term: ^Terminal, th: ^Theme, cols, rows: int) {
     terminal_resize(term, rows, cols)
     terminal_set_default_colors(term, th.fg, th.bg)
 }
 
-// Build the view. Pure, unlike the editor's — there is no tween to re-aim, because the
-// terminal's viewport is an integer line and always has been (the copy cursor moves it in
-// whole lines and the live grid is bottom-aligned). terminal_frame still calls it twice, but
-// for a different reason: see there.
+// Build the view. Pure, unlike the editor's — the terminal's viewport is an integer line, so
+// there is no tween to re-aim. terminal_frame still calls it twice, for its own reason.
 terminal_view :: proc(term: ^Terminal, area: Rect, row_h: i32, cw: f32, cols, rows: int) -> Terminal_View {
     return Terminal_View {
         area  = area,
@@ -123,24 +72,9 @@ terminal_view :: proc(term: ^Terminal, area: Rect, row_h: i32, cw: f32, cols, ro
     }
 }
 
-// What the pointer is over: a cell of the grid, named three ways because three different
-// things want it.
-//
-//   row/col   the on-screen cell, which is what the paint uses
-//   line      its ABSOLUTE line, which is what the copy cursor walks (scrollback included)
-//   live      whether that line is a row of the live grid rather than captured history
-//
-// `live` is the gate on forwarding and nothing else: the TUI has no idea our scrollback
-// exists, so a click on a line that scrolled off has no cell to report and must stay local.
-//
-// C7d added the fourth, `bcol`: the BOUNDARY between cells the pointer is nearest, where
-// `col` is the cell it is inside. A selection end needs the boundary — that is what lets it
-// include the character you are pointing at — and a cell report to a TUI needs the cell.
-//
-// alacritty carries the same information as `Anchor { point, side: Left | Right }`, computed
-// against the half-cell width. A boundary column in 0..=cols says it in one number, and the
-// number is directly comparable, so `cursor_range` orders a pair of these unmodified. Same
-// fact, one less field to keep consistent.
+// What the pointer is over. `live` gates forwarding — the TUI has no idea our scrollback
+// exists. `bcol` is the nearest BOUNDARY where `col` is the cell it is inside: a selection
+// end needs one, a cell report the other.
 Terminal_Hit :: struct {
     ok:   bool,
     row:  int,
@@ -150,25 +84,9 @@ Terminal_Hit :: struct {
     live: bool,
 }
 
-// Resolve the pointer against the grid. As in C7a this is not clay.PointerOver — the body is
-// one element, so there is no tree question to ask. When this was written it was also a
-// hedge: asking Clay would have tied the pane to declaring last (invariant 11,
-// docs/clay-refactor.md), which happened to be true here and was not worth depending on.
-// C8a retired that rule outright, so what is left is the plain reason — one box, one
-// comparison, and no tree needed to make it.
-//
-// The column FLOORS for `col`, because a terminal mouse report names a CELL — a TUI is told
-// which character the pointer is on, and there is no insertion point between two cells for
-// that answer to land on. **And that is the whole truth for FORWARDING and only half of it
-// for SELECTION**, which this comment denied until the integration pass: C7a's
-// boundary-versus-glyph split does recur here, it just never touched the forwarding path
-// that C7b's eighteen mutations all tested. A selection end needs the BOUNDARY or it cannot
-// include the character you are pointing at, so `bcol` rounds beside the floor (C7d).
-//
-// A pane taller or wider than a whole number of cells has a remainder strip at its bottom
-// and right edge. That strip is not a cell, so it is not a hit — under a row height it is
-// invisible either way, and inventing the nearest cell would report a click the user did
-// not make to somebody else's program.
+// Resolve the pointer against the grid. Not clay.PointerOver — one box, one comparison. `col`
+// FLOORS because a mouse report names a CELL; `bcol` rounds beside it for selection. The
+// sub-cell remainder is not a cell and so not a hit.
 terminal_hit :: proc(a: ^App, term: ^Terminal, v: Terminal_View) -> Terminal_Hit {
     if !a.mouse_on || !a.mouse.known || term == nil || v.rows <= 0 || v.cols <= 0 || v.row_h <= 0 || v.cw <= 0 {
         return {}
@@ -186,10 +104,9 @@ terminal_hit :: proc(a: ^App, term: ^Terminal, v: Terminal_View) -> Terminal_Hit
     }
     bcol := terminal_boundary_col(v, a.mouse.x)
     n := v.top + row
-    // The clamp gate, the twin of doc_clamp_pos (C7a): the view's row count is the PANE's
-    // and the session's is what the last resize left, so for one frame after the window
-    // grows there are screen rows with no grid row behind them. Those resolve as history
-    // rather than as a cell the TUI does not have.
+    // The view's row count is the PANE's and the session's is what the last resize left, so
+    // for one frame after the window grows there are screen rows with no grid row behind
+    // them. Those resolve as history rather than as a cell the TUI does not have.
     live := n >= term.sb_total && n - term.sb_total < term.rows
     return Terminal_Hit{ok = true, row = row, col = col, bcol = bcol, line = n, live = live}
 }
@@ -204,14 +121,9 @@ terminal_boundary_col :: proc(v: Terminal_View, x: i32) -> int {
     return clamp(int(math.round(f32(x - v.area.x) / v.cw)), 0, v.cols)
 }
 
-// Keep a mouse-tracking TUI's pointer where ours is. Called every frame the pane draws,
-// which is every frame a motion event arrives; libvterm drops the call when the cell has
-// not changed and emits nothing unless the TUI asked for motion, so the cost of doing this
-// unconditionally is one comparison in C (terminal_mouse_at).
-//
-// It is not gated on focus. Hover in a TUI is a property of where the pointer IS, not of
-// which pane owns the keyboard — and focus-follows-click is C8d's question for every pane at
-// once, not one this pane gets to answer early by itself.
+// Keep a mouse-tracking TUI's pointer where ours is. Every frame the pane draws: libvterm
+// drops an unchanged cell and emits nothing unless the TUI asked for motion, so doing it
+// unconditionally costs one comparison in C. Not gated on focus — hover is about position.
 terminal_track :: proc(term: ^Terminal, hit: Terminal_Hit) {
     if term == nil || !term.mouse_on || !hit.ok || !hit.live {
         return
@@ -219,34 +131,9 @@ terminal_track :: proc(term: ^Terminal, hit: Terminal_Hit) {
     terminal_mouse_at(term, hit.line - term.sb_total, hit.col)
 }
 
-// Apply a pending click — the table at the top of this file, in code.
-//
-// The press is claimed only when a cell was actually hit, so a press aimed at another pane
-// is not eaten. Alt is checked BEFORE the claim rather than after, which is the difference
-// between "Alt+click does nothing here" and "Alt+click is swallowed here": the switcher
-// overlay is up while Alt is held and C8c may well want that press.
-//
-// Nothing is stamped and nothing is re-attached, unlike C7a's editor click. The terminal
-// keeps its view and its selection apart already (wheel_apply says the same thing from the
-// other side), so there is no detached state for a click to resume from, and the block
-// cursor is the child process's, not a blinking caret of ours.
-//
-// The click COUNT chooses the GRANULARITY, not the verb (C7d). There is one verb here —
-// selection — and single / double / triple are character, word and line, which is
-// alacritty's `Simple` / `Semantic` / `Lines`. C7b left the count unused on the reasoning
-// that a terminal line has no Enter verb for a double click to reach; true, and it answered
-// the wrong question. What that code did for a SINGLE click is what a TRIPLE click should
-// do, which was the tell that the model underneath it was the keyboard's.
-//
-// On the forward path the count is still not ours to interpret, and that part stands: xterm
-// sends one press per physical press and the application does its own timing. See
-// terminal_mouse_tap.
-//
-// **Shift both overrides mouse mode and extends**, which C7b said it could not. alacritty
-// gates the two on one condition (`shift_key() || !mouse_mode()`) because they are not rival
-// meanings — "keep this click local" and "grow the existing selection" compose fine. They
-// only looked rival while the local half had a row-granular cursor with no anchor worth
-// extending.
+// Apply a pending click — the table at the top of this file, in code. Alt is checked BEFORE
+// the claim: "Alt+click does nothing here" rather than "is swallowed here", since the
+// switcher may want that press. The COUNT chooses GRANULARITY, not the verb.
 terminal_click :: proc(a: ^App, term: ^Terminal, hit: Terminal_Hit) {
     if !hit.ok || term == nil {
         return
@@ -263,7 +150,7 @@ terminal_click :: proc(a: ^App, term: ^Terminal, hit: Terminal_Hit) {
         return
     }
     // Local from here. The press captures, so the rest of the gesture is this session's
-    // however far the pointer roams (C7c) — and the grade goes in with it, because a
+    // however far the pointer roams — and the grade goes in with it, because a
     // double-click-drag has to keep expanding by whole words.
     drag_begin(a, .Terminal_Sel, a.term_active, count, Pos{hit.line, hit.bcol}, hit.col)
 
@@ -280,13 +167,9 @@ terminal_click :: proc(a: ^App, term: ^Terminal, hit: Terminal_Hit) {
     }
 }
 
-// Where a drag POINTS, which is not where a hit lands — the same split C7a and C7c drew in
-// the editor, arriving here unchanged. A hit outside the pane is refused because a press
-// there belongs to somebody else; a drag under capture answers wherever the pointer went.
-//
-// The ROW is clamped rather than the pixel, for the editor's reason: the pane's bottom edge
-// sits inside a row that was never painted (the sub-cell remainder), and a pixel clamp would
-// aim the selection at it.
+// Where a drag POINTS, which is not where a hit lands — the split the editor draws. A hit
+// outside the pane is refused; a drag under capture answers wherever the pointer went. The
+// ROW is clamped rather than the pixel, or the sub-cell remainder would take the selection.
 terminal_drag_pos :: proc(a: ^App, v: Terminal_View) -> (bound, cell: Pos) {
     if v.rows <= 0 || v.cols <= 0 || v.row_h <= 0 || v.cw <= 0 {
         return {}, {}
@@ -300,16 +183,9 @@ terminal_drag_pos :: proc(a: ^App, v: Terminal_View) -> (bound, cell: Pos) {
     return Pos{n, terminal_boundary_col(v, a.mouse.x)}, Pos{n, col}
 }
 
-// The absolute line a drag should be extending to — the pointer's own while it is inside the
-// pane, and the autoscroll's walk while it is past an edge (C7c's `Drag.over`, in this
-// client's units).
-//
-// **This pane scrolls the view ITSELF, where the editor's client does not**, and the
-// difference is not a taste one. The editor has a viewport policy that chases the caret, so
-// walking the selection is enough and `b.scroll` is left to it. Nothing chases anything
-// here: `view_top` is moved explicitly or not at all. So the walk moves it, using
-// terminal_sel_move's own idiom for keeping a cursor on screen — which is where that
-// arithmetic already lived.
+// The absolute line a drag extends to: the pointer's inside the pane, the autoscroll's walk
+// past an edge. **This pane scrolls the view ITSELF**, where the editor leaves it to a policy
+// that chases the caret — nothing chases anything here, so the walk moves `view_top`.
 terminal_drag_line :: proc(a: ^App, term: ^Terminal, v: Terminal_View, line: int, now: f64) -> int {
     past, dir := 0, 0
     switch {
@@ -338,13 +214,9 @@ terminal_drag_line :: proc(a: ^App, term: ^Terminal, v: Terminal_View, line: int
     return a.drag.over
 }
 
-// Extend a live selection drag — the pointer's per-frame verb, run beside terminal_click for
-// C7a's reason: the click can change which lines are on screen, and so can this.
-//
-// Only the LOCAL half of the pane drags. A click forwarded to a mouse-tracking TUI is a tap
-// (move, press, release) and dragging over it is the TUI's own business — terminal_track
-// already feeds it every motion, and libvterm filters by the mode it asked for. So no
-// capture is begun on the forward path and none is consumed here.
+// Extend a live selection drag, run beside terminal_click because both can change which lines
+// are on screen. Only the LOCAL half drags: a forwarded click is a tap, and dragging over a
+// mouse-tracking TUI is its own business (terminal_track already feeds it every motion).
 terminal_drag :: proc(a: ^App, term: ^Terminal, v: Terminal_View, now: f64) {
     if !a.mouse_on || !a.mouse.known || term == nil {
         return
@@ -375,22 +247,11 @@ Terminal_Body :: struct {
     v:    Terminal_View,
 }
 
-// Declare the pane into the window's tree (C8a). Two elements, the same shape C7a settled on:
-//
-//   term_pane  the content area inside the focus ring, floating at the pane's own rect and
-//              clipping its own content (painted by panel(), not here)
-//     term_grid  the cell grid, as a Custom — and the element terminal_hit points at
-//     sw_col     the Alt-held session switcher (C8c, overlay_ui.odin), when it is up: a
-//                floating child, so it inherits the pane's clip and covers the grid
-//
-// The Custom covers the whole content area rather than the whole-cell grid inside it, so
-// the box the painter is handed is the box the hit test sized itself from. The sub-cell
-// remainder is inside that box, painted with the default background like every other blank
-// cell, and rejected by the hit test rather than by the geometry.
-//
-// It took the `pane` rect it never read until C8c and takes the FONT instead: the grid sizes
-// itself from the view, but the switcher measures in cells like every other piece of chrome,
-// and `(a, f, …)` is the shape the other five declares already have.
+// Declare the pane into the window's tree. The Custom covers the whole content area, not the
+// whole-cell grid inside it, so the painter's box IS the box the hit test sized itself from.
+//   term_pane    the content area inside the focus ring, clipping its own content
+//     term_grid    the cell grid, as a Custom — the element terminal_hit points at
+//     sw_col       the Alt-held switcher (overlay_ui.odin), a floating child over the grid
 terminal_declare :: proc(a: ^App, f: ^Font, term: ^Terminal, v: Terminal_View, now: f64 = 0) {
     area := v.area
 
@@ -399,9 +260,8 @@ terminal_declare :: proc(a: ^App, f: ^Font, term: ^Terminal, v: Terminal_View, n
     cu := new(ClayCustom, context.temp_allocator)
     cu^ = ClayCustom{paint = terminal_paint_grid, user = body}
 
-    // No backgroundColor: panel() has already filled the pane and drawn its focus ring, and
-    // Clay's transparent default emits no Rectangle at all — so this pane's command list is
-    // the Custom bracketed by the pane's own clip, and nothing else.
+    // No backgroundColor: panel() already filled the pane, and Clay's transparent default
+    // emits no Rectangle — so the command list is the Custom inside the pane's clip.
     if clay.UI(clay.ID("term_pane"))(clay_pane_box(area)) {
         if clay.UI(clay.ID("term_grid"))(
             {
@@ -410,21 +270,18 @@ terminal_declare :: proc(a: ^App, f: ^Font, term: ^Terminal, v: Terminal_View, n
             },
         ) {}
 
-        // The switcher after the grid, inside the pane: a floating child, so it inherits the
-        // pane's clip and paints in a group of its own (overlay_ui.odin). It would have
-        // survived being declared without one HERE — the grid is a Custom and a Custom flushes
-        // on the way out — but that is an accident of this pane's shape, and the chord bar over
-        // the filetree's rows is the case it does not hold for.
+        // After the grid and inside the pane: a floating child, so it inherits the pane's
+        // clip and paints in its own group. It would survive without one here (a Custom
+        // flushes on the way out), but that is an accident of this pane's shape.
         if switcher_shown(a) {
             switcher_declare(a, f, area, now)
         }
     }
 }
 
-// The absolute lines the KEYBOARD's copy cursor highlights, as a half-open range — empty
-// when there is no span to draw. Out of the painter for terminal_msel_row_span's reason: a
-// painter is where a headless test cannot follow, so arithmetic left inside it is arithmetic
-// nothing can assert, and this is where the boundary-versus-line reading shows on screen.
+// The absolute lines the KEYBOARD's copy cursor highlights, half-open; empty when there is no
+// span. Out of the painter for terminal_msel_row_span's reason — a headless test cannot
+// follow one, so this is where the boundary-versus-line reading becomes assertable.
 terminal_sel_row_span :: proc(term: ^Terminal) -> (lo, hi: int) {
     if !term.sel_active {
         return 0, 0
@@ -433,27 +290,17 @@ terminal_sel_row_span :: proc(term: ^Terminal) -> (lo, hi: int) {
     return a, b
 }
 
-// Whether absolute line `n` is inside that highlight. The COMPARISON and not just the range,
-// because `n <= hi` and `n < hi` are the bug and the fix and a proc returning the pair cannot
-// tell them apart — the mutation that flips it lives here, so the assertion has to as well.
-//
-// Per row, which is why it can afford to be a call. The mouse selection's per-CELL test stays
-// inline against terminal_msel_row_span's pair: that one runs 12k times a frame, and it is a
-// direct application of a half-open span whose ends are themselves asserted.
+// Whether absolute line `n` is inside that highlight — the COMPARISON, not just the range,
+// because `n <= hi` and `n < hi` are the bug and the fix. Per row, so it can afford to be a
+// call; the mouse's per-CELL test stays inline, running 12k times a frame.
 terminal_sel_row_shown :: proc(term: ^Terminal, n: int) -> bool {
     lo, hi := terminal_sel_row_span(term)
     return n >= lo && n < hi
 }
 
-// The columns of absolute line `n` covered by the mouse selection, as a half-open span —
-// empty (lo == hi) on every line it does not reach. The first line starts at lo.col, the
-// last stops at hi.col, the interior fills: the same clip editor_paint_body applies to a
-// text selection, which is one of the four things the shared vocabulary was chosen for.
-//
-// Pulled out of the painter rather than written inline, and not for tidiness: a painter is
-// the one place in this refactor a headless test cannot follow, so the arithmetic inside it
-// is the arithmetic nothing can assert. Out here it is a value, and the row-versus-cell
-// distinction that C7d is entirely about can be pinned directly.
+// The columns of absolute line `n` the mouse selection covers, half-open and empty on every
+// line it does not reach: first line from lo.col, last to hi.col, interior filled — the clip
+// editor_paint_body applies to a text selection. Out of the painter so it is assertable.
 terminal_msel_row_span :: proc(term: ^Terminal, n, cols: int) -> (lo, hi: int) {
     if !terminal_msel_has_span(term) {
         return 0, 0
@@ -467,16 +314,9 @@ terminal_msel_row_span :: proc(term: ^Terminal, n, cols: int) -> (lo, hi: int) {
     return clamp(lo, 0, cols), clamp(hi, 0, cols)
 }
 
-// The cell grid: the default background in one quad, then each cell — a per-cell background
-// fill only when it differs from the default (terminals are mostly default-bg, so that
-// stays cheap), the glyph on top, and a reverse-video block at the cursor. Colours come from
-// the session (theme fg/bg for default cells); the reverse attr swaps fg and bg. Unchanged
-// from the draw_terminal that lived in render.odin, beyond taking its box from Clay instead
-// of computing one.
-//
-// Positions come from `r`, the box the solver resolved, and not from v.area, even though the
-// two are equal by construction — reading the box is the contract, and the equality is what
-// tests/terminal_ui_test.odin pins.
+// The cell grid: the default background in one quad, then per cell a fill only where it
+// differs, the glyph, and a reverse-video block at the cursor. Positions come from `r`, the
+// box the solver resolved, not v.area — tests/terminal_ui_test.odin pins the equality.
 terminal_paint_grid :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
     g := (^Terminal_Body)(user)
     if g == nil || g.term == nil {
@@ -550,13 +390,9 @@ terminal_paint_grid :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App,
     flush_pane(t, clip, win_w, win_h)
 }
 
-// The terminal pane: the active session's libvterm cell grid.
-//
-// The order is the template's, and the view is built twice for a reason of this pane's own.
-// It is not C5c's re-aim — nothing tweens here — it is that the click can change WHICH lines
-// are on screen: clicking the live bottom line leaves select mode, and terminal_view_top
-// reports the live bottom rather than the scrolled top the moment it does. Declaring from
-// the pre-click view would paint one frame of the state the user just left.
+// The terminal pane: the active session's libvterm cell grid. The view is built twice, not to
+// re-aim a tween but because the click can change WHICH lines are on screen — clicking the
+// live bottom leaves select mode, and terminal_view_top answers differently the moment it does.
 terminal_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     area, row_h, cols, rows := terminal_geom(pane, a.scale, t.font.line_height, t.font.cell_w)
     if cols == 0 || rows == 0 {
@@ -582,8 +418,7 @@ terminal_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     terminal_declare(a, &t.font, term, v, now)
 }
 
-// The pane alone in a window, as a command list: the test-facing wrapper (see
-// filetree_layout for why every pane keeps one).
+// Test-facing wrapper; see filetree_layout.
 terminal_layout :: proc(
     a: ^App,
     f: ^Font,

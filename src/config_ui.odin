@@ -2,47 +2,29 @@ package main
 
 import clay "../bindings/clay"
 
-// The config / syntax pane's UI half — C5b, the third pane declared in Clay and the first
-// with rows that are neither one-per-item nor uniformly clickable. filetree_ui.odin is the
-// template and grep_ui.odin the row -> item indirection; the frame order in config_frame is
-// the same and load-bearing for the same reason (see filetree_ui.odin's header).
+// The config / syntax pane's UI half — rows that are neither one-per-item nor uniformly
+// clickable. filetree_ui.odin is the template and grep_ui.odin the row -> item indirection; the
+// frame order in config_frame is the same, and load-bearing for the same reason. Three things
+// are new here:
+//   1. Chrome rows. Section rules and titles have no navigable item (`item == -1`) and the hit
+//      test refuses them — dead space, as grep's spacers are.
+//   2. Two coordinates per row. A click resolves to a row AND, inside an open dropdown, to a
+//      choice, so config_hit returns the DISPLAY row index and config_click reads item/opt off it.
+//   3. A Custom for the text fields. They are live Docs with carets, and a caret is an OVER-quad
+//      (text.odin) that a Clay Rectangle cannot produce — the bridge maps those to `fill`, which
+//      paints under the text. A setting is a field only while HIGHLIGHTED, decided in
+//      config_declare rather than in the flattening (see ConfigRow).
 //
-// Three things are new here.
-//
-//   1. **Chrome rows.** Section rules and titles are display rows with no navigable item, so
-//      `ConfigRow.item == -1` and the hit test refuses them. They are dead space, exactly as
-//      grep's spacers are.
-//   2. **Two coordinates per row.** A click has to resolve to a row AND, inside an open
-//      dropdown, to a choice — so config_hit returns the DISPLAY row index and config_click
-//      reads `item` / `opt` off it, rather than resolving to an item the way grep_hit does.
-//   3. **A Custom for the text fields.** The language filter and the free-text setting are
-//      live one-line Docs with selection spans and carets, and a caret is an OVER-quad
-//      (text.odin) — it must land above the glyphs, which a Clay Rectangle cannot do, since
-//      the bridge maps those to `fill` and everything in a scissor group paints under the
-//      text. So they take the escape hatch the boundary reserves for per-glyph surfaces.
-//      The setting is a field only while HIGHLIGHTED and a plain label otherwise, and that
-//      choice is made in config_declare rather than in the flattening — see ConfigRow for
-//      why a row list that encoded selectedness would have to be built twice.
-//
-// The dropdown is NOT an overlay, and this is worth stating because docs/clay-refactor.md
-// billed C5b as the refactor's first occlusion case. It is not one: draw_config spliced an
-// open dropdown's options INTO the row list as indented rows, pushing the rows below it
-// down, and this port keeps that behaviour. Nothing here covers anything, so nothing here
-// needs `floating`, a second clip group, or an overlay-first hit test. See the C5b notes in
-// the refactor doc for where the occlusion question actually lands.
+// **The dropdown is NOT an overlay.** Its options are spliced INTO the row list as indented rows,
+// so nothing needs `floating`, a second clip group, or an overlay-first hit test.
 
-// Extra vertical padding per row, in logical pixels — the value draw_config has always
-// used, and tighter than the filetree's (FT_ROW_PAD) because this pane is a dense form
-// rather than a list you scan.
+// Extra vertical padding per row, in logical pixels. Tighter than the filetree's (FT_ROW_PAD):
+// this pane is a dense form rather than a list you scan.
 CONFIG_ROW_PAD :: 2
 
-// The pane's fixed geometry: the content area inside the focus ring, the row height, how
-// many display rows fit, and the content width in whole cells (which is all the section
-// rules need in order to span it). Pure, and shared by every phase of the frame — the one
-// call that makes them incapable of disagreeing.
-//
-// Unlike the filetree and grep, no row is reserved for a header: this pane's first row is
-// already a section rule, and the "settings" title is a row like any other.
+// The pane's fixed geometry: content area inside the focus ring, row height, how many display rows
+// fit, and the content width in whole cells. Pure, and shared by every phase of the frame so they
+// cannot disagree. No row is reserved for a header — the first row is already a section rule.
 config_geom :: proc(
     pane: Rect,
     scale, line_h, cell_w: f32,
@@ -60,9 +42,8 @@ config_geom :: proc(
     return area, row_h, max(1, int(area.h / row_h)), int(f32(area.w) / cell_w)
 }
 
-// How many cells the key column spans: the widest setting key plus ": ". Every value and
-// every inline editor starts at this offset from its row's text, so the value column is
-// straight down the pane regardless of key length.
+// How many cells the key column spans: the widest setting key plus ": ". Every value and inline
+// editor starts here, so the value column runs straight down the pane whatever the key length.
 config_val_off :: proc() -> f32 {
     keycol := 0
     for si in 0 ..< SETTING_COUNT {
@@ -71,25 +52,16 @@ config_val_off :: proc() -> f32 {
     return f32(keycol + 2)
 }
 
-// Move the viewport to follow the selected row, under the shared `scroll_mode` policy.
-// `anchor` and `total` are both in DISPLAY rows: an open dropdown splices its options into
-// the list, so the row space shifts under the stored top — Follow simply re-frames from
-// wherever it lands on the next frame, which is what draw_config always did.
-//
-// This is the write that used to be a side effect of painting (`cp.scroll = ...` sat in the
-// middle of draw_config). It is a normal state update now: GL-free, before any declaration.
+// Move the viewport to follow the selected row under the shared `scroll_mode` policy. `anchor` and
+// `total` are DISPLAY rows: an open dropdown splices options in, so the row space shifts under the
+// stored top and Follow simply re-frames next frame. GL-free, and never a side effect of painting.
 config_scroll_apply :: proc(cp: ^ConfigPane, anchor, rows, total: int, center: bool, last_input_at: f64 = 0) {
     list_scroll_apply(&cp.scroll, &cp.scroll_detached, anchor, rows, total, center, last_input_at)
 }
 
-// Which DISPLAY row the pointer is over, or -1. A row index rather than an item, because a
-// click on an option row needs the choice as well as the row that owns it — see the header.
-// Chrome rows carry item == -1 and are skipped, so a press on a rule or a section title is
-// dead space rather than a hit on whatever row sits nearest.
-//
-// As in the other panes this resolves against the tree Clay is still holding — the one the
-// LAST frame declared — which is why it runs before this frame's declaration and why
-// `first` is cp.scroll as it stood when those rows were painted.
+// Which DISPLAY row the pointer is over, or -1 — a row index, not an item, since an option row
+// needs the choice too. Chrome rows (item == -1) are dead space. **Resolves against the tree the
+// LAST frame declared**, so it runs first and `first` is cp.scroll as those rows were painted.
 config_hit :: proc(rows: []ConfigRow, first, max_rows: int) -> int {
     lo := clamp(first, 0, max(0, len(rows)))
     n := max(0, min(len(rows) - lo, max_rows))
@@ -102,23 +74,9 @@ config_hit :: proc(rows: []ConfigRow, first, max_rows: int) -> int {
     return -1
 }
 
-// Apply a pending click on display row `row` (-1 = the pointer hit nothing). Claimed only
-// on a real hit, so a press aimed elsewhere is not eaten — see mouse_take_click.
-//
-// The verbs are the keyboard's, reached through the same procs:
-//
-//   - a nav row: single click selects it (Up/Down), double click opens its dropdown
-//     (Right/Enter). Clicking OFF an open dropdown closes it, which is the one thing the
-//     keyboard cannot express — its Up/Down are captured by the dropdown while it is open.
-//   - an option row: a single click CHOOSES it (config_choose), because an option list is
-//     already the second half of a two-step gesture and making it a third would be unlike
-//     every dropdown ever built. This is the one deliberate departure from the template's
-//     single-selects / double-activates rule.
-//
-// A double click on an option is therefore swallowed rather than run twice: the first press
-// commits and closes the dropdown, and by the time the second is claimed the row underneath
-// is something else entirely. The count guard is what stops an impatient user installing a
-// grammar and then opening whatever slid up into that spot.
+// Apply a pending click on display row `row` (-1 = hit nothing), claimed only on a real hit. A nav
+// row selects on one click and opens its dropdown on two; an OPTION row chooses on one, being
+// already the second half of a gesture, and its double click is swallowed rather than run twice.
 config_click :: proc(a: ^App, rows: []ConfigRow, row: int) {
     if row < 0 || row >= len(rows) {
         return
@@ -162,15 +120,13 @@ config_click :: proc(a: ^App, rows: []ConfigRow, row: int) {
         }
     case .Search, .Text:
     // Neither text row has a double-click verb: selecting one already makes it the editor.
-    // The filter is live as you type (config_pane_filter); a setting commits on Enter or
-    // when the selection leaves it (config_edit_sync).
+    // The filter is live as you type; a setting commits on Enter or on leaving the row.
     }
 }
 
-// A row's text colour, derived rather than stored — the flattening carries no palette, for
-// the same reason it carries no selection (see ConfigRow). Language rows are tinted by
-// INSTALL STATE rather than by selectedness, which is deliberate and predates the port: the
-// ✓/✗ mark and the colour say the same thing twice, on purpose.
+// A row's text colour, derived rather than stored — the flattening carries no palette, for the
+// same reason it carries no selection (see ConfigRow). Language rows are tinted by INSTALL STATE
+// rather than selectedness: the ✓/✗ mark and the colour say the same thing twice, on purpose.
 config_row_color :: proc(th: ^Theme, r: ConfigRow, sel: bool) -> [3]f32 {
     switch r.kind {
     case .Rule:
@@ -185,24 +141,17 @@ config_row_color :: proc(th: ^Theme, r: ConfigRow, sel: bool) -> [3]f32 {
     return th.fg
 }
 
-// What a text row's Custom element needs in order to paint itself — which Doc, and whether
-// it may carry a caret. Handed to the bridge as `customData`, so it must outlive EndLayout —
-// it lives in the frame's temp arena.
-//
-// It used to carry the body clip too: this pane found that the bridge handed a painter its
-// BOX and a box is not a clip, so a search row half off the bottom of the pane would have
-// scissored to its full-height box and drawn outside the body. That was a gap in the
-// ClayCustom contract rather than a quirk of this pane, and C5c closed it — `paint` now
-// takes the live clip as a parameter, so there is nothing left here but the field's data.
+// What a text row's Custom needs to paint itself. Handed to the bridge as `customData`, so it must
+// outlive EndLayout — it lives in the frame's temp arena. No clip is carried: `paint` takes the
+// live one, since a box is not a clip and a half-off-screen row would draw outside the body.
 Config_Edit :: struct {
     doc:   ^Doc,
     now:   f64,
     caret: bool, // config_caret_live: the row owns the keys, so it may show a blinking caret
 }
 
-// One text row's field: the Doc's runes at the value column, with per-cursor selection spans
-// and carets — the command-line treatment, reused. Shared by the language filter and the
-// free-text setting, which differ in what they edit and in nothing this proc can see.
+// One text row's field: the Doc's runes at the value column with per-cursor selection spans and
+// carets. Shared by the language filter and the free-text setting, which differ in nothing here.
 config_paint_edit :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
     e := (^Config_Edit)(user)
     if e == nil || e.doc == nil || len(e.doc.lines) == 0 {
@@ -223,8 +172,8 @@ config_paint_edit :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
         }
     }
     text_draw_runes(t, line.text[:], ex, ty, th.fg)
-    // `caret` is the gate the blink phase alone cannot be: a pane that is not being typed
-    // into stops redrawing, so a caret drawn there would freeze mid-blink rather than go out.
+    // `caret` is the gate the blink phase alone cannot be: a pane not being typed into stops
+    // redrawing, so a caret drawn there would freeze mid-blink rather than go out.
     if e.caret && caret_blink_on(a, e.now) {
         for c in e.doc.cursors {
             caret(t, Rect{i32(ex + cw * f32(c.head.col)), y, i32(2 * a.scale), i32(lh)}, th.fg)
@@ -235,12 +184,8 @@ config_paint_edit :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
     flush_pane(t, clip, win_w, win_h)
 }
 
-// Declare the pane into the window's tree (C8a). Reads App and the flattened rows, writes
-// only Clay — no mutation, no GL. `rows` is passed in rather than rebuilt so the frame
-// flattens exactly once, and so the hit test, the click and this declaration cannot be
-// looking at different lists.
-//
-// The tree is:
+// Declare the pane into the window's tree: reads App and the flattened rows, writes only Clay.
+// `rows` is passed in rather than rebuilt so the hit test, the click and this cannot disagree.
 //   cf_pane   the content area inside the focus ring, floating at the pane's own rect and
 //             clipping its own content
 //     cf_body   the clip group
@@ -258,9 +203,7 @@ config_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []ConfigRow, now: f6
     first := clamp(cp.scroll, 0, max(0, len(rows)))
     visible := max(0, min(len(rows) - first, max_rows))
 
-    // Nothing here paints a background: panel() has already filled the pane and drawn
-    // its focus ring, and Clay's transparent default emits no Rectangle at all, so every
-    // fill below is one that means something.
+    // No backgroundColor: panel() already filled the pane, so every fill below means something.
     if clay.UI(clay.ID("cf_pane"))(clay_pane_box(area)) {
         if clay.UI(clay.ID("cf_body"))(
             {
@@ -309,11 +252,9 @@ config_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []ConfigRow, now: f6
                         ) {
                             clay.Text(r.text, clay_text_config(col, lh))
                         }
-                        // A live text field: a Custom, because carets are over-quads (see
-                        // the header). The filter box always is one; a free-text setting is
-                        // one only while it is highlighted, and shows its stored value the
-                        // rest of the time — which is why this is decided HERE, where
-                        // selectedness is already derived, rather than in the flattening.
+                        // A live text field: a Custom, because carets are over-quads (see the
+                        // header). A free-text setting is one only while highlighted, decided
+                        // HERE where selectedness is derived rather than in the flattening.
                         if r.kind == .Search || (r.kind == .Text && sel) {
                             // The struct outlives EndLayout in the frame's temp arena.
                             cu := new(ClayCustom, context.temp_allocator)
@@ -337,39 +278,29 @@ config_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []ConfigRow, now: f6
     }
 }
 
-// The config / syntax pane: a "settings" block (key: value rows, each choosing from a
-// dropdown — except a free-text one, which is typed into) then a "syntax" block listing every
-// known language with its grammar status (✓/✗) and, when a row is opened, its install-options
-// dropdown nested under it. Section headers are flanked by rules; setting values share one
-// column; the search row filters the language list live as you type. One selection highlight,
-// centre-scrolled like the filetree. Up/Down move, Right/Enter open a dropdown, Enter chooses
-// (or, on a text setting, saves); a click selects a row, a double click opens its dropdown,
-// and a click on an option chooses it.
+// The config / syntax pane: a "settings" block of key: value rows (dropdowns, bar the free-text
+// one) then a "syntax" block listing each language's grammar status (✓/✗) with its install-options
+// dropdown nested under an opened row. The search row filters that list live as you type.
 config_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     area, _, max_rows, cols := config_geom(pane, a.scale, t.font.line_height, t.font.cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }
     cp := &a.config_pane
-    // One flattening serves the hit test AND the click, because no row carries selection
-    // state (the C5a rule). But this pane needs a SECOND one that grep did not, and the
-    // difference is structural rather than cosmetic: choosing an option splices rows out of
-    // the list and can rewrite a value (config_choose -> setting_commit), so the list the
-    // click acted on is not the list this frame should paint. Re-flatten between the two,
-    // and the anchor, the scroll policy and the declaration all see the post-click pane.
+    // One flattening serves the hit test AND the click, since no row carries selection state.
+    // This pane needs a SECOND one grep does not: choosing an option splices rows out and can
+    // rewrite a value, so the list the click acted on is not the one this frame should paint.
     rows := config_rows(cp, a, cols, context.temp_allocator)
 
     hit := config_hit(rows, cp.scroll, max_rows)
-    // The hovered row is written before the click for the same reason it is hit-tested
-    // there: both resolve against the tree Clay is still holding. A click that reshapes the
-    // list leaves this index pointing a row or two off for exactly one frame, which the next
-    // frame's hit test corrects.
+    // Written before the click for the same reason it is hit-tested there: both resolve against
+    // the tree Clay still holds. A click that reshapes the list leaves this a row or two off for
+    // exactly one frame, which the next frame's hit test corrects.
     cp.hover = hit
     config_click(a, rows, hit)
-    // A click is the one thing that can move the selection off a text row without going
-    // through the keyboard, so the reconcile sits here, between the click and the re-flatten:
-    // the row that was left commits, the row that was entered seeds, and the rows this frame
-    // paints already show the result.
+    // A click is the one thing that can move the selection off a text row without the keyboard,
+    // so the reconcile sits between the click and the re-flatten: the row left commits, the row
+    // entered seeds, and the rows this frame paints already show the result.
     config_edit_sync(a)
 
     rows = config_rows(cp, a, cols, context.temp_allocator)
@@ -378,8 +309,7 @@ config_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     config_declare(a, &t.font, pane, rows, now)
 }
 
-// The pane alone in a window, as a command list: the test-facing wrapper (see
-// filetree_layout for why every pane keeps one).
+// Test-facing wrapper; see filetree_layout.
 config_layout :: proc(
     a: ^App,
     f: ^Font,

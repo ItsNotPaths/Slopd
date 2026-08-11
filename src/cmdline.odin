@@ -7,20 +7,17 @@ import "core:strconv"
 import "core:strings"
 import "vendor:glfw"
 
-// The master command line: a one-line Doc (the shared multi-cursor editing core,
-// so every motion/edit op is reused from the buffer — Enter just submits instead
-// of splitting) plus a history ring and an executor. It lives in the status strip
-// (rendering) and is driven by input.odin while a.cl_active. Output never lands
-// here — builtins mutate app state, shell commands route to a terminal (stubbed
-// until libvterm).
+// The master command line: a one-line Doc (the shared multi-cursor core, so every motion/edit
+// op is reused from the buffer — Enter submits instead of splitting) plus a history ring and
+// an executor. Output never lands here: builtins mutate app state, shell commands go to a
+// terminal session. Driven by input.odin while a.cl_active.
 CommandLine :: struct {
     using doc:  Doc,
     history:  [dynamic]string,
     hist_idx: int, // index into history; == len(history) means the live edit
-    // Injection alert: a UI gesture (git/filetree, Alt+W) just pre-filled the line
-    // rather than the user typing it. The text renders in the alert colour until the
-    // user touches it — tracked by version so any edit (which bumps doc.version) clears
-    // the alert with no per-edit hook. injected gates it; inject_ver is the pristine mark.
+    // Injection alert: a UI gesture pre-filled the line rather than the user typing it, and
+    // the text renders in the alert colour until touched. Tracked by version so any edit
+    // clears the alert with no per-edit hook; `inject_ver` is the pristine mark.
     injected:   bool,
     inject_ver: u64,
 }
@@ -49,17 +46,14 @@ cl_open :: proc(a: ^App) {
 cl_inject :: proc(a: ^App, text: string) {
     cl_open(a)
     cl_recall(a, text)
-    // Flag the pristine injected text for the alert colour; any edit bumps doc.version
-    // past this mark and the alert clears itself (see draw_command_line).
+    // Any edit bumps doc.version past this mark and the alert clears itself (draw_command_line).
     a.cl.injected = true
     a.cl.inject_ver = a.cl.doc.version
 }
 
-// A UI gesture that produces a full command line either STAGES it (cl_inject: pre-fill
-// the CL and wait for the user's Enter) or RUNS it immediately — chosen per action by
-// config. Staging is the reviewable default; `run` is the insta-enter shortcut. Used
-// by the filetree folder cd (a.folder_cd_run); other inject sites that pre-fill an
-// INCOMPLETE command for the user to finish (e.g. Alt+W's "j ") stay cl_inject.
+// A UI gesture producing a FULL command line either stages it (reviewable default) or runs
+// it, chosen per action by config. Gestures that pre-fill an INCOMPLETE command for the user
+// to finish (e.g. Alt+W's "j ") call cl_inject directly instead.
 cl_dispatch :: proc(a: ^App, text: string, run: bool) {
     if run {
         cl_exec(a, text)
@@ -111,12 +105,9 @@ cl_recall :: proc(a: ^App, text: string) {
     doc_cursor_to_end(&a.cl.doc)
 }
 
-// A submitted line is a chain of `&&` segments, each a Slopd BUILTIN (goto/zen/put,
-// run here) or a SHELL command (injected into a terminal). `&&` is honoured: a step
-// only runs once the preceding shell step exits 0 — detected asynchronously via the
-// OSC exit sentinel, so the chain is pumped a frame at a time (cl_chain_pump).
-// Consecutive shell segments coalesce and keep their `&&` so the shell enforces the
-// conditional among them; only a shell step a builtin waits on gets the sentinel.
+// A submitted line is a chain of `&&` segments, each a Slopd BUILTIN or a SHELL command. A step runs
+// only once the preceding shell step exits 0, detected asynchronously via the OSC sentinel, so the
+// chain pumps a frame at a time. Adjacent shell segments coalesce and keep their `&&` for the shell.
 CLStep :: struct {
     shell: bool,
     text:  string, // owned; freed by cl_chain_clear
@@ -142,9 +133,8 @@ cl_exec :: proc(a: ^App, input: string) {
     cl_chain_pump(a)
 }
 
-// Build the chain from a submitted line (no execution — split out so the parsing is
-// unit-testable on its own). Populates a.cl_chain; a new line abandons any pending
-// chain first.
+// Build the chain from a submitted line (no execution — split out so parsing is unit-testable
+// on its own). A new line abandons any pending chain first.
 cl_parse :: proc(a: ^App, input: string) {
     cl_chain_clear(a)
     ch := &a.cl_chain
@@ -181,10 +171,9 @@ cl_parse :: proc(a: ^App, input: string) {
     }
 }
 
-// Advance the chain as far as it can go this frame: resolve a pending shell step's
-// exit code (short-circuiting on failure), run builtins inline, and inject the next
-// shell step. A non-final shell step (one a later step depends on) is wrapped with
-// the exit sentinel and we return to wait; the final step injects plain.
+// Advance the chain as far as it can go this frame: resolve a pending shell step's exit code
+// (short-circuiting on failure), run builtins inline, inject the next shell step. A non-final
+// shell step is wrapped with the exit sentinel and we return to wait; the final one is plain.
 cl_chain_pump :: proc(a: ^App) {
     ch := &a.cl_chain
     if !ch.waiting && len(ch.steps) == 0 {
@@ -225,9 +214,8 @@ cl_chain_pump :: proc(a: ^App) {
     cl_chain_clear(a)
 }
 
-// Inject a shell command into the chain's target terminal. The final step runs
-// plain; a non-final step is wrapped so the shell reports its exit code back via the
-// private OSC, which the runner waits on (see cl_chain_pump).
+// Inject a shell command into the chain's target terminal. The final step runs plain; a
+// non-final step is wrapped so the shell reports its exit code back via the private OSC.
 @(private = "file")
 cl_inject_shell :: proc(a: ^App, cmd: string, last: bool) {
     ch := &a.cl_chain
@@ -244,11 +232,9 @@ cl_inject_shell :: proc(a: ^App, cmd: string, last: bool) {
     id := a.cl_wait_seq
     a.cl_wait_seq += 1
     t.exit_ready = false // discard any stale report before we arm this one
-    // A waited step runs in a subshell with the pager neutralised — there is no point
-    // paging a command we're about to `&&`-goto past, and a pager (e.g. git's `less`)
-    // would block forever waiting for a keypress, stalling the whole chain. The
-    // trailing `;printf` always runs, reporting the group's final exit code via the
-    // private OSC (literal \033/\007/%d reach the shell verbatim; libvterm hides it).
+    // A waited step runs in a subshell with the pager neutralised: a pager (git's `less`) would
+    // block forever on a keypress and stall the whole chain. The trailing `;printf` always runs,
+    // reporting the group's exit code via the private OSC (\033/\007/%d reach the shell verbatim).
     line := fmt.tprintf(
         "(export GIT_PAGER=cat PAGER=cat; %s) ;printf '\\033]%d;%d;%%d\\007' \"$?\"\n",
         cmd,
@@ -261,8 +247,7 @@ cl_inject_shell :: proc(a: ^App, cmd: string, last: bool) {
     ch.wait_term = t
 }
 
-// Run a Slopd builtin. Returns success (builtins always succeed, so a following
-// chain step proceeds).
+// Run a Slopd builtin. Always succeeds, so a following chain step proceeds.
 @(private = "file")
 cl_run_builtin :: proc(a: ^App, text: string) -> bool {
     name := first_field(text)
@@ -300,13 +285,9 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
     return true
 }
 
-// Quit/write builtins — the ONLY way to close Slopd (Esc never quits). Guarded by the
-// unsaved RING so typed-by-mistake quits can't throw away work: `q` refuses while any
-// buffer is dirty, `wq` saves the current one first, `wqa`/`waq` save them all. `q!`
-// force-quits, discarding everything. buffer_save can't write an unnamed buffer yet, so
-// a write that leaves work dirty refuses rather than quitting. A refusal ECHOES into t1
-// (the master CL terminal) — consistent with "output always lands in a real terminal,
-// never the status strip". Messages stay apostrophe-free so the single-quoted echo holds.
+// Quit/write builtins — the ONLY way to close Slopd (Esc never quits), guarded by the unsaved RING
+// so a mistyped quit can't throw away work. buffer_save can't write an unnamed buffer, so a write
+// leaving work dirty refuses. Refusals ECHO into t1: **keep messages apostrophe-free**.
 @(private = "file")
 cl_quit :: proc(a: ^App, cmd: string) {
     switch cmd {
@@ -341,8 +322,7 @@ cl_quit :: proc(a: ^App, cmd: string) {
     }
 }
 
-// Save every dirty buffer in the ring; returns how many remain dirty (an unnamed buffer
-// can't be written yet, so it stays).
+// Save every dirty buffer in the ring; returns how many remain dirty (an unnamed one stays).
 @(private = "file")
 cl_write_all :: proc(a: ^App) -> int {
     for &b in a.editor.buffers {
@@ -353,18 +333,16 @@ cl_write_all :: proc(a: ^App) -> int {
     return ring_dirty_count(&a.editor)
 }
 
-// Surface a Slopd message in t1 by running a single-quoted `echo` — the same run_in_t1
-// seam the Config buttons use, so feedback lands in a real terminal (lazily spawning t1).
+// Surface a Slopd message in t1 by running a single-quoted `echo`, so feedback lands in a
+// real terminal (lazily spawning t1) rather than the status strip.
 @(private = "file")
 cl_echo_t1 :: proc(a: ^App, msg: string) {
     run_in_t1(a, fmt.tprintf("echo '%s'", msg))
 }
 
-// `cd [dir]` (builtin): set the PROJECT ROOT — captured by Slopd, never sent to a
-// shell. Relative paths resolve against the current root and a leading ~ expands to
-// $HOME; a bare `cd` (or `cd ~`) goes home. Only an existing directory is accepted,
-// so a typo leaves the root untouched. New terminals spawn here; `tu` syncs the
-// unlocked ones; the idle status strip shows it.
+// `cd [dir]` (builtin): set the PROJECT ROOT — captured by Slopd, never sent to a shell. Only an
+// existing directory is accepted, so a typo leaves the root untouched. New terminals spawn here;
+// `tu` syncs the unlocked ones.
 @(private = "file")
 cl_cd :: proc(a: ^App, args: string) {
     dir := cl_resolve_dir(a, strings.trim_space(args))
@@ -394,9 +372,8 @@ cl_resolve_dir :: proc(a: ^App, arg: string) -> string {
     return filepath.clean(raw) or_else strings.clone(raw)
 }
 
-// `tu` (terminal update) builtin: push `cd <project root>` into every UNLOCKED live
-// terminal so they all follow the project root at once. Locked sessions (Alt+L) keep
-// their own cwd. A background sync — it changes no focus, unlike the goto builtins.
+// `tu` (terminal update): push `cd <project root>` into every UNLOCKED live terminal at once.
+// Locked sessions (Alt+L) keep their own cwd. A background sync — it changes no focus.
 @(private = "file")
 cl_tu :: proc(a: ^App) {
     if a.project_root == "" {
@@ -410,15 +387,11 @@ cl_tu :: proc(a: ^App) {
     }
 }
 
-// `reload [y|n]` (builtin): settle a pending disk-change conflict, or force a re-read of
-// the current buffer from disk. When the file changed under unsaved edits the conflict is
-// raised and this command is auto-staged in the CL (cl_inject "reload ") for you to finish:
+// `reload [y|n]`: settle a pending disk-change conflict, which auto-stages this command in the CL.
 //   reload y   re-reads the file, DISCARDING the unsaved edits
 //   reload n   keeps your edits and CACHES it, so it stops asking until the file changes again
-// A bare `reload` while conflicted is deliberately a NO-OP — an accidental Enter on the
-// staged line must not silently discard your edits; you have to answer y or n. With no
-// conflict pending, `reload` (or `reload y`) is a manual refresh — re-read from disk,
-// discarding any unsaved edits (vim's :e!).
+// A bare `reload` while conflicted is deliberately a NO-OP: an accidental Enter on the staged line
+// must not silently discard edits. With no conflict it is a manual refresh (vim's :e!).
 @(private = "file")
 cl_reload :: proc(a: ^App, args: string) {
     if a.main != .Text || len(a.editor.buffers) == 0 {
@@ -439,13 +412,11 @@ cl_reload :: proc(a: ^App, args: string) {
 }
 
 // `j [file] [line]` / `jump ...`: reveal a location through the shared jump_to primitive.
-// Forms:
 //   j N            move to a line in the current buffer (1-based absolute, matching the gutter)
 //   j +N / j -N    move relative to the current line
 //   j <file>       open <file> (name-first under the project root, or a system-wide /abs path)
 //   j <file> N     open <file> and go to line N (a +N/-N here is relative to the file's top)
-// A bare-number first field is always a line in the current buffer; otherwise the first field
-// is a file and an optional second field is the line. Out-of-range lines clamp.
+// A bare-number first field is always a line in the current buffer. Out-of-range lines clamp.
 @(private = "file")
 cl_jump :: proc(a: ^App, args: string) {
     s := strings.trim_space(args)
@@ -476,15 +447,9 @@ cl_jump :: proc(a: ^App, args: string) {
     jump_to(a, path, max(line, 0), 0)
 }
 
-// `grep [flags] <pattern>` (builtin): hijack the user's grep into a PROJECT-WIDE search
-// whose results land in the Grep aux pane. Any leading `-flags` are discarded — grep_run
-// forces its own info-rich set (see grep.odin) so the output is always uniform — and the
-// rest of the line is the pattern (kept whole, so multi-word patterns work). The pattern is
-// a regex (GNU grep default): no -w/-F here, unlike the symbol-lookup goto. With grep_pane
-// off, a lone hit jumps straight into the editor (no picker) while 0 or 2+ open the pane; on
-// (the default) every search opens the pane, a lone hit included. A pattern that itself
-// begins with '-' can't be expressed (the flag-strip eats it) — a rare limit we accept for
-// the "force our flags" contract.
+// `grep [flags] <pattern>`: hijack the user's grep into a PROJECT-WIDE search landing in the Grep
+// pane. Leading `-flags` are discarded (grep_run forces its own); the rest is the pattern, kept
+// whole, as a regex. **A pattern beginning with '-' can't be expressed** — the flag-strip eats it.
 @(private = "file")
 cl_grep :: proc(a: ^App, args: string) {
     query := strings.trim_space(args)
@@ -503,8 +468,8 @@ cl_grep :: proc(a: ^App, args: string) {
     }
 }
 
-// `put [text]`: type the literal text then the editor's current selection into the
-// target terminal, with NO trailing newline (composes a command at the prompt).
+// `put [text]`: type the literal text then the editor's selection into the target terminal,
+// with NO trailing newline (composes a command at the prompt).
 @(private = "file")
 cl_put :: proc(a: ^App, args: string) {
     sel := editor_selection_text(a, context.temp_allocator)
@@ -516,16 +481,12 @@ cl_put :: proc(a: ^App, args: string) {
     }
 }
 
-// --- shell command builders ---
-//
-// UI gestures that stage a REAL shell line in the CL (see cl_inject) rather than doing
-// the work behind a modal prompt: you read the command, edit it, press Enter, and it
-// lands in history like anything you typed. Pure string builders, so they unit-test
-// without an App; the callers live in input.odin (the filetree chords).
+// --- shell command builders --- UI gestures stage a REAL shell line in the CL rather than
+// hiding the work behind a modal prompt: you read it, edit it, Enter, and it lands in history.
+// Pure string builders, so they unit-test without an App; callers are the filetree chords.
 
-// Wrap s in single quotes for the shell, so spaces and metacharacters in a path stay
-// literal. An embedded single quote closes, escapes, and reopens ('\'') — the one form
-// that is safe in every POSIX shell.
+// Wrap s in single quotes so spaces and metacharacters in a path stay literal. An embedded
+// single quote closes, escapes and reopens ('\'') — the one form safe in every POSIX shell.
 sh_quote :: proc(s: string, alloc := context.allocator) -> string {
     b := strings.builder_make(alloc)
     strings.write_byte(&b, '\'')
@@ -540,10 +501,9 @@ sh_quote :: proc(s: string, alloc := context.allocator) -> string {
     return strings.to_string(b)
 }
 
-// The staged line for a filetree delete: `rm -rf '<path>' ... && ls`. The trailing `ls`
-// is our own builtin — once the rm exits 0 the chain runs it, re-reading the listing and
-// putting focus back on the filetree, so the pane shows the result. "" when there is
-// nothing selected to delete (the caller then stages nothing).
+// The staged line for a filetree delete: `rm -rf '<path>' ... && ls`. The trailing `ls` is our
+// own builtin — once the rm exits 0 the chain runs it, re-reading the listing and refocusing the
+// filetree. "" when nothing is selected, and the caller then stages nothing.
 rm_command :: proc(paths: []string, alloc := context.allocator) -> string {
     if len(paths) == 0 {
         return ""
@@ -558,12 +518,9 @@ rm_command :: proc(paths: []string, alloc := context.allocator) -> string {
     return strings.to_string(b)
 }
 
-// The staged line that RUNS a file, or "" when the file isn't ours to run (the caller
-// hands those to the desktop instead — see desktop_open). An executable file (a binary,
-// or a script with a shebang) runs by its own quoted path; a NON-executable shell script
-// still runs, under `bash` — the one interpreter case worth carrying, since chmod +x is
-// the step people skip. Add a case here to teach it another interpreter. The trailing
-// space is so arguments type straight on.
+// The staged line that RUNS a file, or "" when it isn't ours to run (the caller hands those to
+// desktop_open). Executables run by quoted path; a NON-executable shell script still runs under
+// `bash`, since chmod +x is the step people skip. The trailing space is so args type straight on.
 run_command :: proc(path: string, executable: bool, alloc := context.allocator) -> string {
     quoted := sh_quote(path, context.temp_allocator)
     if executable {
@@ -588,8 +545,7 @@ cl_chain_clear :: proc(a: ^App) {
     ch.wait_term = nil
 }
 
-// Run a command in t1, the master CL terminal (the Config pane's language buttons
-// and any plain injection). Surfaces t1 and runs the command — no chaining.
+// Run a command in t1, the master CL terminal: surfaces it and runs — no chaining.
 run_in_t1 :: proc(a: ^App, cmd: string) {
     term_focus(a, 1)
     if t := term_current(a); t != nil {
@@ -624,11 +580,9 @@ is_term_token :: proc(s: string) -> bool {
     return len(s) >= 2 && s[0] == 't' && all_digits(s[1:])
 }
 
-// The inline ghost hint for the command line: a faint argument example drawn just past the
-// typed text once a command is recognised, dropped as soon as you start typing the argument
-// (so it never overlaps real input). This is the extensible seam — give a command an arg
-// hint by adding a case here (e.g. a goto could hint "file [line]"). "" = no hint. The line
-// is taken from the start (leading whitespace yields no command, hence no hint).
+// The inline ghost hint: a faint argument example drawn past the typed text once a command is
+// recognised, dropped once you start typing the argument so it never overlaps real input. Give a
+// command a hint by adding a case. "" = no hint; leading whitespace yields no command, so none.
 cl_ghost_hint :: proc(line: string) -> string {
     name := first_field(line)
     if name == "" || strings.trim_space(line[len(name):]) != "" {
@@ -650,8 +604,8 @@ cl_is_builtin :: proc(name: string) -> bool {
     return false
 }
 
-// Switch to terminal session n (1-based), surfacing the terminal pane. Shared by
-// the command line (tN) and Alt+1..9. Clamps n into the existing session range.
+// Switch to terminal session n (1-based), surfacing the terminal pane. Shared by the command
+// line (tN) and Alt+1..9; clamps n into the existing session range.
 term_focus :: proc(a: ^App, n: int) {
     a.aux_mode = .Terminal
     set_focus(a, .Aux)

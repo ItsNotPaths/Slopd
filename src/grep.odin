@@ -9,14 +9,13 @@ import "core:unicode/utf8"
 // Project search + its results model. grep_run is the ONE canonical entry point: run grep
 // with a forced, info-rich flag set and parse the output into structured GrepHits. Both
 // consumers go through it, so the parse + shape is defined once:
-//   - the Alt+Enter "jump to definition" (link.odin): grep_run narrows to every line that
-//     mentions the symbol, then tree-sitter (ts_filter_definitions) keeps only the lines
-//     that actually DEFINE it — not the invocations.
-//   - a FUTURE Prawk-style CL `grep` interception: capture the user's `grep ...`, DISCARD
-//     their flags, force ours (so the output is always uniform + maximally informative),
-//     route the query through grep_run, and drop the hits straight into the GrepPane.
-// Forcing the flags (rather than honouring the user's) is deliberate: a single parse path,
-// always with filename + line, is what makes the output reusable downstream.
+//   - Alt+Enter "jump to definition" (link.odin): grep_run narrows to every line mentioning
+//     the symbol, then tree-sitter (ts_filter_definitions) keeps only the lines that DEFINE
+//     it, not the invocations.
+//   - the CL `grep` interception (cl_grep, cmdline.odin): the user's flags are discarded,
+//     ours forced, and the hits dropped straight into the GrepPane.
+// Forcing the flags is deliberate: a single parse path, always with filename + line, is what
+// makes the output reusable downstream.
 
 GrepHit :: struct {
     path:      string,   // absolute file path (owned)
@@ -31,10 +30,9 @@ GrepHit :: struct {
 // window). The match line itself sits in the middle of the block.
 GREP_CONTEXT :: 2
 
-// GrepPane — the results model the Grep aux mode renders + navigates (draw_grep,
-// grep_key). Two producers stash into it: Alt+Enter's multi-result definition lookup
-// (link.odin) and the CL `grep` interception (cl_grep). The pane lists query/hits, Up/Down
-// move `selected`, and Enter opens that hit (grep_open_hit) in the editor.
+// The results model the Grep aux mode renders + navigates. Two producers stash into it:
+// Alt+Enter's multi-result definition lookup (link.odin) and the CL `grep` interception
+// (cl_grep). Up/Down move `selected`; Enter opens that hit (grep_open_hit).
 GrepPane :: struct {
     query:    string,           // the symbol / pattern searched (owned)
     hits:     [dynamic]GrepHit, // results, in scan order
@@ -42,24 +40,20 @@ GrepPane :: struct {
     scroll:   int,              // first visible DISPLAY row — the viewport top (list_scroll_target)
     hover:    int,              // the block under the pointer, or -1 — transient (config_ui)
 
-    // A wheel gesture DETACHES the view from the selection (glfw time; 0 = following it),
-    // the flat-row twin of Buffer.scroll_detached. While it is set neither viewport policy
-    // runs, so the wheel moves the view rather than the cursor; the next keystroke that
-    // reaches this pane re-attaches it. See list_scroll_apply (scroll.odin).
+    // Wheel-detached at this glfw time; 0 = following the selection. See list_scroll_apply.
     scroll_detached: f64,
 }
 
-// Up/Down: move the highlighted row, clamped to the results (no wrap). The editor only
-// follows on Enter (grep_open_hit), so this is pure selection movement.
+// Up/Down: move the highlighted row, clamped (no wrap). The editor only follows on Enter,
+// so this is pure selection movement.
 grep_move :: proc(g: ^GrepPane, dir: int) {
     if n := len(g.hits); n > 0 {
         g.selected = clamp(g.selected + dir, 0, n - 1)
     }
 }
 
-// Open a hit's file and place the caret on the match, through the shared jump_to primitive
-// (the same one the `j` builtin and Alt+Enter follows use). The single canonical jump, shared
-// by the pane's Enter (grep_open_selected) and link.odin's single-definition goto.
+// Open a hit's file and place the caret on the match, via the shared jump_to primitive.
+// The single canonical jump, shared by the pane's Enter and link.odin's single-definition goto.
 grep_open_hit :: proc(a: ^App, h: GrepHit) {
     jump_to(a, h.path, h.line - 1, h.col) // GrepHit.line is 1-based; jump_to wants 0-based
 }
@@ -72,14 +66,9 @@ grep_open_selected :: proc(a: ^App) {
     }
 }
 
-// Run grep with FORCED flags and parse stdout into hits. -r recursive, -n line numbers,
-// -H always-with-filename (so a single-file result parses the same as a tree), -I skip
-// binaries, --exclude-dir=.git. `word` adds -w (whole-word — symbol lookup); `fixed` adds
-// -F (literal pattern, not a regex). GNU grep emits no column, so we recover it on parse
-// (first occurrence of the query on the line). It execs grep directly through
-// os.process_exec rather than through a shell, so the pattern + paths need no quoting, and
-// `--` guards a pattern that begins with '-'.
-// Returns temp-allocated hits ([] on no match or spawn error).
+// Run grep with FORCED flags and parse stdout into hits. `-H` matters: a single-file result then
+// parses the same as a tree. `word` adds -w (symbol lookup), `fixed` adds -F (literal). Execs grep
+// directly, not via a shell, so pattern + paths need no quoting and `--` guards a leading '-'.
 grep_run :: proc(root, query: string, word := false, fixed := false) -> []GrepHit {
     if root == "" || query == "" {
         return nil
@@ -108,10 +97,9 @@ grep_run :: proc(root, query: string, word := false, fixed := false) -> []GrepHi
     return hits[:]
 }
 
-// Parse one `path:line:content` grep line. Splits on the first two colons only (a POSIX
-// path has none; the content may have many). The column is the first occurrence of the
-// query on the line, as a rune offset (best effort: 0 when it can't be located, e.g. a
-// regex query). Temp-allocated strings.
+// Parse one `path:line:content` grep line, splitting on the first two colons only (a POSIX
+// path has none; the content may have many). Column is the query's first occurrence as a rune
+// offset — best effort, 0 when it can't be located (e.g. a regex query). Temp-allocated.
 @(private = "file")
 grep_parse :: proc(raw, query: string) -> (GrepHit, bool) {
     c1 := strings.index_byte(raw, ':')
@@ -140,9 +128,8 @@ grep_parse :: proc(raw, query: string) -> (GrepHit, bool) {
     }, true
 }
 
-// Replace the pane's contents, deep-cloning `hits` into the pane's own storage (callers
-// pass temp-allocated scans). The previous set is freed first. Each hit's context block is
-// read from disk here (grep_read_context), so the pane owns it independent of the scan; the
+// Replace the pane's contents, deep-cloning `hits` (callers pass temp-allocated scans) and
+// freeing the previous set. Context blocks are read from disk here so the pane owns them; a
 // file is re-read at most once per run of same-file hits (grep groups its output by file).
 grep_set :: proc(g: ^GrepPane, query: string, hits: []GrepHit) {
     grep_clear(g)
@@ -201,8 +188,8 @@ grep_file_lines :: proc(path: string) -> []string {
 }
 
 // The owned context block around 1-based `line`: GREP_CONTEXT lines either side, clamped to
-// the file, each cloned. Returns the block and the 1-based number of its first line. Empty
-// (and ctx_first 0) when the file couldn't be read — the pane falls back to the match text.
+// the file. Returns the block and the 1-based number of its first line; empty (ctx_first 0)
+// when the file couldn't be read, and the pane then falls back to the match text.
 @(private = "file")
 grep_read_context :: proc(lines: []string, line: int) -> (ctx: []string, first: int) {
     if len(lines) == 0 {
@@ -225,28 +212,9 @@ grep_destroy :: proc(g: ^GrepPane) {
     delete(g.hits)
 }
 
-// --- display rows ---------------------------------------------------------------------
-//
-// The pane shows each hit as a `grep -rn`-style CONTEXT BLOCK — a "path:line" title over the
-// lines around the match, blocks parted by a blank row — so one hit is SEVERAL display rows
-// and the viewport, the scroll policy and the hit test all count rows, not hits. That
-// flattening used to live inside draw_grep as a local, which is why nothing could hit-test
-// it and why `g.scroll` could only move as a side effect of painting (C5a; see
-// docs/clay-refactor.md).
-//
-// GrepRow deliberately carries NEITHER a colour NOR a selected flag, though the version in
-// render.odin carried both:
-//
-//   - Colour is fully derived from `header` / `match` / selectedness, so storing it only
-//     created a second place for the palette to reach. The pane picks colours at
-//     declaration time (grep_ui.odin).
-//   - Selectedness would make the flattening depend on `g.selected`, and the selection
-//     CHANGES MID-FRAME when a click lands — the rows would have to be rebuilt right after
-//     being built. Leaving it out makes one flattening per frame valid for the whole frame:
-//     a row belongs to the selected block iff `hit == g.selected`.
-//
-// `hit` is the load-bearing addition: it maps a display row back to the hit it came from,
-// which is what lets a click on any row of a block select that block. Spacers carry -1.
+// --- display rows --- Each hit renders as a CONTEXT BLOCK, so one hit is SEVERAL display
+// rows and the viewport, scroll policy and hit test all count rows. **No colour or selected
+// flag here**: colour is derived, and selectedness CHANGES MID-FRAME on a click.
 
 GrepRow :: struct {
     hit:    int, // index into g.hits; -1 for the blank spacer between blocks
@@ -256,10 +224,9 @@ GrepRow :: struct {
     header: bool, // the block's "path:line" title row (drawn flush-left)
 }
 
-// Flatten the hits into display rows: title, context block (or the trimmed match text when
-// the file could not be re-read), blank spacer. Allocated from `alloc` (the caller passes
-// the frame's temp allocator); the strings borrow the pane's own storage bar the titles and
-// line numbers, which are formatted into `alloc`.
+// Flatten the hits into display rows: title, context block (or the trimmed match text when the
+// file could not be re-read), blank spacer. Strings borrow the pane's own storage bar the
+// titles and line numbers, which are formatted into `alloc` (usually the frame's temp).
 grep_rows :: proc(g: ^GrepPane, root: string, alloc := context.allocator) -> []GrepRow {
     rows := make([dynamic]GrepRow, 0, len(g.hits) * (2 * GREP_CONTEXT + 3), alloc)
     for h, hi in g.hits {
@@ -286,9 +253,9 @@ grep_rows :: proc(g: ^GrepPane, root: string, alloc := context.allocator) -> []G
     return rows[:]
 }
 
-// The display row the selected block OPENS at — its title. The scroll policy frames this
-// the way the editor frames its caret line, so a block scrolls into view by its top rather
-// than by whichever of its rows happens to be nearest.
+// The display row the selected block OPENS at — its title. The scroll policy frames this the
+// way the editor frames its caret line, so a block scrolls in by its top rather than by
+// whichever of its rows happens to be nearest.
 grep_anchor :: proc(rows: []GrepRow, sel: int) -> int {
     for r, i in rows {
         if r.header && r.hit == sel {
@@ -299,10 +266,8 @@ grep_anchor :: proc(rows: []GrepRow, sel: int) -> int {
 }
 
 // How many cells wide the line-number gutter must be, measured from the rows that will
-// actually be drawn. draw_grep used to estimate it as `max(h.line) + GREP_CONTEXT` digits,
-// which over-reserves whenever a match sits within GREP_CONTEXT lines of end-of-file (the
-// context block is clamped there, so those digits are never printed). Measuring the rows is
-// both simpler and exact.
+// actually be drawn — exact, where estimating from `max(h.line) + GREP_CONTEXT` over-reserves
+// for a match within GREP_CONTEXT lines of end-of-file (its block is clamped there).
 grep_gutter_w :: proc(rows: []GrepRow) -> int {
     w := 1
     for r in rows {

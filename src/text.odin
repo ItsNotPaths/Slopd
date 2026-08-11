@@ -178,11 +178,9 @@ text_init :: proc(t: ^Text, ttf: []u8, logical_px, scale: f32) -> bool {
     return true
 }
 
-// Re-bakes the atlas when the logical font size (font zoom) or the DPI scale (the
-// window moved to another monitor) changes, so glyphs stay crisp at the new pixel
-// density and size. No-op when both are unchanged — cheap to call every frame.
-// Reports whether it actually re-baked: the cell advance changed with it, so callers
-// holding measurements taken against the old font (Clay's text cache) must drop them.
+// Re-bakes the atlas when the logical font size (font zoom) or the DPI scale (the window
+// moved monitors) changes, so glyphs stay crisp; a no-op otherwise, cheap to call every
+// frame. Reports a re-bake: the cell advance moved, so cached measurements must be dropped.
 text_apply :: proc(t: ^Text, logical_px, scale: f32) -> (rebaked: bool) {
     if logical_px <= 0 || scale <= 0 {
         return false
@@ -210,12 +208,6 @@ caret :: proc(t: ^Text, r: Rect, c: [3]f32) {
         push_quad(&t.over, r, c)
     }
 }
-
-// `fill_quad` (an arbitrary 4-corner quad, for the diagonal hatching axis-aligned fill()
-// cannot express) went at C9. Its only caller was the git pane's diff hatch, and that pane
-// was deleted rather than ported at C6 — this is what a deleted feature leaves behind in a
-// shared renderer, and it is the reason the C9 sweep exists. `git log -S fill_quad` finds it
-// if a future pane wants slanted quads back.
 
 @(private = "file")
 push_quad :: proc(buf: ^[dynamic]f32, r: Rect, c: [3]f32) {
@@ -264,12 +256,9 @@ glyph_push :: proc(t: ^Text, r: rune, xpos, ypos: ^f32, c: [3]f32) {
         return
     }
     q: stbtt.aligned_quad
-    // GetPackedQuad would step the pen by the glyph's own (fractional) advance; we ignore
-    // that and step by the fixed cell below so the grid stays exactly monospace. The pen
-    // we feed in is already integral, so there is no accumulator to drift — and with the
-    // cell origin pinned, align_to_integer is left OFF: it would re-round each glyph's
-    // sub-pixel offset (fighting the 2x atlas oversampling) and make spacing look jittery,
-    // worst at small sizes. Off, the oversampled ink lands at its true offset in the cell.
+    // GetPackedQuad would step the pen by the glyph's own fractional advance; we step by the
+    // fixed cell instead, from an already-integral pen, so nothing drifts. align_to_integer
+    // stays OFF: re-rounding each sub-pixel offset fights the 2x oversampling into jitter.
     pen := xpos^
     stbtt.GetPackedQuad(&pc, FONT_ATLAS, FONT_ATLAS, 0, &pen, ypos, &q, false)
     xpos^ += t.font.cell_w

@@ -5,10 +5,9 @@ import "core:fmt"
 import "core:strings"
 import "vendor:glfw"
 
-// Input: GLFW key events -> mutations on App. Non-modal, Alt-rooted. Bare keys
-// stay free for typing; navigation uses the ARROW KEYS only (no hjkl aliases — in a
-// non-modal editor those letters have to type). Pane/terminal navigation lives under
-// Alt.
+// Input: GLFW key events -> mutations on App. Non-modal, Alt-rooted: bare keys stay free for
+// typing, navigation is the ARROW KEYS only (hjkl have to type), and pane/terminal navigation
+// lives under Alt.
 //
 // Binds:
 //   Alt+Left/Right            focus editor / aux pane
@@ -43,10 +42,9 @@ import "vendor:glfw"
 // Bare keys go to the focused editable (see cl_handle_key / buffer_key): typing,
 // motion, Tab, undo/redo (Ctrl+Z/Y), save (Ctrl+S), clipboard (Ctrl+C/X/V).
 //
-// Pointer input is the sibling file, mouse.odin, and it is ADDITIVE: it is never the only
-// route to anything above, which is what makes `mouse: off` a preference rather than a
-// mutilation. Every pointer verb below has a keyboard twin in the right column, and that is
-// a rule the next one has to satisfy too, not an observation about the current set.
+// Pointer input (mouse.odin) is ADDITIVE: never the only route to anything above, which is
+// what makes `mouse: off` a preference rather than a mutilation. Every pointer verb below has
+// a keyboard twin, and the next one has to as well.
 //
 //   click                     place the caret / select a row     a motion key, Up / Down
 //   Shift+click               extend the selection               Shift + a motion
@@ -61,43 +59,23 @@ import "vendor:glfw"
 //   wheel                     scroll the view under the pointer  PageUp / PageDown, arrows
 //   wheel over an image       zoom about the pointer             Ctrl+= / Ctrl+-
 //
-// FOUR RULES, and they are the whole of the pointer's behaviour:
-//
-//   1. **A WHEEL SCROLLS A VIEW.** Never a selection, never a caret, never focus. It acts on
-//      whatever is UNDER the cursor whether or not that pane is focused, and scrolling
-//      DETACHES the view from whatever it was following; the next keystroke in that pane
-//      re-attaches. Over a terminal whose child asked for the pointer, the notch is the
-//      child's (terminal_wheel_forwards) — Shift keeps it local.
-//   2. **A CLICK ACTS ON PRESS AND NAMES ONE THING.** The first surface to hit-test something
-//      under the pointer owns it (mouse_take_click); an unclaimed press dies at the end of
-//      the frame rather than surviving into one where the pointer has moved.
-//   3. **FOCUS FOLLOWS THE CLICK — and only the click** (C8d). A press inside a pane moves
-//      the arrows there, through set_focus, without consuming the press: the pane still gets
-//      its own verb in the same frame. The wheel deliberately does not do this, because no
-//      wheel anywhere should steal focus, and neither does a press on the split divider.
-//   4. **THE KEYBOARD OUTRANKS THE POINTER**, and this file is where that starts: any key
-//      that does something stands the pointer down (mouse_stand_down) — the cursor is hidden
-//      and nothing hovers — until the pointer moves or is pressed. Two highlights that both
-//      mean "here" is one too many, and while you are driving with the arrows the pointer is
-//      not saying anything, it is just resting somewhere. A BARE MODIFIER is excluded, which
-//      is the part worth remembering when adding one: Alt+click drops a cursor, so holding
-//      Alt must leave the cursor on screen to aim with, and Ctrl held is the filetree's
-//      chord bar.
-//
-// Standing down suppresses HOVER, never a click — the gate is at the six places hover is
-// painted (hover_shown), never in a hit test, so no state exists in which a click the user
-// aimed is swallowed. See docs/clay-refactor.md, open decision 5.
+// FOUR RULES, the whole of the pointer's behaviour (mouse.odin has the detail):
+//   1. A WHEEL SCROLLS A VIEW — never a selection, a caret, or focus; and it DETACHES.
+//   2. A CLICK ACTS ON PRESS AND NAMES ONE THING; an unclaimed press dies with the frame.
+//   3. FOCUS FOLLOWS THE CLICK, and only the click — never a wheel, never the divider.
+//   4. THE KEYBOARD OUTRANKS THE POINTER: any key that does something stands it down. A BARE
+//      MODIFIER is excluded — Alt+click needs the cursor on screen to aim with.
 
 // Is this key a bare modifier — one that qualifies the next keystroke rather than being one?
-// Only used to decide what stands the pointer down (see handle_key), which is why Super is
-// in the list despite nothing binding it: the question is "did the user ask for something",
-// and a modifier on its own never has.
+// Super and CapsLock are included: the question is "did the user ask for something". Alt is
+// unreachable in two of the three callers, so one set serves all of them.
 key_is_modifier :: proc(key: i32) -> bool {
     switch key {
     case glfw.KEY_LEFT_ALT, glfw.KEY_RIGHT_ALT,
          glfw.KEY_LEFT_CONTROL, glfw.KEY_RIGHT_CONTROL,
          glfw.KEY_LEFT_SHIFT, glfw.KEY_RIGHT_SHIFT,
-         glfw.KEY_LEFT_SUPER, glfw.KEY_RIGHT_SUPER:
+         glfw.KEY_LEFT_SUPER, glfw.KEY_RIGHT_SUPER,
+         glfw.KEY_CAPS_LOCK:
         return true
     }
     return false
@@ -157,10 +135,9 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         a.blink_base = now // any keypress holds the caret solid, then blinks
         a.last_input_at = now // perf log: timestamp for keystroke->present latency
 
-        // The keyboard takes over: hide the pointer and stop it hovering (mouse.odin). A
-        // BARE MODIFIER does not count, and that exclusion is the whole subtlety — Alt+click
-        // drops a cursor, so holding Alt has to leave the cursor on screen for you to aim
-        // it, and Ctrl held is the filetree's chord bar rather than a verb of its own.
+        // The keyboard takes over: hide the pointer and stop it hovering. A BARE MODIFIER
+        // does not count — Alt+click drops a cursor, so holding Alt must leave the cursor on
+        // screen to aim with, and Ctrl held is the filetree's chord bar.
         if !key_is_modifier(key) {
             mouse_stand_down(a)
         }
@@ -213,16 +190,15 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     // showing text. An image surface has no doc, so caret/drop/move-all chords no-op there.
     editing := a.cl_active || (a.focus == .Editor && a.main == .Text)
 
-    // Escape: a focused live terminal gets it first (so vim etc. see it) — Esc is
-    // carved out of the Zen toggle there. Otherwise cancel the command line, clear a
-    // pending move-all prefix, or collapse a multi-cursor set; with nothing to cancel
-    // it drives Zen — turning it on (never off), then flipping the shown pane side.
+    // Escape: a focused live terminal gets it first, so vim etc. see it. Otherwise cancel the
+    // command line, a move-all prefix, or a multi-cursor set; with nothing to cancel it drives
+    // Zen — turning it on (never off), then flipping the shown pane side.
     if key == glfw.KEY_ESCAPE {
         if a.cl_chain.waiting {
             cl_chain_clear(a) // abandon a stuck/pending && chain (the shell command runs on)
         } else if ts := term_sel_target(a); ts != nil && (ts.sel_active || ts.msel_on) {
             // First Esc leaves the selection, back to the input line — whichever way it was
-            // made. terminal_sel_reset drops both (C7d).
+            // made. terminal_sel_reset drops both.
             terminal_sel_reset(ts)
         } else if tf := term_focused(a); tf != nil {
             terminal_input_key(tf, key, mods)
@@ -324,10 +300,9 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
                 }
             }
 
-        // Alt+Up/Down drives the terminal pane: the bare chord cycles session; Ctrl+Alt
-        // moves the row-only copy cursor (scrolling into scrollback), Shift+Alt grows a
-        // line selection from it — Ctrl+Shift+C then copies (see the routing below). The
-        // editor's line jump moved off this onto Ctrl+Up/Down (see buffer_key).
+        // Alt+Up/Down drives the terminal pane: bare cycles session, Ctrl+Alt moves the
+        // copy cursor into scrollback, Shift+Alt grows a line selection from it, and
+        // Ctrl+Shift+C copies. The editor's line jump is Ctrl+Up/Down (buffer_key).
         case glfw.KEY_UP, glfw.KEY_DOWN:
             dir := key == glfw.KEY_UP ? -1 : 1
             if a.aux_mode == .Terminal && term_count(a) > 0 {
@@ -350,10 +325,9 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         return
     }
 
-    // Global font zoom: Ctrl +/- resizes text in every pane, Ctrl+0 resets. Gated on
-    // Ctrl-without-Alt so bare =/-/0 still type into the focused editable, and handled
-    // here (not in the per-pane key procs) because the zoom isn't owned by any pane.
-    // The main loop re-bakes the atlas next frame from app.font_px.
+    // Global font zoom. Gated on Ctrl-without-Alt so bare =/-/0 still type, and handled here
+    // rather than per-pane because the zoom is not owned by any pane. The main loop re-bakes
+    // the atlas next frame from app.font_px.
     if mods & glfw.MOD_CONTROL != 0 && mods & glfw.MOD_ALT == 0 {
         switch key {
         case glfw.KEY_EQUAL, glfw.KEY_KP_ADD:
@@ -377,14 +351,9 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         return
     }
 
-    // PageUp/PageDown alias the scrollback copy-cursor (the Ctrl+Alt+Up/Down move): one
-    // line into history at a time, Shift extends the selection for copy (like Shift+Alt+
-    // Up/Down). GLFW REPEAT keeps firing while held, so a held key scrolls continuously.
-    // BUT a full-screen TUI on the alt screen owns its own scrollback — there PageUp must
-    // reach the app (claude/less page through their buffer), so we only intercept on the
-    // normal screen and otherwise fall through to libvterm below. term_sel_target (not
-    // term_focused) so this matches the Ctrl+Alt+Up selector it aliases — a dead shell's
-    // scrollback is still scrollable; on the alt screen it falls through to the TUI.
+    // PageUp/PageDown alias the copy-cursor move, Shift extending. Only on the NORMAL screen:
+    // a full-screen TUI owns its scrollback and must see the key. term_sel_target, not
+    // term_focused, to match the selector it aliases — a dead shell scrolls too.
     if ts := term_sel_target(a);
        ts != nil && !ts.on_altscreen && (key == glfw.KEY_PAGE_UP || key == glfw.KEY_PAGE_DOWN) {
         terminal_sel_move(ts, key == glfw.KEY_PAGE_UP ? -1 : 1, mods & glfw.MOD_SHIFT != 0)
@@ -402,7 +371,7 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     // Bare keys go to the focused editable, consuming a pending move-all prefix (a
     // bare modifier on its way to the motion must not eat it).
     all := false
-    if !is_modifier_key(key) {
+    if !key_is_modifier(key) {
         all = a.move_all_armed
         a.move_all_armed = false
     }
@@ -437,11 +406,9 @@ grep_key :: proc(a: ^App, key, mods: i32) {
     }
 }
 
-// Editing keys shared by the command line and the buffer (the CL is a one-line
-// buffer): horizontal motion (Ctrl = word), Home/End, and readline Ctrl+A/Ctrl+E,
-// with Shift extending the selection and `all` (the Alt+M prefix) moving every
-// cursor. Returns true if the key was a motion it handled. (Package-level: the aux
-// panes' text boxes reuse it too.)
+// Editing keys shared by the command line and the buffer: horizontal motion (Ctrl = word),
+// Home/End, readline Ctrl+A/Ctrl+E, with Shift extending and `all` (the Alt+M prefix) moving
+// every cursor. Returns true if it handled a motion. The aux panes' text boxes reuse it.
 edit_motion :: proc(d: ^Doc, key, mods: i32, all: bool) -> bool {
     shift := mods & glfw.MOD_SHIFT != 0
     ctrl := mods & glfw.MOD_CONTROL != 0
@@ -581,8 +548,8 @@ editor_copy :: proc(a: ^App) {
 // Copy a terminal's selected lines (the line-select cursor's range) to the system
 // clipboard. Plain joined text — no per-cursor pieces, so paste anywhere is literal.
 term_copy :: proc(a: ^App, t: ^Terminal) {
-    // Either selection will do — the keyboard's line range or the mouse's character span
-    // (C7d). terminal_selection_text picks; this only has to know there is something.
+    // Either selection will do — the keyboard's line range or the mouse's character span.
+    // terminal_selection_text picks; this only has to know there is something.
     if !t.sel_active && !terminal_msel_has_span(t) {
         return
     }
@@ -629,11 +596,9 @@ clipboard_set :: proc(a: ^App, joined: string, pieces: []string) {
     a.clip_pieces = pieces
 }
 
-// Filetree key handling (when the filetree aux pane is focused). Plain arrows + Enter
-// navigate (Shift+Enter opens in the OS app instead of ours); Shift+Up/Down sweep-marks a
-// contiguous run; the dired-style file ops are CTRL chords (Ctrl is global elsewhere but
-// unused in this pane, so it owns them here), discoverable via the Ctrl-held chord bar.
-// The destructive one stages an `rm -rf` command line — the CL is the confirm.
+// Filetree keys. Arrows + Enter navigate (Shift+Enter opens in the OS app); Shift+Up/Down
+// sweep-mark a run; the dired-style file ops are CTRL chords, discoverable via the Ctrl-held
+// chord bar. The destructive one stages an `rm -rf` command line — the CL is the confirm.
 filetree_key :: proc(a: ^App, key, mods: i32) {
     ft := &a.tree
     ctrl := mods & glfw.MOD_CONTROL != 0
@@ -704,12 +669,9 @@ filetree_cd_selected :: proc(a: ^App) {
     }
 }
 
-// Shift+Enter in the filetree: open the entry the way the DESKTOP would — its default
-// application (Sublime for text, vlc for an mp4, the file manager for a directory), via
-// xdg-open. The exception is anything we could RUN: a binary or a script instead STAGES
-// its run command in the command line (run_command), because running is a decision and
-// usually wants arguments typed after it. Plain Enter is unchanged — that opens the file
-// HERE, in Slopd's own editor.
+// Shift+Enter: open the entry the way the DESKTOP would, via xdg-open. The exception is
+// anything we could RUN — a binary or script STAGES its run command in the CL instead, since
+// running is a decision that usually wants arguments. Plain Enter opens it here.
 filetree_open_selected :: proc(a: ^App) {
     e := filetree_selected(&a.tree)
     if e == nil || e.name == ".." {
@@ -724,10 +686,9 @@ filetree_open_selected :: proc(a: ^App) {
     desktop_open(e.path)
 }
 
-// Ctrl+D / Ctrl+Shift+D in the filetree: stage `rm -rf <paths> && ls` in the command line.
-// The delete is a real shell command you read (the full paths are right there), can edit,
-// and run with Enter — no modal confirm to answer, and it lands in CL history like anything
-// else. No-op with nothing selected / nothing marked.
+// Ctrl+D / Ctrl+Shift+D: stage `rm -rf <paths> && ls` in the command line. The delete is a
+// real shell command you read, edit and run with Enter — no modal confirm, and it lands in CL
+// history like anything else. No-op with nothing selected or marked.
 filetree_rm_selected :: proc(a: ^App, marked: bool) {
     paths := filetree_targets(&a.tree, marked, context.temp_allocator)
     if cmd := rm_command(paths, context.temp_allocator); cmd != "" {
@@ -735,11 +696,9 @@ filetree_rm_selected :: proc(a: ^App, marked: bool) {
     }
 }
 
-// Config aux pane key handling (bare keys, when the Config pane is focused). Non-modal,
-// arrow-keys-only: Up/Down move between rows; the highlighted row owns the rest. A setting
-// or language row opens a dropdown on Right/Enter (choices for a setting, grammar actions
-// for a language); the search box and a free-text setting edit in place (typed chars via
-// char_callback), the setting committing on Enter or when the selection leaves it.
+// Config pane keys. Up/Down move between rows and the highlighted row owns the rest: a
+// setting or language opens a dropdown on Right/Enter, while the search box and a free-text
+// setting edit in place, committing on Enter or when the selection leaves.
 config_key :: proc(a: ^App, key, mods: i32) {
     cp := &a.config_pane
     // Settle the selection as it STANDS before acting on this key — whatever moved it here
@@ -788,12 +747,9 @@ config_key :: proc(a: ^App, key, mods: i32) {
     config_text_key(a, &cp.search, key, mods, true)
 }
 
-// The editing keys shared by the pane's two text rows: Left/Right (and Ctrl+, Home/End) move
-// the caret, Backspace/Delete edit. They differ only in what an edit MEANS afterwards, which
-// is what `filter` picks: the language filter re-runs live on every change and has nothing to
-// submit, so Enter is not its key; a setting accumulates and Enter commits it (as does moving
-// off the row — see config_edit_sync). One proc because the two rows are the same field with
-// different consequences, and a divergence between them would only ever be an oversight.
+// The editing keys shared by the pane's two text rows; they differ only in what an edit MEANS
+// afterwards, which `filter` picks. The language filter re-runs live and has nothing to
+// submit; a setting accumulates and Enter commits it (as does leaving the row).
 @(private = "file")
 config_text_key :: proc(a: ^App, d: ^Doc, key, mods: i32, filter: bool) {
     cp := &a.config_pane
@@ -817,10 +773,9 @@ config_text_key :: proc(a: ^App, d: ^Doc, key, mods: i32, filter: bool) {
     }
 }
 
-// Navigation within an open dropdown. Up/Down move within it — config_dropdown_move owns
-// the difference between a setting's clamped choice list and a language's step-out into the
-// rows around it — Left cancels, and Enter/Right chooses (config_choose). Both verbs live in
-// config_pane.odin because a click reaches them too, and the two paths must not diverge.
+// Navigation within an open dropdown: Up/Down move (config_dropdown_move owns the difference
+// between a setting's clamped list and a language's step-out), Left cancels, Enter/Right
+// chooses. Both verbs live in config_pane.odin because a click reaches them too.
 @(private = "file")
 config_dropdown_key :: proc(a: ^App, key: i32) {
     switch key {
@@ -835,11 +790,9 @@ config_dropdown_key :: proc(a: ^App, key: i32) {
     }
 }
 
-// A chosen language option builds a `slopd ...` command and runs it in t1 (the
-// master CL terminal) — the same stubbed seam as the command line's shell path, so
-// these light up when libvterm injection lands. The CLI flags themselves work today.
-// Package-level (not file-private) because config_choose calls it: the pointer path
-// reaches these options too, so the verb had to move out of the keyboard's file.
+// A chosen language option builds a `slopd ...` command and runs it in t1 (the master CL
+// terminal), through the same seam the command line's shell path uses. Package-level because
+// config_choose calls it: the pointer reaches these options too.
 config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
     // Re-invoke ourselves by absolute path (single-quoted for the shell) so these
     // work in the self-contained release where slopd isn't on PATH.
@@ -856,23 +809,6 @@ config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
         cmd = fmt.tprintf("'%s' --grammar uninstall %s", self, lang)
     }
     run_in_t1(a, cmd)
-}
-
-// Bare modifier keys (Shift/Ctrl/Super on their way into a chord) — used so the
-// one-shot move-all prefix survives them to reach the actual motion key, and so a
-// modifier press (e.g. the Ctrl of Ctrl+Shift+C) doesn't drop a terminal selection.
-is_modifier_key :: proc(key: i32) -> bool {
-    switch key {
-    case glfw.KEY_LEFT_SHIFT,
-         glfw.KEY_RIGHT_SHIFT,
-         glfw.KEY_LEFT_CONTROL,
-         glfw.KEY_RIGHT_CONTROL,
-         glfw.KEY_LEFT_SUPER,
-         glfw.KEY_RIGHT_SUPER,
-         glfw.KEY_CAPS_LOCK:
-        return true
-    }
-    return false
 }
 
 // Jumping to an aux mode focuses the aux pane (like the command-line goto does).

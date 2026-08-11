@@ -8,10 +8,9 @@ import "core:strings"
 import "core:time"
 import "core:unicode/utf8"
 
-// FileTree — a self-contained dired-style directory listing. It reads a directory,
-// moves/enters, and pre-formats each row's fixed-width columns. It has NO dependency
-// on the rest of Slopd (no App, no GL), so it can be lifted into another project; the
-// host wires up rendering, the unsaved-ring prefix, and what Enter does with a file.
+// FileTree — a self-contained dired-style directory listing: read a directory, move/enter,
+// pre-format each row's fixed-width columns. **No dependency on the rest of Slopd** (no App,
+// no GL); the host wires up rendering, the unsaved-ring prefix, and what Enter does.
 
 FT_NAME_W :: 24 // name column width, in cells (padded / truncated)
 FT_SIZE_W :: 8 // size column width, right-justified
@@ -24,9 +23,8 @@ FileEntry :: struct {
     display: string, // owned "<mode>  <name>  <size>  <mtime>"; host adds the ring prefix
 }
 
-// What a paste does with the marked set: duplicate the files (Copy) or move them
-// (Cut, which also empties the set afterwards). Set by the copy/cut chords; Copy is
-// the default so paste works even if you never pressed one.
+// What a paste does with the marked set: duplicate (Copy) or move (Cut, which also empties the
+// set). Copy is the default so paste works even if you never pressed a copy/cut chord.
 YankMode :: enum {
     Copy,
     Cut,
@@ -39,15 +37,11 @@ FileTree :: struct {
     scroll:   int, // first visible row — the viewport top (see list_scroll_target)
     hover:    int, // the entry under the pointer, or -1 — transient frame state (config_ui)
 
-    // A wheel gesture DETACHES the view from the selection (glfw time; 0 = following it),
-    // the flat-row twin of Buffer.scroll_detached. While it is set neither viewport policy
-    // runs, so the wheel moves the view rather than the cursor; the next keystroke that
-    // reaches this pane re-attaches it. See list_scroll_apply (scroll.odin).
+    // Wheel-detached at this glfw time; 0 = following the selection. See list_scroll_apply.
     scroll_detached: f64,
 
-    // The yank set: paths marked for a pending copy/cut, OWNED and kept across dir
-    // navigation (yank here, walk elsewhere, paste there). yank_mode says what paste
-    // does with them.
+    // The yank set: paths marked for a pending copy/cut, OWNED and kept across dir navigation
+    // (yank here, walk elsewhere, paste there).
     yanked:    [dynamic]string,
     yank_mode: YankMode,
 }
@@ -150,14 +144,9 @@ filetree_activate :: proc(ft: ^FileTree) -> (path: string, is_file: bool) {
     return e.path, true
 }
 
-// --- yank set + file operations ---
-//
-// The yank set is a list of marked absolute paths plus a mode (copy/cut). Marking is
-// toggle-on-toggle-off; paste applies the mode into the current dir; filetree_targets
-// reports the highlighted entry or the whole set for the host to delete (as a staged
-// `rm -rf` command line). All paths are owned by ft.yanked and survive dir navigation,
-// so you can mark in one directory and paste in another. Every op reloads the listing
-// afterwards (preserving the cursor row where it can).
+// --- yank set + file operations --- Marked absolute paths plus a copy/cut mode. Marking is
+// toggle-on-toggle-off; paste applies the mode into the current dir; filetree_targets reports
+// what the host should delete. Every op reloads the listing, keeping the cursor row where it can.
 
 // Toggle the highlighted entry in/out of the yank set. ".." is never marked.
 filetree_yank_toggle :: proc(ft: ^FileTree) {
@@ -234,11 +223,9 @@ filetree_paste :: proc(ft: ^FileTree) {
     filetree_reload(ft)
 }
 
-// The paths a file op acts on: the whole marked set, or just the highlighted entry
-// (".." excluded). The strings are BORROWED from the tree — use them before the next
-// reload frees them. Deleting is no longer done here: the host turns these into an
-// `rm -rf` command line (see rm_command), so the paths are read and confirmed as a
-// real command rather than behind a modal prompt.
+// The paths a file op acts on: the whole marked set, or just the highlighted entry (".."
+// excluded). The strings are **BORROWED from the tree** — use them before the next reload frees
+// them. The host turns these into a staged `rm -rf` line, not a delete behind a modal prompt.
 filetree_targets :: proc(ft: ^FileTree, marked: bool, alloc := context.allocator) -> []string {
     if marked {
         return slice.clone(ft.yanked[:], alloc)
@@ -252,9 +239,8 @@ filetree_targets :: proc(ft: ^FileTree, marked: bool, alloc := context.allocator
     return out
 }
 
-// Re-read the current dir, keeping the cursor near where it was (filetree_load resets
-// it to 0). ft.dir is freed by the load, so clone before handing it back in. A tree that
-// was never loaded (dir == "") has nothing to re-read.
+// Re-read the current dir, keeping the cursor near where it was (filetree_load resets it to 0).
+// ft.dir is freed by the load, so clone before handing it back in.
 filetree_reload :: proc(ft: ^FileTree) {
     if ft.dir == "" {
         return
@@ -267,9 +253,8 @@ filetree_reload :: proc(ft: ^FileTree) {
 
 // --- internals ---
 
-// A destination path under `dir` for base name `name` that does not already exist:
-// the bare name if it's free, else "<stem>_copy<ext>", "<stem>_copy2<ext>", ... So a
-// paste never overwrites (and pasting into the source dir yields a duplicate).
+// A destination under `dir` for base name `name` that does not already exist: the bare name if
+// free, else "<stem>_copy<ext>", "_copy2", ... so a paste never overwrites.
 @(private = "file")
 fs_unique_dest :: proc(dir, name: string) -> string {
     base := filepath.join({dir, name}, context.temp_allocator) or_else ""
@@ -317,10 +302,9 @@ fs_copy_path :: proc(src, dst: string) -> bool {
     return os.write_entire_file(dst, data) == nil
 }
 
-// Recursively remove a file or directory tree. A directory is emptied first (os.remove
-// is rmdir on a dir, which needs it empty), with its handle closed before the rmdir. Only
-// the cross-device Cut path uses this — a user-facing delete is a staged `rm -rf` (see
-// filetree_targets), so nothing here removes files behind the user's back.
+// Recursively remove a file or directory tree; a directory is emptied first (os.remove is rmdir
+// on a dir) with its handle closed before the rmdir. **Only the cross-device Cut path uses this**
+// — a user-facing delete is a staged `rm -rf`, so nothing here deletes behind the user's back.
 @(private = "file")
 fs_remove_path :: proc(path: string) -> bool {
     if os.is_dir(path) {
@@ -359,11 +343,9 @@ entry_less :: proc(a, b: FileEntry) -> bool {
 @(private = "file")
 entry_from :: proc(dir: string, fi: os.File_Info) -> FileEntry {
     path := filepath.join({dir, fi.name}) or_else strings.clone(fi.name)
-    // A symlink to a directory should navigate and tint like one; stat follows the
-    // link (broken/circular links fall back to non-dir). The mode column still
-    // shows 'l' so the listing stays honest about what it is. The exec bit comes from
-    // the same stat — a symlink's own mode is always rwx, so only the TARGET's bit says
-    // whether Shift+Enter has something to run.
+    // A symlink to a directory navigates and tints like one, so stat follows the link (broken
+    // links fall back to non-dir); the mode column still shows 'l'. The exec bit comes from the
+    // same stat — a symlink's own mode is always rwx, so only the TARGET's bit is meaningful.
     is_dir := fi.type == .Directory
     exec := .Execute_User in fi.mode
     if fi.type == .Symlink {

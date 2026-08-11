@@ -24,11 +24,9 @@ Line_Numbers :: enum {
     Relative,
 }
 
-// How a viewport tracks what it is following: Follow moves the view only when the target
-// would leave it; Middle pins the target to the pane's middle row, so Up/Down always move
-// the content instead. One policy across every line-oriented view — the editor follows its
-// caret (buffer_scroll_target, which also walks folds), while the filetree / grep / config
-// lists follow their selection (list_scroll_target).
+// How a viewport tracks what it follows: Follow moves the view only when the target would leave
+// it; Middle pins the target to the middle row so Up/Down move the content. One policy across
+// every line view — the editor its caret (buffer_scroll_target), the lists their selection.
 Scroll_Mode :: enum {
     Follow,
     Middle,
@@ -56,16 +54,9 @@ Config :: struct {
     hover:            bool, // tint the row under the pointer; needs `mouse` to mean anything
 }
 
-// Splits a config line at its trailing comment: `body` is everything before the '#'
-// (untrimmed, so its length is the comment's column) and `comment` runs from the '#' to
-// the end of the line, "" when there is none.
-//
-// A '#' opens a comment only at the start of the line or after a space/tab — the same
-// rule ini and git-config use. That keeps a '#' that is glued to a token inside the
-// value, which is the only place one can plausibly be meant: git_tool is free text
-// (`git_tool: sh -c foo#bar`) and a theme name is arbitrary. A '#' that follows
-// whitespace is always a comment, with no escape for it; the file's header promises
-// trailing comments and every shipped line uses one, so that is the side to err on.
+// Splits a config line at its trailing comment; `body` is untrimmed, so its length is the comment's
+// column. A '#' opens a comment only at line start or after a space/tab (the ini / git-config rule),
+// keeping one glued to a token inside a free-text value. **After whitespace there is no escape.**
 config_split_comment :: proc(line: string) -> (body: string, comment: string) {
     for i in 0 ..< len(line) {
         if line[i] != '#' {
@@ -78,11 +69,9 @@ config_split_comment :: proc(line: string) -> (body: string, comment: string) {
     return line, ""
 }
 
-// A config line with its comment removed and trimmed; "" for a blank or comment-only
-// line. Every read goes through this: the shipped config documents each setting with a
-// trailing comment, so a parser that kept it would hand parse_on_off "on   # on | off",
-// match nothing, and silently fall back to the default. Where the value is free text —
-// git_tool — the comment would instead become the value, naming a tool "# e.g. lazygit".
+// A config line with its comment removed and trimmed; "" for a blank or comment-only line. Every
+// read goes through this: the shipped config documents each setting with a trailing comment, so
+// keeping it would hand parse_on_off "on   # on | off" and silently fall back to the default.
 config_strip_comment :: proc(line: string) -> string {
     body, _ := config_split_comment(line)
     return strings.trim_space(body)
@@ -218,8 +207,7 @@ find_config :: proc() -> string {
     return ""
 }
 
-// Resolves a theme config token to a file path for load_theme ("" => baked-in
-// default). Tokens come from the Config pane's theme dropdown:
+// Resolves a theme config token (from the Config pane's dropdown) to a file path for load_theme:
 //   "" / "default"        -> themes/default.theme beside the binary (else baked-in)
 //   "global"              -> ~/.config/unrawk/active.theme, the universal Thrawk theme
 //                            (github.com/ItsNotPaths/Thrawk); falls back to default
@@ -309,12 +297,9 @@ theme_options :: proc(allocator := context.allocator) -> []string {
 // to point at for the empty case. load_config maps this straight back to 0.
 GIT_TERM_DETACHED :: "detached"
 
-// "detached", then every session number a launch can actually land on: the open ones plus
-// the next (git_term_slot's rule — a number past the end opens one more, and only one). A
-// configured number beyond that is appended as well, because config_pane_open_setting
-// pre-selects by MATCHING the current value: a hand-written `git_term: 7` that was missing
-// from the list would leave the dropdown pointing at "detached", and the first Enter would
-// quietly change a setting the user came to look at.
+// "detached", then every session number a launch can land on: the open ones plus the next
+// (git_term_slot's rule). A configured number beyond that is appended too, because the pane
+// pre-selects by MATCHING the current value — a missing `git_term: 7` would silently reset it.
 @(private = "file")
 git_term_options :: proc(a: ^App, allocator := context.allocator) -> []string {
     top := git_term_slot(term_count(a), TERM_MAX) // the highest slot that names a session
@@ -329,11 +314,9 @@ git_term_options :: proc(a: ^App, allocator := context.allocator) -> []string {
     return out[:]
 }
 
-// --- the editable settings shown in the Config aux pane ---
-// config.odin owns config, so the Setting model + writeback live here. The pane edits these
-// keys and no others; per-language grammar paths also live in the config file but are
-// intentionally NOT here — they're data for the syntax list, not knobs — so the settings
-// list stays small. Order is the pane's row order, and follows the shipped slopd.config's.
+// --- the editable settings shown in the Config aux pane --- The pane edits these keys and no
+// others; per-language grammar paths live in the config file but are deliberately NOT here, being
+// data for the syntax list rather than knobs. Order is the pane's row order.
 
 Setting :: enum {
     Theme,
@@ -352,13 +335,9 @@ Setting :: enum {
     Hover,
 }
 
-// Whether a setting is FREE TEXT rather than a choice — the row is an editor you type into,
-// not a dropdown you pick from. Only git_tool: it is a command line, so the set of legal
-// values is "whatever launches your git tool", including flags (`sublime_merge -n`) and
-// wrapper scripts. A menu here could only ever be a guess at what you meant.
-//
-// Everything else is genuinely closed (on/off, a theme file that exists, a terminal session
-// that can exist) and stays a dropdown, because for those a menu is the whole answer.
+// Whether a setting is FREE TEXT rather than a choice — the row is an editor, not a dropdown.
+// Only git_tool: it is a command line, flags and wrapper scripts included, so a menu could only
+// guess. Everything else is genuinely closed and stays a dropdown.
 setting_is_text :: proc(s: Setting) -> bool {
     return s == .GitTool
 }
@@ -437,11 +416,9 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
     case .FolderCd:
         a.folder_cd_run = parse_stage_run(val) or_return
     case .GitTool:
-        // Free text, so this is the one setting a user can type something UNREADABLE into:
-        // a value carrying a comment-opening '#' would be written whole and then read back
-        // truncated (config_split_comment), and the pane would show a value the file does
-        // not hold. Refusing it keeps the old tool, which is this proc's contract for an
-        // invalid value — and the config file stays the place to write anything exotic.
+        // Free text, so this is the one setting that can be typed UNREADABLE: a value carrying a
+        // comment-opening '#' writes whole but reads back truncated, and the pane would show a
+        // value the file does not hold. Refuse it; the config file stays the place for exotica.
         if _, comment := config_split_comment(val); comment != "" {
             return false
         }
@@ -516,14 +493,9 @@ on_off :: proc(b: bool) -> string {
     return b ? "on" : "off"
 }
 
-// Persists `key: value` to the config file via read-modify-write: the matching key
-// line is replaced in place and every other line — comments, unknown keys, anything
-// this build doesn't know about — is preserved verbatim; a new key is appended.
-//
-// The replaced line keeps its own trailing comment, re-aligned to the column it sat at.
-// That comment documents the setting ("# on | off"), not its current value, so rewriting
-// `mouse: on   # on | off` as a bare `mouse: off` would erase the shipped config's
-// documentation one setting at a time as the Config pane is used.
+// Persists `key: value` by read-modify-write: the matching line is replaced in place, every other
+// line — comments, unknown keys — preserved verbatim, a new key appended. The replaced line keeps
+// its trailing comment, re-aligned: it documents the setting ("# on | off"), not its value.
 config_set :: proc(key, val: string) -> bool {
     path := config_write_path()
 
@@ -553,10 +525,9 @@ config_set :: proc(key, val: string) -> bool {
     return err == nil
 }
 
-// Writes one `key: value` line, followed by `comment` (already including its '#') when
-// there is one, padded out to `col` — where the comment sat on the line being replaced —
-// so the file's comment column survives an edit. A longer value just pushes the comment
-// right, keeping one space. An empty value writes a bare `key:`, like the shipped file.
+// Writes one `key: value` line, then `comment` (with its '#') padded out to `col` — where it sat
+// on the replaced line — so the file's comment column survives an edit. A longer value pushes the
+// comment right, keeping one space. An empty value writes a bare `key:`, like the shipped file.
 @(private = "file")
 config_write_line :: proc(b: ^strings.Builder, key, val, comment: string, col: int) {
     n := strings.write_string(b, key)

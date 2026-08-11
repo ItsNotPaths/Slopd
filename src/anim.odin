@@ -2,23 +2,16 @@ package main
 
 // Scoped animation for the redraw scheduler. An Anim is a one-shot scalar tween in
 // seconds on the glfw.GetTime() clock: state that wants to move (smooth scroll, the
-// Zen slide, a bell flash) embeds one, starts it, and reads anim_value() each frame.
+// Zen slide, the overlay fades) embeds one, starts it, and reads anim_value() each frame.
 //
 // The main loop polls app_next_wake() after every frame to decide how to wait: a
 // non-negative result is a timeout (spin at vsync while something moves), a negative
-// one means block until the next input event (0% idle when nothing is animating).
-// This keeps the event-driven loop adaptive — the best of both — and an external
-// glfw.PostEmptyEvent (a future PTY reader thread) unblocks either wait.
-//
-// Mechanism only for now: nothing starts an Anim yet, so app_next_wake always says
-// "block" and the editor idles exactly as before. Smooth scroll is the first consumer.
+// one means block until the next input event (0% idle when nothing is animating). An
+// external glfw.PostEmptyEvent (a PTY reader thread) unblocks either wait.
 
-// The wait an animating frame asks for: 0 means "don't sleep, redraw now" so SwapBuffers
-// at SwapInterval(1) is the sole pacer and animations run at the full refresh rate (e.g.
-// 240fps on a 240Hz panel). A non-zero budget here would floor the wait and cap animation
-// fps below vsync — at 1/120 the loop missed every other 240Hz edge, halving smooth-scroll
-// to ~120fps. (If a compositor ever leaves SwapBuffers non-blocking, this becomes a busy
-// spin while animating — acceptable, since an animating frame wants to redraw regardless.)
+// The wait an animating frame asks for: 0 means "don't sleep, redraw now", so SwapBuffers at
+// SwapInterval(1) is the sole pacer and animations run at the full refresh rate. Any non-zero
+// budget floors the wait and caps animation below vsync (1/120 halves scroll on a 240Hz panel).
 VSYNC_PACED :: 0.0
 
 // Animation timings (seconds) — short by design, in keeping with the spartan ethos.
@@ -65,10 +58,9 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     if a.view == .Split && anim_active(&a.split_anim, now) { // the split widen/narrow
         wake = sched_min(wake, VSYNC_PACED)
     }
-    // The two overlay fades, gated on the SAME predicates the declarations are (C8c,
-    // overlay_ui.odin). They used to be spelled out here, and the switcher's copy had drifted:
-    // it asked only `alt_held && aux_mode == .Terminal`, so the loop woke at vsync to animate a
-    // switcher render was refusing to draw for the whole of an Alt+Ctrl or Alt+Shift chord.
+    // The two overlay fades, gated on the SAME predicates their draw sites use
+    // (overlay_ui.odin) rather than a copy spelled out here: a copy drifts, and the loop
+    // then wakes at vsync to animate a render that is refusing to draw.
     if switcher_shown(a) && anim_active(&a.switcher_anim, now) {
         wake = sched_min(wake, VSYNC_PACED)
     }
@@ -84,15 +76,12 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     if a.focus == .Editor { // wake to re-stat the focused view pane for external edits
         wake = sched_min(wake, max(0, a.disk_poll_at - now))
     }
-    // A drag held past a pane edge (drag.odin). The only pointer path that needs a wake at
-    // all: a click and a wheel notch each ARRIVE as an event, so the loop is already up for
-    // them, while a drag parked off the bottom of the pane produces no events and must keep
-    // scrolling anyway. Not VSYNC_PACED — the tick is DRAG_SCROLL_S, and the wake is what
-    // paces the autoscroll rather than the frame rate.
+    // A drag held past a pane edge (drag.odin) — the only pointer path needing a wake: a
+    // click or wheel notch ARRIVES as an event, but a drag parked off the pane bottom emits
+    // none and must keep scrolling. Not VSYNC_PACED: this wake paces DRAG_SCROLL_S, not fps.
     if w := drag_next_wake(a, now); w >= 0 {
         wake = sched_min(wake, w)
     }
-    // Bell flash reports here once libvterm gives us a bell to flash on.
     return wake
 }
 

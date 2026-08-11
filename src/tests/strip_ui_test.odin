@@ -2,6 +2,7 @@ package tests
 
 import app ".."
 import clay "../../bindings/clay"
+import "core:strings"
 import "core:testing"
 
 // C8b: the status strip declared in Clay. The strip has no list, no viewport and no click, so
@@ -180,7 +181,7 @@ test_strip_labels_are_anchored_not_a_row :: proc(t: ^testing.T) {
 
     // A file name far wider than its share of the strip: 45 characters, in a 50-cell window.
     b := app.editor_current(&a.editor)
-    b.path = "/tmp/a-very-long-file-name-that-eats-the-strip.odin"
+    b.path = strings.clone("/tmp/a-very-long-file-name-that-eats-the-strip.odin") // owned: buffer_destroy frees it
     cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
 
     left := text_box(&cmds, "  a-very-long-file-name-that-eats-the-strip.odin")
@@ -289,7 +290,7 @@ test_strip_conflict_command_list :: proc(t: ^testing.T) {
     fixture(&a, "alpha")
     defer teardown(&a)
     b := app.editor_current(&a.editor)
-    b.path = "/tmp/x.odin"
+    b.path = strings.clone("/tmp/x.odin") // owned: buffer_destroy frees it
     b.conflict = true
 
     cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)

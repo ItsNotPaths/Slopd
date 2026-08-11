@@ -169,11 +169,9 @@ buffer_back_visible :: proc(b: ^Buffer, line, n: int) -> int {
     return i
 }
 
-// Step `n` visible lines DOWN from `line` (clamped to the last line) — the twin of
-// buffer_back_visible, which C7c's drag autoscroll walks the selection past the bottom edge
-// with. It ends on buffer_prev_visible because the far end is the asymmetric one: line 0 can
-// never be hidden (a fold hides `line > f.line`), but the LAST line can, so a walk that runs
-// out of buffer inside a collapsed block has to back out of it.
+// Step `n` visible lines DOWN from `line` (clamped to the last) — the twin of
+// buffer_back_visible, used by the drag autoscroll. It ends on buffer_prev_visible because
+// the LAST line CAN be hidden (line 0 cannot), so a walk that runs out must back out.
 buffer_fwd_visible :: proc(b: ^Buffer, line, n: int) -> int {
     i := clamp(line, 0, len(b.lines) - 1)
     left := n
@@ -242,10 +240,9 @@ buffer_collapse_hidden_cursors :: proc(b: ^Buffer) {
     doc_merge_cursors(&b.doc)
 }
 
-// The line range to fold for a block opening on `line`: [start, end] with end the
-// last line to hide. Tree-sitter first (accurate for braces/blocks/defs), falling
-// back to an indentation scan when no grammar is loaded or no multi-line node opens
-// on the line.
+// The line range to fold for a block opening on `line`: [start, end] with end the last line
+// to hide. Tree-sitter first (accurate for braces/blocks/defs), falling back to an indentation
+// scan when no grammar is loaded or no multi-line node opens on the line.
 fold_range :: proc(a: ^App, b: ^Buffer, line: int) -> (start, end: int, ok: bool) {
     if s, e, got := highlight_fold_range(a, b, line); got {
         return s, e, true

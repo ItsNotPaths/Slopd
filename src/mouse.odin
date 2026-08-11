@@ -5,40 +5,28 @@ import "vendor:glfw"
 import clay "../bindings/clay"
 
 // Mouse: GLFW pointer events -> mutations on App. The sibling of input.odin, which owns
-// the keyboard; the manifesto there still holds, so everything reachable here has a key
-// binding too and `mouse: off` costs convenience, never capability.
+// the keyboard; everything reachable here has a key binding too, so `mouse: off` costs
+// convenience, never capability.
 //
-// Mouse input is NOUN-FIRST, and that is the whole reason this file exists separately: a
-// key event names its verb outright, while a wheel notch carries only a position, which
-// must resolve to a pane before there is a verb at all. wheel_target is that resolution
-// and is PURE — App state plus the frame's Layout in, a target out, no mutation — so the
-// routing table is a headless unit test (tests/mouse_test.odin) rather than something you
-// confirm by waggling a mouse. wheel_apply is the only half that writes.
+// Mouse input is NOUN-FIRST: a key names its verb outright, while a wheel notch carries only
+// a position and must resolve to a pane before there is a verb at all. wheel_target is that
+// resolution and is PURE, so the routing table is a headless unit test (tests/mouse_test.odin);
+// wheel_apply is the only half that writes.
 //
-// Two coordinate traps, both handled at the callback so nothing downstream repeats them:
-//
-//   1. GLFW reports the cursor in WINDOW (logical) coordinates, while Layout, Rect and
-//      Clay all work in FRAMEBUFFER pixels. On a HiDPI screen those differ by the
-//      framebuffer/window ratio, so mouse_to_fb converts once, on the way in. It derives
-//      the ratio from the two sizes rather than reusing App.scale (the content scale):
-//      the two agree on every setup we have, but only the former is the conversion by
-//      definition.
-//
-//   2. Routing resolves against the layout the last frame PAINTED (App.lay), not a freshly
-//      computed one. Mid-animation — the Zen slide, a split adjustment — a recomputed
-//      layout is already somewhere else, so a notch would land in a pane the user cannot
-//      see yet. This is the same "hit-test against the previous frame" rule Clay's own
-//      SetPointerState follows (see docs/clay-refactor.md, C1).
+// Two coordinate traps, handled at the callback so nothing downstream repeats them:
+//   1. GLFW reports WINDOW (logical) coords; Layout, Rect and Clay use FRAMEBUFFER pixels.
+//      mouse_to_fb converts once on the way in, deriving the ratio from the two sizes rather
+//      than from App.scale — only the former is the conversion by definition.
+//   2. Routing resolves against the layout the last frame PAINTED (App.lay); mid-animation a
+//      recomputed layout is elsewhere, so a notch would land in a pane not yet on screen.
 
-// Lines moved per wheel notch. Three is the near-universal desktop default, and each of
-// the routing targets happens to consume "lines" natively — buffer rows, diff rows, list
-// selection steps — so there is one constant rather than a per-pane table.
+// Lines moved per wheel notch — the near-universal desktop default. Every routing target
+// consumes "lines" natively, so one constant rather than a per-pane table.
 WHEEL_LINES :: 3
 
 // What makes two presses a double-click: near enough in time AND in space. The slop is in
-// framebuffer pixels and deliberately small — a press that travelled is a drag gesture
-// (C7), not a second click — while 0.4s is the common desktop default, comfortably above a
-// deliberate double-tap and below the pause that means "two separate clicks".
+// framebuffer pixels and deliberately small — a press that travelled is a drag, not a second
+// click — while 0.4s is the common desktop default.
 DOUBLE_CLICK_S :: 0.4
 DOUBLE_CLICK_PX :: 4
 
@@ -48,78 +36,37 @@ DOUBLE_CLICK_PX :: 4
 Mouse :: struct {
     x, y:  i32,
     known: bool,
-    down:  bool, // left button held; fed to Clay and, from C7, the drag machine
-    // Undelivered wheel travel. A mouse wheel reports whole notches, but a trackpad (and
-    // libinput's high-resolution axis) reports fractions of one, and rounding each event
-    // up to a notch would make a gentle two-finger drag tear through the buffer. Carrying
-    // the remainder makes both correct without a device check: exact for ±1 events, and a
-    // fraction of a line per event otherwise.
+    down:  bool, // left button held; fed to Clay and the drag machine
+    // Undelivered wheel travel. A wheel reports whole notches, a trackpad fractions of one,
+    // and rounding each event up to a notch would make a gentle two-finger drag tear through
+    // the buffer. Carrying the remainder gets both right without a device check.
     accum: f64,
 
-    // A left press waiting for a noun. A wheel notch resolves to a PANE, which the callback
-    // can do on its own (wheel_target); a click resolves to a ROW, a field, a checkbox —
-    // and only the pane's own Clay declaration knows which element sits under the pointer.
-    // So the press is parked here and the next frame's draw claims it, hit-testing against
-    // the layout Clay is already holding. Nothing else in this file interprets it.
+    // A left press waiting for a noun. A wheel notch resolves to a PANE in the callback, but a
+    // click resolves to a ROW or field, and only the pane's own declaration knows what is under
+    // the pointer — so the press is parked here and the next frame's draw claims it.
     click:       bool, // a press is pending
     click_count: int, // presses in the current run: 1 single, 2 double, 3+ keeps counting
     click_at:    f64, // glfw time of the press, for the double-click window
     click_x:     i32, // and where it landed, for the slop
     click_y:     i32,
 
-    // The keyboard has taken over: the cursor is hidden and nothing hovers. Set by any key
-    // that does something (mouse_stand_down), cleared by any pointer motion or press
-    // (mouse_wake). See those two for the reasoning; `cursor_hidden` is only the bookkeeping
-    // that keeps mouse_apply_cursor from calling into GLFW every frame.
+    // The keyboard has taken over: cursor hidden, nothing hovers. `cursor_hidden` is only
+    // bookkeeping, to keep mouse_apply_cursor from calling into GLFW every frame.
     stood_down:    bool,
     cursor_hidden: bool,
 
-    // The modifiers held AT THE PRESS, taken from GLFW's own `mods` rather than read off
-    // App.alt_held / shift_held when the pane claims it. Two reasons, and the second is the
-    // one that bites: a press is claimed on a later frame than it arrived, so a modifier
-    // released in between would be read as never held; and the key-tracking flags only see
-    // keys this window received, while `mods` is the state the window system reports with
-    // the event itself. Stored as bools so this file stays the only one that knows GLFW's
-    // bit values (C7).
-    //
-    // Ctrl is here for ONE client: the terminal forwards it to a mouse-tracking TUI as
-    // MOD_CTRL (C7b), which is the only place in Slopd where a modified click means
-    // something to somebody else's program. Shift never reaches a TUI — it is the override
-    // that keeps the click local — and Alt never does either, for the same reason the
-    // keyboard's Alt-chords never reach the shell.
+    // The modifiers held AT THE PRESS, from GLFW's own `mods`: a press is claimed a frame
+    // later, so a modifier released in between would read as never held via App.alt_held etc.
+    // Ctrl has one client — the terminal forwards it to a mouse-tracking TUI as MOD_CTRL.
     click_shift: bool,
     click_ctrl:  bool,
     click_alt:   bool,
 }
 
 // --- standing the pointer down while the keyboard is in use ---
-//
-// Two highlights that both mean "here" are one too many. A list pane paints the row under
-// the pointer AND the selected row, and while you are moving the selection with the arrows
-// the pointer is not saying anything — it is sitting wherever you left it, lighting a row
-// you are not thinking about and competing with the one you are. So a keystroke stands the
-// pointer down: the cursor is hidden and nothing hovers, until the pointer does something
-// that means the hand is back on it.
-//
-// This is not a timeout and deliberately not one. A dwell timer would need a wake in the
-// scheduler and would make the cursor vanish mid-thought while you read; the keyboard is
-// already the unambiguous signal, and it costs nothing to watch.
-//
-// What wakes it: ANY pointer event — motion, a press, or a wheel event. The wheel was
-// briefly excluded on the reasoning that scrolling does not move the pointer, so waking
-// would relight whatever the cursor happened to be resting over; that is true and it is not
-// the point. Turning a wheel is a hand on the mouse, and a program that keeps the cursor
-// hidden while you are visibly using the mouse is wrong about who is driving. Hover
-// following a scroll is what hover IS — the row under the pointer changed because the rows
-// moved — and the next keystroke stands it straight back down.
-//
-// **Standing down suppresses HOVER, never a click.** A press wakes the pointer in the
-// callback, before any pane gets a chance to claim it, so there is no state in which a
-// deliberate click is swallowed — which is why the gate lives at the four places hover is
-// PAINTED (hover_shown) and not in any pane's hit test. Clay is still fed the real pointer
-// for the same reason: the list panes ask it which row the pointer is over (`ft_row` /
-// `gp_row` / `cf_row`), and parking the pointer off-screen to kill hover would quietly
-// break that instead.
+// A keystroke hides the cursor and stops it hovering until any pointer event (a wheel counts)
+// wakes it. **Suppresses HOVER, never a click** — hence the gate in hover_shown, not a hit test.
 
 // A key that does something: hide the pointer and stop it answering.
 mouse_stand_down :: proc(a: ^App) {
@@ -131,20 +78,16 @@ mouse_wake :: proc(a: ^App) {
     a.mouse.stood_down = false
 }
 
-// Whether hover may PAINT this frame. The config toggle (`hover: on|off`) and the stand-down
-// state, in one place, because every pane needs both and neither is worth restating four
-// times. The hovered item is still resolved while stood down — it costs nothing, it is the
-// same call the click needs, and a pane that stopped tracking it would have to re-hit-test
-// on the motion event that wakes it.
+// Whether hover may PAINT this frame — the config toggle and the stand-down state in one
+// place, since every pane needs both. The hovered item is still RESOLVED while stood down:
+// it is the same call the click needs, and dropping it would force a re-hit-test on wake.
 hover_shown :: proc(a: ^App) -> bool {
     return a.hover_on && !a.mouse.stood_down
 }
 
-// Push the cursor's visibility to GLFW, once per frame, from the one state that decides it.
-// Called from the main loop rather than from the callbacks on purpose: this way there is a
-// single writer and no path can strand a hidden cursor — turning `mouse: off` while the
-// pointer is stood down reveals it on the next frame, because the desired state below is
-// simply false again.
+// Push the cursor's visibility to GLFW once per frame. From the main loop, not the callbacks,
+// so there is a single writer and no path can strand a hidden cursor — turning `mouse: off`
+// while stood down reveals it next frame, the desired state simply being false again.
 mouse_apply_cursor :: proc(a: ^App) {
     want := a.mouse_on && a.mouse.stood_down
     if want == a.mouse.cursor_hidden || a.window == nil {
@@ -154,11 +97,9 @@ mouse_apply_cursor :: proc(a: ^App) {
     glfw.SetInputMode(a.window, glfw.CURSOR, want ? glfw.CURSOR_HIDDEN : glfw.CURSOR_NORMAL)
 }
 
-// Claim the pending click. Clearing it here is what makes a press have exactly ONE noun:
-// the first pane to hit-test something under the pointer owns it, and every later asker in
-// the same frame sees nothing. A pane must therefore ask only when it actually hit
-// something of its own — an unclaimed press is dropped at the end of the frame (render),
-// not carried into the next one, where the pointer may be somewhere else entirely.
+// Claim the pending click. Clearing it here is what gives a press exactly ONE noun: the first
+// pane to hit-test something owns it, and every later asker sees nothing — so a pane must ask
+// only when it actually hit something. An unclaimed press is dropped at the end of the frame.
 mouse_take_click :: proc(a: ^App) -> (count: int, ok: bool) {
     if !a.mouse_on || !a.mouse.click {
         return 0, false
@@ -173,17 +114,14 @@ mouse_take_click :: proc(a: ^App) -> (count: int, ok: bool) {
 Wheel_Target :: enum {
     None, // the status strip, the inter-pane gutter, off-window
     Editor, // editor pane, Text surface: the buffer's viewport
-    Media, // editor pane, Image surface: the zoom (C8d) — the one target that is not a scroll
+    Media, // editor pane, Image surface: the zoom — the one target that is not a scroll
     Terminal,
     List, // filetree / grep / config
 }
 
-// Which target a wheel notch at (mx, my) belongs to. Pure: no mutation, no GL, no window
-// — the routing decision table, and the thing tests/mouse_test.odin pins.
-//
-// Hidden panes carry a zero rect out of compute_layout, so rect_hit rejects them without
-// a separate visibility check, and the editor/aux rects never overlap (in Zen the editor
-// shrinks to the strip the sliding aux pane leaves uncovered), so probe order is free.
+// Which target a wheel notch at (mx, my) belongs to. Pure — the routing decision table, pinned
+// by tests/mouse_test.odin. Hidden panes carry a zero rect, so rect_hit rejects them with no
+// visibility check, and the editor/aux rects never overlap, so probe order is free.
 wheel_target :: proc(a: ^App, lay: Layout, mx, my: i32) -> Wheel_Target {
     if rect_hit(lay.editor, mx, my) {
         return a.main == .Image ? .Media : .Editor
@@ -200,31 +138,9 @@ wheel_target :: proc(a: ^App, lay: Layout, mx, my: i32) -> Wheel_Target {
     return .None
 }
 
-// Apply `notch` wheel notches to `target`. Positive is DOWN / forward (the callback
-// normalises GLFW's inverted sign), and the magnitude is notches, not lines — the
-// per-target conversion happens here because a list steps by selection and a buffer by
-// rows, and a trackpad can deliver several at once.
-//
-// The MIDDLE scroll_mode question is the substance of this proc. Both viewport policies
-// derive their top from the thing they follow and ignore whatever top they were handed —
-// MIDDLE outright, FOLLOW once the caret would leave the pane — so "move the view, leave
-// the selection" is not expressible while a policy is running. Two answers, by pane kind:
-//
-// ~~The LIST panes are conceptually a cursor in a list, so the wheel moves the SELECTION.~~
-// **Reversed: every list pane now DETACHES, exactly as the editor does.** A wheel scrolls
-// the VIEW — which is what a wheel means everywhere else in this program (the editor, the
-// terminal, the git diff) and everywhere else on the desktop — and the next keystroke that
-// reaches that pane re-attaches its policy to the selection (list_scroll_apply, scroll.odin).
-//
-// The original reasoning was sound and the conclusion was still wrong. MIDDLE really does
-// re-derive the top from the selection, so a view-only scroll IS overwritten on the next
-// frame — but the answer to that is the detach the editor already had, not a wheel that
-// moves the cursor. Moving the selection also had a wart it could not shed: a notch is
-// WHEEL_LINES *items*, which in grep meant three BLOCKS, about eighteen display rows for
-// one notch. Detached, a notch is three rows in every pane.
-//
-// The terminal needs no detach: it already keeps view and selection apart, so the wheel
-// moves the view and scroll_mode never enters into it.
+// Apply `notch` wheel notches to `target`. Positive is DOWN / forward (the callback normalises
+// GLFW's inverted sign). **A wheel scrolls the VIEW, never a selection** — and since both
+// viewport policies re-derive the top from what they follow, that needs the DETACH.
 wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
     if notch == 0 {
         return
@@ -234,18 +150,13 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
     case .None:
     case .Media:
         // The one target that does not scroll: over an image a notch ZOOMS, about the
-        // pointer (C8d). It is the only branch here that ignores `d` — WHEEL_LINES is a
-        // count of rows and a picture has none — so the notch count goes straight through
-        // to media_wheel, which compounds it into a zoom factor.
+        // pointer. The only branch that ignores `d` — WHEEL_LINES counts rows and a picture
+        // has none — so the notch count goes to media_wheel, which compounds it into a factor.
         media_wheel(a, notch)
     case .Editor:
         if len(a.editor.buffers) == 0 {
             return
         }
-        // Detaching the view from the caret is what makes this a real scroll rather than a
-        // nudge inside a caret-shaped cage — and it is what lets ONE branch serve both
-        // scroll_modes, since neither policy runs while detached (buffer_scroll_apply).
-        // The next keystroke re-attaches, so the caret is never lost for long.
         buffer_scroll_by(editor_current(&a.editor), d, glfw.GetTime())
     case .Terminal:
         t := term_current(a)
@@ -253,35 +164,19 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
             return
         }
         if terminal_wheel_forwards(t, a.shift_held) {
-            // The child asked for the pointer — mouse reports, the alt screen, or both — so
-            // the notches are its scroll, not ours. Which of those two it asked for decides
-            // only the ENCODING (buttons 4/5 or the page key), and that lives one level down
-            // in terminal_scroll_tui.
-            //
-            // **This used to ask `t.on_altscreen` alone**, which is the C9 item: the click
-            // asked `mouse_on` and the two disagreed over an inline mouse-tracking program
-            // like `fzf --height`, sending a click to it while the wheel scrolled our
-            // scrollback. One predicate, one question — see terminal_wheel_forwards.
+            // The child asked for the pointer (mouse reports, the alt screen, or both), so the
+            // notches are its scroll. Which of the two only picks the ENCODING, one level down.
+            // One predicate for both, or a click and a wheel disagree over `fzf --height`.
             for _ in 0 ..< abs(notch) {
                 terminal_scroll_tui(t, notch < 0 ? -1 : 1)
             }
         } else {
-            // The VIEW, not the copy cursor. ~~Our scrollback is only reachable through the
-            // copy cursor, so scrolling back IS moving it.~~ That was true and it made the
-            // terminal the one pane where a wheel notch moved a cursor — putting a
-            // keyboard-only marker on screen that nobody asked for, and dragging a
-            // selection's anchor around under it. The view has its own detach now
-            // (terminal_scroll_by), exactly as every list pane and the editor do, and rule 10
-            // finally holds everywhere: a wheel scrolls the view, never the selection.
-            terminal_scroll_by(t, d)
+            terminal_scroll_by(t, d) // the view, not the copy cursor
         }
     case .List:
-        // Every list pane scrolls its VIEW, through one shared proc. The stamp is the whole
-        // mechanism: while it is set the pane's viewport policy does not run, so this write
-        // survives the frame in either scroll_mode, and the next keystroke to reach the pane
-        // clears it. No total is passed — the callback has no font, no pane rect and, for
-        // grep and config, no flattened row list, so it cannot know where the end is;
-        // list_scroll_apply clamps on the next frame, which bounds the overshoot at a notch.
+        // No total is passed: the callback has no font, no pane rect and — for grep and
+        // config — no flattened row list, so it cannot know where the end is.
+        // list_scroll_apply clamps next frame, bounding the overshoot at one notch.
         now := glfw.GetTime()
         switch a.aux_mode {
         case .FileTree:
@@ -290,9 +185,7 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
             list_scroll_by(&a.grep.scroll, &a.grep.scroll_detached, d, now)
         case .Config:
             // Including with a dropdown open: its options are spliced into the row list, so
-            // scrolling the view carries them along and there is nothing special to do.
-            // config_dropdown_move stays the KEYBOARD's, where moving a selection is the
-            // point. (That branch was a refusal until C5b and a selection move until now.)
+            // scrolling the view carries them along.
             list_scroll_by(&a.config_pane.scroll, &a.config_pane.scroll_detached, d, now)
         case .Terminal:
         // Not a list pane; wheel_target never routes it here.
@@ -300,8 +193,7 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
     }
 }
 
-// Convert a GLFW cursor position (window coordinates) to framebuffer pixels — trap 1 in
-// the header. The ratio is derived from the two sizes rather than assumed to be App.scale.
+// GLFW cursor position (window coords) -> framebuffer pixels; see trap 1 in the header.
 @(private = "file")
 mouse_to_fb :: proc(w: glfw.WindowHandle, x, y: f64) -> (i32, i32) {
     ww, wh := glfw.GetWindowSize(w)
@@ -328,14 +220,9 @@ cursor_pos_callback :: proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
     a.mouse.known = true
 }
 
-// The left button: held state (fed to Clay, and from C7 to the drag machine) plus a
-// pending press for a pane to claim. The press is NOT routed here — see Mouse.click — but
-// the click RUN is counted here, because that is a property of the input stream (how close
-// two presses were in time and space) rather than of whatever they landed on.
-//
-// Release is deliberately not a verb: a click acts on press, the way every list does, so a
-// row is selected the moment the button goes down. It IS the end of a capture, though — see
-// below.
+// The left button: held state (fed to Clay and the drag machine) plus a pending press for a
+// pane to claim. The press is NOT routed here, but the click RUN is counted here — a property
+// of the input stream. Release is not a verb (a click acts on press), only the end of a capture.
 mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mods: i32) {
     context = runtime.default_context()
     a := (^App)(glfw.GetWindowUserPointer(window))
@@ -344,27 +231,19 @@ mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mo
     }
     a.mouse.down = action != glfw.RELEASE
     if !a.mouse.down {
-        // A release still commands no verb, but it ends whatever the press captured (C7c).
-        // Reported before the mouse_on gate on purpose: a drag begun and then switched off
-        // mid-gesture must still be told the button came up, or the capture outlives the
-        // toggle that was meant to have stopped it. drag_release only PARKS the end — the
-        // owning pane is owed one more frame at the position the pointer stopped at, since
-        // WaitEvents drains a motion and its release together (drag.odin).
+        // Reported BEFORE the mouse_on gate: a drag switched off mid-gesture must still be
+        // told the button came up, or the capture outlives the toggle. It only PARKS the end —
+        // the owning pane is owed one more frame at the position the pointer stopped at.
         drag_release(a)
         return
     }
     if !a.mouse_on {
         return
     }
-    // A press is the hand back on the mouse, so it wakes BEFORE it is parked for a pane to
-    // claim — the click then acts at the position it was made, with the cursor visible
-    // again from that frame on. Waking after would make the first click of a run act while
-    // still stood down, which is the one case where "ignored" would be wrong: the user
-    // aimed it.
-    mouse_wake(a)
-    // A press can be the first pointer event the window ever sees, exactly as a wheel notch
-    // can (a cursor already sitting over a freshly opened window reports no motion), so ask
-    // GLFW outright rather than resolving against a position we never received.
+    mouse_wake(a) // wake BEFORE parking it, so the click acts with the cursor visible
+    // A press can be the first pointer event the window ever sees (a cursor already over a
+    // freshly opened window reports no motion), so ask GLFW rather than routing against a
+    // position we never received.
     if !a.mouse.known {
         x, y := glfw.GetCursorPos(window)
         a.mouse.x, a.mouse.y = mouse_to_fb(window, x, y)
@@ -381,20 +260,9 @@ mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mo
     m.click = true
 }
 
-// Spend one wheel event: wake the pointer, accumulate the sub-notch travel, then route and
-// apply whatever whole notches that produced. GLFW's yoffset is positive for a scroll UP,
-// which is the opposite of every "lines down" convention downstream, so the sign flips
-// exactly once — here.
-//
-// Split out of scroll_callback so it is reachable headlessly: everything the callback keeps
-// needs a window handle, and everything here is a decision worth a test — the wake, the
-// accumulator (which does nothing at all on a device that sends ±1 per notch, so a run on
-// this desk says nothing either way about it), and the routing.
-//
-// THE WAKE IS UNCONDITIONAL, ahead of the accumulator rather than beside the apply: a
-// trackpad delivers a long run of fractional events that each spend no notch, and the hand
-// is plainly on the pointer throughout. Waking only when a notch lands would leave the
-// cursor hidden through exactly the gesture that is most obviously pointer use.
+// Spend one wheel event: wake, accumulate the sub-notch travel, then route and apply whatever
+// whole notches that produced. GLFW's yoffset is positive for a scroll UP, so the sign flips
+// exactly once — here. The wake is UNCONDITIONAL: fractional events still mean a hand on it.
 mouse_wheel :: proc(a: ^App, yoffset: f64) {
     if !a.mouse_on || yoffset == 0 {
         return
@@ -428,9 +296,8 @@ scroll_callback :: proc "c" (window: glfw.WindowHandle, xoffset, yoffset: f64) {
 }
 
 // Hand Clay this frame's pointer, so PointerOver / OnHover resolve during the declarations
-// that follow. Called from render before anything is declared. With the mouse configured
-// off — or before the first pointer event — the pointer is parked off-screen so nothing
-// can hover, which is cheaper and clearer than making every declaration check the flag.
+// that follow. With the mouse off — or before the first pointer event — it is parked
+// off-screen so nothing can hover, rather than making every declaration check the flag.
 mouse_feed_clay :: proc(a: ^App) {
     if !a.mouse_on || !a.mouse.known {
         clay.SetPointerState({-1, -1}, false)

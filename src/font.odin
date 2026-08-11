@@ -15,12 +15,9 @@ import stbtt "vendor:stb/truetype"
 // and spinners. A user font (SLOPD_FONT) overrides it at runtime.
 IOSEVKA_TTF := #load("../vendor/fonts/IosevkaFixed-Latin.ttf")
 
-// Glyphs are baked into the atlas LAZILY: the first time a codepoint is drawn we
-// rasterize just that glyph into the shared atlas and cache its quad. A terminal only
-// ever shows a small alphabet of distinct glyphs, so the atlas stays small no matter
-// how large the font's coverage is — and any codepoint the font has Just Works, with
-// no fixed pre-baked list to maintain. (The old design pre-baked one contiguous ASCII
-// range, which is why box/braille/symbols rendered blank.)
+// Glyphs are baked into the atlas LAZILY: the first time a codepoint is drawn we rasterize
+// just that glyph into the shared atlas and cache its quad. A terminal only ever shows a
+// small alphabet, so the atlas stays small however large the font's coverage is.
 FONT_ATLAS :: 1024 // single-channel R8 atlas, 1 MB; holds far more than any one screen uses
 
 Glyph :: struct {
@@ -45,11 +42,14 @@ Font :: struct {
 }
 
 // Picks the user's font (SLOPD_FONT) if set and readable, else bundled Iosevka Fixed.
-choose_font :: proc() -> []u8 {
+// `owned` says which: a read file is the caller's to free, the embedded bytes are not.
+choose_font :: proc() -> (ttf: []u8, owned: bool) {
     if path := os.get_env("SLOPD_FONT", context.temp_allocator); path != "" {
-        return os.read_entire_file_from_path(path, context.allocator) or_else IOSEVKA_TTF
+        if data, err := os.read_entire_file_from_path(path, context.allocator); err == nil {
+            return data, true
+        }
     }
-    return IOSEVKA_TTF
+    return IOSEVKA_TTF, false
 }
 
 // (Re)initializes the atlas at px physical pixels and records monospace metrics. Called
@@ -75,10 +75,8 @@ font_load :: proc(f: ^Font, ttf: []u8, px: f32) -> bool {
     stbtt.PackSetOversampling(&f.pc, 2, 2) // smoother edges at small sizes
 
     // Warm the printable-ASCII range in one batched pack call (tighter packing than 95
-    // incremental bakes, and it's almost always the bulk of what's on screen). Folded
-    // into the initial full upload below, so no dirty-band bookkeeping. Everything else
-    // bakes lazily on first use. A 0 return (only at extreme zoom, where the batch won't
-    // fit) just leaves ASCII to the lazy path.
+    // incremental bakes, and almost always the bulk of what's on screen); the full upload
+    // below covers it, so no dirty band. A 0 return leaves ASCII to the lazy path.
     ascii: [95]stbtt.packedchar
     if stbtt.PackFontRange(&f.pc, raw_data(ttf), 0, px, 32, 95, &ascii[0]) != 0 {
         for i in 0 ..< 95 {
@@ -93,11 +91,9 @@ font_load :: proc(f: ^Font, ttf: []u8, px: f32) -> bool {
     f.line_height = f32(ascent - descent + line_gap) * scale
     advance, lsb: c.int
     stbtt.GetCodepointHMetrics(&f.info, 'M', &advance, &lsb) // monospace: any glyph
-    // Snap the cell to a whole physical pixel. Glyphs step the pen by this fixed
-    // width (not their own fractional advance), so every cell origin lands on the
-    // same integer grid the carets and selection use — otherwise integer-aligned
-    // glyph ink drifts ±1px per cell against a fractional advance and the text
-    // stops looking precisely monospace.
+    // Snap the cell to a whole physical pixel. Glyphs step the pen by this fixed width, not
+    // their own fractional advance, so every cell origin lands on the integer grid carets
+    // and selection use — otherwise ink drifts ±1px per cell and text stops looking mono.
     f.cell_w = math.round(f32(advance) * scale)
 
     gl.GenTextures(1, &f.tex)
@@ -146,10 +142,9 @@ font_glyph :: proc(f: ^Font, r: rune) -> (pc: stbtt.packedchar, ok: bool) {
         return {}, false
     }
     g: Glyph
-    // PackFontRange appends this one glyph into the live atlas (skyline packer carries
-    // over between calls), writing its bitmap into f.pixels and quad into g.pc. A 0
-    // return means the atlas is full: cache it absent (renders blank until the next
-    // re-bake on zoom/DPI change frees the atlas) rather than retrying every frame.
+    // PackFontRange appends this one glyph into the live atlas (the skyline packer carries
+    // over between calls). A 0 return means the atlas is full: cache it absent — blank until
+    // the next re-bake on zoom/DPI change frees the atlas — rather than retry every frame.
     g.present = stbtt.PackFontRange(&f.pc, raw_data(f.ttf), 0, f.px, c.int(r), 1, &g.pc) != 0
     if g.present {
         // Grow the dirty band to cover this glyph's rows, so font_sync re-uploads only

@@ -1,65 +1,34 @@
 package main
 
-// Drag capture — C7c, and the one genuinely NEW state machine in this refactor. Everything
-// else the mouse work added was a translation of something that already existed (a click is
-// a keyboard verb reached from a pixel, a wheel notch is a scroll); a drag is not, because
-// GLFW has no such concept. It delivers a press, a stream of motion, and a release, all
-// addressed to the WINDOW, and the meaning that binds them together is ours to keep.
-//
-// The invariant, and it is the whole file: **a press captures, and every motion until the
-// release goes to whatever the press resolved to, wherever the pointer has since gone.** A
-// selection begun in the editor keeps extending while the pointer is over the filetree, off
-// the bottom of the window, or on another monitor. Without that, a drag would stop the
-// instant it left the pane it started in — which is exactly the moment the user is asking
-// for more of it.
-//
-// This is deliberately NOT Clay's job. Clay's OnHover is per-element and frame-scoped: it
-// can answer "is the pointer over this box right now", which is the opposite of what capture
-// means. Clay resolves the noun at the press (through each pane's `_hit`), and this file
-// keeps it.
+// Drag capture. GLFW delivers a press, a stream of motion and a release, all addressed to the
+// WINDOW; the meaning that binds them is ours. The invariant is the whole file: **a press
+// captures, and every motion until the release goes to whatever the press resolved to, wherever
+// the pointer has since gone.** Clay resolves the noun at the press; this file keeps it.
 //
 // Two things the machine stores that a bare press/release pair does not imply:
 //
-//   1. **The TARGET, not just the kind.** A drag serves one buffer / one terminal / one
-//      divider. A buffer switch mid-drag must make the drag inert, not repoint it at
-//      somebody else's text, so the client asks drag_live with the thing it is drawing.
-//   2. **The GRADE, fixed at press time.** Single / double / triple chooses the GRANULARITY
-//      of the gesture — character, word, line — and it applies for the whole drag, so a
-//      double-click-drag keeps growing by whole words rather than selecting one word and
-//      then continuing by characters. Both reference terminals do this by storing the type
-//      on the Selection and expanding per-type when the range is READ (alacritty's
-//      SelectionType, ghostty's Order); we store it here and expand in the client's frame.
-//      A machine that only remembered where the press landed could not express it.
+//   1. **The TARGET, not just the kind.** A drag serves one buffer / terminal / divider, so a
+//      buffer switch mid-drag makes it inert rather than repointing it at somebody else's text.
+//   2. **The GRADE, fixed at press time.** Single / double / triple chooses the granularity —
+//      character, word, line — for the gesture's whole length. Both reference terminals do the
+//      same (alacritty's SelectionType, ghostty's Order): store the type, expand when read.
 //
-// The release is PARKED rather than acted on, which is the one thing here that reads odd
-// and is load-bearing. glfw.WaitEvents drains every pending event before the loop renders,
-// so a motion immediately followed by a release arrives as ONE batch and is followed by ONE
-// frame. Clearing the drag in the release callback would throw that last motion away — the
-// final stretch of the gesture, which is the part the user was aiming with. So a release
-// sets `ending`, the owning pane gets one more frame to apply the position the pointer
-// actually stopped at, and drag_sweep buries it at the end of that frame. It is the same
-// shape as Mouse.click, for the same reason: the callback has no noun, only the frame does.
+// The release is PARKED, not acted on: WaitEvents drains a motion and the release after it into
+// ONE frame, so clearing in the callback would discard that last motion. `ending`, then swept.
 
-// Autoscroll cadence while the pointer is dragging past a pane edge, and the ceiling on how
-// many lines one tick may walk. alacritty uses a 15ms timer with the delta scaled by how far
-// past the edge the pointer is, which is what these are — the scaling is drag_scroll_step.
-// The cap exists because the overshoot is unbounded (the pointer can be at the bottom of a
-// 4K screen while the pane is 200px tall) and a drag that teleports to the end of the file
-// is not a drag.
+// Autoscroll cadence while the pointer drags past a pane edge, and the ceiling on how many
+// lines one tick may walk — alacritty's 15ms timer scaled by overshoot (drag_scroll_step). The
+// cap exists because the overshoot is unbounded: a drag that teleports to EOF is not a drag.
 DRAG_SCROLL_S :: 0.015
 DRAG_SCROLL_MAX :: 8
 
-// What a press captured. All four were named at C7c, when only the first was live, because
-// the machine is built once against ALL of its clients (that is why C7c is a checkpoint of
-// its own) and because an enum that lists them makes the switch in drag_autoscrolling total.
-// C7d brought the second and C8d the last two; nothing in this file changed to admit them
-// except the autoscroll's answer for the pan, which the C7c note had already predicted.
+// What a press captured. Listing every kind keeps the switch in drag_autoscrolling total.
 Drag_Kind :: enum {
     None,
-    Editor_Text, // C7c: the editor's text selection
-    Terminal_Sel, // C7d: per-character grid selection
-    Split, // C8d: the editor/aux divider — the one client with a motion threshold
-    Media_Pan, // C8d: panning the image surface — the only 2D drag
+    Editor_Text, // the editor's text selection
+    Terminal_Sel, // per-character grid selection
+    Split, // the editor/aux divider — the one client with a motion threshold
+    Media_Pan, // panning the image surface — the only 2D drag
 }
 
 Drag :: struct {
@@ -75,37 +44,22 @@ Drag :: struct {
     ending: bool,
 
     // Where the press landed, in framebuffer pixels. The split divider and the media pan
-    // (C8d) drag by pixel delta from here, and it is nothing to do with the editor's anchor.
+    // drag by pixel delta from here, and it is nothing to do with the editor's anchor.
     origin_x, origin_y: i32,
 
-    // The media pan at press time — the pan client's `anchor`: where the VIEW was when the
-    // gesture began, so each frame re-derives the pan from the TOTAL pixel delta rather than
-    // accumulating a per-frame one. Same argument as `anchor`'s, arriving at the same answer
-    // for the opposite reason: the editor stores its origin in document units because the
-    // view moves under it, and this stores the view because the document does not move at all.
-    //
-    // Accumulating instead (pan += the delta since the last frame, origin advanced to here)
-    // is the obvious alternative and it quietly makes origin_x/y mean two different things
-    // in two clients — a threshold in one measures from the press, a pan in the other from
-    // the previous frame. One f32 pair is cheaper than that ambiguity.
+    // Where the VIEW was when a media pan began, so each frame re-derives the pan from the
+    // TOTAL pixel delta. Accumulating instead would make origin_x/y mean two different things
+    // in two clients — a threshold from the press, a delta from the last frame.
     origin_pan: [2]f32,
 
-    // The gesture has travelled past its client's motion threshold. LATCHED: a press that
-    // has become a drag does not stop being one by coming back near where it started, and
-    // an un-latched threshold leaves the client's state written for a position the pointer
-    // has since left. Only clients that HAVE a threshold read it (drag_moved) — the editor
-    // and the terminal deliberately have none, because a zero-length drag there re-derives
-    // the position the click already set (C7c).
+    // The gesture has travelled past its client's motion threshold. LATCHED: a press that has
+    // become a drag does not stop being one by coming back near where it started. Only clients
+    // that HAVE a threshold read it (drag_moved); the editor and terminal have none.
     moved: bool,
 
-    // Where the press landed in the DOCUMENT, resolved once and never re-resolved. Both
-    // columns, for C7a's reason: `anchor` is the caret BOUNDARY a character-grade drag
-    // extends from, `anchor_glyph` is the character actually pointed at, which is what a
-    // word-grade drag expands its run around.
-    //
-    // Storing the position rather than re-deriving it from origin_x/y each frame is the
-    // point: the view scrolls DURING a drag (that is what autoscroll is), so a pixel origin
-    // would name a different line every time the window moved under it.
+    // Where the press landed in the DOCUMENT, resolved once. `anchor` is the caret BOUNDARY a
+    // character-grade drag extends from, `anchor_glyph` the character pointed at, which a
+    // word-grade drag expands around. Stored because the view SCROLLS during a drag.
     anchor:       Pos,
     anchor_glyph: int,
 
@@ -113,31 +67,16 @@ Drag :: struct {
     // past — so leaving the pane takes effect on the next frame rather than after a tick.
     scroll_at: f64,
 
-    // Where the autoscroll has walked to, in the client's own units — a buffer line for the
-    // editor, an absolute scrollback row for the terminal (C7d) — and whether it is in force
-    // at all. Seeded from the edge the pointer left over, advanced on each tick, dropped the
-    // moment the pointer comes back inside the pane.
-    //
-    // **This is state and not a per-frame derivation, and the difference is the whole of it.**
-    // Past an edge the pointer has stopped naming a line: it is off the pane, and the only
-    // thing that changes while it sits there is how long it has been there. Re-resolving it
-    // every frame is the obvious implementation and it OSCILLATES — the walked line moves the
-    // viewport, the next frame resolves the pointer against a view still tweening toward it,
-    // the selection snaps back to the edge row, and the policy re-aims at where the selection
-    // now is. The scroll and the selection then fight each other at the frame rate. So while
-    // the pointer is outside, the DRAG names the line and the pointer only says "keep going".
+    // Where the autoscroll has walked to, in the client's own units (a buffer line, or an
+    // absolute scrollback row), and whether it is in force. STATE, not a per-frame derivation:
+    // past an edge the pointer stops naming a line, and re-resolving it every frame OSCILLATES.
     over:    int,
     over_on: bool,
 }
 
-// Capture. Called by a pane from inside its `_click`, once it has claimed the press and
-// knows what the press MEANT — which is the only place that knowledge exists (a click has no
-// noun until a pane draws, C3).
-//
-// Refused when the button is already up: a press and its release can both land in the gap
-// between two frames, and that is a click, not a drag. The cost is that a flick completed
-// inside one frame keeps only its press position, which is unavoidable without replaying
-// event history and is under 16ms of travel.
+// Capture. Called by a pane from inside its `_click`, once it knows what the press MEANT.
+// Refused when the button is already up: a press and its release can both land between two
+// frames, and that is a click — such a flick keeps only its press position.
 drag_begin :: proc(a: ^App, kind: Drag_Kind, target, grade: int, anchor: Pos, glyph: int, pan: [2]f32 = {}) {
     if !a.mouse.down {
         return
@@ -154,21 +93,9 @@ drag_begin :: proc(a: ^App, kind: Drag_Kind, target, grade: int, anchor: Pos, gl
     }
 }
 
-// Has this gesture travelled far enough to BE a drag? `px` is the client's own threshold in
-// framebuffer pixels, max-norm (the same shape DOUBLE_CLICK_PX's slop is, and for the same
-// reason: a pointer moves in two axes and neither one is the interesting number).
-//
-// **The answer latches**, which is the whole reason this is a proc and not an expression at
-// the call site. An un-latched threshold reads correctly on the way out and wrongly on the
-// way back: a divider dragged 40px right and then returned to 1px from the press would
-// refuse the last frame and leave the split where the 40px was, with the pointer somewhere
-// else entirely. Once a press has become a drag it stays one until the button comes up.
-//
-// Only a client that must distinguish a click from a drag needs this. The editor and the
-// terminal do not — a zero-length drag there re-derives the position the click already set,
-// so the two agree by construction (C7c). The split divider does: a CLICK on it must do
-// nothing at all, and without a threshold the sub-pixel jitter of a press would nudge the
-// split by whatever pixel the pointer settled on.
+// Has this gesture travelled far enough to BE a drag? `px` is the client's threshold in
+// framebuffer pixels, max-norm. **The answer latches**: un-latched, a divider dragged 40px out
+// and back to 1px would refuse the last frame and leave the split where the 40px was.
 drag_moved :: proc(a: ^App, px: i32) -> bool {
     if a.drag.moved {
         return true
@@ -182,8 +109,7 @@ drag_moved :: proc(a: ^App, px: i32) -> bool {
 
 // Whether `kind` over `target` is the drag currently held. The target comparison is what
 // makes capture safe across a mid-drag change of subject: switching buffers with the button
-// down leaves the drag held (it is still the same gesture) but stops it writing, and the
-// release then buries it.
+// down leaves the drag held but stops it writing.
 drag_live :: proc(a: ^App, kind: Drag_Kind, target: int) -> bool {
     return a.drag.kind == kind && a.drag.target == target
 }
@@ -195,12 +121,9 @@ drag_release :: proc(a: ^App) {
     }
 }
 
-// End of frame: bury a drag that has had its last frame. Beside render's `a.mouse.click =
-// false` and for the same reason — a pointer gesture is an event at a place, and one that
-// has finished must not survive into a frame where the pointer is somewhere else.
-//
-// `mouse_on` going false mid-drag also buries it. The alternative is a capture that outlives
-// the toggle that was supposed to have switched the pointer off.
+// End of frame: bury a drag that has had its last frame — a finished gesture must not
+// survive into a frame where the pointer is somewhere else. `mouse_on` going false mid-drag
+// buries it too, or the capture outlives the toggle meant to have stopped it.
 drag_sweep :: proc(a: ^App) {
     if a.drag.kind == .None {
         return
@@ -210,24 +133,16 @@ drag_sweep :: proc(a: ^App) {
     }
 }
 
-// Whether the drag is pulling the view past an edge this instant: the pointer has left the
-// captured pane vertically, so the client walks the selection further on each tick and the
-// pane's own viewport policy does the scrolling.
-//
-// Pure, and it asks `a.lay` — the layout the LAST FRAME PAINTED — for exactly the reason
-// wheel_target does (mouse.odin, trap 2): mid-animation a freshly computed layout is already
-// somewhere the user cannot see yet. The scheduler calls this too, which is what keeps the
-// autoscroll wake off a render→state backchannel: nothing has to publish "I am autoscrolling"
-// because the question is answerable from state that already exists.
+// Whether the drag is pulling the view past an edge this instant. Asks `a.lay`, the layout the
+// LAST FRAME PAINTED (mouse.odin, trap 2). The scheduler calls this too, which keeps the
+// autoscroll wake off a render->state backchannel.
 drag_autoscrolling :: proc(a: ^App) -> bool {
     r: Rect
     switch a.drag.kind {
     case .None, .Split, .Media_Pan:
-        // The divider has no view to run off the end of, and the media pan's answer is
-        // NEITHER AXIS rather than "the vertical one" — C7c predicted that and this is
-        // where it is spent. An image is not a list of rows: a pan already moves the
-        // surface a pixel per pixel of pointer travel, so "past the edge" has nothing left
-        // to mean, and walking it would be a second thing moving the same view.
+        // The divider has no view to run off the end of, and for the media pan the answer
+        // is NEITHER axis: a pan already moves the surface a pixel per pixel of pointer
+        // travel, so walking it would be a second thing moving the same view.
         return false
     case .Editor_Text:
         r = a.lay.editor
@@ -240,10 +155,9 @@ drag_autoscrolling :: proc(a: ^App) -> bool {
     return a.mouse.y < r.y || a.mouse.y >= r.y + r.h
 }
 
-// Spend an autoscroll tick if one is due. Called only once the client has established that
-// the pointer IS past an edge, so a drag held still inside its pane consumes nothing and
-// leaves `scroll_at` in the past — which is what makes the first frame after the pointer
-// leaves act at once instead of a tick later.
+// Spend an autoscroll tick if one is due. Called only once the pointer is established as
+// past an edge, so a drag inside its pane leaves `scroll_at` in the past — which is what
+// makes the first frame after the pointer leaves act at once rather than a tick later.
 drag_tick :: proc(a: ^App, now: f64) -> bool {
     if now < a.drag.scroll_at {
         return false
@@ -262,12 +176,9 @@ drag_scroll_step :: proc(past, row_h: int) -> int {
     return clamp(1 + past / row_h, 1, DRAG_SCROLL_MAX)
 }
 
-// The wait an autoscrolling drag asks the loop for, or -1 for "nothing here needs a wake".
-// Folded into app_next_wake (anim.odin) beside the tweens.
-//
-// This is the pump the drag needs and no other pointer path does: a wheel notch and a click
-// each arrive as an event, so the loop is already awake for them, while a drag held still
-// past the bottom edge produces no events at all and must still keep scrolling.
+// The wait an autoscrolling drag asks the loop for, or -1. The one pointer path that needs a
+// pump: a wheel notch and a click each arrive as an event, while a drag held still past the
+// bottom edge produces none and must keep scrolling anyway.
 drag_next_wake :: proc(a: ^App, now: f64) -> f64 {
     if !drag_autoscrolling(a) {
         return -1

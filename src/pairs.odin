@@ -64,7 +64,7 @@ buffer_autopair :: proc(b: ^Buffer, r: rune) -> bool {
             if is_open(r) || is_quote(r) {
                 append(&edits, Edit{lo, hi, surround_runes(d, r, close, lo, hi), 0}) // surround
             } else {
-                append(&edits, Edit{lo, hi, []rune{r}, 0}) // closer replaces the selection
+                append(&edits, Edit{lo, hi, runes(r), 0}) // closer replaces the selection
             }
             continue
         }
@@ -78,9 +78,9 @@ buffer_autopair :: proc(b: ^Buffer, r: rune) -> bool {
         case (is_close(r) || is_quote(r)) && next == r:
             append(&edits, Edit{c.head, c.head, nil, -1}) // step over the existing close
         case (is_open(r) || is_quote(r)) && !is_word(next) && !quote_apostrophe:
-            append(&edits, Edit{c.head, c.head, []rune{r, close}, 1}) // insert pair, caret inside
+            append(&edits, Edit{c.head, c.head, runes(r, close), 1}) // insert pair, caret inside
         case:
-            append(&edits, Edit{c.head, c.head, []rune{r}, 0}) // plain
+            append(&edits, Edit{c.head, c.head, runes(r), 0}) // plain
         }
     }
     b.dirty |= doc_commit(d, edits[:])
@@ -106,6 +106,16 @@ buffer_tab :: proc(b: ^Buffer, indent: Indent) {
 }
 
 // --- internals ---
+
+// A temp-allocated rune slice, for the edits built one per cursor above. NOT `[]rune{...}` at
+// the call site: a compound literal's storage is hoisted to the enclosing frame, so slices
+// built in the per-cursor loop would all alias one buffer.
+@(private = "file")
+runes :: proc(rs: ..rune) -> []rune {
+    out := make([]rune, len(rs), context.temp_allocator)
+    copy(out, rs)
+    return out
+}
 
 // Column just past the next close/quote on the line at/after col, when the caret
 // is past the leading whitespace (so Tab still indents at the line start).

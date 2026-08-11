@@ -13,32 +13,22 @@ import "vendor:glfw"
 // It owns both bus connections and every ObjectManager tree, and the main thread never
 // touches a socket.
 //
-// Threading model (terminal.odin's reader, plus one thing):
+// Threading model:
 //   - The worker blocks in poll() on [wake pipe, system fd, session fd]. D-Bus is
-//     signal-driven, so there is NO sampling loop: the panes are live and the app still
-//     idles at 0%. The only timer is a 1s tick, armed only while a pane wanting a live
-//     graph is on screen (sysbus_set_ticking).
+//     signal-driven, so there is NO sampling loop. The only timer is a 1s tick, armed only
+//     while a pane wanting a live graph is on screen (`sysbus_set_ticking`).
 //   - Incoming signals update the worker's authoritative trees. Anything that moves is
 //     snapshotted heap-owned, handed off as `pending` under `lock`, and PostEmptyEvent
-//     wakes the main loop. sysbus_drain installs it into `cur` each frame. `cur` is
+//     wakes the main loop. `sysbus_drain` installs it into `cur` each frame. `cur` is
 //     MAIN-THREAD-ONLY, so draw needs no lock.
+//   - A REQUEST QUEUE runs the other way: the main thread pushes a request and a wake byte,
+//     the worker performs the call and reports the outcome in the next snapshot. Requests
+//     run one at a time, in order, so a hung daemon delays those behind it (bounded by
+//     DBUS_CALL_TIMEOUT) but never the UI.
 //
-// THE ONE ADDITION — a REQUEST QUEUE the other way. A D-Bus Connect() can block for thirty
-// seconds, so an action cannot run on the main thread the way an instant syscall could:
-// the main thread pushes a request and writes a wake byte, and
-// the worker performs the call and reports the outcome in the next snapshot. The row
-// renders in-flight in the meantime — the worker publishes a snapshot as soon as it picks
-// a request up, BEFORE it blocks on the call, precisely so that state is visible. A
-// permission failure (the polkit-gated ops on iwd and BlueZ) is carried as an error name
-// ON THE RESULT, because the user asked for this action and it has to be legible.
-//
-// Requests are performed one at a time, in order. A hung daemon therefore delays the
-// requests queued behind it (bounded by DBUS_CALL_TIMEOUT) but never the UI, which is
-// drawing a snapshot and does not wait on anything.
-//
-// Testing: sysbus_open and sysbus_step are the whole worker minus the blocking poll, and
-// both are synchronous. Attach scripted connections with sysbus_attach and a test drives
-// the entire thing on one thread with no daemon and no timing (src/tests/sysbus_test.odin).
+// Testing: `sysbus_open` and `sysbus_step` are the whole worker minus the blocking poll,
+// and both are synchronous. Attach scripted connections with `sysbus_attach`
+// (src/tests/sysbus_test.odin).
 
 SYS_TICK_MS :: 1000 // the graph beat, armed only while a pane wants it
 SYS_RESULTS_KEEP :: 32 // finished results retained for the panes to read back
@@ -176,10 +166,8 @@ sysbus_start :: proc(sb: ^Sysbus) {
     }
     sb.worker.data = sb
     // The worker allocates every snapshot and the main thread frees it, so the two must
-    // agree on the allocator — without this the worker would run under the default context
-    // and hand back memory allocated somewhere the caller's allocator has never heard of.
-    // Its TEMP allocator is a different matter and is replaced with a private arena inside
-    // the worker proc, since that one genuinely must not be shared.
+    // agree on the allocator. Its TEMP allocator is a different matter and is replaced with
+    // a private arena inside the worker proc, since that one must not be shared.
     sb.worker.init_context = context
     thread.start(sb.worker)
 }
@@ -400,11 +388,8 @@ sysbus_worker_proc :: proc(th: ^thread.Thread) {
 }
 
 // Opens the connections the watches need, starts their trees, and publishes the first
-// snapshot. Runs once, on the worker, because dbus_open plus a GetManagedObjects round
-// trip is exactly the blocking work the main thread must never do. A bus that won't open,
-// or a service that isn't running, is not an error: the tree stays empty and
-// present=false, and the NameOwnerChanged match dbus_om_start registered brings it to life
-// if the daemon shows up later.
+// snapshot. Runs once, on the worker: `dbus_open` plus a GetManagedObjects round trip is
+// the blocking work the main thread must never do. An unreachable bus is not an error.
 sysbus_open :: proc(sb: ^Sysbus) {
     for w in sb.watches {
         om := dbus_om_make(w.service, w.root, w.filter)
@@ -555,10 +540,9 @@ sysbus_dispatch :: proc(sb: ^Sysbus, bus: Dbus_Bus, m: ^Dbus_Message) -> bool {
     return changed
 }
 
-// A service that just (re)appeared has an empty tree and a `refetch` flag; this is where
-// the new snapshot is taken. ONE attempt per appearance — the flag is cleared either way,
-// because retrying it on every later message would mean a call per signal against a daemon
-// that has already shown it won't answer. Its next restart sets the flag again.
+// A service that just (re)appeared has an empty tree and a `refetch` flag; this is where the
+// new snapshot is taken. ONE attempt per appearance — the flag is cleared either way, since
+// retrying on every later message would mean a call per signal. Its next restart re-sets it.
 @(private = "file")
 sysbus_refetch :: proc(sb: ^Sysbus) -> bool {
     changed := false

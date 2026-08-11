@@ -8,11 +8,9 @@ import "core:strconv"
 import "core:strings"
 import "core:sys/posix"
 
-// D-Bus — a from-scratch wire client (see "System panes" in plan.txt). We speak the
-// protocol directly rather than binding libdbus-1: it is the transport every system pane
-// rides on, so it must never be the one dependency we can't degrade from, and — the real
-// win — marshalling is a pure function over bytes, so all of it unit-tests headless with
-// no bus, no daemon (src/tests/dbus_test.odin).
+// D-Bus — a from-scratch wire client (see "System panes" in plan.txt). Speaking the
+// protocol directly rather than binding libdbus-1 keeps marshalling a pure function over
+// bytes, so all of it unit-tests headless with no bus (src/tests/dbus_test.odin).
 //
 // The protocol, in full:
 //   - A connection is a unix socket. The address comes from the environment
@@ -24,14 +22,14 @@ import "core:sys/posix"
 //   - Every type has a fixed alignment and is written at an offset that is a multiple of
 //     it, counting from the START OF THE MESSAGE. That single rule is the whole format.
 //
-// Ownership: decoded messages BORROW. dbus_msg_decode returns strings that alias the
-// buffer you handed it, and dbus_msg_args parses the body into an allocator you choose
-// (temp, per frame). Nothing here clones — clone what you keep (same trap as os.dir).
+// Ownership: decoded messages BORROW. `dbus_msg_decode` returns strings that alias the
+// buffer you handed it, and `dbus_msg_args` parses the body into an allocator you choose
+// (temp, per frame). Nothing here clones — clone what you keep.
 //
 // Not implemented (deliberately, until something needs it): unix-fd passing ('h' is
 // carried as the u32 index it is on the wire, but no fds ride the control message), and
 // the serve-side vtable dispatcher. The reply CONSTRUCTORS that dispatcher needs are
-// here (dbus_msg_return / dbus_msg_error), so exporting an object is additive.
+// here (`dbus_msg_return` / `dbus_msg_error`), so exporting an object is additive.
 
 DBUS_SYSTEM_PATH :: "/run/dbus/system_bus_socket" // the well-known system bus socket
 DBUS_PROTOCOL_VERSION :: 1
@@ -213,11 +211,9 @@ Dbus_Writer :: struct {
     buf: [dynamic]u8,
 }
 
-// There is no `dbus_writer_destroy`, and its absence is deliberate rather than an oversight
-// (it existed until C9, uncalled). A writer HANDS ITS BUFFER OUT — `dbus_marshal_bytes` and
-// dbus_message_bytes both end in `return w.buf[:]` — so the bytes belong to the caller's
-// allocator from that moment on. A destructor here would free memory somebody else now owns,
-// which makes it worse than dead weight: it is a plausible-looking call that corrupts.
+// There is deliberately no `dbus_writer_destroy`: a writer HANDS ITS BUFFER OUT
+// (`dbus_marshal_bytes` and `dbus_msg_build` both end in `return w.buf[:]`), so the bytes
+// belong to the caller's allocator from that moment on.
 
 // Pads to the next multiple of `align` with NULs. The spec requires the padding be zero.
 dbus_pad :: proc(w: ^Dbus_Writer, align: int) {
@@ -613,9 +609,8 @@ dbus_unmarshal :: proc(
 // is offset-aware), then padded to 8 before the body is appended.
 //
 // `sender` is left empty for anything we actually send — the daemon stamps that field
-// itself and overwrites whatever a client puts there. It exists so a test (and the
-// scripted transport the panes are tested through) can synthesize a message exactly as it
-// would arrive off the bus, sender and all.
+// itself. It exists so a test can synthesize a message exactly as it would arrive off the
+// bus, sender and all.
 dbus_msg_build :: proc(
     type: Dbus_Msg_Type,
     serial: u32,
@@ -908,8 +903,7 @@ dbus_bus_address :: proc(bus: Dbus_Bus, alloc := context.temp_allocator) -> stri
 
 // Parses a D-Bus address into a unix socket path. An address is a `;`-separated list of
 // `transport:key=value,key=value` entries; we take the first unix entry we understand.
-// Values are %XX-escaped. `abstract` selects Linux's abstract namespace (a leading NUL
-// in sun_path rather than a filesystem path).
+// Values are %XX-escaped; `abstract` selects Linux's abstract namespace (leading NUL).
 dbus_parse_address :: proc(
     addr: string,
     alloc := context.temp_allocator,
@@ -1063,10 +1057,8 @@ dbus_close :: proc(c: ^Dbus_Conn) {
 // --- scripted transport ---
 //
 // A connection with a negative fd speaks to nobody: writes are recorded in `sent` instead
-// of sent, and reads come out of `script` instead of the socket. It is terminal.odin's
-// pty = -1 fake session, one layer down — the thing that lets the sysbus worker and a
-// whole pane be driven end to end with no daemon, no root, and no timing (layer 2 of the
-// three-layer model in plan.txt).
+// of sent, and reads come out of `script` instead of the socket — the sysbus worker and a
+// whole pane drive end to end with no daemon (layer 2 of the three-layer model in plan.txt).
 //
 // Serials are deterministic on a fresh fake connection: it never says Hello, so the first
 // call out is serial 1, the second 2, and so on. That is how a script knows which
@@ -1095,10 +1087,8 @@ dbus_sent_msg :: proc(c: ^Dbus_Conn, n: int) -> (msg: Dbus_Message, ok: bool) {
 }
 
 // Would the scripted bus hand something over right now? A REPLY exists only because a call
-// asked for it, so one sitting at the head of the script stays there until dbus_call is
-// actually waiting on it. Without that rule a test's whole scripted conversation would be
-// swallowed by the first drain — something no real bus does, and the difference is exactly
-// the bug it would hide.
+// asked for it, so one sitting at the head of the script stays there until `dbus_call` is
+// actually waiting on it — otherwise the first drain swallows the whole conversation.
 @(private = "file")
 dbus_script_ready :: proc(c: ^Dbus_Conn) -> bool {
     if len(c.script) == 0 {
@@ -1237,10 +1227,9 @@ read_line :: proc(fd: posix.FD, alloc := context.temp_allocator) -> (line: strin
 DBUS_AUTH_TIMEOUT :: 5000 // ms; the handshake is local and instant when it works at all
 DBUS_CALL_TIMEOUT :: 25000 // ms; matches libdbus's default reply timeout
 
-// The SASL handshake: a leading NUL byte (it carries the credentials on some transports
-// and is required on all), AUTH EXTERNAL, then BEGIN. We also send NEGOTIATE_UNIX_FD and
-// discard the answer — we pass no fds, but asking keeps us on the same path as every
-// other client, and a daemon that refuses is not an error for us.
+// The SASL handshake: a leading NUL byte (required on all transports; it carries the
+// credentials on some), AUTH EXTERNAL, then BEGIN. We also send NEGOTIATE_UNIX_FD and
+// discard the answer — we pass no fds, and a daemon that refuses is not an error for us.
 @(private = "file")
 dbus_auth :: proc(c: ^Dbus_Conn) -> bool {
     nul := [1]u8{0}
@@ -1296,12 +1285,11 @@ dbus_read_msg :: proc(c: ^Dbus_Conn, timeout_ms := DBUS_CALL_TIMEOUT) -> (msg: D
 }
 
 // Sends a method call and waits for its reply, queueing anything else that arrives first
-// (signals, calls addressed to us) in c.inbox for the caller to drain.
+// (signals, calls addressed to us) in `c.inbox` for the caller to drain.
 //
 // ok=false means "no method return": either the call failed on the wire, or the daemon
 // answered with an error — in which case the ERROR message is still returned, so
-// reply.error_name is the thing to read. Always dbus_msg_free the result when ok is true
-// or the message came back with a type.
+// `reply.error_name` is the thing to read. `dbus_msg_free` any result that came back typed.
 dbus_call :: proc(
     c: ^Dbus_Conn,
     destination, path, iface, member: string,
@@ -1376,9 +1364,8 @@ dbus_as_string :: proc(v: Dbus_Value) -> (s: string, ok: bool) {
 }
 
 // Any integer-ish value widened to i64, whichever of the seven integer type codes it was
-// marshalled as. Callers care that BlueZ's RSSI is negative and iwd's frequency is large,
-// not that one is 'n' and the other 'u' — and a property's exact width is the daemon's
-// business, not something a pane should have to hard-code per field.
+// marshalled as. A property's exact width is the daemon's business, not something a pane
+// should have to hard-code per field.
 dbus_as_int :: proc(v: Dbus_Value) -> (n: i64, ok: bool) {
     #partial switch t in v {
     case u8:

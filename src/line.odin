@@ -71,15 +71,8 @@ word_left_index :: proc(text: []rune, from: int) -> int {
 }
 
 // The run of one character class CONTAINING `col`, as a half-open [lo, hi) — what a
-// double-click selects (doc_select_word, C7). The word motions above are directional and
-// asymmetric by design (they skip whitespace on the way, so "the next stop" is never the
-// run you are standing in); this is the symmetric question, and expressing it in terms of
-// them would give the wrong answer at either end of a word.
-//
-// A column past the last rune looks LEFT — clicking off the end of a line selects the word
-// that ends there, which is what the caret at that column is next to. Whitespace is a class
-// like any other, so a double-click in an indent selects the indent run: predictable, and
-// it makes "select this blank gap" reachable at all.
+// double-click selects. The motions above are directional and would answer this wrong at
+// either end of a word. A column past the last rune looks LEFT; whitespace is a class too.
 word_span :: proc(text: []rune, col: int) -> (lo, hi: int) {
     n := len(text)
     if n == 0 {

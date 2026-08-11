@@ -4,6 +4,7 @@ import app ".."
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:strings"
 import "core:testing"
 
 // Syntax-highlighting tests. These need the compiled odin grammar (odin.so + odin.scm)
@@ -88,7 +89,7 @@ setup :: proc(a: ^app.App) -> bool {
 mkbuf :: proc() -> app.Buffer {
     b: app.Buffer
     app.buffer_set_text(&b, SNIPPET)
-    b.path = "demo.odin"
+    b.path = strings.clone("demo.odin") // owned: buffer_destroy frees it
     return b
 }
 

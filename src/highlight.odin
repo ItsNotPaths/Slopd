@@ -11,23 +11,20 @@ import "core:unicode/utf8"
 import ts "../vendor/odin-tree-sitter"
 
 // Syntax highlighting via tree-sitter. A buffer's language is resolved from its file
-// extension against the registry; the grammar's compiled parser (grammars/<lang>.so)
-// is dlopen'd once and its highlights query (grammars/<lang>.scm) compiled once, both
-// cached by language. On draw we reparse the buffer and colour the visible rows from
-// the query's captures. v1 reparses the whole buffer each draw — simple and fast for
-// normal files; incremental reparse is a later optimisation. The tree-sitter engine is
-// the vendored `ts` bindings (libtree-sitter, statically linked); the per-language .so
-// is the only dynamically loaded piece.
+// extension against the registry; the grammar's compiled parser (grammars/<lang>.so) is
+// dlopen'd once and its highlights query (grammars/<lang>.scm) compiled once, both cached
+// by language. On draw we colour the visible rows from the query's captures. Each content
+// change reparses the WHOLE buffer (the tree is cached between changes) — simple and fast
+// for normal files; incremental reparse is a later optimisation. The engine is the vendored
+// `ts` bindings (libtree-sitter, statically linked); the .so is the only dynamic piece.
 
 // A colour per rune for one line (length == the line's rune count). An unhighlighted
 // rune keeps the default foreground.
 Row_Colors :: [][3]f32
 
-// A loaded grammar: the dlopen handle, its tree-sitter language, and the compiled
-// highlights query (nil if the grammar shipped none). `ok` is false when loading or
-// the ABI check failed — cached so a broken grammar isn't retried every draw.
-// `preds` holds each query pattern's predicates, parsed (and any regexes compiled)
-// once at load so the per-frame paint can filter captures without re-parsing.
+// A loaded grammar: dlopen handle, tree-sitter language, and the compiled highlights query
+// (nil if the grammar shipped none). `ok` is false when the load or ABI check failed —
+// cached so a broken grammar isn't retried every draw. `preds` is parsed once at load.
 Loaded_Grammar :: struct {
     lib:   dynlib.Library,
     lang:  ts.Language,
@@ -36,12 +33,9 @@ Loaded_Grammar :: struct {
     ok:    bool,
 }
 
-// A parsed query predicate, e.g. (#lua-match? @type "^[A-Z]..."), (#any-of? @x "a" "b"),
-// (#not-has-parent? @t parameter call_expression). tree-sitter returns captures WITHOUT
-// evaluating these, so the highlighter must — otherwise a gated capture (capitalised ->
-// @type, ALL_CAPS -> @constant, context/self -> @variable.builtin) fires on every
-// identifier and the real colour is lost. Filters whose op we don't model fail OPEN (the
-// capture is kept), so an unsupported predicate never blanks a token.
+// A parsed query predicate, e.g. (#lua-match? @type "^[A-Z]..."), (#any-of? @x "a" "b").
+// tree-sitter returns captures WITHOUT evaluating these, so the highlighter must — else a
+// gated capture (capitalised -> @type) fires on every identifier. Unmodelled ops fail OPEN.
 @(private = "file")
 Predicate :: struct {
     op:     Pred_Op,
@@ -71,13 +65,10 @@ Highlighter :: struct {
     tree:     ts.Tree,
     tree_buf: rawptr, // the Buffer it was parsed from (identity)
     tree_ver: u64, // doc.version at parse time
-    tree_src: string, // the exact text the tree was parsed from; node byte offsets index
-    // it (predicate evaluation reads through it). Heap-owned, replaced on reparse.
-    // Painted-row cache: highlight_visible repaints the same window every frame (idle
-    // caret blink, a non-editor animation), redoing the query + sort + per-rune fill
-    // for an identical result. Memoize the last painted rows keyed by what they depend
-    // on — buffer, content version, window, and theme (colours bake in) — and reuse on a
-    // match. Heap-owned so it survives the per-frame temp free_all; rebuilt on any change.
+    tree_src: string, // exact text the tree was parsed from (node offsets index it); heap
+    // Painted-row cache: highlight_visible repaints the same window every frame (idle caret
+    // blink, a non-editor animation), so memoize the last paint keyed by everything it
+    // depends on — buffer, version, window, theme. Heap-owned; survives the temp free_all.
     cache_rows:  []Row_Colors,
     cache_buf:   rawptr,
     cache_ver:   u64,
@@ -124,11 +115,9 @@ highlighter_destroy :: proc(h: ^Highlighter) {
     ts.parser_delete(h.parser)
 }
 
-// Loads grammar `name` from an explicit `dir` and seeds it into the highlighter's
-// grammar cache under `name` — the same slot highlighter_grammar fills lazily from
-// the exe-relative grammars dir. Lets a caller resolve a grammar from a non-standard
-// location (a test fixture, a preview) so a later highlight_visible finds it cached
-// and skips the disk/registry lookup. ok mirrors the load.
+// Loads grammar `name` from an explicit `dir` into the highlighter's cache under `name` —
+// the slot highlighter_grammar otherwise fills lazily from the exe-relative grammars dir.
+// Lets a test fixture or preview resolve a grammar from elsewhere. ok mirrors the load.
 highlighter_preload :: proc(h: ^Highlighter, dir, name: string) -> bool {
     g := load_grammar(dir, name)
     h.loaded[name] = g
@@ -212,9 +201,8 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
     ts.query_cursor_exec(h.cursor, g.query, ts.tree_root_node(tree))
 
     // Collect the visible captures, then paint largest-span-first so a more specific
-    // (smaller) capture overrides the broader one it nests inside. Captures whose
-    // pattern has predicates that don't hold are dropped (tree-sitter doesn't filter
-    // them); otherwise gated rules like capitalised->@type fire on every identifier.
+    // (smaller) capture overrides the broader one it nests inside. Captures whose predicates
+    // don't hold are dropped — tree-sitter won't, and gated rules would fire on everything.
     spans := make([dynamic]Capture_Span, 0, 256, context.temp_allocator)
     for {
         match, ci, more := ts.query_cursor_next_capture(h.cursor)
@@ -240,16 +228,9 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
             },
         )
     }
-    // Largest span first so a smaller (more specific) capture paints over it. Ties
-    // break by start position, then by query pattern index, giving a TOTAL order so
-    // the painted result never depends on the (unstable) sort's input order. The
-    // missing pattern tiebreak was a flicker bug: when one node is captured by two
-    // patterns of different colours (same span — equal size, start row & col), the
-    // pair sorted arbitrarily, and the last-painted winner flipped each frame as the
-    // capture emission order shifted with the scrolling point range. highlights.scm
-    // follows the later-pattern-overrides-earlier convention (general rules first,
-    // specific ones last), so the HIGHEST pattern index wins — it must sort last to
-    // paint last.
+    // Largest span first so a smaller (more specific) capture paints over it. Ties break by
+    // start position then pattern index — a TOTAL order, so the result never depends on the
+    // unstable sort's input. highlights.scm puts specific rules last, so the highest wins.
     slice.sort_by(spans[:], proc(x, y: Capture_Span) -> bool {
         if x.size != y.size {
             return x.size > y.size
@@ -307,10 +288,9 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
     return rows
 }
 
-// Debug: print every capture the query emits over [first_line, first_line+count),
-// with its query pattern index, name, span, the theme slot it maps to, and whether
-// its pattern's predicates hold. Lets a test see which patterns compete for a node and
-// how precedence/filtering resolves them. Not part of the draw path.
+// Debug: print every capture the query emits over [first_line, first_line+count) — pattern
+// index, name, span, the theme slot it maps to, and whether its predicates hold. Shows which
+// patterns compete for a node and how precedence resolves them. Not part of the draw path.
 highlight_dump_captures :: proc(a: ^App, b: ^Buffer, first_line, count: int) {
     g, ok := highlighter_grammar(a, b.path)
     if !ok || g.query == nil {
@@ -361,11 +341,9 @@ hl_cache_free :: proc(h: ^Highlighter) {
     h.cache_rows = nil
 }
 
-// The fold range for a block opening on `line`, from the buffer's parse tree:
-// [line, end_row] where end_row is the last line to hide. Finds the innermost
-// multi-line syntax node that BEGINS on `line` (a brace block, a def/proc body, an
-// array literal, …) and folds down to its last line. ok=false when there's no loaded
-// grammar or no such node — the caller then falls back to an indentation scan.
+// The fold range for a block opening on `line`: [line, end_row], end_row being the last line
+// to hide. Finds the innermost multi-line node that BEGINS on `line` (a brace block, a proc
+// body, …). ok=false with no grammar or no such node — the caller falls back to an indent scan.
 highlight_fold_range :: proc(a: ^App, b: ^Buffer, line: int) -> (start, end: int, ok: bool) {
     if line < 0 || line >= len(b.lines) {
         return 0, 0, false
@@ -394,11 +372,9 @@ highlight_fold_range :: proc(a: ^App, b: ^Buffer, line: int) -> (start, end: int
             if ep.col == 0 && last > line {
                 last -= 1 // half-open end at column 0 sits on the next line; trim it
             }
-            // Keep a lone dedented closer (the `}` of a brace block) on its own line.
-            // A node's end point lands on the `}` line or just past it depending on the
-            // grammar, so without this equivalent blocks folded differently — the brace
-            // survived at one nesting depth but not another. Trimming any trailing line
-            // no deeper than the header makes the closer always visible, consistently.
+            // Keep a lone dedented closer (a brace block's `}`) on its own line: a node's
+            // end point lands on the `}` line or just past it depending on the grammar, so
+            // trimming a trailing line no deeper than the header keeps folds consistent.
             if last > line && line_indent_cols(&b.lines[last]) <= line_indent_cols(&b.lines[line]) {
                 last -= 1
             }
@@ -410,9 +386,8 @@ highlight_fold_range :: proc(a: ^App, b: ^Buffer, line: int) -> (start, end: int
 }
 
 // Is the rune at (line, col) inside a string, character or comment node? Auto-indent
-// (buffer.odin) consults this so an opener bracket sitting inside a string or comment —
-// `x := "{"`, `// open {` — doesn't trigger an extra indent level. Returns false when no
-// grammar is loaded for the buffer, so the caller falls back to the pure bracket heuristic.
+// (buffer.odin) asks so an opener inside a string or comment — `x := "{"` — doesn't add an
+// indent level. False when no grammar is loaded, so the caller uses the bracket heuristic.
 ts_in_string_or_comment :: proc(a: ^App, b: ^Buffer, line, col: int) -> bool {
     g, found := highlighter_grammar(a, b.path)
     if !found {
@@ -446,9 +421,8 @@ rune_col_to_byte :: proc(runes: []rune, col: int) -> int {
 }
 
 // The loaded grammar for a buffer path's extension, loading on first use and caching.
-// ok=false means no registry match. A not-yet-installed grammar is NOT cached (so a
-// later install is picked up on a subsequent draw); a present-but-broken one IS cached
-// as failed so it isn't retried every frame.
+// ok=false means no registry match. A not-yet-installed grammar is NOT cached (so a later
+// install is picked up); a present-but-broken one IS cached as failed, not retried per frame.
 @(private = "file")
 highlighter_grammar :: proc(a: ^App, path: string) -> (Loaded_Grammar, bool) {
     if path == "" {
@@ -511,15 +485,16 @@ load_grammar :: proc(dir, name: string) -> Loaded_Grammar {
     return g
 }
 
-// Parses every pattern's predicates from the compiled query once, compiling Match
-// patterns to regexes up front. Owned by the grammar; freed in highlighter_destroy.
+// Parses every pattern's predicates from the compiled query once, compiling Match patterns
+// to regexes up front. Owned by the grammar; freed in highlighter_destroy. Rows are cloned
+// to an exact length — `delete` frees by len, and a dynamic array's backing is its cap.
 @(private = "file")
 build_predicates :: proc(query: ts.Query) -> [][]Predicate {
     n := ts.query_pattern_count(query)
     out := make([][]Predicate, n)
     for p in 0 ..< n {
         steps := ts.query_predicates_for_pattern(query, p)
-        preds := make([dynamic]Predicate, 0, 2)
+        preds := make([dynamic]Predicate, 0, 2, context.temp_allocator)
         lo := 0
         for hi in 0 ..< len(steps) {
             if steps[hi].type != .Done {
@@ -530,7 +505,7 @@ build_predicates :: proc(query: ts.Query) -> [][]Predicate {
             }
             lo = hi + 1
         }
-        out[p] = preds[:]
+        out[p] = slice.clone(preds[:])
     }
     return out
 }
@@ -568,7 +543,7 @@ parse_predicate :: proc(query: ts.Query, steps: []ts.Query_Predicate_Step) -> (P
     case:
         pred.op = .Unknown
     }
-    strs := make([dynamic]string, 0, 2)
+    strs := make([dynamic]string, 0, 2, context.temp_allocator)
     for s in steps[1:] {
         #partial switch s.type {
         case .Capture:
@@ -581,7 +556,7 @@ parse_predicate :: proc(query: ts.Query, steps: []ts.Query_Predicate_Step) -> (P
             append(&strs, strings.clone(ts.query_string_value_for_id(query, s.value_id)))
         }
     }
-    pred.strs = strs[:]
+    pred.strs = slice.clone(strs[:]) // exact length; the strings themselves stay heap-owned
     if pred.op == .Match && len(pred.strs) > 0 {
         // Lua patterns and regex share the anchored char-class subset highlights use;
         // a pattern the engine can't compile fails open (has_re stays false).
@@ -711,21 +686,14 @@ byte_to_rune_col :: proc(runes: []rune, byte_col: int) -> int {
 }
 
 // --- definition filtering (link jumping) ---
-//
-// Given grep hits for a symbol (grep.odin) — every line that mentions it, uses included —
-// keep only the lines that DEFINE it, decided by tree-sitter. For each hit we parse its
-// file (once per file; grep groups its output by file) and inspect every whole-word
-// occurrence of the symbol on the hit's line: an occurrence is a definition when its
-// identifier node is its construct's `name:` or `declarator:` field. That is the cross-
-// grammar shape of a declaration's name (function / method / class / type / variable),
-// while a call's callee sits under `function:`/`callee:` and a bare reference under no
-// field — so invocations and uses fall away. Files whose language has no installed grammar
-// are dropped (we can't verify a definition there).
 
-// Node types that NAME-bearing definitions live in, matched as substrings so one list
-// spans many grammars: function_definition / function_declaration / function_item,
-// method_definition, class_declaration, struct_specifier, type_alias, variable_declarator,
-// init_declarator, *_spec (Go), etc.
+// Narrows grep hits for a symbol (grep.odin) to the lines that DEFINE it: parse each hit's
+// file and keep whole-word occurrences whose identifier node is its construct's `name:` or
+// `declarator:` field. A call's callee sits under `function:`/`callee:`, a bare use nowhere.
+
+// Node types that NAME-bearing definitions live in, matched as substrings so one list spans
+// many grammars: function_definition / function_item, method_definition, class_declaration,
+// struct_specifier, type_alias, variable_declarator, *_spec (Go), etc.
 @(private = "file")
 DEF_TYPE_SUBSTR :: [?]string {
     "function",
@@ -828,10 +796,9 @@ ts_def_col_on_line :: proc(tree: ts.Tree, source: string, starts: []int, row: in
     return 0, false
 }
 
-// Is `node` (the identifier at a match) the NAME of a definition rather than a use? True
-// when its construct exposes it via `name:` or a `declarator:` chain. Checks the parent,
-// then the grandparent (the name can nest one level, e.g. C's function_declarator under
-// function_definition).
+// Is `node` (the identifier at a match) the NAME of a definition rather than a use? True when
+// its construct exposes it via `name:` or a `declarator:` chain. Checks the parent then the
+// grandparent — the name can nest one level (C's function_declarator under a definition).
 @(private = "file")
 ts_point_is_def :: proc(node: ts.Node, source, ident: string) -> bool {
     if ts.node_is_null(node) || ts.node_text(node, source) != ident {

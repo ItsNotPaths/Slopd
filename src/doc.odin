@@ -93,27 +93,17 @@ doc_collapse_to_primary :: proc(d: ^Doc) {
     d.primary = 0
 }
 
-// Leaves a fixed cursor at the free caret's current position (the Alt+A drop).
-// The caret (primary) keeps roaming via the movement ops, so the anchor stays put
-// while you move on. The two sit coincident until the caret steps off; a
-// coincident pair collapses to one when an edit is applied.
+// Leaves a fixed cursor at the free caret's position (the Alt+A drop); the caret (primary)
+// keeps roaming via the movement ops. The two sit coincident until the caret steps off, and
+// a coincident pair collapses to one when an edit is applied.
 doc_drop_anchor :: proc(d: ^Doc) {
     p := d.cursors[d.primary].head
     append(&d.cursors, Cursor{anchor = p, head = p, goal = p.col})
 }
 
-// --- pointer-placed cursors (C7) ---
-//
-// The four below are the Doc half of click-to-caret. They exist because every cursor op
-// above answers "where next, from where I am" — a motion — while a pointer names an
-// absolute position outright. Nothing in the keyboard's vocabulary could express that, so
-// these are new verbs rather than a mouse path into old ones; each is still the same shape
-// as the keyboard verb it mirrors (place / extend / drop / select), so neither input path
-// grows behaviour the other lacks in kind.
-//
-// All of them clamp: a Pos derived from a pixel is only as good as the geometry that made
-// it, and a stale window (a resize between the press and the frame that claims it) must
-// cost a caret in the wrong place, never an index out of the buffer.
+// --- pointer-placed cursors ---
+// Keyboard ops are motions; a pointer names an absolute position, so these are new verbs
+// mirroring the keyboard shapes. All clamp — a stale layout must never index out of bounds.
 
 // Clamp a position onto a real line and column. The single gate every pointer-derived Pos
 // passes through — the procs below take arbitrary Pos values and none of them may trust one.
@@ -122,10 +112,9 @@ doc_clamp_pos :: proc(d: ^Doc, p: Pos) -> Pos {
     return Pos{line, clamp(p.col, 0, line_len(&d.lines[line]))}
 }
 
-// Move the primary cursor's head to `p`. select=true keeps the anchor, growing the
-// selection (shift-click); false collapses onto the new position (a plain click on an
-// existing selection). The keyboard twin is a motion with Shift held — this is the same
-// cursor_place, reached with a destination instead of a direction.
+// Move the primary cursor's head to `p`. select=true keeps the anchor, growing the selection
+// (shift-click); false collapses onto the new position. The same `cursor_place` a keyboard
+// motion uses, reached with a destination instead of a direction.
 doc_set_head :: proc(d: ^Doc, p: Pos, select: bool) {
     q := doc_clamp_pos(d, p)
     c := &d.cursors[d.primary]
@@ -133,29 +122,18 @@ doc_set_head :: proc(d: ^Doc, p: Pos, select: bool) {
     c.goal = q.col
 }
 
-// Add a cursor AT `p` and make it the roaming one (Alt+click). doc_drop_anchor leaves its
-// new cursor where the caret already is and keeps the old one roaming, because the keyboard
-// has to walk somewhere before the drop means anything; a pointer names the destination, so
-// the new cursor is the one that goes on to move.
-//
-// Deliberately no merge: a drop coincident with an existing cursor stays a coincident pair,
-// exactly as doc_drop_anchor's does, and collapses at the next edit.
+// Add a cursor AT `p` and make it the roaming one (Alt+click) — a pointer names the
+// destination, so unlike `doc_drop_anchor` the NEW cursor is the one that goes on to move.
+// Deliberately no merge: a coincident drop stays a coincident pair, collapsing at the next edit.
 doc_add_cursor :: proc(d: ^Doc, p: Pos) {
     q := doc_clamp_pos(d, p)
     append(&d.cursors, Cursor{anchor = q, head = q, goal = q.col})
     d.primary = len(d.cursors) - 1
 }
 
-// Collapse to one cursor spanning anchor..head, in that order (C7c). The verb a DRAG needs
-// and the one no keyboard gesture does: a keystroke either moves a head or drops an anchor,
-// and can never name BOTH ends at once — but a word-grade drag re-derives both every frame,
-// because crossing back over the press point moves the anchor from one end of the pressed
-// word to the other.
-//
-// The order is the gesture's and is deliberately not normalised: the head stays the end the
-// eye is at, so a following Shift+click or Shift+Right extends from the right place.
-// cursor_range orders it on READ, which is where both reference terminals put the same
-// decision (alacritty's to_range, ghostty's Order).
+// Collapse to one cursor spanning anchor..head — the verb a DRAG needs, since a word-grade
+// drag re-derives BOTH ends every frame. The order is the gesture's and deliberately not
+// normalised: the head stays the end the eye is at, and `cursor_range` orders it on READ.
 doc_select_span :: proc(d: ^Doc, anchor, head: Pos) {
     a := doc_clamp_pos(d, anchor)
     h := doc_clamp_pos(d, head)
@@ -181,18 +159,9 @@ doc_select_line :: proc(d: ^Doc, line: int) {
     doc_select_span(d, Pos{l, 0}, Pos{l, line_len(&d.lines[l])})
 }
 
-// The span a drag covers at its fixed GRADE (C7c) — word (2) or line (3+). Grade 1 is
-// deliberately not here: a character drag is doc_set_head, which keeps whatever anchor the
-// click established, and a Shift+click's anchor is not the press position.
-//
-// `press` and `at` carry GLYPH columns, not caret boundaries, for C7a's reason: a word names
-// the character being pointed at, and the boundary rounded off the same pixel sits one past
-// the end of the run at every word ending in the file.
-//
-// The expansion happens HERE, per frame, rather than being baked in when the button went
-// down. That is what makes a double-click-drag keep growing by whole words: alacritty stores
-// the type on the Selection and expands when the range is read, and this is that, with the
-// type living in Drag.grade.
+// The span a drag covers at its fixed GRADE — word (2) or line (3+); grade 1 is `doc_set_head`.
+// `press` and `at` carry GLYPH columns, not caret boundaries: the boundary off the same pixel
+// sits one past the run's end. Expanded per frame, so a double-click-drag grows by whole words.
 doc_drag_span :: proc(d: ^Doc, grade: int, press, at: Pos) -> (anchor, head: Pos) {
     p := doc_clamp_pos(d, press)
     q := doc_clamp_pos(d, at)
@@ -230,10 +199,9 @@ cursor_has_selection :: proc(c: Cursor) -> bool {
     return c.anchor != c.head
 }
 
-// The line of the FIRST (topmost) cursor. The primary drives the gutter and the
-// current-line bar, but with a trail of cursors down the file the first one is what a
-// centred viewport should hold (we're multi-cursor first, so "the cursor" is a set, not
-// a point). Cursors aren't kept globally sorted, so scan.
+// The line of the FIRST (topmost) cursor. The primary drives the gutter, but "the cursor" is
+// a SET, so a centred viewport should hold the top of it rather than the primary. Cursors
+// aren't kept globally sorted, so scan.
 doc_top_cursor_line :: proc(d: ^Doc) -> int {
     line := d.cursors[0].head.line
     for c in d.cursors[1:] {
@@ -241,11 +209,6 @@ doc_top_cursor_line :: proc(d: ^Doc) -> int {
     }
     return line
 }
-
-// `doc_has_any_selection` (any cursor holding a range) went at C9, uncalled. Every asker
-// turned out to want a specific cursor's answer, which is `cursor_has_selection` — one of the
-// four names C7d made the terminal share with this file, and the reason the aggregate was
-// never reached for.
 
 // The cursor's selection as an ordered (low, high) position pair.
 cursor_range :: proc(c: Cursor) -> (lo, hi: Pos) {
@@ -293,10 +256,9 @@ doc_text :: proc(d: ^Doc, lo, hi: Pos, alloc := context.allocator) -> string {
     return capture_range(d, lo, hi, alloc)
 }
 
-// Gathers copy text in document order: each cursor's selection, or — when nothing
-// is selected — each cursor's whole line plus a newline. Returns the joined
-// clipboard string and the per-cursor pieces (kept for multi-cursor paste). Both
-// allocated with alloc.
+// Gathers copy text in document order: each cursor's selection, or — nothing selected — each
+// cursor's whole line plus a newline. Both results use `alloc`; `pieces` is an exact-length
+// CLONE, because the caller frees it with `delete`, which sizes by len, not a dynamic's cap.
 doc_copy :: proc(d: ^Doc, alloc := context.allocator) -> (joined: string, pieces: []string) {
     order := cursor_order(d, context.temp_allocator)
     any_sel := false
@@ -306,7 +268,7 @@ doc_copy :: proc(d: ^Doc, alloc := context.allocator) -> (joined: string, pieces
             break
         }
     }
-    out := make([dynamic]string, 0, len(order), alloc)
+    out := make([dynamic]string, 0, len(order), context.temp_allocator)
     for idx in order {
         c := d.cursors[idx]
         if any_sel {
@@ -322,7 +284,7 @@ doc_copy :: proc(d: ^Doc, alloc := context.allocator) -> (joined: string, pieces
         }
     }
     sep := any_sel ? "\n" : ""
-    return strings.join(out[:], sep, alloc), out[:]
+    return strings.join(out[:], sep, alloc), slice.clone(out[:], alloc)
 }
 
 // Inserts the same text at every cursor (replacing selections) — a plain paste.
@@ -441,11 +403,8 @@ doc_delete_word_forward :: proc(d: ^Doc) -> bool {
 }
 
 // --- movement ---
-// doc_move moves ONLY the free caret (the primary), leaving dropped cursors put
-// (bare-arrow behaviour, the basis of cursor placement); doc_move_all moves every
-// cursor together (the Alt+M one-shot prefix). select=true keeps the anchor to
-// extend a selection; a plain move with a selection collapses to the edge it moves
-// toward, GUI-style. Vertical motion keeps the goal column across short lines.
+// select=true keeps the anchor to extend a selection; a plain move with a selection collapses
+// to the edge it moves toward, GUI-style. Vertical motion keeps the goal column.
 
 Motion :: enum {
     Left,
@@ -458,12 +417,13 @@ Motion :: enum {
     Down,
 }
 
-// count applies only to vertical motion (Up/Down) — how many lines to jump; the
-// horizontal/Home/End motions ignore it.
+// Moves ONLY the free caret (the primary), leaving dropped cursors put — bare-arrow
+// behaviour, the basis of cursor placement. `count` applies only to Up/Down (lines to jump).
 doc_move :: proc(d: ^Doc, motion: Motion, select := false, count := 1) {
     move_cursor(d, &d.cursors[d.primary], motion, select, count)
 }
 
+// Moves every cursor together (the Alt+M one-shot prefix).
 doc_move_all :: proc(d: ^Doc, motion: Motion, select := false, count := 1) {
     for &c in d.cursors {
         move_cursor(d, &c, motion, select, count)
@@ -517,27 +477,23 @@ move_cursor :: proc(d: ^Doc, c: ^Cursor, motion: Motion, select: bool, count := 
 
 // --- internals ---
 
-// One replacement: the text in [start, end) becomes runes (which may span lines).
-// caret_delta nudges the resulting caret left of the inserted text's end (same
-// line only): 1 lands it inside a freshly inserted pair, -1 steps it one past
-// (skipping over an existing close). 0 for ordinary edits.
+// One replacement: the text in [start, end) becomes `runes` (which may span lines).
+// caret_delta nudges the resulting caret left of the inserted text's end (same line only):
+// 1 lands it inside a fresh pair, -1 steps one past an existing close, 0 for ordinary edits.
 Edit :: struct {
     start, end:  Pos,
     runes:       []rune,
     caret_delta: int,
 }
 
-// Applies a set of non-overlapping edits (one per cursor), then rebuilds the
-// cursor list collapsed onto each edit's new end. Edits are applied back-to-front
-// in document order so unprocessed (earlier) edits keep valid coordinates;
-// already-applied (later) results are shifted by each edit's size delta. When rec
-// is non-nil it is filled with reversible ops (final-coord ranges + removed text)
-// for the undo journal; undo/redo pass nil and apply raw.
+// Applies non-overlapping edits (one per cursor) back-to-front so unprocessed (earlier) edits
+// keep valid coords, then rebuilds the cursors collapsed onto each new end. Non-nil `rec`
+// collects reversible ops for the undo journal. `edits_in` is READ ONLY — sort/dedup a copy.
 doc_apply :: proc(d: ^Doc, edits_in: []Edit, rec: ^Batch = nil) -> bool {
     if len(edits_in) == 0 {
         return false
     }
-    edits := edits_in
+    edits := slice.clone(edits_in, context.temp_allocator)
     slice.sort_by(edits, proc(a, b: Edit) -> bool {
         return pos_less(a.start, b.start)
     })

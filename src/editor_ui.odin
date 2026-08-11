@@ -4,31 +4,14 @@ import "core:math"
 import "core:strconv"
 import clay "../bindings/clay"
 
-// The editor pane's UI half — C7, and the first surface on the far side of the boundary
-// docs/clay-refactor.md draws: **Clay owns the frame, we own the body.** The text body is a
-// 2D per-glyph surface — folds, per-glyph syntax colour, multi-cursor carets, selection
-// spans, indent guides, whitespace markers — and one widget per glyph is absurd, so the
-// pane declares ONE `Custom` element and the existing painter fills the box Clay reserves.
-// Nothing about how a line is drawn changed here; it is a straight port.
-//
-// So what does the port buy, if the painting is untouched? The geometry. draw_editor used
-// to compute the content area, the row height, the gutter width, the text column and the
-// animated top as locals and throw them away, which is exactly why a click had nothing to
-// resolve against. All of it is `Editor_View` now, computed once per phase from one proc,
-// and the two things that must agree — where a glyph is PAINTED and where a pixel is READ
-// BACK as a Pos — are derived from the same fields by the same helpers. editor_pos_at is
-// the inverse of the painter's row/column arithmetic and cannot drift from it without the
-// command-list test failing, because the test asserts the Custom's box IS the area the view
-// was built from.
-//
-// The frame order is the template's, and the editor adds one wrinkle to it (see
-// editor_view): the window is computed TWICE, either side of the click, because a click
-// that moves the caret re-aims the scroll animation and that re-aim has to happen in the
-// frame that caused it — C5c's rule 9 (docs/clay-refactor.md), which every pane that tweens
-// its viewport hits.
+// The editor pane's UI half. **Clay owns the frame, we own the body:** the text body is a 2D
+// per-glyph surface, so the pane declares ONE `Custom` and the painter fills the box Clay
+// reserves. Everything the phases must agree about lives in `Editor_View`, so where a glyph is
+// PAINTED and where a pixel READS BACK as a Pos cannot drift; the command-list test asserts
+// the Custom's box IS the area the view was built from. The view is computed TWICE, either
+// side of the click, because a click that moves the caret re-aims the scroll animation.
 
-// Extra vertical padding per row, in logical pixels — the twin of FT_ROW_PAD and
-// GREP_ROW_PAD, and the value draw_editor has always used.
+// Extra vertical padding per row, in logical pixels — the twin of FT_ROW_PAD / GREP_ROW_PAD.
 EDITOR_ROW_PAD :: 2
 
 // Narrowest line-number gutter, in digits. A file under ten lines still gets two, so the
@@ -36,18 +19,13 @@ EDITOR_ROW_PAD :: 2
 EDITOR_GUTTER_MIN :: 2
 
 // How far past the end of a folded header's text its collapse marker may be clicked, in
-// cells. The marker itself is three dots inside about one cell (draw_fold_marker); the
-// target is deliberately wider than the paint, because the alternative to hitting it is
-// putting the caret at end-of-line — a harmless miss either way, so the generous span
-// costs nothing and a pixel-exact one would be a nuisance to hit.
+// cells. Deliberately wider than the paint (three dots in about one cell): the alternative
+// to hitting it is putting the caret at end-of-line, a harmless miss either way.
 EDITOR_FOLD_HIT_CELLS :: 2
 
-// The pane's fixed geometry: the content area inside the focus ring, the row height, and
-// how many whole rows fit. Pure, and the same shape as every other pane's `_geom` — the
-// buffer-dependent half (the gutter, the animated top) is editor_view below.
-//
-// `rows` is at least 1 in a pane too short to hold one, exactly as the list panes report:
-// the clip is what keeps an overflowing row inside the pane, not the count.
+// The content area inside the focus ring, the row height, and how many whole rows fit; the
+// buffer-dependent half (gutter, animated top) is editor_view. `rows` is at least 1 even in a
+// pane too short — the clip keeps an overflowing row inside the pane, not the count.
 editor_geom :: proc(pane: Rect, scale: f32, line_h: f32) -> (area: Rect, row_h: i32, rows: int) {
     area = inset(pane, i32(2 * scale))
     row_h = i32(line_h) + i32(EDITOR_ROW_PAD * scale)
@@ -59,26 +37,22 @@ editor_geom :: proc(pane: Rect, scale: f32, line_h: f32) -> (area: Rect, row_h: 
 }
 
 // The line-number gutter's width in digits — wide enough for the last line number, never
-// under EDITOR_GUTTER_MIN. Both the painter and editor_pos_at size the text column from
-// this one call, which is what stops a click landing one cell out in a thousand-line file.
+// under EDITOR_GUTTER_MIN. The painter and editor_pos_at both size the text column from this
+// one call, which is what stops a click landing one cell out in a thousand-line file.
 editor_gutter_w :: proc(b: ^Buffer) -> int {
     return max(EDITOR_GUTTER_MIN, num_digits(len(b.lines)))
 }
 
-// Where column 0 starts: a one-cell left margin, the gutter, then a one-cell gap. The
-// formula lives here rather than at its two call sites because those two are the paint and
-// the hit test, and a text column that means one thing to each is the whole class of bug
-// this refactor exists to delete.
+// Where column 0 starts: a one-cell left margin, the gutter, then a one-cell gap. One proc
+// because its two callers are the paint and the hit test, and a text column that means
+// something different to each is a whole class of bug.
 editor_text_x :: proc(area_x: i32, gutter: int, cw: f32) -> f32 {
     return f32(area_x) + f32(gutter + 2) * cw
 }
 
-// Everything the editor's phases need to agree about: the box, the row grid, the text
-// column and where the view actually IS this instant.
-//
-// `top` is the ANIMATED top, not b.scroll — b.scroll is where the viewport is heading and
-// smooth_scroll says where it has got to — and `off` is the sub-row remainder that shifts
-// every row up by a fraction of one. Row ids downstream are view indices off `top`.
+// The box, the row grid, the text column, and where the view IS this instant. `top` is the
+// ANIMATED top, not b.scroll (which is where the viewport is heading); `off` is the sub-row
+// remainder shifting every row up by a fraction. Row ids downstream are view indices off `top`.
 Editor_View :: struct {
     area:   Rect,
     row_h:  i32,
@@ -91,15 +65,9 @@ Editor_View :: struct {
     lh:     f32,
 }
 
-// Build the view — and RE-AIM the scroll animation, which is why this is not a pure query
-// and why editor_frame calls it twice.
-//
-// smooth_scroll is what makes anim_active true, and app_next_wake schedules the next frame
-// off exactly that (scroll.odin). The loop is WaitEvents-driven, so a frame that moves
-// b.scroll — which is any frame a click lands a caret off-screen — and does not reach here
-// again leaves nothing to wake the loop, and the view sits frozen part-scrolled until an
-// unrelated event arrives. C5c found this in a list pane; the editor tweens the same way,
-// so it inherits the same rule rather than a special case.
+// Build the view — and RE-AIM the scroll animation, which is why it is not a pure query.
+// smooth_scroll is what makes anim_active true and app_next_wake schedules off that, so a
+// frame moving b.scroll without reaching here again leaves the view frozen part-scrolled.
 editor_view :: proc(b: ^Buffer, f: ^Font, area: Rect, row_h: i32, rows: int, now: f64) -> Editor_View {
     top, off := smooth_scroll(&b.scroll_anim, b.scroll, now, row_h)
     gutter := editor_gutter_w(b)
@@ -116,14 +84,9 @@ editor_view :: proc(b: ^Buffer, f: ^Font, area: Rect, row_h: i32, rows: int, now
     }
 }
 
-// The lines the window shows, in paint order: walk down from `top` skipping folded-away
-// lines, taking `count` of them. The visual row index counts only drawn lines while the
-// line indices skip the hidden ones, which is the whole reason a screen row cannot be
-// turned back into a line by arithmetic.
-//
-// One definition, two callers — the painter (which needs the list, for the highlight span
-// as well as the rows) and editor_line_at_row (which needs the nth). Allocated in the
-// frame's temp arena, freed wholesale by the main loop.
+// The lines the window shows, in paint order: down from `top`, skipping folded-away lines.
+// The visual row index counts only drawn lines while the line indices skip hidden ones, which
+// is why a screen row cannot be turned back into a line by arithmetic. Temp-allocated.
 editor_visible_lines :: proc(b: ^Buffer, top, count: int) -> []int {
     out := make([dynamic]int, 0, max(0, count), context.temp_allocator)
     for i := max(0, top); i < len(b.lines) && len(out) < count; i += 1 {
@@ -147,20 +110,9 @@ editor_line_at_row :: proc(b: ^Buffer, top, vrow: int) -> (line: int, ok: bool) 
     return lines[vrow], true
 }
 
-// A framebuffer point inside the pane, as a document position. The inverse of the painter's
-// row/column arithmetic: the row grid backwards through the fold walk, the column by
-// dividing out the cell advance.
-//
-// The column ROUNDS rather than truncating, so the caret lands on whichever side of the
-// glyph the pointer is nearer — clicking the right half of a character puts the caret after
-// it, which is what every editor does and what makes selecting up to end-of-word possible
-// without overshooting. A point left of the text column (in the gutter or the margin)
-// clamps to column 0 rather than reporting a miss: clicking the gutter means "this line",
-// which is exactly where Home would put you.
-//
-// ok=false means the point is below the last drawn row — there is no line there, and
-// inventing the last one would make a click in empty space jump the caret to the end of the
-// file. Above the top row cannot happen: y is inside the area by the time we are called.
+// A framebuffer point as a document position — the inverse of the painter's arithmetic. The
+// column ROUNDS, so a character's right half puts the caret after it; the gutter clamps to 0.
+// ok=false below the last drawn row, or a click in empty space would jump to end-of-file.
 editor_pos_at :: proc(b: ^Buffer, v: Editor_View, x, y: i32) -> (p: Pos, ok: bool) {
     if v.row_h <= 0 || len(b.lines) == 0 {
         return {}, false
@@ -172,12 +124,9 @@ editor_pos_at :: proc(b: ^Buffer, v: Editor_View, x, y: i32) -> (p: Pos, ok: boo
     return Pos{line, clamp(editor_caret_col(v, x), 0, line_len(&b.lines[line]))}, true
 }
 
-// The visible ROW a framebuffer y falls on, or -1 above the window. The one place the row
-// grid is divided out, so editor_pos_at (which refuses a row past the last line) and
-// editor_drag_pos (which clamps to the last DRAWN row) cannot come to different views about
-// where a row is.
-//
-// The window is shifted up by `off`, so the point moves down by it to compensate.
+// The visible ROW a framebuffer y falls on, or -1 above the window — the one place the row
+// grid is divided out, so editor_pos_at and editor_drag_pos cannot disagree about where a row
+// is. The window is shifted up by `off`, so the point moves down by it to compensate.
 editor_row_at :: proc(v: Editor_View, y: i32) -> int {
     if v.row_h <= 0 {
         return -1
@@ -189,10 +138,8 @@ editor_row_at :: proc(v: Editor_View, y: i32) -> int {
     return dy / int(v.row_h)
 }
 
-// The caret BOUNDARY column under x — rounded, and unclamped to any line, so the two callers
-// that need it (editor_pos_at inside the pane, editor_drag_pos past its edges) round it the
-// one way. Its twin is editor_glyph_col below, and the pair is the whole of C7a's
-// one-pixel-two-questions finding in two procs.
+// The caret BOUNDARY column under x — rounded, and unclamped to any line, so its two callers
+// (editor_pos_at inside the pane, editor_drag_pos past its edges) round it the one way.
 editor_caret_col :: proc(v: Editor_View, x: i32) -> int {
     if v.cw <= 0 {
         return 0
@@ -200,13 +147,9 @@ editor_caret_col :: proc(v: Editor_View, x: i32) -> int {
     return int(math.round((f32(x) - v.text_x) / v.cw))
 }
 
-// The column of the GLYPH under the pointer — floored, where editor_pos_at rounds.
-//
-// One pixel, two different questions, and conflating them is a bug with exactly one cell of
-// slop, which is the kind that survives a casual look. A caret column is a BOUNDARY between
-// glyphs, so it rounds: the right half of a character means "after it". A word selection
-// names a CHARACTER, so it floors: pointing anywhere in the last `o` of "foo.bar" must
-// select "foo", where the rounded boundary would be 3 — the '.' — and select that instead.
+// The column of the GLYPH under the pointer — floored, where editor_pos_at rounds. One pixel,
+// two questions: a caret column is a BOUNDARY, a word selection names a CHARACTER. Pointing at
+// the last `o` of "foo.bar" must select "foo", where the rounded boundary is 3 — the '.'.
 editor_glyph_col :: proc(v: Editor_View, x: i32) -> int {
     if v.cw <= 0 {
         return 0
@@ -229,34 +172,16 @@ Editor_Hit :: struct {
     glyph: int, // the character actually pointed at; what a double click selects
 }
 
-// Resolve the pointer against the editor body: is it in the pane, and if so, where in the
-// text. The body is a single Custom with no per-row boxes, so the second half is ours to
-// compute — that division is the boundary working as intended, Clay routing to the surface
-// and the surface reading its own pixels.
-//
-// THE FIRST HALF IS NOT clay.PointerOver, and the reason changed at C8a. It used to be
-// forced: Clay held one tree, every pane declared its own, and the tree standing when a frame
-// started was whichever pane declared LAST — so the editor, which declares FIRST, got `false`
-// from PointerOver("ed_body") no matter where the pointer was. Clicks that simply never
-// happened, with nothing in a command list to show for it. That was invariant 11
-// (docs/clay-refactor.md) and it is retired: the window declares one tree, the editor is in
-// it, and PointerOver would answer correctly today (tests/window_ui_test.odin pins that).
-//
-// The rect stays because it is the better tool for ONE box, not because Clay is unsafe:
-// wheel_target answers the same question the same way (mouse.odin), rect_hit is half-open so
-// a pane boundary cannot be claimed twice, and it needs no tree at all — which keeps
-// editor_hit callable from a test that never declares anything.
-//
-// The fold marker is tested BEFORE the text, and only on a line that actually has one, so
-// the ordinary case pays one array scan of the fold list (usually empty).
+// Resolve the pointer against the editor body. A single Custom with no per-row boxes, so
+// where-in-the-text is ours; whether-in-the-pane is a rect test, since rect_hit is half-open
+// and needs no tree. The fold marker is tested BEFORE the text, only on a line that has one.
 editor_hit :: proc(a: ^App, b: ^Buffer, v: Editor_View) -> Editor_Hit {
     if !a.mouse_on || !a.mouse.known || a.main != .Text {
         return {}
     }
-    // Deliberately NOT gated on a.mouse.stood_down (mouse.odin). Standing the pointer down
-    // suppresses HOVER, never a click: a press wakes the pointer before any pane can claim
-    // it, so refusing hits here would only ever discard a click the user aimed — and would
-    // make this pane behave differently from the four that resolve their rows regardless.
+    // Deliberately NOT gated on a.mouse.stood_down: standing down suppresses HOVER, never a
+    // click. A press wakes the pointer before any pane can claim it, so refusing hits here
+    // would only discard a click the user aimed.
     if !rect_hit(v.area, a.mouse.x, a.mouse.y) {
         return {}
     }
@@ -283,28 +208,10 @@ editor_hit :: proc(a: ^App, b: ^Buffer, v: Editor_View) -> Editor_Hit {
 //   triple click         select the line          Home, Shift+End
 //   click a fold marker  expand the block         Ctrl+Enter on the header
 //
-// "Single selects, double activates" is a rule about LISTS (C5b, C5c) and there is no list
-// here: every count is a different grade of the same verb, selection, which is what a click
-// in text has meant since before any of this. So a double click is not swallowed — the
-// single click that preceded it placed a caret inside the word the double click then
-// selects, and the two read as one gesture.
-//
-// The press is claimed only when something was actually hit, so a click in another pane is
-// left for whoever else is drawing.
-//
-// Claiming it re-attaches this buffer's view if the wheel had detached it — a click IS a
-// deliberate caret placement, so the policy resuming from it cannot move the view anywhere
-// surprising (the line you clicked is on screen by definition), and leaving it detached
-// would mean the arrows you press next scroll a view that no longer tracks them.
-//
-// It does that by clearing b.scroll_detached DIRECTLY rather than by stamping
-// a.last_input_at, which is the obvious way and is wrong. That timestamp is global and the
-// aux panes re-attach off it too (pane_input_at, scroll.odin) — gated on the aux pane
-// holding FOCUS, which it may well be doing while you click in the editor. render draws the
-// editor first, so the stamp would land before the aux pane read it, and clicking in the
-// editor would snap a wheel-scrolled filetree back to its selection: action at a distance,
-// the exact thing pane_input_at was introduced to prevent. blink_base is stamped, because
-// holding the caret solid where you just clicked is a display nicety with no such reach.
+// "Single selects, double activates" is a rule about LISTS; here every count is a grade of one
+// verb. Claiming the press re-attaches this buffer's view if the wheel had detached it, and
+// clears b.scroll_detached DIRECTLY rather than stamping the global a.last_input_at — the aux
+// panes re-attach off that too, so a click here would snap a scrolled filetree back.
 editor_click :: proc(a: ^App, hit: Editor_Hit, now: f64) {
     if hit.kind == .None {
         return
@@ -324,15 +231,9 @@ editor_click :: proc(a: ^App, hit: Editor_Hit, now: f64) {
         return // a marker is a BUTTON, and a button is not something you drag out of
     }
 
-    // The press is now a CAPTURE (C7c): until the button comes up, every motion belongs to
-    // this buffer's selection whatever pane the pointer wanders over. The grade goes in with
-    // it and is not re-read per frame — that is the whole reason the machine stores it, and
-    // it is what makes a double-click-drag keep growing by whole words (drag.odin).
-    //
-    // Begun for EVERY text click, including the plain single one, because the difference
-    // between a click and a drag is not something the press can know: it is whether the
-    // pointer moves before the release. A drag that never moves re-derives the position the
-    // click already set, which is why the machine needs no motion threshold.
+    // The press is now a CAPTURE: every motion until the button comes up belongs to this
+    // buffer, at the grade fixed here. Begun for EVERY text click — whether a press is a drag
+    // is not something the press can know, and a zero-length one re-derives what it set.
     drag_begin(a, .Editor_Text, a.editor.active, count, hit.pos, hit.glyph)
 
     d := &b.doc
@@ -351,24 +252,10 @@ editor_click :: proc(a: ^App, hit: Editor_Hit, now: f64) {
     }
 }
 
-// Where a DRAG points, which is a different question from the one editor_hit answers and
-// must be answered differently. A hit is REFUSED outside the pane, because a press there
-// belongs to somebody else. A drag under capture must resolve a position wherever the
-// pointer went, because the gesture already belongs to this pane (drag.odin) — and the
-// moment it is most obviously still in use is the moment it leaves.
-//
-// So the ROW is clamped into the window and a point below the last DRAWN row (a buffer
-// shorter than its pane) resolves to the last visible line rather than to "no line":
-// dragging off the bottom means "to the end", never "nothing".
-//
-// The clamp is on the row and not on the pixel, because the pane's bottom edge sits in the
-// MIDDLE of a row — 196px of 18px rows leaves a 16px strip the painter never fills — and a
-// drag must not aim at a line that was never put on screen. x needs no clamp at all:
-// editor_caret_col rounds a negative offset to a negative column and the line length clamps
-// it, which is the same "the gutter means column 0" rule editor_pos_at already has.
-//
-// Both columns come back, exactly as Editor_Hit carries both: the caret boundary a
-// character-grade drag extends to, and the glyph a word-grade drag expands around.
+// Where a DRAG points — a different question from editor_hit's. A hit is REFUSED outside the
+// pane; a drag under capture resolves wherever the pointer went, and below the last DRAWN row
+// means "to the end". The clamp is on the ROW, not the pixel: the pane's bottom edge sits
+// mid-row, and a drag must not aim at a line never put on screen.
 editor_drag_pos :: proc(b: ^Buffer, v: Editor_View, x, y: i32) -> (p: Pos, glyph: int) {
     if v.row_h <= 0 || v.rows <= 0 || len(b.lines) == 0 {
         return {}, 0
@@ -381,17 +268,9 @@ editor_drag_pos :: proc(b: ^Buffer, v: Editor_View, x, y: i32) -> (p: Pos, glyph
     return Pos{line, clamp(editor_caret_col(v, x), 0, line_len(&b.lines[line]))}, glyph
 }
 
-// The line a drag should be extending to, given the one the pointer resolved to — the same
-// line while the pointer is inside the pane, and the autoscroll's own walk while it is past
-// an edge.
-//
-// Past an edge the pointer has stopped naming a line, so Drag.over does (see the field for
-// why it must be state rather than a per-frame derivation). It is SEEDED from the edge row
-// the pointer left over, so a drag that runs off the bottom continues from the last line the
-// user could see rather than from wherever it happened to press.
-//
-// The tick is spent only once the pointer is established as being outside, which is what
-// makes leaving the pane act on the very next frame rather than up to DRAG_SCROLL_S later.
+// The line a drag extends to: the pointer's own inside the pane, the autoscroll's walk past an
+// edge. Past one the pointer has stopped naming a line, so Drag.over does — seeded from the
+// edge row it left over. The tick is spent only once the pointer is established outside.
 editor_drag_line :: proc(a: ^App, b: ^Buffer, v: Editor_View, line: int, now: f64) -> int {
     past, dir := 0, 0
     switch {
@@ -407,12 +286,9 @@ editor_drag_line :: proc(a: ^App, b: ^Buffer, v: Editor_View, line: int, now: f6
     if !a.drag.over_on {
         a.drag.over, a.drag.over_on = line, true
     }
-    // Walking past an edge is a request for the VIEWPORT POLICY to follow, so it re-attaches
-    // the view the way a click does (and directly, for the same reason: last_input_at is
-    // global and the aux panes re-attach off it). The wheel is free to detach the view
-    // mid-drag while the pointer is still inside the pane — scroll with one hand, extend with
-    // the other — but a detached view does not chase the caret, so a drag off the bottom edge
-    // would otherwise extend the selection somewhere nobody can see.
+    // Walking past an edge asks the VIEWPORT POLICY to follow, so it re-attaches the view as
+    // a click does. A detached view does not chase the caret, so without this a drag off the
+    // bottom would extend the selection somewhere nobody can see.
     b.scroll_detached = 0
     if drag_tick(a, now) {
         step := drag_scroll_step(past, int(v.row_h))
@@ -424,21 +300,9 @@ editor_drag_line :: proc(a: ^App, b: ^Buffer, v: Editor_View, line: int, now: f6
     return a.drag.over
 }
 
-// Extend a live text drag to wherever the pointer is now — the pointer's per-frame verb and
-// the sibling of editor_click, run right beside it and for its reason: a gesture that walks
-// the caret off-screen has to scroll in the frame that moved it, and buffer_scroll_apply
-// comes after both.
-//
-// **Nothing here writes b.scroll.** Autoscroll walks the SELECTION past the visible window
-// and the existing viewport policy follows it, which is the difference between adding a
-// feature and adding a second thing that moves the view. It also means the drag scrolls in
-// whichever scroll_mode the user chose, without this proc knowing there are two.
-//
-// The grades split where doc.odin splits them: a character drag is doc_set_head, which keeps
-// whatever anchor the click established (a Shift+click's anchor is not the press position,
-// and an Alt+click's cursor is the new one), while word and line re-derive BOTH ends every
-// frame through doc_drag_span, because crossing back over the press point moves the anchor
-// from one end of the pressed run to the other.
+// Extend a live text drag, beside editor_click because a gesture that walks the caret
+// off-screen must scroll in the frame that moved it. **Nothing here writes b.scroll**:
+// autoscroll walks the SELECTION and the policy follows, in whichever scroll_mode is set.
 editor_drag :: proc(a: ^App, b: ^Buffer, v: Editor_View, now: f64) {
     if !a.mouse_on || !a.mouse.known || a.main != .Text || len(b.lines) == 0 {
         return
@@ -472,21 +336,10 @@ Editor_Body :: struct {
     now: f64,
 }
 
-// Declare the pane and hand back the frame's command list. Three elements: the root that
-// puts the pane where compute_layout decided it goes, the pane box, and the body — which is
-// the whole content area as one Custom.
-//
-// The tree is deliberately this thin. There is no gutter element, no row elements: the
-// current-line bar spans the gutter and the text as one strip, every row shares one
-// sub-pixel scroll offset, and the line numbers ride the same walk as the glyphs. Declaring
-// them separately would put a second copy of the row grid in the tree for Clay to solve —
-// the exact duplication the refactor removes — to buy hit targets the surface already
-// resolves for itself. The Custom hatch is for pixels no widget tree wants, and 60 rows of
-// per-glyph colour is the case it was reserved for (docs/clay-refactor.md, the boundary).
-//
-//   ed_pane  the content area inside the focus ring, floating at the pane's own rect and
-//            clipping its own content (painted by panel(), not here)
-//     ed_body  the text surface, as a Custom — and the element editor_hit points at
+// Declare the pane. The tree is deliberately thin — no gutter or row elements, which would put
+// a second copy of the row grid in the tree to buy hit targets the surface already resolves.
+//   ed_pane    the content area inside the focus ring, clipping its own content
+//     ed_body    the text surface, as a Custom — the element editor_hit points at
 editor_declare :: proc(a: ^App, f: ^Font, pane: Rect, v: Editor_View, now: f64) {
     b := editor_current(&a.editor)
     area := v.area
@@ -496,9 +349,8 @@ editor_declare :: proc(a: ^App, f: ^Font, pane: Rect, v: Editor_View, now: f64) 
     cu := new(ClayCustom, context.temp_allocator)
     cu^ = ClayCustom{paint = editor_paint_body, user = body}
 
-    // No backgroundColor: panel() has already filled the pane and drawn its focus ring, and
-    // Clay's transparent default emits no Rectangle at all — so this pane's command list is
-    // the Custom bracketed by the pane's own clip, and nothing else.
+    // No backgroundColor: panel() already filled the pane, and Clay's transparent default
+    // emits no Rectangle — so the command list is the Custom inside the pane's clip.
     if clay.UI(clay.ID("ed_pane"))(clay_pane_box(area)) {
         if clay.UI(clay.ID("ed_body"))(
             {
@@ -509,16 +361,9 @@ editor_declare :: proc(a: ^App, f: ^Font, pane: Rect, v: Editor_View, now: f64) 
     }
 }
 
-// The text surface: a line-number gutter, the buffer's lines with syntax colour, the
-// current-line bar, selection spans, indent guides, whitespace markers, fold markers and a
-// caret per cursor. Unchanged from the draw_editor that lived in render.odin, beyond taking
-// its box from Clay instead of computing one — which is the point of the checkpoint.
-//
-// Positions come from `r`, the box the solver resolved, and NOT from v.area, even though
-// the two are equal by construction (ed_body fills ed_pane, which is sized to the area).
-// Reading the box is the contract; the equality is what tests/editor_ui_test.odin pins, so
-// a declaration that ever stopped honouring it would fail there rather than silently paint
-// the body one place and hit-test it another.
+// The text surface: gutter, lines with syntax colour, current-line bar, selections, indent
+// guides, whitespace and fold markers, a caret per cursor. Positions come from `r`, the box the
+// solver resolved, NOT v.area — tests/editor_ui_test.odin pins the equality.
 editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
     e := (^Editor_Body)(user)
     if e == nil || e.b == nil {
@@ -621,10 +466,7 @@ editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
 
 // The editor pane. Scrolls to keep the cursor visible, the view sliding smoothly toward the
 // target top line. (Tabs currently advance one cell — fine for the space-indent default;
-// proper tab width is a TODO.)
-//
-// The order is the template's, and the doubled editor_view is the editor's own wrinkle —
-// see that proc for why the second call is load-bearing rather than tidy.
+// proper tab width is a TODO.) See editor_view for why it is built twice.
 editor_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     b := editor_current(&a.editor)
     area, row_h, rows := editor_geom(pane, a.scale, t.font.line_height)
@@ -637,7 +479,7 @@ editor_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     // against a view built before this frame's scroll policy runs.
     v := editor_view(b, &t.font, area, row_h, rows, now)
     editor_click(a, editor_hit(a, b, v), now)
-    editor_drag(a, b, v, now) // and extend a capture the press already made (C7c)
+    editor_drag(a, b, v, now) // and extend a capture the press already made
 
     // Then move the viewport, so a click that put the caret off-screen scrolls in the same
     // frame it was made, and rebuild the view over the result.
@@ -647,8 +489,7 @@ editor_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     editor_declare(a, &t.font, pane, v, now)
 }
 
-// The pane alone in a window, as a command list: the test-facing wrapper (see
-// filetree_layout for why every pane keeps one).
+// Test-facing wrapper; see filetree_layout.
 editor_layout :: proc(
     a: ^App,
     f: ^Font,
@@ -664,7 +505,7 @@ editor_layout :: proc(
     return clay.EndLayout(0)
 }
 
-// --- painters, moved wholesale from render.odin with the pane they serve ---
+// --- painters ---
 
 // Indent guides for one line: a thin vertical rail at the left edge of each indent
 // level the line sits at. The rail of the cursor's enclosing scope (sc_level, over

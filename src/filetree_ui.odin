@@ -2,45 +2,30 @@ package main
 
 import clay "../bindings/clay"
 
-// The filetree pane's UI half — C3, the first pane declared in Clay. filetree.odin is the
-// host-independent listing (it reads directories and formats rows, with no App and no GL);
-// everything here is the part that knows about Slopd: the theme, the unsaved ring, the
-// pointer, and the pane rect it all has to fit inside.
+// The filetree pane's UI half, and the template the other list panes follow. filetree.odin
+// is the host-independent listing (it reads directories and formats rows, with no App and no
+// GL); everything here is the part that knows about Slopd: the theme, the unsaved ring, the
+// pointer, and the pane rect it all has to fit inside. The pane's geometry exists ONCE, as a
+// declared tree Clay resolves into boxes that paint AND answer "what is under the pointer".
 //
-// The point of the port is that the pane's geometry now exists ONCE, as a declared tree.
-// draw_filetree used to compute row_h, the list top, the visible window and each row's y
-// as locals and throw them away, which is why nothing could hit-test them; Clay resolves
-// the same tree into boxes that paint AND answer "what is under the pointer". Nothing
-// about the listing itself changed here — same dired-style header, same one-cell margin,
-// same prefix column, same colours. The redesign is a separate job.
+// The frame order in filetree_frame is the load-bearing part:
 //
-// The frame order in filetree_frame is the load-bearing part, and it reads oddly until you
-// know why:
-//
-//   1. Resolve the pending click FIRST, against the boxes Clay is still holding from the
-//      LAST frame. That is not a compromise — it is the only correct choice. The pointer
-//      is over the pane the user is looking at, which is the one that was painted, and
-//      SetPointerState (fed at the top of render) resolves against exactly that tree.
-//   2. THEN move the viewport, so a click that changed the selection scrolls in the same
-//      frame it was made.
-//   3. THEN declare, so the frame paints the post-click state. Consuming the click after
-//      the declaration instead would paint the pre-click list and leave the selection
-//      invisible until the next unrelated event woke the loop. (The paint itself is the
-//      window's since C8a — one tree, one clay_paint; see window_ui.odin.)
+//   1. Resolve the pending click FIRST, against the boxes Clay still holds from the LAST
+//      frame — the pointer is over the pane that was painted, and SetPointerState (fed at the
+//      top of render) resolves against exactly that tree.
+//   2. THEN move the viewport, so a click that changed the selection scrolls in the same frame.
+//   3. THEN declare, so the frame paints the post-click state. Consuming the click after the
+//      declaration would paint the pre-click list and leave the selection invisible until the
+//      next unrelated event woke the loop.
 
-// Extra vertical padding per row, in logical pixels — the twin of GREP_ROW_PAD, and the
-// value draw_filetree has always used. Rows are whole pixels tall so the list stays on the
-// cell grid: Clay solves in floats, and chrome that is not a whole multiple of the row
-// height lands the solver's output between pixels.
+// Extra vertical padding per row, in logical pixels — the twin of GREP_ROW_PAD. Rows are whole
+// pixels tall so the list stays on the cell grid: Clay solves in floats, and chrome that is not
+// a whole multiple of the row height lands the solver's output between pixels.
 FT_ROW_PAD :: 2
 
-// The pane's fixed geometry: the content area inside the focus ring, the row height, and
-// how many entry rows fit under the header. Pure, and shared by every phase of the frame —
-// the hit test, the scroll policy and the declaration all size themselves from this one
-// call, which is what makes them incapable of disagreeing.
-//
-// `rows` is at least 1 even in a pane too short to hold a row: the old code did the same,
-// and the clip group is what keeps an overflowing row inside the pane.
+// The pane's fixed geometry: the content area inside the focus ring, the row height, and how
+// many entry rows fit under the header. Pure, and shared by every phase of the frame, which is
+// what makes them incapable of disagreeing. `rows` is at least 1 even in a too-short pane.
 filetree_geom :: proc(pane: Rect, scale: f32, line_h: f32) -> (area: Rect, row_h: i32, rows: int) {
     area = inset(pane, i32(2 * scale))
     row_h = i32(line_h) + i32(FT_ROW_PAD * scale)
@@ -51,27 +36,16 @@ filetree_geom :: proc(pane: Rect, scale: f32, line_h: f32) -> (area: Rect, row_h
     return
 }
 
-// Move the viewport to follow the selection, under the shared `scroll_mode` policy — the
-// same one the editor tracks its caret with (list_scroll_target, scroll.odin).
-//
-// This is the write that used to happen INSIDE draw_filetree, which meant the pane's
-// scroll position was a side effect of painting: nothing headless could exercise it, and
-// a frame that did not draw did not scroll. It is a normal state update now, GL-free and
-// called before anything is declared.
+// Move the viewport to follow the selection, under the shared `scroll_mode` policy — the same
+// one the editor tracks its caret with (list_scroll_target, scroll.odin). A normal state
+// update, GL-free and called before anything is declared, so a headless test can exercise it.
 filetree_scroll_apply :: proc(ft: ^FileTree, rows: int, center: bool, last_input_at: f64 = 0) {
     list_scroll_apply(&ft.scroll, &ft.scroll_detached, ft.selected, rows, len(ft.entries), center, last_input_at)
 }
 
-// Which entry the pointer is over, or -1 for none. Clay answers from the tree it is
-// holding — i.e. the one the LAST frame declared — which is why this runs before this
-// frame's declaration rather than after it.
-//
-// The loop is over the visible window only, never the whole listing: a directory can hold
-// thousands of entries and only the declared ones can possibly be hit. `ft.scroll` is
-// deliberately read BEFORE filetree_scroll_apply runs, so the window matches the rows that
-// were actually painted. A stale id (the window shrank since) simply reports false, so a
-// resize between the press and the frame that claims it costs a missed click, never a hit
-// on the wrong row.
+// Which entry the pointer is over, or -1. Clay answers from the tree the LAST frame declared,
+// so this runs before this frame's, over the visible window only and reading `ft.scroll` as it
+// stood then. A stale id reports false: a resize costs a missed click, never a wrong row.
 filetree_hit :: proc(ft: ^FileTree, rows: int) -> int {
     first := clamp(ft.scroll, 0, max(0, len(ft.entries)))
     n := max(0, min(len(ft.entries) - first, rows))
@@ -84,15 +58,9 @@ filetree_hit :: proc(ft: ^FileTree, rows: int) -> int {
     return -1
 }
 
-// Apply a pending click on `row` (-1 = the pointer hit no row). Single click selects,
-// double click activates — the mouse twin of Down/Up and Enter, so both paths end in the
-// same two procs and neither can grow behaviour the other lacks.
-//
-// The click is claimed only when a row was actually hit; a press over the header, the
-// margin or another pane is left for whoever else is drawing (nobody, today) and dropped
-// at the end of the frame. Focus is NOT taken: focus-follows-click is C8d and belongs to
-// every pane at once, since a filetree that grabs focus while the git pane does not is
-// worse than one that never does.
+// Apply a pending click on `row` (-1 = the pointer hit no row). Single click selects, double
+// click activates — the mouse twin of Down/Up and Enter, so neither path can grow behaviour the
+// other lacks. Claimed only on a real hit; focus is NOT taken here (see window_ui.odin).
 filetree_click :: proc(a: ^App, row: int) {
     if row < 0 {
         return
@@ -117,7 +85,7 @@ filetree_click :: proc(a: ^App, row: int) {
     }
 }
 
-// Declare the pane into the window's tree (C8a). Reads App, writes only Clay — no mutation,
+// Declare the pane into the window's tree. Reads App, writes only Clay — no mutation,
 // no GL — which is what lets tests/filetree_ui_test.odin assert the resolved boxes for a
 // known listing and viewport without a window.
 //
@@ -129,7 +97,7 @@ filetree_click :: proc(a: ^App, row: int) {
 //       ft_row/i   one per visible entry, keyed by ENTRY index so a hit names an entry
 //         ft_pre/i   the two-cell prefix column, so names start on a fixed cell
 //
-//     ch_bar     the Ctrl-held chord cheat-sheet (C8c, overlay_ui.odin), when it is up: a
+//     ch_bar     the Ctrl-held chord cheat-sheet (overlay_ui.odin), when it is up: a
 //                floating child of the pane, so it inherits the pane's clip and covers the
 //                rows rather than being laid out under them
 //
@@ -145,9 +113,7 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, now: f64 = 0) {
     first := clamp(ft.scroll, 0, max(0, len(ft.entries)))
     visible := max(0, min(len(ft.entries) - first, rows))
 
-    // No backgroundColor anywhere in this tree: panel() has already filled the pane and
-    // drawn its focus ring, and Clay's default transparent is not painted (clay_color
-    // reports it invisible), so the fills that do appear are the ones that mean
+    // No backgroundColor: panel() already filled the pane, so the fills that do appear mean
     // something — a marked row, the selection.
     if clay.UI(clay.ID("ft_pane"))(clay_pane_box(area)) {
         if clay.UI(clay.ID("ft_head"))(
@@ -177,9 +143,7 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, now: f64 = 0) {
                 marked := filetree_yanked_contains(ft, e.path)
                 ringed := ring_contains(a, e.path)
 
-                // One background per element, where the old code laid two fills over
-                // each other: the selection bar covered the mark bar exactly, so the
-                // pixels are the same and the precedence is now stated rather than
+                // One background per element, so the precedence is stated rather than
                 // implied by draw order.
                 bg: clay.Color
                 if i == ft.selected {
@@ -187,7 +151,7 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, now: f64 = 0) {
                 } else if marked {
                     bg = clay_rgb(th.line_highlight)
                 } else if hover_shown(a) && i == ft.hover {
-                    bg = clay_rgb(hover_bg(th)) // C5b's toggle; last, so it never masks a mark
+                    bg = clay_rgb(hover_bg(th)) // last, so it never masks a mark
                 }
 
                 if clay.UI(clay.ID("ft_row", u32(i)))(
@@ -206,9 +170,8 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, now: f64 = 0) {
                     pcol := marked ? th.accent : ringed ? th.urgent : th.muted
 
                     // A fixed TWO-cell column, not a gap: the prefix is one cell and the
-                    // name starts on the next but one, which is the column the listing
-                    // has always used. Sized in cells (a float, cell_w is exact) rather
-                    // than as padding, which Clay takes as whole pixels.
+                    // name starts on the next but one. Sized in cells (a float, cell_w is
+                    // exact) rather than as padding, which Clay takes as whole pixels.
                     if clay.UI(clay.ID("ft_pre", u32(i)))(
                         {layout = {sizing = {width = clay.SizingFixed(2 * cw)}}},
                     ) {
@@ -219,11 +182,9 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, now: f64 = 0) {
             }
         }
 
-        // The chord bar goes LAST and inside the pane, which is the whole of what makes it an
-        // overlay: `attachTo = .Parent` takes ft_pane off the open clip stack, so the bar is
-        // clipped to the pane and gets a scissor group of its own — without which its backdrop
-        // would be an under-quad in the rows' own batch and would paint BEHIND the names it is
-        // supposed to be covering (C1, property 1). See overlay_ui.odin.
+        // The chord bar goes LAST and inside the pane, which is what makes it an overlay:
+        // `attachTo = .Parent` takes ft_pane off the open clip stack, so the bar gets a scissor
+        // group of its own — without which its backdrop would paint BEHIND the names it covers.
         if chord_shown(a) {
             chord_declare(a, f, area, now)
         }
@@ -231,10 +192,8 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, now: f64 = 0) {
 }
 
 // The pane alone in a window, as a command list — the test-facing half of the declaration
-// above, and the shape every `<p>_layout` has taken since C8a put the panes in one tree. The
-// app never calls it; tests/filetree_ui_test.odin does, because a pane's boxes are the same
-// whether or not another pane is declared beside it, and asserting them one pane at a time is
-// what keeps a pane test about the pane.
+// above. The app never calls it; tests/filetree_ui_test.odin does, because a pane's boxes are
+// the same whether or not another pane is declared beside it.
 filetree_layout :: proc(
     a: ^App,
     f: ^Font,
@@ -249,15 +208,9 @@ filetree_layout :: proc(
     return clay.EndLayout(0)
 }
 
-// The filetree listing: a dired-style header (current dir) then rows, each prefixed '+'
-// (marked for yank), '*' (in the unsaved ring) or '-' (neither). The selection is
-// highlighted and the list tracks it under the shared `scroll_mode` policy; directories
-// are tinted. See the header for why the three steps happen in this order.
-//
-// It no longer paints, and the rename says so: since C8a the window declares one tree and
-// paints it once (window_ui.odin), so a pane's frame ends at its declaration. Everything
-// before that is unchanged and deliberately so — the phases and their order ARE the pane
-// template, and the only thing the single tree took away was the pane's own clay_paint.
+// The filetree listing: a dired-style header (current dir) then rows, each prefixed '+' (marked
+// for yank), '*' (in the unsaved ring) or '-'. The selection is highlighted and tracked under
+// the shared `scroll_mode` policy. The phases and their order ARE the pane template.
 filetree_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     area, _, rows := filetree_geom(pane, a.scale, t.font.line_height)
     if area.w <= 0 || area.h <= 0 {

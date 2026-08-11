@@ -7,19 +7,16 @@ import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
 
-// Link jumping — Alt+Enter on the token under the editor caret "follows" it, picking an
-// action from what the token IS (classified most- to least-specific, so a bare identifier
-// is the fallback):
+// Link jumping — Alt+Enter on the token under the editor caret "follows" it, picking an action
+// from what the token IS, classified most- to least-specific so a bare identifier is the fallback:
 //   [[name]]            -> open the nearest name.md, searched from the project root
 //   http(s)/ftp/... URL -> hand off to the desktop (xdg-open -> xdg-desktop-portal)
 //   #hex / rgb()/rgba() -> stash the colour for the (stubbed) colour editor pane
-//   an identifier       -> grep the project for it, then tree-sitter keeps only the lines
-//                          that DEFINE it (not the invocations): one definition jumps
-//                          straight there, several stash in the GrepPane (grep.odin) for a
-//                          future results UI. A word that's none of the above and has no
-//                          definition is a no-op.
-// Only the dispatch + the URL/wiki/colour handling live here; the project scan is grep.odin
-// and the definition filtering is highlight.odin (where the tree-sitter machinery lives).
+//   an identifier       -> grep the project, then tree-sitter keeps only the lines that DEFINE
+//                          it: one definition jumps straight there, several list in the
+//                          GrepPane. No definition and no other match is a no-op.
+// Only the dispatch + URL/wiki/colour handling live here; the project scan is grep.odin and the
+// definition filtering is highlight.odin (where the tree-sitter machinery lives).
 
 link_follow :: proc(a: ^App) {
     b := editor_current(&a.editor)
@@ -45,10 +42,8 @@ link_follow :: proc(a: ^App) {
 
 // --- the shared jump primitive ---
 
-// jump_to is the ONE "reveal a location" entry point behind the `j`/`jump` builtin, the grep
-// pane, and every Alt+Enter follow. A non-empty `path` is opened first (open_file reuses an
-// already-open buffer + focuses the editor); then the caret lands on `line` (0-based, clamped
-// to the file) at `col` (0-based, clamped to the line). Callers compute the absolute target —
+// The ONE "reveal a location" entry point, behind the `j`/`jump` builtin, the grep pane and every
+// Alt+Enter follow. `line`/`col` are 0-based and clamped. **Callers compute the absolute target** —
 // jump_to does no relative arithmetic of its own.
 jump_to :: proc(a: ^App, path: string, line: int, col: int) {
     if path != "" {
@@ -61,11 +56,9 @@ jump_to :: proc(a: ^App, path: string, line: int, col: int) {
     set_focus(a, .Editor)
 }
 
-// Resolve a `j`/Alt+Enter file argument to an openable absolute path. Per the user's rule:
-// a bare `name.ext` (no separator) is looked up project-first — nearest match under the
-// project root (find_nearest_file); a `/abs/path` or `~/path` is taken system-wide; a
-// relative path WITH a separator joins onto the project root. ok=false when nothing exists,
-// so a non-path token falls through to the next Alt+Enter classifier. Temp-allocated.
+// Resolve a `j`/Alt+Enter file argument to an openable absolute path: a bare `name.ext` is the
+// nearest match under the project root, `/abs` and `~/` are system-wide, a relative path WITH a
+// separator joins the root. ok=false when nothing exists, so the next classifier gets a try.
 jump_resolve_path :: proc(a: ^App, arg: string) -> (string, bool) {
     if arg == "" {
         return "", false
@@ -100,10 +93,9 @@ parse_line_spec :: proc(s: string, base: int) -> (int, bool) {
 
 // --- jump to definition ---
 
-// Resolve an identifier to its definition: grep narrows to every file/line that mentions
-// it (grep_run), tree-sitter filters those to the lines that actually DEFINE it
-// (ts_filter_definitions). Nothing found is a no-op, a single site jumps straight there
-// (no picker), several stash in the grep pane for a future results UI to list and pick.
+// Resolve an identifier to its definition: grep narrows to every line mentioning it, tree-sitter
+// filters to the lines that actually DEFINE it. Nothing found is a no-op, a single site jumps
+// straight there with no picker, several open the grep pane to pick from.
 @(private = "file")
 link_jump_definition :: proc(a: ^App, ident: string) {
     hits := grep_run(a.project_root, ident, word = true, fixed = true)
@@ -125,8 +117,7 @@ link_jump_definition :: proc(a: ^App, ident: string) {
 // --- wiki links ---
 
 // `[[name]]` -> open the nearest `name.md`, searched breadth-first from the project root
-// (nearest = shallowest). `name` keeps an explicit extension verbatim (`[[notes.txt]]`),
-// otherwise `.md` is appended. No-op when nothing matches.
+// (nearest = shallowest). An explicit extension is kept verbatim, otherwise `.md` is appended.
 @(private = "file")
 link_open_wiki :: proc(a: ^App, name: string) {
     target := strings.trim_space(name)
@@ -143,9 +134,8 @@ link_open_wiki :: proc(a: ^App, name: string) {
 @(private = "file")
 FIND_DIR_BUDGET :: 4096
 
-// Breadth-first search from `root` for a file whose base name equals `filename`, returning
-// the shallowest match (the "nearest"). Skips dotted directories (.git etc.) and caps the
-// number of directories visited. The returned path is temp-allocated (open_file clones it).
+// Breadth-first search from `root` for a file whose base name equals `filename`, returning the
+// shallowest match. Skips dotted directories and caps how many are visited. Temp-allocated.
 @(private = "file")
 find_nearest_file :: proc(root, filename: string) -> (string, bool) {
     queue := make([dynamic]string, context.temp_allocator)
@@ -182,26 +172,16 @@ find_nearest_file :: proc(root, filename: string) -> (string, bool) {
 @(private = "file")
 URL_SCHEMES :: [?]string{"https://", "http://", "ftp://", "file://", "mailto:", "www."}
 
-// Hand a URL or a FILE PATH to the desktop, which opens it in its default application —
-// a browser for a link, an image viewer / vlc / Sublime for a file (the filetree's
-// Shift+Enter, see filetree_open_selected). xdg-open is the freedesktop entry point: on a
-// portal-enabled desktop (Flatpak / modern Wayland) it routes to org.freedesktop.portal.
-// OpenURI, falling back to the user's default handler elsewhere — so we reach the portal
-// where it exists without linking a dbus client. This proc is the single seam to swap in a
-// direct OpenURI dbus call later.
-//
-// Spawned through `sh -c '... &'` so the SHELL backgrounds the handler: we exec and reap the
-// shell, which exits immediately (no zombie), while the app it launched — which may live for
-// hours, e.g. a video player — is reparented to init and never blocks our loop. The target
-// travels as $1, so nothing in it is ever re-parsed as shell syntax.
+// Hand a URL or FILE PATH to the desktop's default application. Spawned through `sh -c '... &'` so
+// the SHELL backgrounds the handler: we reap the shell at once (no zombie) while a long-lived app
+// (a video player) reparents to init. The target travels as $1, never re-parsed as shell syntax.
 desktop_open :: proc(target: string) {
     argv := []string{"sh", "-c", `xdg-open "$1" >/dev/null 2>&1 &`, "sh", target}
     _, _, _, _ = os.process_exec(os.Process_Desc{command = argv}, context.temp_allocator)
 }
 
-// The URL the caret sits on: expand over the contiguous run of URL-ish characters around
-// it (stopping at whitespace and bracketing/quoting delimiters), trim trailing sentence
-// punctuation, then accept only if it carries a known scheme.
+// The URL the caret sits on: expand over the run of URL-ish characters around it, trim trailing
+// sentence punctuation, then accept only if it carries a known scheme.
 @(private = "file")
 link_url_at :: proc(line: []rune, col: int) -> (string, bool) {
     n := len(line)
@@ -257,13 +237,9 @@ is_trailing_punct :: proc(r: rune) -> bool {
 
 // --- file paths ---
 
-// A file path under the caret, optionally with a `:line` or `:line:col` suffix (the grep /
-// compiler convention, e.g. `src/main.odin:42`). Expands over the run of path-ish characters,
-// splits off any trailing line/col, then accepts ONLY when the path actually resolves to an
-// existing file (jump_resolve_path) — so a plain identifier or `foo.bar` field access that
-// isn't a real file falls through to the definition jump. A bare word with neither a '/' nor a
-// file extension is skipped outright (it's an identifier, not a path — and skipping avoids a
-// project-tree walk on every Alt+Enter). Returns 0-based line/col for jump_to.
+// A file path under the caret, optionally with a `:line[:col]` suffix. Accepts ONLY when the path
+// resolves to an existing file, so a `foo.bar` field access falls through to the definition jump;
+// a bare word with no '/' and no extension is skipped, avoiding a tree walk on every Alt+Enter.
 @(private = "file")
 link_path_at :: proc(a: ^App, line: []rune, col: int) -> (path: string, lno, lcol: int, ok: bool) {
     n := len(line)
@@ -306,9 +282,9 @@ link_path_at :: proc(a: ^App, line: []rune, col: int) -> (path: string, lno, lco
     return "", 0, 0, false
 }
 
-// Path-token characters: anything that isn't whitespace or a quoting/bracketing delimiter.
-// ':' IS included so the trailing `:line:col` suffix rides along in the token (split off
-// afterwards); a stray `a:b` is harmless since the path still has to resolve to a real file.
+// Path-token characters: anything but whitespace or a quoting/bracketing delimiter. ':' IS
+// included so a trailing `:line:col` rides along; a stray `a:b` is harmless since the path
+// still has to resolve to a real file.
 @(private = "file")
 is_path_rune :: proc(r: rune) -> bool {
     if unicode.is_space(r) {
@@ -323,9 +299,8 @@ is_path_rune :: proc(r: rune) -> bool {
 
 // --- identifiers ---
 
-// The identifier the caret sits in (or just past): expand over [A-Za-z0-9_] both ways.
-// Rejects a token that doesn't START like an identifier (a bare number is no symbol to
-// jump to). Returns a temp-allocated string.
+// The identifier the caret sits in (or just past): expand over [A-Za-z0-9_] both ways. Rejects a
+// token that doesn't START like an identifier — a bare number is no symbol to jump to.
 @(private = "file")
 link_ident_at :: proc(line: []rune, col: int) -> (string, bool) {
     n := len(line)
@@ -400,9 +375,8 @@ link_wikilink_at :: proc(line: []rune, col: int) -> (string, bool) {
 
 // --- colours ---
 
-// ColorPane — the (stubbed) colour editor's state: just the colour the caret was on, in
-// 0..1 RGBA. Opening currently only records it; the editing UI + the AuxMode that shows it
-// are future work, so this is the seam, not the pane.
+// The (stubbed) colour editor's state: just the colour the caret was on, in 0..1 RGBA. Opening
+// only records it — the editing UI and its AuxMode are future work. This is the seam, not the pane.
 ColorPane :: struct {
     rgba: [4]f32,
 }
@@ -494,9 +468,8 @@ parse_hex_rgba :: proc(hex: []rune) -> (rgba: [4]f32, ok: bool) {
     return {f32((v >> 16) & 0xff) / 255, f32((v >> 8) & 0xff) / 255, f32(v & 0xff) / 255, 1}, true
 }
 
-// `rgb(r,g,b)` / `rgba(r,g,b,a)` containing the caret: scan the line for the function name
-// + '(' ... ')' and check the caret falls within. Channels are 0..255 (-> 0..1); alpha is
-// 0..1 when written with a decimal point, else 0..255.
+// `rgb(r,g,b)` / `rgba(r,g,b,a)` containing the caret: scan for the name + '(' ... ')' and check
+// the caret falls within. Channels are 0..255; alpha is 0..1 when written with a '.', else 0..255.
 @(private = "file")
 link_rgbfunc_at :: proc(line: []rune, col: int) -> ([4]f32, bool) {
     n := len(line)

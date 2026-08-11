@@ -11,18 +11,16 @@ Rect :: struct {
     x, y, w, h: i32, // top-left origin, pixels
 }
 
-// Whether a point falls inside a rect — half-open on the far edges, so two rects sharing
-// a boundary (the panes either side of the gutter, the halves either side of the
-// rule) can never both claim the same pixel. A zero-sized rect never hits, which is what
+// Whether a point falls inside a rect — half-open on the far edges, so two rects sharing a
+// boundary can never both claim the same pixel. A zero-sized rect never hits, which is what
 // lets hit-testing skip a hidden-pane check: compute_layout leaves those zeroed.
 rect_hit :: proc(r: Rect, x, y: i32) -> bool {
     return r.w > 0 && r.h > 0 && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
 }
 
-// Font zoom. font_px is the logical text size in points, shared by every pane; the
-// atlas bakes at font_px * DPI scale. Ctrl +/- steps it, Ctrl+0 resets to the base.
-// The chosen size is persisted to config, but debounced: we wait FONT_SAVE_DELAY of
-// no further change before writing, so a burst of Ctrl+/- is one save, not a dozen.
+// Font zoom. font_px is the logical text size in points, shared by every pane; the atlas
+// bakes at font_px * DPI scale. Ctrl +/- steps it, Ctrl+0 resets. Persisting is debounced by
+// FONT_SAVE_DELAY, so a burst of Ctrl+/- is one config write, not a dozen.
 FONT_BASE_PX :: 15
 FONT_PX_MIN :: 8
 FONT_PX_MAX :: 40
@@ -44,28 +42,17 @@ Focus :: enum {
     Aux,
 }
 
-// What the MAIN (left / "document") pane shows. The left pane holds the document you
-// opened — text by default, or a media viewer for an image — while the aux pane (right)
-// holds a TOOL acting on documents (filetree/terminal/…). That document-vs-tool line
-// is why media surfaces are peers of the text editor here, not aux modes. Text/Image are
-// the v1 set; Audio/Video are future variants (each adds a draw_* / *_key branch + decode).
+// What the MAIN (left / "document") pane shows. The left pane holds the document you opened,
+// the aux pane a TOOL acting on documents — which is why media surfaces are peers of the text
+// editor here rather than aux modes. Audio/Video are future variants.
 MainSurface :: enum {
     Text,
     Image,
 }
 
-// How the two panes are arranged — the single stored bit the layout derives from.
-// Split (default): both panes always on screen. Zen: the editor gets the full
-// width and the aux pane slides in only while it is focused (any goto / Alt+Right
-// reveals it; focusing the editor retracts it). Full: one surface — the editor or
-// the aux pane — fills the whole window, chosen by focus; Alt+E / Alt+T / Alt+G /
-// … (or the `full`/`fm` builtin) swap which surface is up. `--util` launches into
-// Full on the filetree. Visibility is recomputed every frame from this + focus, so
-// there is no separate hidden/popped state to keep in sync.
-//
-// The command line reaches all three: `zen`/`zm` and `full`/`fm` TOGGLE their own mode,
-// while `normal`/`nm` names Split outright — the way back that does not depend on
-// remembering which mode you are in (see view_normal).
+// How the two panes are arranged — the single stored bit the layout derives from. Split: both
+// on screen. Zen: full-width editor, aux slides in only while focused. Full: one surface fills
+// the window, chosen by focus. Visibility is recomputed per frame, so no hidden state to sync.
 View :: enum {
     Split,
     Zen,
@@ -82,12 +69,9 @@ App :: struct {
     focus:    Focus,
     split:    f32, // editor width as a fraction of the window (0..1)
 
-    // Terminal sessions (aux pane, terminal mode). Heap-allocated and held by
-    // pointer so the array growing never moves a Terminal out from under its reader
-    // thread (see terminal.odin). t1 is spawned lazily on first use. The switcher
-    // overlay is hidden until Alt is held, then Up/Down move term_active. Ctrl/Shift
-    // held are tracked too: Alt+Ctrl / Alt+Shift are the terminal copy-cursor chords,
-    // and the switcher hides while either is down (it is only for plain-Alt switching).
+    // Terminal sessions (aux pane), held by POINTER so the array growing never moves a
+    // Terminal out from under its reader thread (terminal.odin). Alt shows the switcher and
+    // Up/Down move term_active; Alt+Ctrl / Alt+Shift are copy-cursor chords, so it hides then.
     alt_held:    bool,
     ctrl_held:   bool,
     shift_held:  bool,
@@ -99,17 +83,15 @@ App :: struct {
     cl_active: bool,
     cl:        CommandLine,
 
-    // A submitted line parses into an && chain (builtins + shell steps). The runner
-    // injects shell steps and, when a builtin waits on one, blocks on its exit code
-    // (the OSC sentinel) before continuing — pumped each frame. cl_wait_seq tags each
-    // wrapped injection so its exit report can be matched back.
+    // A submitted line parses into an && chain (builtins + shell steps), pumped each frame:
+    // a builtin waiting on a shell step blocks on its exit code (the OSC sentinel).
+    // cl_wait_seq tags each wrapped injection so its exit report can be matched back.
     cl_chain:    CLChain,
     cl_wait_seq: u64,
 
-    // The project root: the directory the `cd` command-line builtin sets (NOT a shell
-    // cd — it's captured by Slopd). New terminals spawn here, the `tu` builtin syncs
-    // every unlocked terminal to it, root-scoped tools read it, and the idle status
-    // strip shows it. Owned; defaults to the launch cwd.
+    // The project root: the directory the `cd` builtin sets (captured by Slopd, NOT a shell
+    // cd). New terminals spawn here, `tu` syncs every unlocked terminal to it, root-scoped
+    // tools read it, and the idle status strip shows it. Owned; defaults to the launch cwd.
     project_root: string,
 
     tree:        FileTree, // filetree aux mode (initialised in main, needs IO)
@@ -124,10 +106,9 @@ App :: struct {
     disk_poll_at:    f64, // glfw time of the next view-pane staleness check (see view_poll_disk)
     conflict_prompt: bool, // disk change under unsaved edits: prompt (y/n in the CL) vs silently keep (config)
 
-    // Alt+Enter link jumping (link.odin). grep holds a multi-result jump-to-definition for
-    // a future results pane to render (single results jump straight in the editor); color
-    // holds the colour the caret was on for the stubbed colour editor. Both are state-only
-    // seams — neither pane is wired/drawn yet.
+    // Alt+Enter link jumping (link.odin). grep holds a multi-result jump-to-definition,
+    // rendered by the Grep aux mode (grep_ui.odin); a single result jumps straight in the
+    // editor. color holds the colour the caret was on — a state-only seam, not drawn yet.
     grep:  GrepPane,
     color: ColorPane,
 
@@ -166,9 +147,8 @@ App :: struct {
     scroll_mode:  Scroll_Mode, // viewport policy: follow the caret / keep it middled (config)
     jump_lines:   int, // lines per Ctrl+Up/Down editor jump (from config)
 
-    // Editor reading-aids, toggled from the Config pane (all default on). show_whitespace:
-    // the ghosted leading-space dots / tab marks. show_guides: indent guides + the active-
-    // scope rail. folding: whether Ctrl+Enter collapses blocks.
+    // Editor reading-aids, toggled from the Config pane (all default on): ghosted leading-space
+    // dots / tab marks, indent guides + the active-scope rail, and Ctrl+Enter block folding.
     show_whitespace: bool,
     show_guides:     bool,
     folding:         bool,
@@ -178,29 +158,23 @@ App :: struct {
     // the user to review and run with Enter (the reviewable default). See cl_dispatch.
     folder_cd_run:   bool,
 
-    // The external git tool Alt+G hands the project root to (`git_tool` in the config
-    // file). Owned; empty means "no tool configured", and Alt+G opens a plain shell at
-    // the root instead — you already have a git workflow, this just gets out of its way.
-    // git_term picks which terminal session hosts it; 0 spawns it detached, for a GUI
-    // tool that wants its own window. See git_tool.odin.
+    // The external git tool Alt+G hands the project root to (config `git_tool`). Owned; empty
+    // means none configured, and Alt+G opens a plain shell at the root instead. git_term picks
+    // the hosting terminal session; 0 spawns it detached, for a GUI tool. See git_tool.odin.
     git_tool: string,
     git_term: int,
 
-    // Mouse (mouse.odin). `mouse` mirrors the GLFW pointer callbacks; `mouse_on` is the
-    // config toggle. `lay` is the layout the LAST FRAME PAINTED — cached by render because
-    // pointer events arrive between frames and must resolve against what is on screen, not
-    // against a layout recomputed mid-animation. Zero until the first frame, and a zero
-    // Layout is all zero rects, so hit-testing before then simply finds nothing.
+    // Mouse (mouse.odin). `mouse` mirrors the GLFW pointer callbacks; `mouse_on` is the config
+    // toggle. `lay` is the layout the LAST FRAME PAINTED, cached by render: pointer events
+    // arrive between frames and must resolve against what is on screen. Zero rects until then.
     mouse:    Mouse,
     mouse_on: bool,
-    // What the left button captured when it went down (drag.odin, C7c). Held between the
+    // What the left button captured when it went down (drag.odin). Held between the
     // press and the release, so every motion in between belongs to whatever the press
     // resolved to rather than to whatever the pointer is over now.
     drag:     Drag,
-    // Whether a pane tints the row under the pointer. Separate from `mouse_on` because it
-    // is a taste question, not a capability one: hover costs a repaint per motion event and
-    // the editor is keyboard-first, so it is worth being able to keep the pointer working
-    // while the chrome stays still. Every list pane reads this one flag (see config_ui).
+    // Whether a pane tints the row under the pointer. Separate from `mouse_on` because it is
+    // a taste question rather than a capability one — hover costs a repaint per motion event.
     hover_on: bool,
     lay:      Layout,
 
@@ -250,11 +224,9 @@ panes_visible :: proc(a: ^App) -> Pane_Vis {
 // Seconds between view-pane staleness checks while the pane is focused.
 DISK_POLL_INTERVAL :: 1.0
 
-// Re-read the focused document pane's file if it changed on disk: the active text buffer
-// reloads (buffer_reload_if_changed), an image re-decodes (media_reload_if_changed). Both
-// no-op when nothing changed (a clean stat) or the pane isn't focused. Shared by the
-// on-focus refresh (set_focus) and the periodic poll. The empty-ring guard keeps it safe
-// on a bare App (the view-arrangement tests never call editor_init).
+// Re-read the focused document pane's file if it changed on disk (text reloads, an image
+// re-decodes); no-op on a clean stat or an unfocused pane. Shared by the on-focus refresh and
+// the periodic poll. The empty-ring guard keeps it safe on a bare App (tests skip editor_init).
 view_refresh :: proc(a: ^App) {
     if a.focus != .Editor {
         return
@@ -265,10 +237,9 @@ view_refresh :: proc(a: ^App) {
             b := editor_current(&a.editor)
             was := b.conflict
             buffer_reload_if_changed(b, a.conflict_prompt)
-            // On a freshly-raised conflict, stage the answer command in the command line
-            // for the user to finish (type y/n, Enter): `reload y` takes the disk version,
-            // `reload n` keeps + caches. Edge-triggered (only on the false->true transition)
-            // so it isn't re-injected every poll tick; skipped if the CL is already busy.
+            // On a freshly-raised conflict, stage the answer for the user to finish (y/n,
+            // Enter): `reload y` takes the disk version, `reload n` keeps + caches. EDGE-
+            // triggered, so it isn't re-injected every poll tick; skipped if the CL is busy.
             if !was && b.conflict && !a.cl_active {
                 cl_inject(a, "reload ")
             }
@@ -278,12 +249,9 @@ view_refresh :: proc(a: ^App) {
     }
 }
 
-// Periodically refresh the focused view pane so edits made by an external tool (an agent,
-// another editor) flow in instead of being overwritten by a later save. Only ticks while
-// the document pane holds focus (no stat traffic off in a terminal or a tool pane);
-// switching INTO the pane refreshes it immediately via set_focus, this catches changes
-// that land while you sit in it. Called once per frame; app_next_wake schedules the wake
-// so the poll fires even at rest.
+// Periodically refresh the focused view pane so an external tool's edits flow in instead of
+// being overwritten by a later save. Only ticks while the document pane holds focus (no stat
+// traffic elsewhere); app_next_wake schedules the wake so the poll fires even at rest.
 view_poll_disk :: proc(a: ^App, now: f64) {
     if a.focus != .Editor || now < a.disk_poll_at {
         return
@@ -292,10 +260,9 @@ view_poll_disk :: proc(a: ^App, now: f64) {
     view_refresh(a)
 }
 
-// The one place focus changes — honours each view's invariants. In Full, focus picks
-// the lone full-window surface (editor or aux), so revealing the editor is a normal
-// focus change. In Zen, focus drives the aux pane's slide (revealed while it holds
-// focus), so re-aim the reveal animation here.
+// The one place focus changes — honours each view's invariants. In Full, focus picks the lone
+// full-window surface; in Zen it drives the aux pane's slide (revealed while it holds focus),
+// so the reveal animation is re-aimed here.
 set_focus :: proc(a: ^App, who: Focus) {
     a.focus = who
     if a.view == .Zen {
@@ -322,29 +289,17 @@ view_toggle_full :: proc(a: ^App) {
     set_focus(a, a.focus)
 }
 
-// Back to the normal arrangement — both panes on screen, split by `a.split` (the `normal` /
-// `nm` command line builtin).
-//
-// **The only one of the three that names an arrangement instead of toggling one**, which is
-// why it is worth having at all. `zen` and `full` each flip their own bit, so getting back to
-// Split means remembering which mode you are actually in: `zen` from Full lands in Zen, not
-// Split, and `full` from Zen lands in Full. `nm` is the one that always means what it says,
-// from any view, and it is idempotent.
-//
-// Focus is KEPT rather than forced to the editor, unlike view_toggle_zen's exit: in Split both
-// panes are on screen whichever one holds the arrows, so there is nothing an arrangement
-// change has to resolve. set_focus is still the way it lands, because leaving Zen has to
-// re-aim that view's reveal — which Split answers differently, and which is not this
-// proc's business to know.
+// Back to the normal arrangement — both panes on screen, split by `a.split` (`normal` / `nm`).
+// **The only one of the three that names an arrangement instead of toggling one**, so it is
+// idempotent. Focus is KEPT, but still set through set_focus, since leaving Zen re-aims it.
 view_normal :: proc(a: ^App) {
     a.view = .Split
     set_focus(a, a.focus)
 }
 
-// Escape's view action: turn Zen ON (never off), then once in Zen flip which side is
-// shown. Focusing the editor hides the aux pane (full-width editor); focusing the aux
-// pane slides it back in on whatever mode was last there (a.aux_mode persists). No-op
-// under Full, where surface swapping is driven by Alt+E/T/G (and the CL), not Esc.
+// Escape's view action: turn Zen ON (never off), then once in Zen flip which side is shown —
+// focusing the editor hides the aux pane, focusing aux slides it back in on the last mode.
+// No-op under Full, where surface swapping is driven by Alt+E/T/G (and the CL), not Esc.
 zen_escape :: proc(a: ^App) {
     if a.view == .Full {
         return

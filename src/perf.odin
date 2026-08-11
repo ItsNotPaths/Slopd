@@ -6,25 +6,21 @@ import "core:slice"
 import gl "vendor:OpenGL"
 import "vendor:glfw"
 
-// Performance log — opt-in via the `--perflog` launch flag, otherwise dormant at zero
-// cost (every entry point early-returns on !enabled). The point is persistence: rather
-// than an on-screen counter, we append numbers to perf.log so a regression can be
-// hunted down after the fact.
+// Performance log — opt-in via the `--perflog` launch flag, otherwise dormant at zero cost
+// (every entry point early-returns on !enabled). The point is persistence: numbers land in
+// perf.log, so a regression can be hunted down after the fact.
 //
 // Three numbers per frame:
 //   cpu  — wall time inside render() (the vertex assembly: layout, highlight, batching)
-//   gpu  — a GL_TIME_ELAPSED timer query around the frame's draw submission. This is the
-//          one that matters for the 240fps-at-4k goal: vsync pins wall-clock frame time
-//          to the refresh interval, hiding GPU cost, so only a timer query reveals the
-//          real headroom (target: well under 4.17ms @ 240Hz).
-//   swap — time blocked in SwapBuffers (mostly the vsync wait; a spike here that isn't
-//          the refresh interval means the GPU is behind).
+//   gpu  — a GL_TIME_ELAPSED query around the frame's draw submission. vsync pins wall-clock
+//          frame time to the refresh interval, hiding GPU cost, so only a timer query shows
+//          the real headroom (target: well under 4.17ms @ 240Hz).
+//   swap — time blocked in SwapBuffers (mostly the vsync wait; a spike here that isn't the
+//          refresh interval means the GPU is behind).
 //
-// The GPU query is double-buffered: each frame issues into one of two query objects and
-// reads back the OTHER (the previous frame's, ready by now since we just waited on vsync),
-// so the read never stalls the pipeline. Samples accumulate for a second, then one line
-// of avg / p99 / max is appended and the window resets — p99 is what surfaces the latency
-// spikes a per-frame average would smear away.
+// The GPU query is double-buffered: each frame issues into one slot and reads back the OTHER
+// (last frame's, ready by now since we just waited on vsync), so the read never stalls. A
+// second of samples aggregates to one avg/p99/max line — p99 surfaces spikes an avg smears.
 
 PERF_FLUSH_INTERVAL :: 1.0 // seconds of samples per aggregated log line
 
@@ -106,10 +102,9 @@ perf_frame :: proc(p: ^Perf, now: f64, cpu_ms, swap_ms: f32, w, h: i32, verts: i
     append(&p.cpu, cpu_ms)
     append(&p.swap, swap_ms)
 
-    // Keystroke->present latency: this frame is the one that displays the result of the
-    // most recent keystroke (we render exactly one frame per input). `now` is just past
-    // SwapBuffers, so it's the moment the frame is handed to the display — count the
-    // keystroke once, the frame after it landed.
+    // Keystroke->present latency: this frame displays the result of the most recent
+    // keystroke (exactly one frame per input), and `now` is just past SwapBuffers — the
+    // moment the frame reaches the display. Counted once, on the frame after it landed.
     if input_at > p.input_seen {
         append(&p.input, f32((now - input_at) * 1000))
         p.input_seen = input_at

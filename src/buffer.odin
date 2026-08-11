@@ -4,10 +4,9 @@ import "core:os"
 import "core:strings"
 import "core:time"
 
-// The text editor: a list of open Buffers (the ring) with one active. Each Buffer
-// is a Doc (the shared multi-cursor editing core) plus file/view state, so every
-// motion and edit op is the same code the command line uses. Multi-cursor native:
-// single-cursor is just N == 1. The UI to spawn extra cursors is still to come.
+// The text editor: a list of open Buffers (the ring) with one active. Each Buffer is a Doc
+// (the shared multi-cursor editing core) plus file/view state, so every motion and edit op is
+// the same code the command line uses. Multi-cursor native: single-cursor is just N == 1.
 
 Buffer :: struct {
     using doc:     Doc, // lines + cursors
@@ -183,16 +182,9 @@ file_mtime :: proc(path: string) -> (time.Time, bool) {
     return fi.modification_time, true
 }
 
-// Re-read the file if it changed on disk since we last loaded or saved it. A view pane
-// goes stale when an external tool (an agent, another editor) rewrites the open file
-// underneath us; without this a later save would clobber those edits with our stale
-// buffer. A CLEAN buffer reloads silently. A DIRTY buffer is a genuine conflict — both
-// sides changed. With `prompt_on_conflict` (config disk_conflict: prompt) we raise
-// `conflict` and leave the decision to the user (resolved via a y/n line in the command
-// line; buffer_conflict_resolve), deliberately NOT adopting the stamp so the conflict
-// keeps asserting until resolved. In the relaxed mode (disk_conflict: keep) we silently
-// keep the edits and adopt the stamp, so there is no prompt and no re-check churn.
-// Returns true if it actually reloaded.
+// Re-read the file if it changed on disk since we last loaded or saved it, so a later save
+// can't clobber an external tool's edits. A CLEAN buffer reloads silently; a DIRTY one is a
+// conflict — `prompt_on_conflict` raises `conflict` and deliberately does NOT adopt the stamp.
 buffer_reload_if_changed :: proc(b: ^Buffer, prompt_on_conflict: bool) -> bool {
     if b.path == "" {
         return false
@@ -215,8 +207,7 @@ buffer_reload_if_changed :: proc(b: ^Buffer, prompt_on_conflict: bool) -> bool {
 
 // Re-read the file from disk, holding the caret line/column and scroll across the swap
 // (clamped to the new length) so a background edit doesn't yank the view to the top. The
-// unconditional reload core, shared by the silent auto-reload and the conflict "reload"
-// choice. Returns true on success.
+// unconditional reload core, shared by the silent auto-reload and the conflict "reload".
 buffer_reload_keep_view :: proc(b: ^Buffer) -> bool {
     if b.path == "" {
         return false
@@ -233,11 +224,9 @@ buffer_reload_keep_view :: proc(b: ^Buffer) -> bool {
     return true
 }
 
-// Settle a pending disk-change conflict. reload=true takes the disk version (the edits
-// are discarded, the file re-read); reload=false KEEPS the edits and adopts the current
-// disk stamp — the cached decision, so the prompt stays down until the file changes
-// AGAIN (a fresh stamp re-raises it) or you switch to a different file. Either clears the
-// conflict.
+// Settle a pending disk-change conflict. reload=true takes the disk version; reload=false
+// KEEPS the edits and adopts the current disk stamp — the cached decision, so the prompt
+// stays down until the file changes AGAIN. Either clears the conflict.
 buffer_conflict_resolve :: proc(b: ^Buffer, reload: bool) {
     b.conflict = false
     if reload {
@@ -260,13 +249,9 @@ buffer_newline :: proc(b: ^Buffer) {
     b.dirty |= doc_newline(&b.doc)
 }
 
-// Enter in the editor: a newline that keeps the code indented (the auto-indent + brace
-// expansion standard editors have). The new line copies the current line's leading
-// whitespace, plus one indent unit when the line opens a block at the caret (its last
-// non-blank char is an opener `([{`). With a grammar loaded, tree-sitter suppresses an opener
-// that actually sits inside a string or comment. Special case: a single caret between a
-// freshly-typed bracket pair (`{|}`, `[|]`, `(|)`) expands across three lines, caret on an
-// indented middle line. Heuristic-first (works with no grammar installed); tree-sitter refines.
+// Enter in the editor: a newline that copies the line's leading whitespace, plus one indent
+// unit when the line opens a block at the caret. Special case: a lone caret between a bracket
+// pair expands across three lines. Heuristic-first, so it works with no grammar installed.
 buffer_enter :: proc(a: ^App, b: ^Buffer) {
     d := &b.doc
 
@@ -413,16 +398,9 @@ buffer_redo :: proc(b: ^Buffer) {
 
 // --- view ---
 
-// The viewport's target top line for a `rows`-tall pane — the scroll policy, kept out of
-// the renderer so it is testable without GL. Two modes (the `scroll_mode` config):
-//   FOLLOW (default) — the view sits still until the caret would leave it, then moves the
-//     minimum: the caret roams the pane and only pushes the text at the edges.
-//   MIDDLE (center)  — the FIRST (topmost) cursor is pinned to the pane's middle row, so
-//     Up/Down move the TEXT under a caret that never leaves the middle. Multi-cursor
-//     first: with a trail down the file it's the top of the set that stays framed.
-// Both walk in VISIBLE rows, so a folded block doesn't take up viewport. Centring clamps
-// at the first line (there is nothing above line 0 to show); near the end of the file it
-// keeps centring and simply lets the view run past the last line.
+// The viewport's target top line for a `rows`-tall pane — the `scroll_mode` policy, kept out
+// of the renderer so it is testable without GL. FOLLOW moves the minimum only once the caret
+// would leave the view; MIDDLE pins the TOPMOST cursor to the middle. Both walk VISIBLE rows.
 buffer_scroll_target :: proc(b: ^Buffer, rows: int, center: bool) -> int {
     if center {
         line := buffer_prev_visible(b, doc_top_cursor_line(&b.doc))
@@ -439,19 +417,9 @@ buffer_scroll_target :: proc(b: ^Buffer, rows: int, center: bool) -> int {
     return top
 }
 
-// Settle this frame's scroll target — the one place b.scroll is written per frame, called
-// from render. Normally that is just the policy above, but the WHEEL can cut the view loose
-// from the caret, and while it is loose the policy must not run at all: both modes derive
-// the top from the caret (MIDDLE re-centres on it outright, FOLLOW drags it back once it
-// would leave the pane), so either would yank a detached view straight back within a screen
-// of the caret. Detached, the view keeps whatever the wheel left it and is only bounded.
-//
-// A KEYSTROKE re-attaches it, and comparing timestamps is what makes that total: every
-// motion, edit, jump, undo and buffer switch is reached by a key, so none of them has to
-// know this flag exists — the alternative, hooking each caret-moving path, is exactly the
-// kind of hand-maintained invariant this refactor is trying to delete. Scrolling away and
-// typing therefore snaps back to the caret, which is what every editor does and what makes
-// the detached state safe: it cannot hide your own edits from you.
+// Settle this frame's scroll target — the one place b.scroll is written per frame. While the
+// WHEEL has the view detached the policy must NOT run (both modes derive the top from the
+// caret and would yank it back); comparing timestamps re-attaches on any keystroke.
 buffer_scroll_apply :: proc(b: ^Buffer, rows: int, center: bool, last_input_at: f64) {
     if b.scroll_detached > 0 && last_input_at > b.scroll_detached {
         b.scroll_detached = 0
@@ -486,10 +454,9 @@ buffer_motion :: proc(b: ^Buffer, motion: Motion, select := false, all := false,
     buffer_skip_hidden(b, motion)
 }
 
-// Keeps cursors off folded (hidden) lines after a motion. A cursor that stepped into
-// a collapsed block is snapped to the fold's visible edge in the direction it moved:
-// backward motions land on the header above the fold, forward motions on the first
-// visible line past it — so a single Up/Down/arrow steps cleanly over a fold.
+// Keeps cursors off folded (hidden) lines after a motion: a cursor that stepped into a
+// collapsed block snaps to the fold's visible edge in the direction it moved (header above,
+// first visible line past it), so a single Up/Down/arrow steps cleanly over a fold.
 @(private = "file")
 buffer_skip_hidden :: proc(b: ^Buffer, motion: Motion) {
     if len(b.folds) == 0 {
