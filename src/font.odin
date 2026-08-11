@@ -68,7 +68,7 @@ font_load :: proc(f: ^Font, ttf: []u8, px: f32) -> bool {
     // Allocate first, but don't commit to `f` (or set `ready`) until PackBegin succeeds,
     // so a PackBegin failure frees the buffer here instead of leaking it past teardown.
     pixels := make([]byte, FONT_ATLAS * FONT_ATLAS)
-    if stbtt.PackBegin(&f.pc, raw_data(pixels), FONT_ATLAS, FONT_ATLAS, 0, 1, nil) == 0 {
+    if !stbtt.PackBegin(&f.pc, raw_data(pixels), FONT_ATLAS, FONT_ATLAS, 0, 1, nil) {
         delete(pixels)
         return false
     }
@@ -81,9 +81,9 @@ font_load :: proc(f: ^Font, ttf: []u8, px: f32) -> bool {
 
     // Warm the printable-ASCII range in one batched pack call (tighter packing than 95
     // incremental bakes, and almost always the bulk of what's on screen); the full upload
-    // below covers it, so no dirty band. A 0 return leaves ASCII to the lazy path.
+    // below covers it, so no dirty band. A false return leaves ASCII to the lazy path.
     ascii: [95]stbtt.packedchar
-    if stbtt.PackFontRange(&f.pc, raw_data(ttf), 0, px, 32, 95, &ascii[0]) != 0 {
+    if stbtt.PackFontRange(&f.pc, raw_data(ttf), 0, px, 32, 95, &ascii[0]) {
         for i in 0 ..< 95 {
             f.ascii[i] = {pc = ascii[i], present = true}
         }
@@ -154,9 +154,9 @@ font_glyph :: proc(f: ^Font, r: rune) -> (pc: stbtt.packedchar, ok: bool) {
     }
     g: Glyph
     // PackFontRange appends this one glyph into the live atlas (the skyline packer carries
-    // over between calls). A 0 return means the atlas is full: cache it absent — blank until
-    // the next re-bake on zoom/DPI change frees the atlas — rather than retry every frame.
-    g.present = stbtt.PackFontRange(&f.pc, raw_data(f.ttf), 0, f.px, c.int(r), 1, &g.pc) != 0
+    // over between calls). A false return means the atlas is full: cache it absent — blank
+    // until the next re-bake on zoom/DPI change frees the atlas — rather than retry every frame.
+    g.present = bool(stbtt.PackFontRange(&f.pc, raw_data(f.ttf), 0, f.px, c.int(r), 1, &g.pc))
     if g.present {
         // Grow the dirty band to cover this glyph's rows, so font_sync re-uploads only
         // the touched strip instead of the whole 1 MB atlas.
