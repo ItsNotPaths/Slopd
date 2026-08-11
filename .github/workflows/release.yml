@@ -38,6 +38,15 @@ jobs:
           path: vendor
           key: vendor-linux-${{ hashFiles('download-deps.sh') }}
 
+      # download-deps.sh builds glfw 3.4 from source, which compiles the X11 and Wayland
+      # backends by default; the runner ships neither set of headers. GLFW dlopens both
+      # at run time, so this only affects the build, not what the release binary needs.
+      - name: Install glfw build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev xorg-dev
+
       # download-deps.sh needs fontTools to subset the bundled Iosevka face; without it
       # it embeds the full ~8.9MB font and the release binary ships at ~10.5MB instead
       # of ~1.9MB. The runner has no fontTools by default, so install it BEFORE deps.
