@@ -14,9 +14,9 @@ GL_MAJOR :: 3
 GL_MINOR :: 3
 
 main :: proc() {
-    // Grammar CLI (`slopd --health [lang]`, `slopd --grammar <action> <lang>`) runs
-    // headless — handle it before opening a window, then exit.
-    if grammar_cli(os.args[1:]) {
+    // Headless CLI (`slopd --version`, `--health [lang]`, `--grammar <action> <lang>`) —
+    // handled before opening a window, then exit.
+    if about_cli(os.args[1:]) || grammar_cli(os.args[1:]) {
         return
     }
 

@@ -20,6 +20,9 @@ Buffer :: struct {
     fold_nlines:     int, // line count the folds were valid at (drop them when it changes)
     disk_mtime:      time.Time, // file mtime at our last load/save; detects external rewrites (see buffer_reload_if_changed)
     conflict:        bool, // the file changed on disk under unsaved edits: a decision is pending (the prompt; see buffer_conflict_resolve)
+    // Content came from the binary, not the filesystem (the `readme` / `license` builtins).
+    // `path` is then a DISPLAY NAME, not a location: nothing may save to it or stat it.
+    embedded:        bool,
 }
 
 Editor :: struct {
@@ -75,7 +78,7 @@ open_file :: proc(a: ^App, path: string) {
     a.main = .Text // a text file flips the main pane back to the editor
     e := &a.editor
     for &b, i in e.buffers {
-        if b.path == path {
+        if b.path == path && !b.embedded { // an embedded doc's path is a name, never a location
             e.active = i
             return
         }
@@ -148,14 +151,21 @@ buffer_load :: proc(b: ^Buffer, path: string) -> bool {
     delete(b.path)
     b.path = new_path
     b.dirty = false
+    b.embedded = false // a real file, even if this buffer previously held an embedded doc
     b.final_newline = strings.has_suffix(content, "\n") // remember it for save
     b.disk_mtime = mtime
     return true
 }
 
+// Whether `path` names a real file — the precondition every disk op shares. False for a
+// scratch buffer (no name yet) and for an embedded doc (a name that is not a location).
+buffer_on_disk :: proc(b: ^Buffer) -> bool {
+    return b.path != "" && !b.embedded
+}
+
 buffer_save :: proc(b: ^Buffer) -> bool {
-    if b.path == "" {
-        return false // save-as not implemented yet
+    if !buffer_on_disk(b) {
+        return false // unnamed (save-as not implemented yet), or an embedded doc
     }
     // doc_string is the single serializer (lines joined by '\n', no trailing one);
     // re-add the trailing newline only if the loaded file had one.
@@ -186,7 +196,7 @@ file_mtime :: proc(path: string) -> (time.Time, bool) {
 // can't clobber an external tool's edits. A CLEAN buffer reloads silently; a DIRTY one is a
 // conflict — `prompt_on_conflict` raises `conflict` and deliberately does NOT adopt the stamp.
 buffer_reload_if_changed :: proc(b: ^Buffer, prompt_on_conflict: bool) -> bool {
-    if b.path == "" {
+    if !buffer_on_disk(b) {
         return false
     }
     mt := file_mtime(b.path) or_else b.disk_mtime // unreadable: treat as unchanged
@@ -209,7 +219,7 @@ buffer_reload_if_changed :: proc(b: ^Buffer, prompt_on_conflict: bool) -> bool {
 // (clamped to the new length) so a background edit doesn't yank the view to the top. The
 // unconditional reload core, shared by the silent auto-reload and the conflict "reload".
 buffer_reload_keep_view :: proc(b: ^Buffer) -> bool {
-    if b.path == "" {
+    if !buffer_on_disk(b) {
         return false
     }
     head := b.cursors[b.primary].head

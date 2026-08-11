@@ -50,28 +50,20 @@ if [ $DO_LOCAL -eq 1 ]; then
     # the shipped binary does not depend on a system libglfw. (OpenGL is always
     # loaded at runtime from the GPU driver; there is nothing to link for it.)
     # Requires ./download-deps.sh to have built the static archive first.
+    # SLOPD_VERSION stamps `slopd --version`; a local build is not a tagged one, so it
+    # says so rather than claiming a release number.
     odin build "$PROJECT_DIR/src" -out:"$RELEASE_DIR/$PROJECT_NAME" \
-        -o:speed -define:GLFW_SHARED=false
+        -o:speed -define:GLFW_SHARED=false -define:SLOPD_VERSION="dev-local"
     # ~150KB of a ~1.9MB binary is .symtab/.strtab. A -o:speed build carries no .debug_*
     # sections to begin with, so --strip-all costs no debuggability that this build had.
     # release.yml already strips; do it here too so a local build matches the download.
     strip --strip-all "$RELEASE_DIR/$PROJECT_NAME"
-    [ -f "$PROJECT_DIR/README.md" ]     && cp "$PROJECT_DIR/README.md"     "$RELEASE_DIR/" || true
-    [ -f "$PROJECT_DIR/LICENSE" ]       && cp "$PROJECT_DIR/LICENSE"       "$RELEASE_DIR/" || true
-    # Self-contained runtime assets, resolved next to the binary at run time
-    # (asset_dir): the config sample, the themes/, and an empty grammars/. We ship
-    # NO default grammars — a language is installed at runtime from the Config pane
-    # (cf) or `slopd --grammar install`, which keeps the dist tiny.
+    # The release is the BINARY plus its config, and nothing else. The language registry,
+    # the default theme, the README and the LICENSE are all #load-ed into the executable
+    # (`readme` / `license` in the command line open the last two). themes/ and grammars/
+    # are user-added, created next to the binary on first use — a language is installed
+    # from the Config pane (cf) or `slopd --grammar install`, which keeps the dist tiny.
     [ -f "$PROJECT_DIR/slopd.config" ]  && cp "$PROJECT_DIR/slopd.config"  "$RELEASE_DIR/" || true
-    [ -d "$PROJECT_DIR/themes" ]        && cp -r "$PROJECT_DIR/themes"     "$RELEASE_DIR/" || true
-    mkdir -p "$RELEASE_DIR/grammars"
-    # The language registry (parsed down from Helix's languages.toml) is generated,
-    # not committed — regenerate it straight into the release folder so it ships
-    # beside the binary like themes/ and grammars/. Falls back to copying a locally
-    # generated one if the fetch fails (offline build).
-    python3 "$PROJECT_DIR/tools/gen-languages.py" "$RELEASE_DIR/languages" \
-        || cp "$PROJECT_DIR/languages" "$RELEASE_DIR/" 2>/dev/null \
-        || echo "  WARNING: no language registry generated; highlighting will have no languages" >&2
     echo "==> Local done: $RELEASE_DIR"
 fi
 

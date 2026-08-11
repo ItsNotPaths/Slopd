@@ -273,17 +273,17 @@ echo ""
 echo "==> language registry (parsed down from Helix's languages.toml)"
 # Slopd's tree-sitter language set follows Helix: tools/gen-languages.py fetches
 # Helix's languages.toml (pinned) and relabels it into our tiny `languages` file
-# (name + grammar repo/rev/subpath + file extensions). GENERATED, never committed;
-# it resolves beside the binary at runtime like themes/ and grammars/. For dev
-# (`odin run`) that's the project root; release.sh regenerates it into the release
-# folder. Grammars themselves are NOT fetched here — they install at runtime via
-# `slopd --grammar`. Refresh by bumping HELIX_REF in the script and re-running.
+# (name + grammar repo/rev/subpath + file extensions). Generated, but COMMITTED —
+# src/grammar.odin #loads it into the binary, and #load resolves at compile time,
+# so a fresh clone has to build without ever running this script. This step is a
+# refresh, not a bootstrap. Grammars themselves are NOT fetched here — they install
+# at runtime via `slopd --grammar`. Bump HELIX_REF and re-run to update the set.
 ROOT="$(dirname "$VENDOR")"
 if python3 "$ROOT/tools/gen-languages.py" "$ROOT/languages"; then
     :
 else
-    echo "  WARNING: language registry generation failed (need python3 + network);" >&2
-    echo "  syntax highlighting will have no languages until it succeeds." >&2
+    echo "  WARNING: language registry refresh failed (need python3 + network);" >&2
+    echo "  the committed languages file is kept, so the build still works." >&2
 fi
 
 echo ""
