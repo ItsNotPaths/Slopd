@@ -261,6 +261,21 @@ test_cl_cd_project_root :: proc(t: ^testing.T) {
     testing.expect_value(t, a.project_root, "/")
 }
 
+// "Set workspace here" IS `cd <dir>` + `tu`, so the root it leaves behind is the one the typed
+// pair would have — with no terminals up, the sync half is the no-op it is meant to be.
+@(test)
+test_cl_workspace :: proc(t: ^testing.T) {
+    a: app.App
+    defer delete(a.project_root)
+    app.cl_workspace(&a, "/tmp")
+    testing.expect_value(t, a.project_root, "/tmp")
+
+    app.cl_workspace(&a, "/no/such/dir/zzz") // a directory that is not there changes nothing
+    testing.expect_value(t, a.project_root, "/tmp")
+    app.cl_workspace(&a, "")
+    testing.expect_value(t, a.project_root, "/tmp")
+}
+
 // A config-driven CL action either stages its command (opens the CL, runs nothing) or
 // runs it at once (no CL) — the filetree folder cd via a.folder_cd_run.
 @(test)

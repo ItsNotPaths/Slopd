@@ -10,9 +10,8 @@ import clay "../bindings/clay"
 //      test refuses them — dead space, as grep's spacers are.
 //   2. Two coordinates per row. A click resolves to a row AND, inside an open dropdown, to a
 //      choice, so config_hit returns the DISPLAY row index and config_click reads item/opt off it.
-//   3. A Custom for the text fields. They are live Docs with carets, and a caret is an OVER-quad
-//      (text.odin) that a Clay Rectangle cannot produce — the bridge maps those to `fill`, which
-//      paints under the text. A setting is a field only while HIGHLIGHTED, decided in
+//   3. Text fields. The shared one-line `Field` (field_ui.odin), which the file browser's path
+//      line is the other instance of. A setting is a field only while HIGHLIGHTED, decided in
 //      config_declare rather than in the flattening (see ConfigRow).
 //
 // **The dropdown is NOT an overlay.** Its options are spliced INTO the row list as indented rows,
@@ -141,49 +140,6 @@ config_row_color :: proc(th: ^Theme, r: ConfigRow, sel: bool) -> [3]f32 {
     return th.fg
 }
 
-// What a text row's Custom needs to paint itself. Handed to the bridge as `customData`, so it must
-// outlive EndLayout — it lives in the frame's temp arena. No clip is carried: `paint` takes the
-// live one, since a box is not a clip and a half-off-screen row would draw outside the body.
-Config_Edit :: struct {
-    doc:   ^Doc,
-    now:   f64,
-    caret: bool, // config_caret_live: the row owns the keys, so it may show a blinking caret
-}
-
-// One text row's field: the Doc's runes at the value column with per-cursor selection spans and
-// carets. Shared by the language filter and the free-text setting, which differ in nothing here.
-config_paint_edit :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
-    e := (^Config_Edit)(user)
-    if e == nil || e.doc == nil || len(e.doc.lines) == 0 {
-        return
-    }
-    th := &a.theme
-    cw := t.font.cell_w
-    lh := t.font.line_height
-    ex := f32(r.x)
-    ty := f32(r.y) + (f32(r.h) - lh) / 2
-    y := i32(ty) // selection / caret share the glyph cell's top
-
-    line := &e.doc.lines[0]
-    for c in e.doc.cursors {
-        if cursor_has_selection(c) {
-            lo, hi := cursor_range(c)
-            fill(t, Rect{i32(ex + cw * f32(lo.col)), y, i32(cw * f32(hi.col - lo.col)), i32(lh)}, th.selection)
-        }
-    }
-    text_draw_runes(t, line.text[:], ex, ty, th.fg)
-    // `caret` is the gate the blink phase alone cannot be: a pane not being typed into stops
-    // redrawing, so a caret drawn there would freeze mid-blink rather than go out.
-    if e.caret && caret_blink_on(a, e.now) {
-        for c in e.doc.cursors {
-            caret(t, Rect{i32(ex + cw * f32(c.head.col)), y, i32(2 * a.scale), i32(lh)}, th.fg)
-        }
-    }
-    // The painter owns its region and ends with its own flush (the ClayCustom contract).
-    // `clip` arrives already intersected with the box, so this is the whole obligation.
-    flush_pane(t, clip, win_w, win_h)
-}
-
 // Declare the pane into the window's tree: reads App and the flattened rows, writes only Clay.
 // `rows` is passed in rather than rebuilt so the hit test, the click and this cannot disagree.
 //   cf_pane   the content area inside the focus ring, floating at the pane's own rect and
@@ -252,22 +208,16 @@ config_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []ConfigRow, now: f6
                         ) {
                             clay.Text(r.text, clay_text_config(col, lh))
                         }
-                        // A live text field: a Custom, because carets are over-quads (see the
-                        // header). A free-text setting is one only while highlighted, decided
-                        // HERE where selectedness is derived rather than in the flattening.
+                        // A live text field: the shared one-line Field (field_ui.odin), which is
+                        // a Custom because carets are over-quads (see the header). A free-text
+                        // setting is one only while highlighted, decided HERE where selectedness
+                        // is derived rather than in the flattening.
                         if r.kind == .Search || (r.kind == .Text && sel) {
-                            // The struct outlives EndLayout in the frame's temp arena.
-                            cu := new(ClayCustom, context.temp_allocator)
-                            ed := new(Config_Edit, context.temp_allocator)
                             d := r.kind == .Search ? &cp.search : &cp.edit
-                            ed^ = {doc = d, now = now, caret = sel && config_caret_live(a)}
-                            cu^ = {paint = config_paint_edit, user = ed}
-                            if clay.UI(clay.ID("cf_edit", u32(i)))(
-                                {
-                                    layout = {sizing = {clay.SizingGrow(), clay.SizingGrow()}},
-                                    custom = {customData = cu},
-                                },
-                            ) {}
+                            field_declare(
+                                clay.ID("cf_edit", u32(i)),
+                                {doc = d, now = now, caret = sel && config_caret_live(a)},
+                            )
                         } else if r.value != "" {
                             clay.Text(r.value, clay_text_config(th.fg, lh))
                         }

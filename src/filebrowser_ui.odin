@@ -1,6 +1,7 @@
 package main
 
 import "core:math"
+import "core:os"
 import "core:path/filepath"
 import "core:unicode/utf8"
 import clay "../bindings/clay"
@@ -48,10 +49,15 @@ FB_ICON_LIST :: "▤"
 
 // What the pointer is over. `index` means whichever list `kind` names — an ENTRY index for a
 // row, a place index, a segment index — and is -1 for a button, whose identity is `btn`.
+//
+// `PathBar` is the path region itself and NOT one of its segment buttons: the whitespace after
+// the last segment, which is the gesture that turns the bar into a text line (and, once it is
+// one, the whole line).
 FB_Hit_Kind :: enum {
     None,
     Button,
     Segment,
+    PathBar,
     Place,
     Row,
 }
@@ -177,14 +183,18 @@ filebrowser_scroll_apply :: proc(a: ^App, rows, cols: int, center: bool) {
     list_scroll_apply(&ft.scroll, &ft.scroll_detached, anchor, rows, total, center, pane_input_at(a))
 }
 
-// How many path-bar cells the segments may use: the bar less its four square buttons, less the
-// one-cell padding each segment button carries. Pure, and asked by both the hit test and the
-// declaration so they elide at the same segment.
+// The path region's box: the bar less its four square buttons. The declaration lays it out by
+// the solver, so this is for the phases the solver cannot answer — the press that puts a caret
+// on the column it landed on.
+filebrowser_path_rect :: proc(bar: Rect, bar_h: i32) -> Rect {
+    return Rect{bar.x + 3 * bar_h, bar.y, max(0, bar.w - 4 * bar_h), bar_h}
+}
+
+// How many cells the segments may use — the path region's, which is also what the LINE scrolls
+// inside (field_cells, on the same rect), so both states of the bar cut the path at the same
+// character. Pure, and asked by both the hit test and the declaration.
 filebrowser_path_cells :: proc(bar: Rect, bar_h: i32, cell_w: f32) -> int {
-    if cell_w <= 0 {
-        return 0
-    }
-    return max(0, int(f32(bar.w - 4 * bar_h) / cell_w))
+    return field_cells(filebrowser_path_rect(bar, bar_h), cell_w)
 }
 
 // Which of the four kinds of target the pointer is over. Probed in the order a press should be
@@ -200,6 +210,11 @@ filebrowser_hit :: proc(a: ^App, segs: []Path_Seg, first_seg, top, visible, cols
         if clay.PointerOver(clay.ID("fb_seg", u32(i))) {
             return FB_Hit{kind = .Segment, index = i}
         }
+    }
+    // The path region minus its buttons: the whitespace AFTER the last segment, and the whole of
+    // the line while it is being edited (no segment is declared then, so this is all that is left).
+    if clay.PointerOver(clay.ID("fb_path")) {
+        return FB_Hit{kind = .PathBar, index = -1}
     }
     for i in 0 ..< len(a.filebrowser.places) {
         if clay.PointerOver(clay.ID("fb_place", u32(i))) {
@@ -224,7 +239,16 @@ filebrowser_hit :: proc(a: ^App, segs: []Path_Seg, first_seg, top, visible, cols
 // Apply a pending LEFT press. Chrome activates on a single press (a button is not a list row —
 // there is nothing to select first), an entry selects on one and opens on two, and a press that
 // hit nothing is left for whoever else is drawing.
-filebrowser_click :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit) {
+//
+// `path` and `cw` are the path region and the cell width, for the one press that needs a COLUMN
+// rather than a box: a press inside the open text line puts the caret where it landed.
+filebrowser_click :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit, path: Rect, cw: f32) {
+    br := &a.filebrowser
+    // A press anywhere else abandons the line, as every desktop's does — and does NOT consume
+    // the press, which still means whatever it landed on.
+    if br.path_edit && hit.kind != .PathBar && a.mouse_on && a.mouse.click {
+        filebrowser_path_cancel(a)
+    }
     if hit.kind == .None {
         return
     }
@@ -232,7 +256,6 @@ filebrowser_click :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit) {
     if !ok {
         return
     }
-    br := &a.filebrowser
     switch hit.kind {
     case .None:
     case .Button:
@@ -240,6 +263,15 @@ filebrowser_click :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit) {
     case .Segment:
         if hit.index >= 0 && hit.index < len(segs) {
             filebrowser_navigate(br, &a.tree, segs[hit.index].path)
+        }
+    case .PathBar:
+        // The empty space after the last segment TURNS THE BAR INTO A LINE (Dolphin's gesture);
+        // a press inside a line that is already open is the field's own — caret, word, value,
+        // and the capture a drag-select extends from.
+        if br.path_edit {
+            field_press(a, filebrowser_path_box(a, path, cw), count)
+        } else {
+            filebrowser_path_open(a)
         }
     case .Place:
         if hit.index >= 0 && hit.index < len(br.places) {
@@ -273,7 +305,7 @@ filebrowser_rclick :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit) {
     ft := &a.tree
     on := Menu_Target{ft.dir, .Dir} // a button's press, and a miss, both act on where you are
     switch hit.kind {
-    case .None, .Button:
+    case .None, .Button, .PathBar:
     case .Row:
         if hit.index >= 0 && hit.index < len(ft.entries) {
             ft.selected = hit.index
@@ -311,6 +343,55 @@ filebrowser_button :: proc(a: ^App, b: Browse_Btn) {
         br.view = br.view == .List ? .Grid : .List
         config_set("file_view", br.view == .Grid ? "grid" : "list")
     }
+}
+
+// --- the path bar's two states ---
+// A row of BUTTONS, until you press the whitespace after them: then it is a text line on the same
+// path, which is the one gesture that lets you TYPE a destination instead of walking to it. Enter
+// goes there; Esc, and a press anywhere else, put the buttons back. Transient, never a mode.
+
+// Whether the line is open AND owns the keyboard. One predicate, so the char callback, the key
+// routing and the blink cannot disagree about who is being typed into.
+filebrowser_path_live :: proc(a: ^App) -> bool {
+    if !a.filebrowser.path_edit || a.focus != .Aux {
+        return false
+    }
+    return a.aux_mode == .FileTree && a.file_pane == .Browser
+}
+
+// Open the line on the browsed directory, caret at the end — the end is the part you edit.
+filebrowser_path_open :: proc(a: ^App) {
+    br := &a.filebrowser
+    br.path_edit = true
+    br.path_off = 0
+    doc_set_text(&br.path, a.tree.dir)
+    doc_cursor_to_end(&br.path)
+}
+
+filebrowser_path_cancel :: proc(a: ^App) {
+    a.filebrowser.path_edit = false
+    a.filebrowser.path_off = 0
+}
+
+// Enter: go where the line says. A path that is not a directory KEEPS THE LINE OPEN with the
+// text still in it — the typo is on screen and one keystroke from being fixed, where closing
+// would throw away what was typed and leave nothing to correct.
+filebrowser_path_commit :: proc(a: ^App) {
+    br := &a.filebrowser
+    typed := doc_string(&br.path, context.temp_allocator)
+    dir := filebrowser_path_resolve(a.tree.dir, typed)
+    if !os.is_dir(dir) {
+        return
+    }
+    filebrowser_path_cancel(a)
+    filebrowser_navigate(br, &a.tree, dir)
+}
+
+// The open line as the pointer sees it — the box the press, the drag and the window all resolve
+// against. `path` is filebrowser_path_rect's, which is the box the field was declared into.
+filebrowser_path_box :: proc(a: ^App, path: Rect, cw: f32) -> Field_Box {
+    br := &a.filebrowser
+    return {doc = &br.path, target = FIELD_PATH, r = path, off = br.path_off, cw = cw}
 }
 
 // Open the selection: descend into a directory THROUGH THE HISTORY (which is the whole
@@ -352,16 +433,17 @@ filebrowser_place_open :: proc(a: ^App, n: int) {
 //   fb_pane        the content area inside the focus ring, clipping its own content
 //     fb_bar       the top bar: three square buttons, the path, then the view toggle
 //       fb_btn/b     one per Browse_Btn, square (its side IS the bar's height)
-//       fb_path      the segments, clipped: a path longer than the bar elides from the LEFT
+//       fb_path      the path, clipped: longer than the bar and it elides from the LEFT
 //         fb_ell       the "…" marking an elision, when there is one
 //         fb_seg/i     one per shown segment, keyed by SEGMENT index
+//         fb_edit      instead of the two above while the line is open: the text field's Custom
 //     fb_body      the two scrolling regions, side by side
 //       fb_side      the places column, with a single-edge border as the rail between them
 //         fb_place/i one per shortcut, the one matching the browsed dir in the accent colour
 //       fb_content   the clip group the contents scroll inside
 //         fb_item/i    List: one row per visible entry, keyed by ENTRY index
 //         fb_grow/r    Grid: one row of tiles, holding fb_item/i tiles keyed the same way
-filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32) {
+filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now: f64 = 0) {
     br := &a.filebrowser
     ft := &a.tree
     th := &a.theme
@@ -379,7 +461,7 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32) {
     visible := list_visible_rows(content.h, off, unit)
 
     if clay.UI(clay.ID("fb_pane"))(clay_pane_box(area)) {
-        filebrowser_declare_bar(a, bar, bar_h, lh, cw)
+        filebrowser_declare_bar(a, bar, bar_h, lh, cw, now)
 
         if clay.UI(clay.ID("fb_body"))(
             {
@@ -454,7 +536,7 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32) {
 // The top bar. Every button is SQUARE — `SizingFixed(bar_h)` on both axes — which is what the
 // design asks for and also what keeps the three icons on a common baseline whatever the zoom.
 @(private = "file")
-filebrowser_declare_bar :: proc(a: ^App, bar: Rect, bar_h, lh: i32, cw: f32) {
+filebrowser_declare_bar :: proc(a: ^App, bar: Rect, bar_h, lh: i32, cw: f32, now: f64) {
     br := &a.filebrowser
     th := &a.theme
     segs := filebrowser_segments(a.tree.dir)
@@ -484,29 +566,16 @@ filebrowser_declare_bar :: proc(a: ^App, bar: Rect, bar_h, lh: i32, cw: f32) {
                 clip = {horizontal = true},
             },
         ) {
-            if first > 0 {
-                if clay.UI(clay.ID("fb_ell"))({layout = {padding = {left = u16(cw)}}}) {
-                    clay.Text("…", clay_text_config(th.muted, lh))
-                }
-            }
-            for i in first ..< len(segs) {
-                last := i == len(segs) - 1
-                bg: clay.Color
-                if hover_shown(a) && i == br.hover_seg {
-                    bg = clay_rgb(hover_bg(th))
-                }
-                if clay.UI(clay.ID("fb_seg", u32(i)))(
-                    {
-                        layout = {
-                            sizing         = {height = clay.SizingGrow()},
-                            padding        = {left = u16(cw / 2), right = u16(cw / 2)},
-                            childAlignment = {y = .Center},
-                        },
-                        backgroundColor = bg,
-                    },
-                ) {
-                    clay.Text(segs[i].name, clay_text_config(last ? th.fg : th.muted, lh))
-                }
+            // The bar's two states. The line is the shared one-line Field (field_ui.odin), the
+            // config pane's text rows being the other instance — with a WINDOW, since a path is
+            // read from its end.
+            if br.path_edit {
+                field_declare(
+                    clay.ID("fb_edit"),
+                    {doc = &br.path, off = br.path_off, now = now, caret = filebrowser_path_live(a)},
+                )
+            } else {
+                filebrowser_declare_segs(a, segs, first, lh, cw)
             }
         }
 
@@ -515,6 +584,36 @@ filebrowser_declare_bar :: proc(a: ^App, bar: Rect, bar_h, lh: i32, cw: f32) {
         // opposite thing.
         icon := br.view == .List ? FB_ICON_GRID : FB_ICON_LIST
         filebrowser_declare_btn(a, .View, icon, true, bar_h, lh)
+    }
+}
+
+// The path as BUTTONS: one per segment from `first` on, behind a '…' when the head is cut.
+@(private = "file")
+filebrowser_declare_segs :: proc(a: ^App, segs: []Path_Seg, first: int, lh: i32, cw: f32) {
+    th := &a.theme
+    if first > 0 {
+        if clay.UI(clay.ID("fb_ell"))({layout = {padding = {left = u16(cw)}}}) {
+            clay.Text("…", clay_text_config(th.muted, lh))
+        }
+    }
+    for i in first ..< len(segs) {
+        last := i == len(segs) - 1
+        bg: clay.Color
+        if hover_shown(a) && i == a.filebrowser.hover_seg {
+            bg = clay_rgb(hover_bg(th))
+        }
+        if clay.UI(clay.ID("fb_seg", u32(i)))(
+            {
+                layout = {
+                    sizing         = {height = clay.SizingGrow()},
+                    padding        = {left = u16(cw / 2), right = u16(cw / 2)},
+                    childAlignment = {y = .Center},
+                },
+                backgroundColor = bg,
+            },
+        ) {
+            clay.Text(segs[i].name, clay_text_config(last ? th.fg : th.muted, lh))
+        }
     }
 }
 
@@ -758,7 +857,7 @@ filebrowser_layout :: proc(
     top, off := smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        filebrowser_declare(a, f, pane, top, off)
+        filebrowser_declare(a, f, pane, top, off, now)
     }
     return clay.EndLayout(0)
 }
@@ -781,7 +880,14 @@ filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     unit := filebrowser_row_h(br.view, row_h, a.scale, t.font.line_height, t.font.cell_w)
     top, off0 := smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
 
+    // The open line is the pane's, not the program's: whatever took the keyboard away from this
+    // pane also closed the line, or it would be waiting for keys that go somewhere else now.
+    if br.path_edit && !filebrowser_path_live(a) {
+        filebrowser_path_cancel(a)
+    }
+
     segs := filebrowser_segments(a.tree.dir)
+    path := filebrowser_path_rect(bar, bar_h)
     first_seg := filebrowser_seg_first(segs, filebrowser_path_cells(bar, bar_h, t.font.cell_w))
     hit := filebrowser_hit(a, segs, first_seg, top, list_visible_rows(content.h, off0, unit), cols)
     br.hover_row = hit.kind == .Row ? hit.index : -1
@@ -789,11 +895,25 @@ filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     br.hover_seg = hit.kind == .Segment ? hit.index : -1
     br.hover_btn = hit.kind == .Button ? hit.btn : .None
 
-    filebrowser_click(a, segs, hit)
+    filebrowser_click(a, segs, hit, path, t.font.cell_w)
     filebrowser_rclick(a, segs, hit)
     filebrowser_scroll_apply(a, rows, cols, a.scroll_mode == .Middle)
 
+    // A live drag extends the line's selection, beside the click for editor_drag's reason — the
+    // gesture that walks the caret off the end must move the window in the frame that moved it,
+    // which is the next two statements in order.
+    if br.path_edit {
+        field_drag(a, filebrowser_path_box(a, path, t.font.cell_w), now)
+    }
+    // The window follows the caret the way the listing's follows the selection, and for the same
+    // reason: an edit that put the caret off the end must not leave you typing blind.
+    if br.path_edit && len(br.path.lines) > 0 {
+        n := line_len(&br.path.lines[0])
+        cur := br.path.cursors[br.path.primary].head.col
+        br.path_off = field_scroll(br.path_off, n, cur, field_cells(path, t.font.cell_w))
+    }
+
     off: i32
     top, off = smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
-    filebrowser_declare(a, &t.font, pane, top, off)
+    filebrowser_declare(a, &t.font, pane, top, off, now)
 }

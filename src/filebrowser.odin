@@ -60,6 +60,14 @@ FileBrowser :: struct {
     // a settings row could be.
     places: [dynamic]Place,
 
+    // The path bar's SECOND state: a plain text line holding the browsed directory, opened by a
+    // press on the bar's empty space and closed by Enter (go there) or Esc. `path_off` is the
+    // first rune shown — a line longer than the bar is cut at the START, which is where the
+    // button bar elides too, because the end of a path is the part you are working in.
+    path_edit: bool,
+    path:      Doc,
+    path_off:  int,
+
     // Transient frame state, written where the hit is taken and read by the declaration — the
     // hovered thing under the pointer, one per kind of target the pane has (rule 6). `cols` is
     // the grid's current column count, written by filebrowser_frame because the KEYBOARD needs it:
@@ -84,6 +92,7 @@ Browse_Btn :: enum {
 filebrowser_init :: proc(br: ^FileBrowser) {
     br.hover_row, br.hover_place, br.hover_seg = -1, -1, -1
     br.cols = 1
+    doc_init(&br.path)
     places := config_places(context.allocator)
     if len(places) == 0 {
         places = filebrowser_default_places(context.allocator)
@@ -105,6 +114,7 @@ filebrowser_destroy :: proc(br: ^FileBrowser) {
     delete(br.fwd)
     filebrowser_places_clear(br)
     delete(br.places)
+    doc_destroy(&br.path)
 }
 
 filebrowser_places_clear :: proc(br: ^FileBrowser) {
@@ -216,6 +226,30 @@ filebrowser_seg_first :: proc(segs: []Path_Seg, maxw: int) -> int {
         }
     }
     return 0
+}
+
+// --- the path LINE ---
+// The line's window (which runes show, and where a column falls) is the shared field's, in
+// field_ui.odin: it is one-line-text-box behaviour, not path behaviour. What IS path behaviour
+// is what a typed line means, which is this.
+
+// Resolve what was typed into the line: `~`, an absolute path, or one relative to `base`. Cleaned,
+// and temp-allocated like every other frame-lived string — the caller navigates with it at once.
+filebrowser_path_resolve :: proc(base, arg: string, alloc := context.temp_allocator) -> string {
+    s := strings.trim_space(arg)
+    home := os.get_env("HOME", context.temp_allocator)
+    raw: string
+    switch {
+    case s == "" || s == "~":
+        raw = home != "" ? home : base
+    case strings.has_prefix(s, "~/"):
+        raw = filepath.join({home, s[2:]}, context.temp_allocator) or_else s
+    case filepath.is_abs(s):
+        raw = s
+    case:
+        raw = filepath.join({base, s}, context.temp_allocator) or_else s
+    }
+    return filepath.clean(raw, alloc) or_else strings.clone(raw, alloc)
 }
 
 // --- the grid ---

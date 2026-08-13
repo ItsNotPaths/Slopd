@@ -172,6 +172,12 @@ test_ctxmenu_file_items_enablement :: proc(t: ^testing.T) {
     testing.expect(t, find(seg, .AddPlace).enabled)
     testing.expect(t, !has(seg, .Delete) && !has(seg, .Mark) && !has(seg, .Paste))
 
+    // "Set workspace here" is the BACKGROUND's verb — the `cd` + `tu` pair on where you are —
+    // and it is on no other menu: on a row or a segment, "here" would name something else.
+    testing.expect(t, find(off_row, .SetWorkspace).enabled)
+    testing.expect_value(t, find(off_row, .SetWorkspace).hint, "^h")
+    testing.expect(t, !has(on_row, .SetWorkspace) && !has(seg, .SetWorkspace))
+
     // Properties is on all three, because all three name something `stat` can describe — and it
     // is the one verb the empty-listing background still offers besides reload.
     testing.expect(t, find(on_row, .Properties).enabled)

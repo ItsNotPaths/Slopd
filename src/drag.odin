@@ -26,6 +26,7 @@ DRAG_SCROLL_MAX :: 8
 Drag_Kind :: enum {
     None,
     Editor_Text, // the editor's text selection
+    Field_Text, // a one-line field's (field_ui.odin) — the same gesture, one line deep
     Terminal_Sel, // per-character grid selection
     Split, // the editor/aux divider — the one client with a motion threshold
     Media_Pan, // panning the image surface — the only 2D drag
@@ -139,10 +140,11 @@ drag_sweep :: proc(a: ^App) {
 drag_autoscrolling :: proc(a: ^App) -> bool {
     r: Rect
     switch a.drag.kind {
-    case .None, .Split, .Media_Pan:
+    case .None, .Split, .Media_Pan, .Field_Text:
         // The divider has no view to run off the end of, and for the media pan the answer
         // is NEITHER axis: a pan already moves the surface a pixel per pixel of pointer
-        // travel, so walking it would be a second thing moving the same view.
+        // travel, so walking it would be a second thing moving the same view. A field walks
+        // its own window from how far past the edge the pointer is, with no tick to spend.
         return false
     case .Editor_Text:
         r = a.lay.editor

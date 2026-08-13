@@ -37,6 +37,7 @@ Menu_Action :: enum {
     Properties,
     AddPlace,
     RemovePlace,
+    SetWorkspace,
     Reload,
 }
 
@@ -250,6 +251,8 @@ ctxmenu_file_action :: proc(a: ^App, action: Menu_Action, on: Menu_Target) {
         filebrowser_place_add(&a.filebrowser, on.path)
     case .RemovePlace:
         filebrowser_place_remove(&a.filebrowser, filebrowser_place_index(&a.filebrowser, on.path))
+    case .SetWorkspace:
+        cl_workspace(a, on.path) // the project root moves here, and every unlocked terminal cds
     case .Reload:
         filetree_reload(ft)
     }
@@ -309,8 +312,10 @@ ctxmenu_file_items :: proc(
         append(&out, Menu_Item{"Properties", "", .Properties, on.path != ""})
     case .Dir:
         // The background of the listing: the verbs that act on WHERE YOU ARE. Paste is the one
-        // that earns the gesture, and it is the reason this menu exists at all.
+        // that earns the gesture, and it is the reason this menu exists at all. "Set workspace
+        // here" is the other: it is `cd` + `tu`, and pointing at the folder is how you mean it.
         append(&out, Menu_Item{"Paste", "^v", .Paste, len(ft.clip) > 0})
+        append(&out, Menu_Item{"Set workspace here", "^h", .SetWorkspace, on.path != ""})
         append(&out, Menu_Item{"Copy path", "^W", .CopyPath, on.path != ""})
         append(&out, Menu_Item{"Properties", "^I", .Properties, on.path != ""})
     }

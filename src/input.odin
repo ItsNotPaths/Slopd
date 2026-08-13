@@ -139,6 +139,8 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
         doc_insert_rune(&a.cl.doc, codepoint)
     } else if tf := term_focused(a); tf != nil {
         terminal_input_rune(tf, codepoint)
+    } else if filebrowser_path_live(a) && codepoint >= 32 {
+        doc_insert_rune(&a.filebrowser.path, codepoint) // the open path line owns the keys
     } else if a.focus == .Aux && a.aux_mode == .Config && codepoint >= 32 {
         // Two kinds of row take text — the search box (filtering live) and a free-text
         // setting; the rest are dropdowns, navigated with the arrows.
@@ -258,6 +260,8 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
             terminal_input_key(tf, key, mods)
         } else if a.cl_active {
             cl_cancel(a)
+        } else if filebrowser_path_live(a) {
+            filebrowser_path_cancel(a) // the path bar goes back to being buttons
         } else if a.move_all_armed {
             a.move_all_armed = false
         } else if a.focus == .Editor && a.main == .Text && len(d.cursors) > 1 {
@@ -509,30 +513,42 @@ edit_motion :: proc(d: ^Doc, key, mods: i32, all: bool) -> bool {
     return true
 }
 
-// Command-line key handling. Shares edit_motion with the buffer; differs only in
-// Enter (submit) and Up/Down (history).
+// The keys a one-line FIELD takes (field_ui.odin): the motion above, the two deletes with their
+// Ctrl word twins, and the clipboard — a text box the pointer can select in must also be one
+// `^c` copies out of. `handled` says the key was spent here, so a field can add its own Enter;
+// `changed` says the text moved, which is what a live filter re-runs on.
+edit_keys :: proc(a: ^App, d: ^Doc, key, mods: i32, all := false) -> (handled, changed: bool) {
+    if edit_motion(d, key, mods, all) {
+        return true, false
+    }
+    ctrl := mods & glfw.MOD_CONTROL != 0
+    switch key {
+    case glfw.KEY_BACKSPACE:
+        if ctrl {doc_delete_word_back(d)} else {doc_backspace(d)}
+        return true, true
+    case glfw.KEY_DELETE:
+        if ctrl {doc_delete_word_forward(d)} else {doc_delete(d)}
+        return true, true
+    case glfw.KEY_C, glfw.KEY_X:
+        if !ctrl {return false, false} // a bare c or x is a character to type
+        return true, field_copy(a, d, key == glfw.KEY_X)
+    case glfw.KEY_V:
+        if !ctrl {return false, false}
+        return true, field_paste(a, d)
+    }
+    return false, false
+}
+
+// Command-line key handling. The same one-line field keys as the config rows and the path bar —
+// it is the third instance of that box — differing only in Enter (submit) and Up/Down (history).
 cl_handle_key :: proc(a: ^App, key, mods: i32, all: bool) {
     d := &a.cl.doc
-    ctrl := mods & glfw.MOD_CONTROL != 0
-    if edit_motion(d, key, mods, all) {
+    if handled, _ := edit_keys(a, d, key, mods, all); handled {
         return
     }
     switch key {
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
         cl_submit(a)
-
-    case glfw.KEY_BACKSPACE:
-        if ctrl {
-            doc_delete_word_back(d)
-        } else {
-            doc_backspace(d)
-        }
-    case glfw.KEY_DELETE:
-        if ctrl {
-            doc_delete_word_forward(d)
-        } else {
-            doc_delete(d)
-        }
 
     case glfw.KEY_UP:
         cl_history_prev(a)
@@ -708,6 +724,8 @@ filetree_ops_key :: proc(a: ^App, key: i32, shift: bool) -> bool {
         } else if e := filetree_selected(ft); e != nil {
             clipboard_set(a, strings.clone(e.path), nil)
         }
+    case glfw.KEY_H:
+        cl_workspace(a, ft.dir) // make the browsed dir the project root, and sync the terminals
     case glfw.KEY_O:
         filetree_edit_selected(a) // open in the editor even when Enter would run it
     case glfw.KEY_I:
@@ -775,6 +793,13 @@ filebrowser_key :: proc(a: ^App, key, mods: i32) {
     shift := mods & glfw.MOD_SHIFT != 0
     grid := br.view == .Grid
 
+    // The open path line takes every key: it is a text field, and the arrows walking the listing
+    // under it while you are typing a destination would be two things one keystroke means.
+    if br.path_edit {
+        filebrowser_path_key(a, key, mods)
+        return
+    }
+
     if ctrl {
         switch key {
         case glfw.KEY_LEFT:
@@ -829,6 +854,21 @@ filebrowser_key :: proc(a: ^App, key, mods: i32) {
         } else {
             filebrowser_activate(a)
         }
+    }
+}
+
+// The path line's keys, while it is open: the shared field keys, and Enter to go where the line
+// says (Esc cancels, with the others in handle_key). The FILE-OP chords are not reachable from
+// here — in a text field ^c and ^v mean the text, not the listing.
+@(private = "file")
+filebrowser_path_key :: proc(a: ^App, key, mods: i32) {
+    d := &a.filebrowser.path
+    if handled, _ := edit_keys(a, d, key, mods); handled {
+        return
+    }
+    switch key {
+    case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
+        filebrowser_path_commit(a)
     }
 }
 
@@ -965,29 +1005,21 @@ config_key :: proc(a: ^App, key, mods: i32) {
     config_text_key(a, &cp.search, key, mods, true)
 }
 
-// The editing keys shared by the pane's two text rows; they differ only in what an edit MEANS
+// The pane's two text rows, on the shared field keys; they differ only in what an edit MEANS
 // afterwards, which `filter` picks. The language filter re-runs live and has nothing to
 // submit; a setting accumulates and Enter commits it (as does leaving the row).
 @(private = "file")
 config_text_key :: proc(a: ^App, d: ^Doc, key, mods: i32, filter: bool) {
-    cp := &a.config_pane
-    if edit_motion(d, key, mods, false) {
+    handled, changed := edit_keys(a, d, key, mods)
+    if changed && filter {
+        config_pane_filter(&a.config_pane) // an edit, not a motion, is what re-filters
+    }
+    if handled {
         return
     }
-    ctrl := mods & glfw.MOD_CONTROL != 0
     switch key {
-    case glfw.KEY_BACKSPACE:
-        if ctrl {doc_delete_word_back(d)} else {doc_backspace(d)}
-    case glfw.KEY_DELETE:
-        if ctrl {doc_delete_word_forward(d)} else {doc_delete(d)}
     case glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
         if !filter {config_edit_commit(a)}
-        return
-    case:
-        return
-    }
-    if filter {
-        config_pane_filter(cp)
     }
 }
 

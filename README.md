@@ -45,7 +45,8 @@ Non-modal / Alt-rooted: bare keys type, arrows navigate, chords live under Alt.
 | `Ctrl+S/Z/Y/C/X/V` | save, undo, redo, clipboard |
 
 Filetree file ops are `Ctrl` chords (`^y` mark, `^u` unmark all, `^c` copy, `^x` cut, `^v`
-paste, `^d` delete, `^w` path); hold `Ctrl` for the cheat-sheet bar, or **right-click** for the
+paste, `^d` delete, `^w` path, `^h` set the workspace to the browsed folder — `cd` plus `tu` in
+one keystroke); hold `Ctrl` for the cheat-sheet bar, or **right-click** for the
 same list as buttons. Copy and cut fill a clipboard from the marked set — or from the row under
 the cursor when nothing is marked — and paste applies it to the folder you are browsing; a cut
 is spent by its paste, a copy is not.
@@ -67,7 +68,9 @@ clipboard and `Ctrl` chords, so this is a choice of presentation and never of ca
 | `^g` | list ⇄ grid (the toggle button; `file_view` persists it) |
 | `^1`..`^9` | open the sidebar's Nth place |
 | `Backspace` | up a directory — and the only way out of a grid, where `←`/`→` step a tile |
-| right-click | the file-ops menu, at the pointer; on empty space it acts on the folder |
+| click the path's empty space | the path bar becomes a text line: type or paste a folder, `Enter` goes, `Esc` back to buttons |
+| in that line | drag to select (double = word, triple = all), `^c` `^x` `^v` — the same one-line field as the config rows and the command line |
+| right-click | the file-ops menu, at the pointer; on empty space it acts on the folder (paste, set workspace here) |
 
 Grid or list is the toggle; **zoom is `Ctrl +/-`** and scales whichever is up, tiles included —
 a tile is measured in text cells, so it grows with the font rather than having a zoom of its own.

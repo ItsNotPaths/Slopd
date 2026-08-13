@@ -391,6 +391,17 @@ cl_tu :: proc(a: ^App) {
     }
 }
 
+// "Set workspace here": `cd <dir>` then `tu`, in one call and with no line to submit. Package-
+// level because the pointer reaches it (the file panes' context menu) as well as the `^h` chord —
+// and it is exactly the two builtins, so what the gesture does is what you could have typed.
+cl_workspace :: proc(a: ^App, dir: string) {
+    if dir == "" {
+        return
+    }
+    cl_cd(a, dir)
+    cl_tu(a)
+}
+
 // `reload [y|n]`: settle a pending disk-change conflict, which auto-stages this command in the CL.
 //   reload y   re-reads the file, DISCARDING the unsaved edits
 //   reload n   keeps your edits and CACHES it, so it stops asking until the file changes again

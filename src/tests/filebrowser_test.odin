@@ -69,6 +69,23 @@ test_filebrowser_seg_first :: proc(t: ^testing.T) {
     testing.expect_value(t, app.filebrowser_seg_first(nil, 10), 0)
 }
 
+// What a typed line means: `~`, an absolute path, or one relative to where you are — the same
+// three cases the `cd` builtin takes, because the line is the pointer's way of typing one.
+@(test)
+test_filebrowser_path_resolve :: proc(t: ^testing.T) {
+    testing.expect_value(t, app.filebrowser_path_resolve("/home/me", "/etc/ssl"), "/etc/ssl")
+    testing.expect_value(t, app.filebrowser_path_resolve("/home/me", "src/app"), "/home/me/src/app")
+    testing.expect_value(t, app.filebrowser_path_resolve("/home/me/src", ".."), "/home/me")
+    testing.expect_value(t, app.filebrowser_path_resolve("/home/me", "  /etc  "), "/etc") // trimmed
+
+    // An empty line is HOME, not the empty path — the same answer a bare `cd` gives.
+    home := os.get_env("HOME", context.temp_allocator)
+    if home != "" {
+        testing.expect_value(t, app.filebrowser_path_resolve("/home/me", ""), home)
+        testing.expect_value(t, app.filebrowser_path_resolve("/home/me", "~"), home)
+    }
+}
+
 // The grid's arithmetic, and the reason `ft.scroll` can mean "first visible row" under both
 // presentations: a row is an entry in List and a row of tiles in Grid, and the anchor the
 // viewport follows is derived rather than stored.

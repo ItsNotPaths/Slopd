@@ -37,14 +37,14 @@ ROW_H :: 22 // the bar's own rows: a 16px line plus CHORD_ROW_PAD
 @(private = "file")
 PAD :: 8
 @(private = "file")
-// The DECLARED bar's rows: twelve chords plus a clipboard-empty "[0 marked]" readout, packed
-// into 28 cells. The packing test below feeds a longer readout and gets one row more — the
+// The DECLARED bar's rows: thirteen chords plus a clipboard-empty "[0 marked]" readout, packed
+// into 28 cells. The packing test below feeds a longer readout and gets the same rows — the
 // bar's height is a function of its content, which is the whole reason it is packed at all.
-NROWS :: 5
+NROWS :: 6
 @(private = "file")
-BAR_H :: NROWS * ROW_H // 110
+BAR_H :: NROWS * ROW_H // 132
 @(private = "file")
-BAR_Y :: 238 // 52 + 296 - 110: anchored to the bottom of the content area
+BAR_Y :: 216 // 52 + 296 - 132: anchored to the bottom of the content area
 
 // The terminal pane the switcher is tested against: {0, 0, 240, 200} insets to
 // {2, 2, 236, 196}, which holds 8 switcher rows of 22px.
@@ -164,7 +164,7 @@ test_overlay_shown_predicates :: proc(t: ^testing.T) {
 // ---------------------------------------------------------------------------------------
 
 // The packing: the only interesting thing the bar does, and until C8c it lived inside a
-// painter where nothing could reach it. Twelve chords of known width plus the state readout,
+// painter where nothing could reach it. Thirteen chords of known width plus the state readout,
 // left-flowing with a two-cell gap.
 //
 // **The second half is the byte-versus-rune assertion, and it is a real behaviour change.**
@@ -178,10 +178,10 @@ test_chord_pack_wraps :: proc(t: ^testing.T) {
     state := "[0 marked · copy 0]" // 19 runes, 20 bytes
 
     // 28 cells — the 296px pane below, less its two 8px margins. Item widths are 7, 9, 7, 6,
-    // 8, 6, 10, 7, 6, 7, 8, 12 and the gap is 2, so the rows break after the third, sixth,
-    // ninth and eleventh, leaving the widest chord and the readout a row each.
+    // 8, 6, 10, 7, 6, 7, 8, 12, 12 and the gap is 2, so the rows break after the third, sixth,
+    // ninth and eleventh, leaving the two widest chords a row and the readout a row of its own.
     items, nrows := chord_items(state, 28)
-    testing.expect_value(t, nrows, 6) // one more than the declared bar's: this readout is longer
+    testing.expect_value(t, nrows, 6)
     testing.expect_value(t, items[0].row, 0)
     testing.expect_value(t, items[0].col, 0)
     testing.expect_value(t, items[2].col, 20) // 7 + 2 + 9 + 2
@@ -189,20 +189,22 @@ test_chord_pack_wraps :: proc(t: ^testing.T) {
     testing.expect_value(t, items[3].col, 0)
     testing.expect_value(t, items[6].row, 2)
     testing.expect_value(t, items[9].row, 3) // ^o, leading the fourth row
-    testing.expect_value(t, items[12].row, 5) // the state readout, last in the flow
-    testing.expect_value(t, items[12].key, "") // and the only item with no key
+    testing.expect_value(t, items[12].row, 4) // ^h, beside ^I on the fifth
+    testing.expect_value(t, items[12].col, 14)
+    testing.expect_value(t, items[13].row, 5) // the state readout, last in the flow
+    testing.expect_value(t, items[13].key, "") // and the only item with no key
 
-    // 136 cells is exactly the width at which the readout's last rune is the last cell of the
+    // 150 cells is exactly the width at which the readout's last rune is the last cell of the
     // row. Counted in bytes it does not fit and everything moves to a second row — which is
     // the mutation this line exists to fail.
-    wide, wide_rows := chord_items(state, 136)
+    wide, wide_rows := chord_items(state, 150)
     testing.expect_value(t, wide_rows, 1)
-    testing.expect_value(t, wide[12].col, 117)
-    testing.expect_value(t, wide[12].row, 0)
+    testing.expect_value(t, wide[13].col, 131)
+    testing.expect_value(t, wide[13].row, 0)
 
     // One cell narrower and it does wrap, so the boundary above is a boundary rather than an
     // accident of the numbers.
-    _, tight_rows := chord_items(state, 135)
+    _, tight_rows := chord_items(state, 149)
     testing.expect_value(t, tight_rows, 2)
 }
 
@@ -249,7 +251,7 @@ test_chord_bar_command_list :: proc(t: ^testing.T) {
             append(&runs, app.clay_rect(c.boundingBox))
         }
     }
-    testing.expect_value(t, len(runs), 2 * 12 + 1) // twelve chords of two runs, plus the readout
+    testing.expect_value(t, len(runs), 2 * 13 + 1) // thirteen chords of two runs, plus the readout
 
     // "^y" on the margin, "mark" one cell past it (the key is two cells plus the space), then
     // "^u" nine cells in — seven for the first item and two for the gap — and "^c" at 20.
@@ -267,10 +269,12 @@ test_chord_bar_command_list :: proc(t: ^testing.T) {
     // The fourth row opens with "^o".
     testing.expect_value(t, runs[18].x, AREA.x + PAD)
     testing.expect_value(t, runs[18].y, BAR_Y + 3 * ROW_H + (ROW_H - 16) / 2)
-    // The last row carries the widest chord AND the readout, which fits beside it at 28 cells
-    // once the clipboard is empty and the readout is only "[0 marked]".
+    // The fifth row carries the two widest chords, ^I then ^h, and the readout is left a row of
+    // its own — even the short "[0 marked]" does not fit beside them at 28 cells.
     testing.expect_value(t, runs[24].x, AREA.x + PAD + 140)
     testing.expect_value(t, runs[24].y, BAR_Y + 4 * ROW_H + (ROW_H - 16) / 2)
+    testing.expect_value(t, runs[26].x, AREA.x + PAD)
+    testing.expect_value(t, runs[26].y, BAR_Y + 5 * ROW_H + (ROW_H - 16) / 2)
 }
 
 // **The occlusion probe, and the reason C8c exists.** clay_paint composites under-quads,

@@ -25,6 +25,10 @@ SIDE_W :: 160
 ROW_H :: 18
 @(private = "file")
 CONTENT :: app.Rect{AREA.x + SIDE_W, AREA.y + BAR_H, AREA.w - SIDE_W, AREA.h - BAR_H}
+// The path region: the bar less its four square buttons — where the segments sit, and where the
+// text line scrolls when the bar is one.
+@(private = "file")
+PATH :: app.Rect{AREA.x + 3 * BAR_H, AREA.y, AREA.w - 4 * BAR_H, BAR_H}
 
 // A listing and a sidebar built by hand: the layout assertions want known counts and stable
 // names, and none of them touch a disk. Every string is a literal, so this is torn down with
@@ -262,6 +266,11 @@ test_filebrowser_hit_kinds :: proc(t: ^testing.T) {
     testing.expect_value(t, seg.kind, app.FB_Hit_Kind.Segment)
     testing.expect_value(t, seg.index, 0)
 
+    // The whitespace AFTER the last segment is the path bar itself, not a miss and not the
+    // nearest button: it is the press that turns the bar into a text line.
+    blank := probe(&a, &f, segs, PATH.x + PATH.w - 5, AREA.y + 5)
+    testing.expect_value(t, blank.kind, app.FB_Hit_Kind.PathBar)
+
     // The sidebar's second shortcut.
     place := probe(&a, &f, segs, AREA.x + 20, AREA.y + BAR_H + ROW_H + 4)
     testing.expect_value(t, place.kind, app.FB_Hit_Kind.Place)
@@ -293,12 +302,12 @@ test_filebrowser_click_verbs :: proc(t: ^testing.T) {
 
     // A miss claims nothing.
     a.mouse.click = true
-    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .None, index = -1})
+    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .None, index = -1}, PATH, 10)
     testing.expect(t, a.mouse.click, "a press that hit nothing must not be claimed")
 
     // A row selects, and one press does not open it.
     a.mouse.click_count = 1
-    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .Row, index = 6})
+    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .Row, index = 6}, PATH, 10)
     testing.expect_value(t, a.tree.selected, 6)
     testing.expect(t, !a.mouse.click, "a press that hit a row must be claimed")
 
@@ -307,20 +316,107 @@ test_filebrowser_click_verbs :: proc(t: ^testing.T) {
     app.config_path_override = "/tmp/slopd_fb_view.config"
     defer app.config_path_override = ""
     a.mouse.click = true
-    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .Button, index = -1, btn = .View})
+    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .Button, index = -1, btn = .View}, PATH, 10)
     testing.expect_value(t, a.filebrowser.view, app.Browse_View.Grid)
 
     // Back with an empty history is a no-op rather than an error: the button is drawn disabled,
     // and a press on it must do nothing at all.
     a.mouse.click = true
-    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .Button, index = -1, btn = .Back})
+    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .Button, index = -1, btn = .Back}, PATH, 10)
     testing.expect_value(t, a.tree.dir, "/home/me/src")
 
     // `mouse: off` costs convenience, never capability — the keyboard path is untouched.
     a.mouse_on = false
     a.mouse.click = true
-    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .Row, index = 9})
+    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .Row, index = 9}, PATH, 10)
     testing.expect_value(t, a.tree.selected, 6)
+}
+
+// The path bar's two states. A press on the whitespace after the segments makes it a text line
+// on the same directory; a press anywhere else puts the buttons back, and does NOT consume that
+// press — dismissing the line and selecting a row are one gesture, as they are in Dolphin.
+@(test)
+test_filebrowser_path_line :: proc(t: ^testing.T) {
+    a: app.App
+    a.mouse_on = true
+    fake_browser(&a, 40)
+    defer fake_browser_free(&a)
+    defer app.doc_destroy(&a.filebrowser.path)
+    segs := app.filebrowser_segments(a.tree.dir)
+
+    a.mouse.click = true
+    a.mouse.click_count = 1
+    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .PathBar, index = -1}, PATH, 10)
+    testing.expect(t, a.filebrowser.path_edit, "the whitespace press did not open the line")
+    line := app.doc_string(&a.filebrowser.path, context.temp_allocator)
+    testing.expect_value(t, line, "/home/me/src") // seeded with where you are
+    testing.expect_value(t, a.filebrowser.path.cursors[0].head.col, 12) // caret at the end
+
+    // A press INSIDE the open line goes to the FIELD: it moves the caret rather than reopening
+    // the line (which would throw away what had been typed). The caret is a BOUNDARY, rounded —
+    // 3.5 cells in lands after the third rune, exactly as a press in the editor body does.
+    a.mouse.click = true
+    a.mouse.click_x = PATH.x + 35
+    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .PathBar, index = -1}, PATH, 10)
+    testing.expect(t, a.filebrowser.path_edit)
+    testing.expect_value(t, a.filebrowser.path.cursors[0].head.col, 4)
+
+    a.mouse.click = true
+    a.mouse.click_x = PATH.x + 34 // just under the half-cell: the boundary before it
+    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .PathBar, index = -1}, PATH, 10)
+    testing.expect_value(t, a.filebrowser.path.cursors[0].head.col, 3)
+
+    // A press on a row closes the line AND selects the row — one press, both meanings.
+    a.mouse.click = true
+    app.filebrowser_click(&a, segs, app.FB_Hit{kind = .Row, index = 4}, PATH, 10)
+    testing.expect(t, !a.filebrowser.path_edit, "a press elsewhere must put the buttons back")
+    testing.expect_value(t, a.tree.selected, 4)
+
+    // Enter on a path that is not a directory KEEPS the line open: the typo is still on screen
+    // and one keystroke from being fixed, where closing would throw it away.
+    app.filebrowser_path_open(&a)
+    app.doc_set_text(&a.filebrowser.path, "/no/such/directory/here")
+    app.filebrowser_path_commit(&a)
+    testing.expect(t, a.filebrowser.path_edit, "a bad path must not close the line")
+    testing.expect_value(t, a.tree.dir, "/home/me/src")
+}
+
+// Declared, the line REPLACES the segment buttons in the same region — the buttons either side
+// of it stay, so the bar does not reflow as you open and close it.
+@(test)
+test_filebrowser_path_line_command_list :: proc(t: ^testing.T) {
+    raw := clay_test_context(600, 300)
+    defer clay_test_context_free(raw)
+    f := clay_test_font()
+    app.clay_use_font(&f)
+
+    a: app.App
+    fake_browser(&a, 4)
+    defer fake_browser_free(&a)
+    defer app.doc_destroy(&a.filebrowser.path)
+
+    // Clay derives a text command's id from its own element, so the segments are counted by
+    // WHERE they landed — which is the claim anyway: text inside the path region.
+    toggle :: app.Rect{PATH.x + PATH.w, AREA.y, BAR_H, BAR_H}
+
+    // Closed: the segments are there and there is no field.
+    cmds := app.filebrowser_layout(&a, &f, PANE, 600, 300)
+    _, edit_off := box_of(&cmds, clay.ID("fb_edit"), .Custom)
+    testing.expect(t, texts_in(&cmds, PATH) == 4, "the closed bar drew no segment") // /, home, me, src
+    testing.expect(t, !edit_off, "the closed bar declared a text field")
+
+    // Open: the field fills the path region, and nothing is laid out inside it — the line's
+    // runes are the painter's, since a caret and a cut head are not things Clay lays out.
+    app.filebrowser_path_open(&a)
+    open := app.filebrowser_layout(&a, &f, PANE, 600, 300)
+    edit, eok := box_of(&open, clay.ID("fb_edit"), .Custom)
+    testing.expect(t, eok, "the open bar declared no text field")
+    testing.expect_value(t, edit, PATH)
+    testing.expect_value(t, texts_in(&open, PATH), 0) // no segment survived
+
+    // The view toggle is still on the bar's right edge: opening the line is not a reflow.
+    testing.expect_value(t, texts_in(&open, toggle), 1)
+    testing.expect_value(t, texts_in(&cmds, toggle), 1)
 }
 
 // Rule 8, in the one place this pane can trip it: a tile is 14 CELLS wide, and at a narrow

@@ -114,7 +114,7 @@ blink_next_edge :: proc(a: ^App, now: f64) -> f64 {
 
 // Whether a caret is on screen this frame (so the loop knows to keep blinking it).
 caret_shown :: proc(a: ^App) -> bool {
-    if a.cl_active {
+    if a.cl_active || filebrowser_path_live(a) {
         return true
     }
     if a.focus == .Aux && a.aux_mode == .Config {
