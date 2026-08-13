@@ -14,9 +14,9 @@ GL_MAJOR :: 3
 GL_MINOR :: 3
 
 main :: proc() {
-    // Headless CLI (`slopd --version`, `--health [lang]`, `--grammar <action> <lang>`) —
-    // handled before opening a window, then exit.
-    if about_cli(os.args[1:]) || grammar_cli(os.args[1:]) {
+    // Headless CLI (`slopd --version`, `--health [lang]`, `--grammar <action> <lang>`,
+    // `--sysbus`) — handled before opening a window, then exit.
+    if about_cli(os.args[1:]) || grammar_cli(os.args[1:]) || sysbus_cli(os.args[1:]) {
         return
     }
 
@@ -158,6 +158,10 @@ main :: proc() {
         for term in app.terminals {
             terminal_drain(term)
         }
+        // Install whatever the D-Bus worker published, on the same principle: it did the
+        // blocking work on its own thread and woke us with PostEmptyEvent. An early return
+        // while no system pane has started it.
+        sysbus_drain(&app.sysbus)
         cl_chain_pump(&app) // advance a pending && chain once its exit code arrives
 
         now := glfw.GetTime()

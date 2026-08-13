@@ -10,15 +10,16 @@ import "core:testing"
 // Syntax-highlighting tests. These need the compiled odin grammar (odin.so + odin.scm)
 // on disk; they resolve it from a few candidate dirs and SKIP (not fail) when it's
 // absent, so a checkout without grammars still passes the rest of the suite. Install
-// it with `./release.sh --local` (writes <repo>/../Slopd-release/grammars) or point
-// SLOPD_TEST_GRAMMARS at a dir holding odin.so/odin.scm.
+// it with `slopd --grammar install odin` (grammars/ is made next to the binary, so
+// <repo>/build/grammars for a --local build) or point SLOPD_TEST_GRAMMARS at a dir
+// holding odin.so/odin.scm.
 
 @(private = "file")
 grammars_dir :: proc() -> (string, bool) {
     candidates := [?]string {
         os.get_env("SLOPD_TEST_GRAMMARS", context.temp_allocator),
-        "../Slopd-release/grammars",
-        "/root/projects/Slopd-release/grammars",
+        "build/grammars",
+        "../build/grammars",
         "grammars",
     }
     for c in candidates {

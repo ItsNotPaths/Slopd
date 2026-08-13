@@ -1,4 +1,5 @@
 vendor/
+/build/
 plan.txt
 slopd
 /grammars

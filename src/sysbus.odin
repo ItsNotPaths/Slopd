@@ -1,6 +1,7 @@
 package main
 
 import "core:c"
+import "core:fmt"
 import "core:mem/virtual"
 import "core:slice"
 import "core:strings"
@@ -705,4 +706,76 @@ sysbus_conn :: proc(sb: ^Sysbus, bus: Dbus_Bus) -> ^Dbus_Conn {
 sysbus_attach :: proc(sb: ^Sysbus, bus: Dbus_Bus, conn: ^Dbus_Conn) {
     dbus_close(sb.conns[bus])
     sb.conns[bus] = conn
+}
+
+// --- `slopd --sysbus` ---
+//
+// Connects for real, takes one snapshot of every registered watch, prints it, exits. No
+// window and NO WORKER THREAD: sysbus_open + sysbus_step are the worker minus its blocking
+// wait, so this drives the whole stack against live daemons exactly as the tests drive it
+// against scripted ones. Read-only, and it is how the panes' property names get checked
+// against the machine rather than against documentation.
+sysbus_cli :: proc(args: []string) -> (handled: bool) {
+    if !slice.contains(args, "--sysbus") {
+        return false
+    }
+    sb: Sysbus
+    if !sysbus_init(&sb) {
+        fmt.eprintln("sysbus: could not make the wake pipe")
+        return true
+    }
+    defer sysbus_destroy(&sb)
+    sysbus_watches(&sb)
+
+    sysbus_open(&sb)
+    sysbus_step(&sb)
+    sysbus_drain(&sb)
+
+    for svc in sb.cur.services {
+        if !svc.present {
+            fmt.printfln("%s  absent", svc.service)
+            continue
+        }
+        paths := dbus_om_paths(svc.tree)
+        fmt.printfln("%s  %d objects", svc.service, len(paths))
+        for p in paths {
+            obj := dbus_om_object(svc.tree, p) or_continue
+            fmt.printfln("  %s", p)
+            for name in sys_sorted_keys(obj.ifaces) {
+                ifc := &obj.ifaces[name]
+                fmt.printfln("    %s", name)
+                for prop in sys_sorted_keys(ifc.props) {
+                    fmt.printfln("      %s = %s", prop, sys_show(ifc.props[prop]))
+                }
+            }
+        }
+    }
+    return true
+}
+
+// Map order is arbitrary and a diagnostic that reshuffles between runs can't be diffed.
+@(private = "file")
+sys_sorted_keys :: proc(m: $M/map[string]$V) -> []string {
+    out := make([dynamic]string, 0, len(m), context.temp_allocator)
+    for k in m {
+        append(&out, k)
+    }
+    slice.sort(out[:])
+    return out[:]
+}
+
+// One property as a line of text. Containers print their shape, not their contents — the
+// point is to see WHICH properties a daemon publishes, not to dump a UUID list.
+@(private = "file")
+sys_show :: proc(v: Dbus_Value) -> string {
+    if s, ok := dbus_as_string(v); ok {
+        return s
+    }
+    #partial switch t in v {
+    case Dbus_Array:
+        return fmt.tprintf("a%s[%d]", t.sig, len(t.items))
+    case Dbus_Struct:
+        return fmt.tprintf("(%d fields)", len(t.fields))
+    }
+    return fmt.tprintf("%v", v)
 }

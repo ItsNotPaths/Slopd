@@ -3,13 +3,13 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_NAME="$(basename "$PROJECT_DIR")"
-RELEASE_DIR="$(cd "$PROJECT_DIR/.." && pwd)/${PROJECT_NAME}-release"
+RELEASE_DIR="$PROJECT_DIR/build"
 
 usage() {
     cat <<EOF
 usage: $(basename "$0") [--local] [--public --version vX.Y.Z [--notes "text"]]
 
-  --local               build locally into <project>-release/ next to the project
+  --local               build locally into build/ inside the project (gitignored)
   --public              trigger release.yml workflow via gh CLI
   --version <tag>       required when --public is used
   --notes <text>        optional release notes

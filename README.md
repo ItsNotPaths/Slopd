@@ -11,7 +11,7 @@ Linux, OpenGL 3.3.
 ```sh
 ./download-deps.sh                 # vendors glfw, libvterm, tree-sitter, the font + icons
 odin build src -out:slopd -define:GLFW_SHARED=false
-./release.sh --local               # or: stripped -o:speed build into ../Slopd-release/
+./release.sh --local               # or: stripped -o:speed build into build/
 ```
 
 | | |
@@ -71,21 +71,6 @@ clipboard and `Ctrl` chords, so this is a choice of presentation and never of ca
 | click the path's empty space | the path bar becomes a text line: type or paste a folder, `Enter` goes, `Esc` back to buttons |
 | in that line | drag to select (double = word, triple = all), `^c` `^x` `^v` — the same one-line field as the config rows and the command line |
 | right-click | the file-ops menu, at the pointer; on empty space it acts on the folder (paste, set workspace here) |
-
-Grid or list is the toggle; **zoom is `Ctrl +/-`** and scales whichever is up, tiles included —
-a tile is measured in text cells, so it grows with the font rather than having a zoom of its own.
-
-Rows and tiles carry a per-type icon. They are **glyphs, not images**: a second face (Nerd
-Fonts' Seti-UI + Devicons, subset to ~178KB against 2.5MB for the whole thing) is baked into the
-same atlas as the text, so an icon costs a codepoint and nothing else — no decode, no cache, no
-second texture. The icon says the *type* and the colour still says the *state*, so a Rust file
-looks like a Rust file whether or not it has unsaved edits. `file_icons: off` removes the column
-outright, and a build without `fonttools` simply has no icon face and falls back to plain tiles.
-
-Places live in the config file's own `[places]` block (`Name: /path`, in sidebar order) and are
-added or removed by right-clicking a folder — not from the Config pane, which edits settings
-and stops reading at that block. Delete the block and Slopd refills it from your home directory,
-whichever standard folders exist under it, and `/`.
 
 ## Command line
 
@@ -183,6 +168,7 @@ slopd --health [lang]        # ✓/✗ table
 | `--version` / `-v` | build version |
 | `--util` | launch into Full on the aux pane (filetree fills the window) |
 | `--perflog` | append per-second frame timings to `perf.log` (beside the binary) |
+| `--sysbus` | print one D-Bus snapshot of the watched system services, then exit |
 | `$SLOPD_FONT` | `.ttf` to use instead of the bundled Iosevka subset |
 
 ## License
