@@ -4,6 +4,8 @@ import "core:fmt"
 import "core:slice"
 import "core:strings"
 
+// PARKED — WIP. Nothing in the running editor uses this; see the banner in src/sysbus.odin.
+//
 // D-Bus ObjectManager — the live object tree, written ONCE (see "System panes" in
 // plan.txt). Every consumer the device panes have — NetworkManager, iwd, BlueZ, Mutter's
 // DisplayConfig, MPRIS, login1 — is the same shape: GetManagedObjects hands back

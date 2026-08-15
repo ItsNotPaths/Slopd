@@ -8,6 +8,8 @@ import "core:strconv"
 import "core:strings"
 import "core:sys/posix"
 
+// PARKED — WIP. Nothing in the running editor uses this; see the banner in src/sysbus.odin.
+//
 // D-Bus — a from-scratch wire client (see "System panes" in plan.txt). Speaking the
 // protocol directly rather than binding libdbus-1 keeps marshalling a pure function over
 // bytes, so all of it unit-tests headless with no bus (src/tests/dbus_test.odin).

@@ -135,11 +135,6 @@ App :: struct {
     gram_ext: map[string]string, // ext -> language name over `grammars`; borrows its strings
     hl:       Highlighter, // tree-sitter syntax highlighting (loaded grammars, cached)
 
-    // The D-Bus worker (sysbus.odin) behind the system panes. app_init registers its watches,
-    // which touch no bus; the first pane that needs one calls sysbus_start. A session that
-    // opens none never connects, and never wakes the main loop for traffic nothing draws.
-    sysbus: Sysbus,
-
     // Multi-cursor drop chord (no mode/toggle): Alt+A held + a direction drops a
     // cursor and steps that way, so holding Alt+A and tapping arrows lays a trail.
     // a_held tracks A the way alt_held tracks Alt. Esc collapses back to one.
@@ -349,34 +344,8 @@ app_init :: proc(a: ^App) {
     cwd, err := os.get_working_directory(context.allocator) // owned; the launch cwd
     a.project_root = err == nil ? cwd : strings.clone(".")
     cl_init(&a.cl)
-    sysbus_init(&a.sysbus) // a failed wake pipe leaves it unstartable, not broken
-    sysbus_watches(&a.sysbus)
-}
-
-// The services the system panes read, and the interfaces each keeps. Registering is two
-// string clones per watch — the worker reads this list once, at sysbus_start, which is
-// where connecting actually happens.
-sysbus_watches :: proc(sb: ^Sysbus) {
-    sysbus_watch(
-        sb,
-        .System,
-        "org.bluez",
-        "/",
-        []string{"org.bluez.Adapter1", "org.bluez.Device1"},
-    )
-    sysbus_watch(
-        sb,
-        .System,
-        "net.connman.iwd",
-        "/",
-        []string {
-            "net.connman.iwd.Adapter",
-            "net.connman.iwd.Device",
-            "net.connman.iwd.Station",
-            "net.connman.iwd.Network",
-            "net.connman.iwd.KnownNetwork",
-        },
-    )
+    // No sysbus here: the D-Bus stack is parked (see the banner in src/sysbus.odin) and the
+    // App owns none of it. `slopd --sysbus` is its only entry point.
 }
 
 // Font zoom: grow/shrink the logical text size in whole points (dir is +1 / -1),
@@ -415,7 +384,6 @@ font_zoom_ratio :: proc(a: ^App) -> f32 {
 // torn down by their own defers.
 app_destroy :: proc(a: ^App) {
     term_destroy_all(a) // kill child shells + join reader threads before GLFW shuts down
-    sysbus_destroy(&a.sysbus) // stops + joins the worker if a pane ever started it
     media_destroy(&a.media) // free the viewed image's texture + path
     cl_chain_clear(a) // frees any pending chain (incl. its backing array)
     cl_destroy(a)

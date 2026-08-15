@@ -168,7 +168,7 @@ slopd --health [lang]        # ✓/✗ table
 | `--version` / `-v` | build version |
 | `--util` | launch into Full on the aux pane (filetree fills the window) |
 | `--perflog` | append per-second frame timings to `perf.log` (beside the binary) |
-| `--sysbus` | print one D-Bus snapshot of the watched system services, then exit |
+| `--sysbus` | *(parked/WIP)* print one D-Bus snapshot of the watched system services, then exit |
 | `$SLOPD_FONT` | `.ttf` to use instead of the bundled Iosevka subset |
 
 ## License

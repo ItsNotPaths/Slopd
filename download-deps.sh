@@ -26,6 +26,24 @@ fetch() {
     echo "  done."
 }
 
+# Odin's vendor bindings hard-code paths relative to the bindings package, so the
+# archives we build have to land inside the Odin install tree. That tree is often
+# root-owned (a distro package puts it in /usr/lib/odin), so escalate — but only
+# for the copy itself, and only when the destination really isn't writable, so a
+# user-local Odin install ($HOME/.local/odin) never prompts.
+odin_install() {
+    local src="$1" dst="$2" dir
+    dir="$(dirname "$dst")"
+    if [ -w "$dir" ] || { [ ! -e "$dir" ] && [ -w "$(dirname "$dir")" ]; }; then
+        mkdir -p "$dir"
+        cp "$src" "$dst"
+    else
+        echo "  $dst is not writable; using sudo to install it"
+        sudo mkdir -p "$dir"
+        sudo cp "$src" "$dst"
+    fi
+}
+
 echo "==> libvterm (leonerd's, the editor-standard parser; static lib)"
 # leonerd's libvterm (neovim mirror): a pure VT state machine — no PTY, no curses,
 # no I/O. We feed it bytes and read out a cell grid, owning the PTY + rendering
@@ -172,29 +190,50 @@ else
     # Stock Odin bindings hard-code the path ../lib/libglfw3.a relative to the
     # bindings package, so the archive must live inside the Odin install tree.
     echo "  installing into Odin tree: $ODIN_GLFW_A"
-    mkdir -p "$(dirname "$ODIN_GLFW_A")"
-    cp "$GLFW_A" "$ODIN_GLFW_A"
+    odin_install "$GLFW_A" "$ODIN_GLFW_A"
     echo "  done."
 fi
 
 echo ""
-echo "==> stb (truetype static lib for the glyph renderer)"
+echo "==> stb (truetype + image static libs for the glyph renderer)"
 # Odin ships the stb bindings but only prebuilt wasm/darwin objects; the Linux
-# static lib is built from the C source that ships with Odin. Self-contained,
+# static libs are built from the C source that ships with Odin. Self-contained,
 # no external deps — same single-binary story as the static glfw build.
-STB_TT_A="${ODIN_ROOT%/}/vendor/stb/lib/stb_truetype.a"
-if [ -f "$STB_TT_A" ]; then
+#
+# We do NOT call Odin's own src/build_stb.sh (nor the older src/Makefile): both
+# cd into the Odin tree and drop their .o files there, which fails outright on a
+# system-wide install like /usr/lib/odin. Compiling here instead keeps every
+# intermediate in the project's vendor/ and leaves one privileged step — copying
+# the finished archives in — to odin_install. The .c files are one-line shims
+# that #include their sibling header, so building them from another cwd is fine.
+STB_SRC="${ODIN_ROOT%/}/vendor/stb/src"
+STB_ODIN_LIB="${ODIN_ROOT%/}/vendor/stb/lib"
+STB_OUT="$VENDOR/stb"                       # project-local copy (cache / record)
+# vendor:stb/truetype and vendor:stb/image are the two the editor imports; the
+# rest come along because the same bindings package foreign-imports them.
+STB_LIBS="stb_image stb_image_write stb_image_resize stb_truetype stb_rect_pack stb_vorbis stb_sprintf"
+stb_installed() {
+    for n in $STB_LIBS; do
+        [ -f "$STB_ODIN_LIB/$n.a" ] || return 1
+    done
+}
+if stb_installed; then
     echo "  already present: stb_truetype.a"
 else
     echo "  building stb static libs..."
-    # Odin replaced src/Makefile with build_stb.sh; older installs still ship the
-    # Makefile, so take whichever this tree has. Both write ../lib/stb_truetype.a.
-    STB_SRC="${ODIN_ROOT%/}/vendor/stb/src"
-    if [ -f "$STB_SRC/build_stb.sh" ]; then
-        sh "$STB_SRC/build_stb.sh" unix >/dev/null
-    else
-        make -C "$STB_SRC" >/dev/null
-    fi
+    mkdir -p "$STB_OUT"
+    (
+        cd "$STB_OUT"
+        for n in $STB_LIBS; do
+            cc -c -O2 -Os -fPIC "$STB_SRC/$n.c" -o "$n.o"
+            ar rcs "$n.a" "$n.o"
+        done
+        rm -f ./*.o
+    )
+    echo "  installing into Odin tree: $STB_ODIN_LIB"
+    for n in $STB_LIBS; do
+        odin_install "$STB_OUT/$n.a" "$STB_ODIN_LIB/$n.a"
+    done
     echo "  done."
 fi
 

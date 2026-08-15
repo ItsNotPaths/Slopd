@@ -10,6 +10,16 @@ import "core:sys/posix"
 import "core:thread"
 import "vendor:glfw"
 
+// PARKED — WIP, not part of the editor.
+//
+// The device panes this was built for were shelved, so nothing in the running app touches
+// sysbus, dbus.odin or dbus_om.odin: the App owns no Sysbus, the main loop drains nothing,
+// and a normal session never opens a socket. What is left is a complete, tested stack kept
+// alive on purpose rather than deleted — it still compiles with the binary, its tests still
+// run (src/tests/{dbus,dbus_om,sysbus}_test.odin), and `slopd --sysbus` still drives it
+// against the real daemons. Picking it back up means writing panes on top of `sysbus_drain`
+// + `sysbus_request`; nothing below this line needs to change first.
+//
 // Sysbus — ONE worker thread behind all four device panes (see "Threading" in plan.txt).
 // It owns both bus connections and every ObjectManager tree, and the main thread never
 // touches a socket.
@@ -706,6 +716,26 @@ sysbus_conn :: proc(sb: ^Sysbus, bus: Dbus_Bus) -> ^Dbus_Conn {
 sysbus_attach :: proc(sb: ^Sysbus, bus: Dbus_Bus, conn: ^Dbus_Conn) {
     dbus_close(sb.conns[bus])
     sb.conns[bus] = conn
+}
+
+// The services the panes were going to read, and the interfaces each would keep.
+// Registering is two string clones per watch and touches no bus; only `--sysbus` calls it
+// now, and it is the list a pane would start from.
+sysbus_watches :: proc(sb: ^Sysbus) {
+    sysbus_watch(sb, .System, "org.bluez", "/", []string{"org.bluez.Adapter1", "org.bluez.Device1"})
+    sysbus_watch(
+        sb,
+        .System,
+        "net.connman.iwd",
+        "/",
+        []string {
+            "net.connman.iwd.Adapter",
+            "net.connman.iwd.Device",
+            "net.connman.iwd.Station",
+            "net.connman.iwd.Network",
+            "net.connman.iwd.KnownNetwork",
+        },
+    )
 }
 
 // --- `slopd --sysbus` ---
