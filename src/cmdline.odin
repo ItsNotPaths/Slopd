@@ -11,6 +11,13 @@ import "vendor:glfw"
 // op is reused from the buffer — Enter submits instead of splitting) plus a history ring and
 // an executor. Output never lands here: builtins mutate app state, shell commands go to a
 // terminal session. Driven by input.odin while a.cl_active.
+//
+// **A line is SHELL unless it says otherwise.** A Slopd builtin is named with a leading `:`
+// sigil and nothing else is captured — `grep foo` is the real grep in a terminal, `:grep foo`
+// is our Grep pane. The command line stopped guessing: what a word means is decided by what
+// you typed, not by a list Slopd happens to hold. Alt+C opens the line empty (shell), Alt+;
+// opens it with the sigil already typed, and the two are the same line — typing `:` yourself
+// after Alt+C is identical.
 CommandLine :: struct {
     using doc:  Doc,
     history:  [dynamic]string,
@@ -34,11 +41,17 @@ cl_destroy :: proc(a: ^App) {
     doc_destroy(&a.cl.doc)
 }
 
-cl_open :: proc(a: ^App) {
+// Open the line, optionally with `prefix` already typed and the caret past it (Alt+; passes the
+// `:` sigil). NOT an injection: the user pressed the key, so there is nothing to review and the
+// alert ring stays off — the prefix is a keystroke saved, not a command staged.
+cl_open :: proc(a: ^App, prefix := "") {
     a.cl_active = true
     doc_clear(&a.cl.doc)
     a.cl.hist_idx = len(a.cl.history)
     a.cl.injected = false // a fresh open is the user's own line, not an injection
+    if prefix != "" {
+        cl_recall(a, prefix)
+    }
 }
 
 // Pre-fill the command line with text and open it (a UI gesture staging a command
@@ -105,9 +118,11 @@ cl_recall :: proc(a: ^App, text: string) {
     doc_cursor_to_end(&a.cl.doc)
 }
 
-// A submitted line is a chain of `&&` segments, each a Slopd BUILTIN or a SHELL command. A step runs
-// only once the preceding shell step exits 0, detected asynchronously via the OSC sentinel, so the
-// chain pumps a frame at a time. Adjacent shell segments coalesce and keep their `&&` for the shell.
+// A submitted line is a chain of `&&` segments, each a Slopd BUILTIN (`:name`) or a SHELL command
+// (anything else). A step runs only once the preceding shell step exits 0, detected asynchronously
+// via the OSC sentinel, so the chain pumps a frame at a time. Adjacent shell segments coalesce and
+// keep their `&&` for the shell. A step's `text` is stored SIGIL-FREE: the `:` is the parser's, and
+// cl_run_builtin sees the same `name args` it always did.
 CLStep :: struct {
     shell: bool,
     text:  string, // owned; freed by cl_chain_clear
@@ -142,24 +157,29 @@ cl_parse :: proc(a: ^App, input: string) {
 
     rest := strings.trim_space(input)
 
-    // A leading tN sets the target terminal for the chain's shell parts; alone it is
-    // just a goto. Stripped before segmenting.
+    // A leading `:tN` builtin sets the target terminal for the chain's shell parts; alone it is
+    // just a goto. Stripped before segmenting, so what follows is an ORDINARY line — `:t2 make`
+    // throws a raw `make` at session 2, and only a further `:` names a builtin there.
     if first := first_field(rest); is_term_token(first) {
-        ch.target = strconv.parse_int(first[1:], 10) or_else 1
+        ch.target = strconv.parse_int(first[2:], 10) or_else 1
         term_focus(a, ch.target)
         rest = strings.trim_space(rest[len(first):])
         if rest == "" {
-            return // bare tN — goto only
+            return // bare :tN — goto only
         }
     }
 
-    for seg in strings.split(rest, "&&", context.temp_allocator) {
+    for seg in cl_split_chain(rest) {
         s := strings.trim_space(seg)
         if s == "" {
             continue
         }
-        if cl_is_builtin(first_field(s)) {
-            append(&ch.steps, CLStep{shell = false, text = strings.clone(s)})
+        if strings.has_prefix(s, ":") {
+            name := strings.trim_space(s[1:])
+            if name == "" {
+                continue // a bare `:` names no builtin; nothing to run
+            }
+            append(&ch.steps, CLStep{shell = false, text = strings.clone(name)})
         } else if n := len(ch.steps); n > 0 && ch.steps[n - 1].shell {
             prev := &ch.steps[n - 1] // coalesce adjacent shell segments (real shell &&)
             joined := strings.concatenate({prev.text, " && ", s})
@@ -169,6 +189,59 @@ cl_parse :: proc(a: ^App, input: string) {
             append(&ch.steps, CLStep{shell = true, text = strings.clone(s)})
         }
     }
+}
+
+// Split a line into `&&` segments the way the SHELL would read it: an `&&` is a chain separator
+// only where the shell would see an operator. Inside '...' or "..." it is text, after a backslash
+// it is an escaped character, and inside `...`, $(...) or a ( ) subshell it belongs to that
+// command — `rm -rf 'a && b.txt' && :ls` is two steps, not four, and the filename survives.
+//
+// The scanner tracks exactly what changes that answer and nothing else: it never expands, never
+// unquotes, and hands each segment on verbatim for the shell to parse properly. Quoting is the
+// shell's own job — this only has to find the seams. An UNCLOSED quote or paren swallows the rest
+// of the line, which is right: the shell would go on reading too, and there is no seam in there.
+//
+// Returns slices of `s` (no copies); the backing list is temp-allocated, so the caller must clone
+// anything it keeps. Only `&&` is an operator here — `;`, `|` and `||` are the shell's alone and
+// ride along inside a segment untouched.
+@(private = "file")
+cl_split_chain :: proc(s: string, alloc := context.temp_allocator) -> []string {
+    out := make([dynamic]string, 0, 4, alloc)
+    quote: u8 // 0, '\'' or '"' — the quote we are inside
+    depth: int // unquoted ( ) / $( ) nesting
+    tick: bool // inside a `...` command substitution
+    start, i := 0, 0
+    for i < len(s) {
+        c := s[i]
+        switch {
+        case quote == '\'':
+            if c == '\'' {quote = 0}
+        case quote == '"':
+            if c == '\\' && i + 1 < len(s) {
+                i += 1 // inside "..." a backslash still escapes the next byte
+            } else if c == '"' {
+                quote = 0
+            }
+        case c == '\\':
+            i += 1 // outside quotes it escapes anything, an `&` included
+        case c == '\'' || c == '"':
+            quote = c
+        case c == '`':
+            tick = !tick
+        case c == '(':
+            depth += 1
+        case c == ')':
+            depth = max(depth - 1, 0)
+        case c == '&' && !tick && depth == 0 && i + 1 < len(s) && s[i + 1] == '&':
+            append(&out, s[start:i])
+            i += 2
+            start = i
+            continue
+        }
+        i += 1
+    }
+    append(&out, s[start:])
+    return out[:]
 }
 
 // Advance the chain as far as it can go this frame: resolve a pending shell step's exit code
@@ -247,7 +320,11 @@ cl_inject_shell :: proc(a: ^App, cmd: string, last: bool) {
     ch.wait_term = t
 }
 
-// Run a Slopd builtin. Always succeeds, so a following chain step proceeds.
+// Run a Slopd builtin — `text` is the segment with its `:` already stripped. Succeeds (so a
+// following chain step proceeds) unless the name is not one of ours: the sigil was a promise
+// that this word is a builtin, so a typo SAYS SO in t1 and stops the chain rather than
+// vanishing. This switch is the whole builtin registry; a new one is a case here and a row in
+// the README's table.
 @(private = "file")
 cl_run_builtin :: proc(a: ^App, text: string) -> bool {
     name := first_field(text)
@@ -285,19 +362,23 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         cl_tu(a)
     case "w", "wa", "q", "q!", "wq", "wqa", "waq":
         cl_quit(a, name)
+    case:
+        cl_echo_t1(a, fmt.tprintf("%s: not a builtin (drop the : to run it in the shell)", name))
+        return false
     }
     return true
 }
 
 // Quit/write builtins — the ONLY way to close Slopd (Esc never quits), guarded by the unsaved RING
 // so a mistyped quit can't throw away work. buffer_save can't write an unnamed buffer, so a write
-// leaving work dirty refuses. Refusals ECHO into t1: **keep messages apostrophe-free**.
+// leaving work dirty refuses. Refusals ECHO into t1 (cl_echo_t1), naming what to type WITH the
+// sigil, since that is the line that would work.
 @(private = "file")
 cl_quit :: proc(a: ^App, cmd: string) {
     switch cmd {
     case "w":
         if !buffer_save(editor_current(&a.editor)) {
-            cl_echo_t1(a, "w: no filename (save-as not yet supported)")
+            cl_echo_t1(a, ":w: no filename (save-as not yet supported)")
         }
     case "wa":
         cl_write_all(a)
@@ -305,21 +386,21 @@ cl_quit :: proc(a: ^App, cmd: string) {
         glfw.SetWindowShouldClose(a.window, true)
     case "q":
         if n := ring_dirty_count(&a.editor); n > 0 {
-            cl_echo_t1(a, fmt.tprintf("q: %d unsaved buffer(s) — wqa to save+quit, q! to discard", n))
+            cl_echo_t1(a, fmt.tprintf(":q: %d unsaved buffer(s) — :wqa saves+quits, :q! drops", n))
         } else {
             glfw.SetWindowShouldClose(a.window, true)
         }
     case "wq":
         buffer_save(editor_current(&a.editor))
         if n := ring_dirty_count(&a.editor); n > 0 {
-            cl_echo_t1(a, fmt.tprintf("wq: %d other unsaved buffer(s) — wqa or q!", n))
+            cl_echo_t1(a, fmt.tprintf(":wq: %d other unsaved buffer(s) — :wqa or :q!", n))
         } else {
             glfw.SetWindowShouldClose(a.window, true)
         }
     case "wqa", "waq":
         cl_write_all(a)
         if n := ring_dirty_count(&a.editor); n > 0 {
-            cl_echo_t1(a, fmt.tprintf("wqa: %d buffer(s) could not be saved — q! to discard", n))
+            cl_echo_t1(a, fmt.tprintf(":wqa: %d buffer(s) could not be saved — :q! to discard", n))
         } else {
             glfw.SetWindowShouldClose(a.window, true)
         }
@@ -337,19 +418,21 @@ cl_write_all :: proc(a: ^App) -> int {
     return ring_dirty_count(&a.editor)
 }
 
-// Surface a Slopd message in t1 by running a single-quoted `echo`, so feedback lands in a
-// real terminal (lazily spawning t1) rather than the status strip.
+// Surface a Slopd message in t1 by running an `echo`, so feedback lands in a real terminal
+// (lazily spawning t1) rather than the status strip. sh_quote does the quoting, so a message
+// carrying the user's own text — an unrecognised builtin name — can hold anything at all.
 @(private = "file")
 cl_echo_t1 :: proc(a: ^App, msg: string) {
-    run_in_t1(a, fmt.tprintf("echo '%s'", msg))
+    run_in_t1(a, fmt.tprintf("echo %s", sh_quote(msg, context.temp_allocator)))
 }
 
-// `cd [dir]` (builtin): set the PROJECT ROOT — captured by Slopd, never sent to a shell. Only an
-// existing directory is accepted, so a typo leaves the root untouched. New terminals spawn here;
-// `tu` syncs the unlocked ones.
+// `:cd [dir]`: set the PROJECT ROOT — Slopd's own notion of where it is working, never a shell's.
+// An UNSIGILLED `cd` is the shell's, moving that terminal and nothing else; the sigil is what
+// tells the two apart. Only an existing directory is accepted, so a typo leaves the root
+// untouched. New terminals spawn here; `:tu` syncs the unlocked ones.
 @(private = "file")
 cl_cd :: proc(a: ^App, args: string) {
-    dir := cl_resolve_dir(a, strings.trim_space(args))
+    dir := cl_resolve_dir(a, unquote_arg(strings.trim_space(args)))
     defer delete(dir)
     if dir == "" || !os.is_dir(dir) {
         return
@@ -376,7 +459,7 @@ cl_resolve_dir :: proc(a: ^App, arg: string) -> string {
     return filepath.clean(raw) or_else strings.clone(raw)
 }
 
-// `tu` (terminal update): push `cd <project root>` into every UNLOCKED live terminal at once.
+// `:tu` (terminal update): push `cd <project root>` into every UNLOCKED live terminal at once.
 // Locked sessions (Alt+L) keep their own cwd. A background sync — it changes no focus.
 @(private = "file")
 cl_tu :: proc(a: ^App) {
@@ -391,7 +474,7 @@ cl_tu :: proc(a: ^App) {
     }
 }
 
-// "Set workspace here": `cd <dir>` then `tu`, in one call and with no line to submit. Package-
+// "Set workspace here": `:cd <dir>` then `:tu`, in one call and with no line to submit. Package-
 // level because the pointer reaches it (the file panes' context menu) as well as the `^h` chord —
 // and it is exactly the two builtins, so what the gesture does is what you could have typed.
 cl_workspace :: proc(a: ^App, dir: string) {
@@ -402,10 +485,10 @@ cl_workspace :: proc(a: ^App, dir: string) {
     cl_tu(a)
 }
 
-// `reload [y|n]`: settle a pending disk-change conflict, which auto-stages this command in the CL.
-//   reload y   re-reads the file, DISCARDING the unsaved edits
-//   reload n   keeps your edits and CACHES it, so it stops asking until the file changes again
-// A bare `reload` while conflicted is deliberately a NO-OP: an accidental Enter on the staged line
+// `:reload [y|n]`: settle a pending disk-change conflict, which auto-stages this command in the CL.
+//   :reload y   re-reads the file, DISCARDING the unsaved edits
+//   :reload n   keeps your edits and CACHES it, so it stops asking until the file changes again
+// A bare `:reload` while conflicted is deliberately a NO-OP: an accidental Enter on the staged line
 // must not silently discard edits. With no conflict it is a manual refresh (vim's :e!).
 @(private = "file")
 cl_reload :: proc(a: ^App, args: string) {
@@ -426,12 +509,13 @@ cl_reload :: proc(a: ^App, args: string) {
     }
 }
 
-// `j [file] [line]` / `jump ...`: reveal a location through the shared jump_to primitive.
-//   j N            move to a line in the current buffer (1-based absolute, matching the gutter)
-//   j +N / j -N    move relative to the current line
-//   j <file>       open <file> (name-first under the project root, or a system-wide /abs path)
-//   j <file> N     open <file> and go to line N (a +N/-N here is relative to the file's top)
-// A bare-number first field is always a line in the current buffer. Out-of-range lines clamp.
+// `:j [file] [line]` / `:jump ...`: reveal a location through the shared jump_to primitive.
+//   :j N            move to a line in the current buffer (1-based absolute, matching the gutter)
+//   :j +N / :j -N   move relative to the current line
+//   :j <file>       open <file> (name-first under the project root, or a system-wide /abs path)
+//   :j <file> N     open <file> and go to line N (a +N/-N here is relative to the file's top)
+// A bare-number first field is always a line in the current buffer. Out-of-range lines clamp. A
+// name with SPACES in it is quoted (`:j "my notes.md" 12`) — the one place a builtin needs it.
 @(private = "file")
 cl_jump :: proc(a: ^App, args: string) {
     s := strings.trim_space(args)
@@ -441,8 +525,8 @@ cl_jump :: proc(a: ^App, args: string) {
     b := editor_current(&a.editor)
     cur := b.cursors[b.primary].head
 
-    first := first_field(s)
-    rest := strings.trim_space(s[len(first):])
+    raw, first := first_arg(s) // a quoted first field is one path, spaces included
+    rest := strings.trim_space(s[len(raw):])
 
     // `j <line>`: the first field is a line number, no file. Keep the column where it fits.
     if line, ok := parse_line_spec(first, cur.line); ok && rest == "" {
@@ -462,9 +546,11 @@ cl_jump :: proc(a: ^App, args: string) {
     jump_to(a, path, max(line, 0), 0)
 }
 
-// `grep [flags] <pattern>`: hijack the user's grep into a PROJECT-WIDE search landing in the Grep
-// pane. Leading `-flags` are discarded (grep_run forces its own); the rest is the pattern, kept
-// whole, as a regex. **A pattern beginning with '-' can't be expressed** — the flag-strip eats it.
+// `:grep [flags] <pattern>`: a PROJECT-WIDE search landing in the Grep pane. Asked for by name —
+// an unsigilled `grep` is the real one, in a terminal — so this is the pane, not an interception.
+// Leading `-flags` are discarded (grep_run forces its own); the rest is the pattern, kept whole,
+// as a regex. **A pattern beginning with '-' can't be expressed** — the flag-strip eats it, and
+// plain `grep` is the way to search for one.
 @(private = "file")
 cl_grep :: proc(a: ^App, args: string) {
     query := strings.trim_space(args)
@@ -483,7 +569,7 @@ cl_grep :: proc(a: ^App, args: string) {
     }
 }
 
-// `put [text]`: type the literal text then the editor's selection into the target terminal,
+// `:put [text]`: type the literal text then the editor's selection into the target terminal,
 // with NO trailing newline (composes a command at the prompt).
 @(private = "file")
 cl_put :: proc(a: ^App, args: string) {
@@ -516,9 +602,9 @@ sh_quote :: proc(s: string, alloc := context.allocator) -> string {
     return strings.to_string(b)
 }
 
-// The staged line for a filetree delete: `rm -rf '<path>' ... && ls`. The trailing `ls` is our
-// own builtin — once the rm exits 0 the chain runs it, re-reading the listing and refocusing the
-// filetree. "" when nothing is selected, and the caller then stages nothing.
+// The staged line for a filetree delete: `rm -rf '<path>' ... && :ls`. The `rm` is the shell's,
+// the sigilled tail is ours — once the rm exits 0 the chain runs it, re-reading the listing and
+// refocusing the filetree. "" when nothing is selected, and the caller then stages nothing.
 rm_command :: proc(paths: []string, alloc := context.allocator) -> string {
     if len(paths) == 0 {
         return ""
@@ -529,7 +615,7 @@ rm_command :: proc(paths: []string, alloc := context.allocator) -> string {
         strings.write_byte(&b, ' ')
         strings.write_string(&b, sh_quote(p, context.temp_allocator))
     }
-    strings.write_string(&b, " && ls")
+    strings.write_string(&b, " && :ls")
     return strings.to_string(b)
 }
 
@@ -610,18 +696,55 @@ first_field :: proc(s: string) -> string {
     return s[:i]
 }
 
+// The first ARGUMENT of a builtin's line: first_field, except that a leading quote runs to its
+// partner, so a path with spaces can be written the way the shell taught you (`:j "my file" 40`).
+// Returns the span to skip (quotes and all) and the value inside them. An unclosed quote is not a
+// quote at all — it falls back to the plain field, since a lone `"` is likelier to be part of a
+// name than the start of something.
 @(private = "file")
-is_term_token :: proc(s: string) -> bool {
-    return len(s) >= 2 && s[0] == 't' && all_digits(s[1:])
+first_arg :: proc(s: string) -> (raw, value: string) {
+    if len(s) > 0 && (s[0] == '\'' || s[0] == '"') {
+        for i in 1 ..< len(s) {
+            if s[i] == s[0] {
+                return s[:i + 1], s[1:i]
+            }
+        }
+    }
+    f := first_field(s)
+    return f, f
 }
 
-// The inline ghost hint: a faint argument example drawn past the typed text once a command is
+// Strip ONE matched pair of surrounding quotes from an argument that is the WHOLE rest of the
+// line (`:cd "my dir"`). Those builtins never needed the quotes — the argument is already the
+// whole field — so honouring the habit beats failing on a directory that is plainly there. Only
+// the outer pair goes; quotes inside the name are part of the name.
+@(private = "file")
+unquote_arg :: proc(s: string) -> string {
+    if len(s) >= 2 && (s[0] == '\'' || s[0] == '"') && s[len(s) - 1] == s[0] {
+        return s[1:len(s) - 1]
+    }
+    return s
+}
+
+// `:tN` — the builtin naming a terminal session. A LINE PREFIX, not a step: it says where the
+// chain's shell parts land, so it is read and stripped before the line is segmented.
+@(private = "file")
+is_term_token :: proc(s: string) -> bool {
+    return len(s) >= 3 && s[0] == ':' && s[1] == 't' && all_digits(s[2:])
+}
+
+// The inline ghost hint: a faint argument example drawn past the typed text once a BUILTIN is
 // recognised, dropped once you start typing the argument so it never overlaps real input. Give a
-// command a hint by adding a case. "" = no hint; leading whitespace yields no command, so none.
+// builtin a hint by adding a case. "" = no hint — and an unsigilled line never has one, since a
+// shell command is the shell's to explain, not ours.
 cl_ghost_hint :: proc(line: string) -> string {
-    name := first_field(line)
-    if name == "" || strings.trim_space(line[len(name):]) != "" {
-        return "" // no command yet, or an argument is already typed
+    if !strings.has_prefix(line, ":") {
+        return ""
+    }
+    body := strings.trim_left_space(line[1:])
+    name := first_field(body)
+    if name == "" || strings.trim_space(body[len(name):]) != "" {
+        return "" // no builtin yet, or an argument is already typed
     }
     switch name {
     case "reload": return "(y/n)"
@@ -629,19 +752,8 @@ cl_ghost_hint :: proc(line: string) -> string {
     return ""
 }
 
-@(private = "file")
-cl_is_builtin :: proc(name: string) -> bool {
-    switch name {
-    case "ls", "gs", "cf", "readme", "README", "license", "LICENSE", "zen", "zm", "full", "fm",
-         "normal", "nm", "put", "j", "jump", "grep", "cd", "reload", "tu",
-         "w", "wa", "q", "q!", "wq", "wqa", "waq":
-        return true
-    }
-    return false
-}
-
 // Switch to terminal session n (1-based), surfacing the terminal pane. Shared by the command
-// line (tN) and Alt+1..9; clamps n into the existing session range.
+// line (`:tN`) and Alt+1..9; clamps n into the existing session range.
 term_focus :: proc(a: ^App, n: int) {
     a.aux_mode = .Terminal
     set_focus(a, .Aux)

@@ -188,7 +188,7 @@ strip_declare_command :: proc(a: ^App, cw: f32, lh: i32, now: f64) {
         },
     ) {}
 
-    // Ghosted per-command argument hint (e.g. `reload` -> "(y/n)"), until an argument is
+    // Ghosted per-builtin argument hint (e.g. `:reload` -> "(y/n)"), until an argument is
     // entered. cl_ghost_hint is the extensible registry and stays where it is.
     if hint := cl_ghost_hint(line_string(l, context.temp_allocator)); hint != "" {
         if clay.UI(clay.ID("st_hint"))({layout = {childAlignment = {y = .Center}}}) {
@@ -197,8 +197,8 @@ strip_declare_command :: proc(a: ^App, cw: f32, lh: i32, now: f64) {
     }
 }
 
-// The unsaved-edits-vs-disk-change hint, in the strip because the answer is a COMMAND: `reload
-// y` (re-read, losing edits) or `reload n` (keep + cache, stops asking until the file changes
+// The unsaved-edits-vs-disk-change hint, in the strip because the answer is a COMMAND: `:reload
+// y` (re-read, losing edits) or `:reload n` (keep + cache, stops asking until the file changes
 // again). Shown while the conflict is pending and the CL is closed, until answered or saved.
 @(private = "file")
 strip_declare_conflict :: proc(a: ^App, lh: i32) {
@@ -208,7 +208,7 @@ strip_declare_conflict :: proc(a: ^App, lh: i32) {
         clay.Text(fmt.tprintf("%s changed on disk - ", name), clay_text_config(th.urgent, lh))
     }
     if clay.UI(clay.ID("st_keys"))({layout = {childAlignment = {y = .Center}}}) {
-        clay.Text("run: reload y (lose edits) / reload n (keep mine)", clay_text_config(th.muted, lh))
+        clay.Text("run: :reload y (lose edits) / :reload n (keep mine)", clay_text_config(th.muted, lh))
     }
 }
 

@@ -20,7 +20,7 @@ odin build src -out:slopd -define:GLFW_SHARED=false
 | **aux modes** | `FileTree` (as an `ls` listing or a file browser) · `Terminal` · `Config` · `Grep` |
 | **views** | `Split` both panes · `Zen` full-width editor, aux slides in while focused · `Full` one surface fills the window |
 
-Views are toggled from the command line: `zen`/`zm`, `full`/`fm`, `normal`/`nm`. `Esc` with
+Views are toggled from the command line: `:zen`/`:zm`, `:full`/`:fm`, `:normal`/`:nm`. `Esc` with
 nothing to cancel turns Zen on and flips which side is shown.
 
 ## Keys
@@ -31,9 +31,9 @@ Non-modal / Alt-rooted: bare keys type, arrows navigate, chords live under Alt.
 |---|---|
 | `Alt+Left/Right`, `Alt+E` | focus editor / aux |
 | `Alt+F` `Alt+T` `Alt+R` | aux mode: filetree, terminal, grep results |
-| `Alt+C` | open the command line |
-| `Alt+W` | open it pre-filled with `j ` (the jump builtin), ready for a line number |
-| `Alt+Enter` | editor: follow the token under the caret (def / URL / `[[file]]` / colour) · filetree: `cd` to the folder |
+| `Alt+C` `Alt+;` | command line: a shell line · the same line with the builtin `:` typed |
+| `Alt+W` | open it pre-filled with `:j `, ready for a line number |
+| `Alt+Enter` | editor: follow the token under the caret (def / URL / `[[file]]` / colour) · filetree: `:cd` to the folder |
 | `Shift+Enter` | filetree: open in the desktop app, or stage a runnable's command |
 | `Alt+1..9`, `Alt+Up/Down` | terminal session N / prev / next (switcher shows while Alt is held) |
 | `Alt+N` `Alt+Q` `Alt+L` | terminal: new · close · lock its cwd |
@@ -45,15 +45,13 @@ Non-modal / Alt-rooted: bare keys type, arrows navigate, chords live under Alt.
 | `Ctrl+S/Z/Y/C/X/V` | save, undo, redo, clipboard |
 
 Filetree file ops are `Ctrl` chords (`^y` mark, `^u` unmark all, `^c` copy, `^x` cut, `^v`
-paste, `^d` delete, `^w` path, `^h` set the workspace to the browsed folder — `cd` plus `tu` in
-one keystroke); hold `Ctrl` for the cheat-sheet bar, or **right-click** for the
-same list as buttons. Copy and cut fill a clipboard from the marked set — or from the row under
-the cursor when nothing is marked — and paste applies it to the folder you are browsing; a cut
-is spent by its paste, a copy is not.
+paste, `^d` delete, `^w` path, `^h` set the workspace to the browsed folder — `:cd` plus `:tu` in
+one keystroke); hold `Ctrl` for the cheat-sheet bar, or **right-click** for the same list as
+buttons. Copy and cut act on the marked set, or on the row under the cursor when nothing is
+marked, and paste applies it to the folder you are browsing.
 
-The mouse is purely additive (`mouse: off` costs no capability). Wheel scrolls whatever is
-under the pointer and detaches the view; a click focuses the pane and does its own job;
-typing stands the pointer down.
+The mouse is purely additive: everything it reaches has a key binding, so `mouse: off` costs no
+capability. Typing stands the pointer down.
 
 ## File browser
 
@@ -68,37 +66,45 @@ clipboard and `Ctrl` chords, so this is a choice of presentation and never of ca
 | `^g` | list ⇄ grid (the toggle button; `file_view` persists it) |
 | `^1`..`^9` | open the sidebar's Nth place |
 | `Backspace` | up a directory — and the only way out of a grid, where `←`/`→` step a tile |
-| click the path's empty space | the path bar becomes a text line: type or paste a folder, `Enter` goes, `Esc` back to buttons |
-| in that line | drag to select (double = word, triple = all), `^c` `^x` `^v` — the same one-line field as the config rows and the command line |
+| click the path's empty space | the path bar becomes a text line — type or paste a folder |
 | right-click | the file-ops menu, at the pointer; on empty space it acts on the folder (paste, set workspace here) |
 
 ## Command line
 
-`Alt+C`. A submitted line is an `&&` chain of Slopd **builtins** and **shell** commands;
-shell steps run in a terminal session and the chain waits on each exit code. A leading `tN`
-targets session N. Text staged by a UI gesture renders in the alert colour until you touch it.
+`Alt+C` opens it, and what you type is a **shell** command, run in a terminal session. A Slopd
+**builtin** is asked for by name with a leading `:` — `grep foo` is the program, `:grep foo` is
+the project search in the Grep pane. `Alt+;` opens the line with the `:` already typed.
+
+A submitted line is an `&&` chain of both kinds, mixed: shell steps run in a terminal session and
+the chain waits on each exit code, builtins run inside Slopd. `rm -rf old && :ls` is the shell's
+delete followed by our listing refresh — the line `^d` stages for you. Text staged by a UI
+gesture renders in the alert colour until you touch it.
 
 | | |
 |---|---|
-| `j` / `jump` | `j 40`, `j +5`, `j file`, `j file 40` |
-| `grep <re>` | project-wide search into the Grep pane |
-| `cd [dir]` | set the project root (Slopd's, not a shell's) · `tu` syncs unlocked terminals |
-| `ls` `cf` `gs` | filetree (also: refresh) · config pane · git tool |
-| `put [text]` | type text + the editor selection into the target terminal, no newline |
-| `reload y\|n` | answer a disk-conflict prompt |
-| `readme` `license` | open the embedded docs |
-| `zen` `full` `normal` | view arrangement |
-| `w wa q q! wq wqa` | write / quit, the only way out; guarded by the unsaved ring |
+| `:tN` | send this line's shell parts to session N (`:t2 make`) · alone, a goto |
+| `:j` / `:jump` | `:j 40`, `:j +5`, `:j file`, `:j file 40` |
+| `:grep <re>` | project-wide search into the Grep pane |
+| `:cd [dir]` | set the project root · `:tu` syncs unlocked terminals |
+| `:ls` `:cf` `:gs` | filetree (also: refresh) · config pane · git tool |
+| `:put [text]` | type text + the editor selection into the target terminal, no newline |
+| `:reload y\|n` | answer a disk-conflict prompt |
+| `:readme` `:license` | open the embedded docs |
+| `:zen` `:full` `:normal` | view arrangement |
+| `:w :wa :q :q! :wq :wqa` | write / quit, the only way out; guarded by the unsaved ring |
 
-Anything else is shell.
+**The two `cd`s.** `:cd src` moves Slopd's project root — what `:grep` searches, what the file
+panes list, where a new terminal starts. A bare `cd src` is the shell's own, moving that one
+session. Neither follows the other; `:tu` pushes the root into every unlocked session when you
+want them back in step (`^h` in the file panes is those two builtins in one keystroke).
 
 <table>
 <tr>
 <td width="50%"><b>Terminals</b>, libvterm + a real PTY per session, up to 99. Alt shows the switcher.<br><img src="imgs/terminal.png"></td>
-<td width="50%"><b>Grep pane</b>, <code>grep &lt;re&gt;</code>, results with context; Enter jumps.<br><img src="imgs/grep.png"></td>
+<td width="50%"><b>Grep pane</b>, <code>:grep &lt;re&gt;</code>, results with context; Enter jumps.<br><img src="imgs/grep.png"></td>
 </tr>
 <tr>
-<td><b>Config pane</b> (<code>cf</code>), every setting is a dropdown; the syntax list installs, updates and uninstalls grammars in place.<br><img src="imgs/config.png"></td>
+<td><b>Config pane</b> (<code>:cf</code>), every setting is a dropdown; the syntax list installs, updates and uninstalls grammars in place.<br><img src="imgs/config.png"></td>
 <td><b>Folding</b> (<code>Ctrl+Enter</code>), collapse the block opening on the line; whitespace dots and the active-scope indent rail are the reading aids beside it.<br><img src="imgs/fold.png"></td>
 </tr>
 <tr>
@@ -123,10 +129,10 @@ and leaves the comment alone.
 | `font_size` | int | logical points; `Ctrl +/-` writes it back (debounced) |
 | `jump_lines` | int | `Ctrl+Up/Down` step |
 | `whitespace`, `indent_guides`, `folding` | `on` \| `off` | editor reading aids |
-| `folder_cd` | `stage` \| `run` | filetree `Alt+Enter`: review the `cd` in the CL, or run it |
-| `git_tool` | e.g. `lazygit` | what `Alt+G` / `gs` hands the project root to |
+| `folder_cd` | `stage` \| `run` | filetree `Alt+Enter`: review the `:cd` in the CL, or run it |
+| `git_tool` | e.g. `lazygit` | what `Alt+G` / `:gs` hands the project root to |
 | `git_term` | int \| empty | terminal session to run it in; empty = spawn detached (for a GUI tool) |
-| `grep_pane` | `on` \| `off` | always open the results pane vs jump straight on a lone hit |
+| `grep_pane` | `on` \| `off` | `:grep`: always open the results pane vs jump straight on a lone hit |
 | `disk_conflict` | `prompt` \| `keep` | file changed on disk under unsaved edits |
 | `mouse`, `hover` | `on` \| `off` | pointer input; hover tints the row under it |
 | `file_pane` | `ls` \| `browser` | the filetree pane's face: the dired listing, or the file browser |
@@ -173,7 +179,7 @@ slopd --health [lang]        # ✓/✗ table
 
 ## License
 
-GPL-3.0. `license` in the command line opens the embedded copy.
+GPL-3.0. `:license` in the command line opens the embedded copy.
 
 Embedded fonts keep their own: **Iosevka Fixed** (SIL OFL 1.1) for text, and the file-browser
 icons from **Nerd Fonts**' Seti-UI and Devicons sets (both MIT) — the CC-BY and Apache icon sets

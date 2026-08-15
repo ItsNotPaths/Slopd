@@ -40,16 +40,16 @@ test_cl_write_ring :: proc(t: ^testing.T) {
 
     b := app.editor_current(&a.editor)
 
-    // Unnamed: `wa` can't save it, so it stays in the ring.
+    // Unnamed: `:wa` can't save it, so it stays in the ring.
     b.dirty = true
-    app.cl_exec(&a, "wa")
+    app.cl_exec(&a, ":wa")
     testing.expect_value(t, app.ring_dirty_count(&a.editor), 1)
 
-    // Named: `wa` writes it and the ring clears.
+    // Named: `:wa` writes it and the ring clears.
     path := "/tmp/slopd_quit_test.txt"
     b.path = strings.clone(path)
     b.dirty = true
-    app.cl_exec(&a, "wa")
+    app.cl_exec(&a, ":wa")
     testing.expect_value(t, app.ring_dirty_count(&a.editor), 0)
     os.remove(path)
 }
@@ -57,7 +57,7 @@ test_cl_write_ring :: proc(t: ^testing.T) {
 @(test)
 test_cl_goto :: proc(t: ^testing.T) {
     a: app.App
-    app.cl_exec(&a, "ls")
+    app.cl_exec(&a, ":ls")
     testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree)
     testing.expect_value(t, a.focus, app.Focus.Aux)
 }
@@ -70,36 +70,70 @@ test_cl_jump :: proc(t: ^testing.T) {
     b := app.editor_current(&a.editor)
     app.buffer_set_text(b, "l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9") // 10 lines
 
-    app.cl_exec(&a, "j 3") // absolute, 1-based -> line index 2
+    app.cl_exec(&a, ":j 3") // absolute, 1-based -> line index 2
     testing.expect_value(t, b.cursors[b.primary].head.line, 2)
     testing.expect_value(t, a.focus, app.Focus.Editor)
 
-    app.cl_exec(&a, "jump 6") // `jump` alias, line index 5
+    app.cl_exec(&a, ":jump 6") // `:jump` alias, line index 5
     testing.expect_value(t, b.cursors[b.primary].head.line, 5)
 
-    app.cl_exec(&a, "j +2") // relative down from 5
+    app.cl_exec(&a, ":j +2") // relative down from 5
     testing.expect_value(t, b.cursors[b.primary].head.line, 7)
 
-    app.cl_exec(&a, "j -4") // relative up from 7
+    app.cl_exec(&a, ":j -4") // relative up from 7
     testing.expect_value(t, b.cursors[b.primary].head.line, 3)
 
-    app.cl_exec(&a, "j 999") // clamps to the last line
+    app.cl_exec(&a, ":j 999") // clamps to the last line
     testing.expect_value(t, b.cursors[b.primary].head.line, 9)
 
-    app.cl_exec(&a, "j -999") // clamps to the first line
+    app.cl_exec(&a, ":j -999") // clamps to the first line
     testing.expect_value(t, b.cursors[b.primary].head.line, 0)
 }
 
+// `:tN` names a session. It is a BUILTIN like any other, so it needs its sigil: an
+// unsigilled `t2` is a command the shell will fail to find, not a goto.
 @(test)
 test_cl_terminal_prefix :: proc(t: ^testing.T) {
     a: app.App
     fake_sessions(&a, 3)
     defer free_sessions(&a)
-    app.cl_exec(&a, "t2")
+    app.cl_exec(&a, ":t2")
     testing.expect_value(t, a.aux_mode, app.AuxMode.Terminal)
     testing.expect_value(t, a.term_active, 1)
-    app.cl_exec(&a, "t9") // clamps to the last session
+    app.cl_exec(&a, ":t9") // clamps to the last session
     testing.expect_value(t, a.term_active, 2)
+}
+
+// An unsigilled `t2` is shell: it lands in t1 as a command line, leaving the ACTIVE session
+// where it was. The sigil is the whole difference between naming a session and typing at one.
+@(test)
+test_cl_bare_tN_is_shell :: proc(t: ^testing.T) {
+    a: app.App
+    fake_sessions(&a, 3)
+    defer {app.cl_chain_clear(&a);free_sessions(&a)}
+    a.term_active = 2
+
+    app.cl_parse(&a, "t2 --version")
+    testing.expect_value(t, a.cl_chain.target, 1) // t1, the default — not session 2
+    testing.expect_value(t, len(a.cl_chain.steps), 1)
+    testing.expect(t, a.cl_chain.steps[0].shell, "an unsigilled tN is a shell command")
+    testing.expect_value(t, a.cl_chain.steps[0].text, "t2 --version")
+    testing.expect_value(t, a.term_active, 2) // parsing a shell line must not switch sessions
+}
+
+// `:tN <rest>`: the session is ours, everything after it is the shell's. `:t2 grep foo` is the
+// REAL grep in session 2 — the throw that used to need an opt-out is just an unsigilled word.
+@(test)
+test_cl_target_then_raw_shell :: proc(t: ^testing.T) {
+    a: app.App
+    fake_sessions(&a, 3)
+    defer {app.cl_chain_clear(&a);free_sessions(&a)}
+
+    app.cl_parse(&a, ":t2 grep foo")
+    testing.expect_value(t, a.cl_chain.target, 2)
+    testing.expect_value(t, len(a.cl_chain.steps), 1)
+    testing.expect(t, a.cl_chain.steps[0].shell, "grep after :tN is the shell's grep")
+    testing.expect_value(t, a.cl_chain.steps[0].text, "grep foo")
 }
 
 @(test)
@@ -107,7 +141,7 @@ test_cl_shell_stub :: proc(t: ^testing.T) {
     a: app.App
     fake_sessions(&a, 2)
     defer free_sessions(&a)
-    app.cl_exec(&a, "echo hi") // unknown -> shell -> t1
+    app.cl_exec(&a, "echo hi") // unsigilled -> shell -> t1
     testing.expect_value(t, a.aux_mode, app.AuxMode.Terminal)
     testing.expect_value(t, a.term_active, 0)
 }
@@ -117,31 +151,51 @@ test_cl_history :: proc(t: ^testing.T) {
     a: app.App
     defer app.cl_destroy(&a)
 
-    app.doc_set_text(&a.cl.doc, "ls")
+    app.doc_set_text(&a.cl.doc, ":ls")
     app.cl_submit(&a)
-    app.doc_set_text(&a.cl.doc, "cf")
+    app.doc_set_text(&a.cl.doc, ":cf")
     app.cl_submit(&a)
 
     app.cl_open(&a) // hist_idx parked at the live edit
-    app.cl_history_prev(&a);testing.expect_value(t, val(&a), "cf")
-    app.cl_history_prev(&a);testing.expect_value(t, val(&a), "ls")
-    app.cl_history_next(&a);testing.expect_value(t, val(&a), "cf")
+    app.cl_history_prev(&a);testing.expect_value(t, val(&a), ":cf")
+    app.cl_history_prev(&a);testing.expect_value(t, val(&a), ":ls")
+    app.cl_history_next(&a);testing.expect_value(t, val(&a), ":cf")
     app.cl_history_next(&a);testing.expect_value(t, val(&a), "") // back to live
 }
 
-// The command line's extensible ghost hint: a recognised command with no argument yet shows
-// its arg example; once an argument is typed (or the command is unknown) the hint drops.
+// Alt+; is Alt+C with the sigil pre-typed: the same line, opened with `:` in it and the caret
+// past it — and NOT an injection, so the alert ring stays off (the user pressed the key).
+@(test)
+test_cl_open_prefix :: proc(t: ^testing.T) {
+    a: app.App
+    defer app.cl_destroy(&a)
+
+    app.cl_open(&a, ":")
+    testing.expect(t, a.cl_active)
+    testing.expect_value(t, val(&a), ":")
+    testing.expect_value(t, a.cl.doc.cursors[a.cl.doc.primary].head.col, 1) // caret past the sigil
+    testing.expect(t, !a.cl.injected, "a keypress is not a staged command")
+
+    app.cl_open(&a) // Alt+C: the empty, shell-first line
+    testing.expect_value(t, val(&a), "")
+}
+
+// The command line's extensible ghost hint: a recognised BUILTIN with no argument yet shows its
+// arg example; once an argument is typed (or the builtin is unknown) the hint drops. A shell
+// line never hints — `reload` without the sigil is somebody else's program, not ours to gloss.
 @(test)
 test_cl_ghost_hint :: proc(t: ^testing.T) {
-    testing.expect_value(t, app.cl_ghost_hint("reload"), "(y/n)")
-    testing.expect_value(t, app.cl_ghost_hint("reload "), "(y/n)") // trailing space, no arg yet
-    testing.expect_value(t, app.cl_ghost_hint("reload y"), "") // argument typed -> no hint
-    testing.expect_value(t, app.cl_ghost_hint("ls"), "") // recognised command, no hint defined
+    testing.expect_value(t, app.cl_ghost_hint(":reload"), "(y/n)")
+    testing.expect_value(t, app.cl_ghost_hint(":reload "), "(y/n)") // trailing space, no arg yet
+    testing.expect_value(t, app.cl_ghost_hint(":reload y"), "") // argument typed -> no hint
+    testing.expect_value(t, app.cl_ghost_hint(":ls"), "") // recognised builtin, no hint defined
+    testing.expect_value(t, app.cl_ghost_hint("reload"), "") // no sigil: a shell command
+    testing.expect_value(t, app.cl_ghost_hint(":"), "") // the sigil alone names nothing
     testing.expect_value(t, app.cl_ghost_hint(""), "") // empty line
 }
 
-// The `reload` builtin settles a pending disk-change conflict: `reload n` keeps the edits
-// (and caches), `reload y` re-reads from disk. With no conflict, `reload` is a manual refresh.
+// The `:reload` builtin settles a pending disk-change conflict: `:reload n` keeps the edits
+// (and caches), `:reload y` re-reads from disk. With no conflict, it is a manual refresh.
 @(test)
 test_cl_reload_conflict :: proc(t: ^testing.T) {
     a: app.App
@@ -159,22 +213,22 @@ test_cl_reload_conflict :: proc(t: ^testing.T) {
     b.dirty = true
     b.conflict = true
 
-    // `reload n` keeps my edits and clears the conflict.
-    app.cl_exec(&a, "reload n")
+    // `:reload n` keeps my edits and clears the conflict.
+    app.cl_exec(&a, ":reload n")
     testing.expect(t, !b.conflict)
     testing.expect_value(t, app.line_string(&b.lines[0], context.temp_allocator), "mine")
 
-    // Re-raise, then `reload y` takes the disk version (edits discarded, buffer clean).
+    // Re-raise, then `:reload y` takes the disk version (edits discarded, buffer clean).
     b.conflict = true
-    app.cl_exec(&a, "reload y")
+    app.cl_exec(&a, ":reload y")
     testing.expect(t, !b.conflict)
     testing.expect(t, !b.dirty)
     testing.expect_value(t, app.line_string(&b.lines[0], context.temp_allocator), "disk")
 
-    // With no conflict, a bare `reload` is a manual re-read from disk (discards edits).
+    // With no conflict, a bare `:reload` is a manual re-read from disk (discards edits).
     app.buffer_set_text(b, "scratch")
     b.dirty = true
-    app.cl_exec(&a, "reload")
+    app.cl_exec(&a, ":reload")
     testing.expect_value(t, app.line_string(&b.lines[0], context.temp_allocator), "disk")
 }
 
@@ -196,26 +250,27 @@ test_cl_active_owns_keys_over_terminal :: proc(t: ^testing.T) {
     testing.expect(t, app.term_focused(&a) == nil, "CL owns keys while active")
 }
 
-// --- chain parser (cl_parse: pure, no shell) ---
+// --- chain parser (cl_parse: pure, no shell). The `:` sigil is the ONLY thing that makes a
+// segment a builtin, and the parser strips it: a step's text is the bare `name args`. ---
 
 @(test)
 test_cl_parse_segments :: proc(t: ^testing.T) {
     a: app.App
     defer app.cl_chain_clear(&a)
-    app.cl_parse(&a, "git add . && gs")
+    app.cl_parse(&a, "git add . && :gs")
     steps := a.cl_chain.steps[:]
     testing.expect_value(t, len(steps), 2)
     testing.expect(t, steps[0].shell, "first segment is shell")
     testing.expect_value(t, steps[0].text, "git add .")
-    testing.expect(t, !steps[1].shell, "gs is a builtin")
-    testing.expect_value(t, steps[1].text, "gs")
+    testing.expect(t, !steps[1].shell, ":gs is a builtin")
+    testing.expect_value(t, steps[1].text, "gs") // stored without the sigil
 }
 
 @(test)
 test_cl_parse_coalesce_shell :: proc(t: ^testing.T) {
     a: app.App
     defer app.cl_chain_clear(&a)
-    app.cl_parse(&a, "a && b && gs") // adjacent shell segments keep their &&
+    app.cl_parse(&a, "a && b && :gs") // adjacent shell segments keep their &&
     steps := a.cl_chain.steps[:]
     testing.expect_value(t, len(steps), 2)
     testing.expect_value(t, steps[0].text, "a && b")
@@ -227,7 +282,7 @@ test_cl_parse_target_prefix :: proc(t: ^testing.T) {
     a: app.App
     fake_sessions(&a, 3)
     defer {app.cl_chain_clear(&a);free_sessions(&a)}
-    app.cl_parse(&a, "t3 git status") // tN sets the chain's shell target
+    app.cl_parse(&a, ":t3 git status") // :tN sets the chain's shell target
     testing.expect_value(t, a.cl_chain.target, 3)
     testing.expect_value(t, len(a.cl_chain.steps), 1)
     testing.expect(t, a.cl_chain.steps[0].shell, "remainder is a shell command")
@@ -238,7 +293,7 @@ test_cl_parse_target_prefix :: proc(t: ^testing.T) {
 test_cl_parse_cd_tu_builtins :: proc(t: ^testing.T) {
     a: app.App
     defer app.cl_chain_clear(&a)
-    app.cl_parse(&a, "cd src && tu") // both are captured builtins, never shell
+    app.cl_parse(&a, ":cd src && :tu") // both are captured builtins, never shell
     steps := a.cl_chain.steps[:]
     testing.expect_value(t, len(steps), 2)
     testing.expect(t, !steps[0].shell, "cd is a builtin")
@@ -247,21 +302,35 @@ test_cl_parse_cd_tu_builtins :: proc(t: ^testing.T) {
     testing.expect_value(t, steps[1].text, "tu")
 }
 
-// `cd` sets the project root: absolute paths land verbatim, relative ones resolve
+// `:cd` sets the project root: absolute paths land verbatim, relative ones resolve
 // against the current root, and a non-directory leaves the root untouched.
 @(test)
 test_cl_cd_project_root :: proc(t: ^testing.T) {
     a: app.App
     defer delete(a.project_root)
-    app.cl_exec(&a, "cd /tmp")
+    app.cl_exec(&a, ":cd /tmp")
     testing.expect_value(t, a.project_root, "/tmp")
-    app.cl_exec(&a, "cd ..") // relative: /tmp/.. -> /
+    app.cl_exec(&a, ":cd ..") // relative: /tmp/.. -> /
     testing.expect_value(t, a.project_root, "/")
-    app.cl_exec(&a, "cd /no/such/dir/zzz") // typo: root unchanged
+    app.cl_exec(&a, ":cd /no/such/dir/zzz") // typo: root unchanged
     testing.expect_value(t, a.project_root, "/")
 }
 
-// "Set workspace here" IS `cd <dir>` + `tu`, so the root it leaves behind is the one the typed
+// An unsigilled `cd` is the SHELL's: it moves that terminal and leaves Slopd's project root
+// exactly where it was. The two `cd`s are different commands, told apart by the sigil.
+@(test)
+test_cl_bare_cd_is_shell :: proc(t: ^testing.T) {
+    a: app.App
+    fake_sessions(&a, 1)
+    defer {app.cl_chain_clear(&a);free_sessions(&a);delete(a.project_root)}
+
+    app.cl_parse(&a, "cd /tmp")
+    testing.expect_value(t, len(a.cl_chain.steps), 1)
+    testing.expect(t, a.cl_chain.steps[0].shell, "an unsigilled cd is the shell's")
+    testing.expect_value(t, a.project_root, "") // the project root never moved
+}
+
+// "Set workspace here" IS `:cd <dir>` + `:tu`, so the root it leaves behind is the one the typed
 // pair would have — with no terminals up, the sync half is the no-op it is meant to be.
 @(test)
 test_cl_workspace :: proc(t: ^testing.T) {
@@ -284,13 +353,13 @@ test_cl_dispatch_stage_vs_run :: proc(t: ^testing.T) {
     defer delete(a.project_root)
     defer app.cl_destroy(&a) // staging opens the CL doc; free it (else it leaks)
 
-    app.cl_dispatch(&a, "cd /tmp", false) // stage
+    app.cl_dispatch(&a, ":cd /tmp", false) // stage
     testing.expect(t, a.cl_active, "stage opens the command line")
-    testing.expect_value(t, val(&a), "cd /tmp")
+    testing.expect_value(t, val(&a), ":cd /tmp")
     testing.expect_value(t, a.project_root, "") // not executed
     app.cl_cancel(&a)
 
-    app.cl_dispatch(&a, "cd /tmp", true) // run
+    app.cl_dispatch(&a, ":cd /tmp", true) // run
     testing.expect(t, !a.cl_active, "run leaves the command line closed")
     testing.expect_value(t, a.project_root, "/tmp") // executed
 }
@@ -305,7 +374,7 @@ test_cl_chain_success_runs_builtin :: proc(t: ^testing.T) {
     append(&a.terminals, tm)
     defer {app.cl_chain_clear(&a);free(tm);delete(a.terminals)}
 
-    app.cl_exec(&a, "build_thing && cf")
+    app.cl_exec(&a, "build_thing && :cf")
     testing.expect(t, a.cl_chain.waiting, "should block on the shell step's exit")
 
     tm.exit_ready = true // shell reports success
@@ -325,7 +394,7 @@ test_cl_chain_failure_short_circuits :: proc(t: ^testing.T) {
     append(&a.terminals, tm)
     defer {app.cl_chain_clear(&a);free(tm);delete(a.terminals)}
 
-    app.cl_exec(&a, "build_thing && cf")
+    app.cl_exec(&a, "build_thing && :cf")
     testing.expect(t, a.cl_chain.waiting, "should block on the shell step's exit")
 
     tm.exit_ready = true // shell reports failure
@@ -343,7 +412,7 @@ test_cl_chain_failure_short_circuits :: proc(t: ^testing.T) {
 test_cl_parse_builtin_then_shell :: proc(t: ^testing.T) {
     a: app.App
     defer app.cl_chain_clear(&a)
-    app.cl_parse(&a, "gs && echo hi")
+    app.cl_parse(&a, ":gs && echo hi")
     steps := a.cl_chain.steps[:]
     testing.expect_value(t, len(steps), 2)
     testing.expect(t, !steps[0].shell)
@@ -357,7 +426,7 @@ test_cl_parse_shell_builtin_shell_no_coalesce :: proc(t: ^testing.T) {
     a: app.App
     defer app.cl_chain_clear(&a)
     // A builtin between two shell segments breaks the run — they must NOT coalesce.
-    app.cl_parse(&a, "make && gs && ./run")
+    app.cl_parse(&a, "make && :gs && ./run")
     steps := a.cl_chain.steps[:]
     testing.expect_value(t, len(steps), 3)
     testing.expect_value(t, steps[0].text, "make")
@@ -369,11 +438,11 @@ test_cl_parse_shell_builtin_shell_no_coalesce :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_cl_parse_bare_tN_is_goto_only :: proc(t: ^testing.T) {
+test_cl_parse_target_only_is_goto :: proc(t: ^testing.T) {
     a: app.App
     fake_sessions(&a, 4)
     defer {app.cl_chain_clear(&a);free_sessions(&a)}
-    app.cl_parse(&a, "t4")
+    app.cl_parse(&a, ":t4")
     testing.expect_value(t, a.cl_chain.target, 4)
     testing.expect_value(t, len(a.cl_chain.steps), 0) // no command — just the goto
 }
@@ -382,10 +451,130 @@ test_cl_parse_bare_tN_is_goto_only :: proc(t: ^testing.T) {
 test_cl_parse_empty_segments_skipped :: proc(t: ^testing.T) {
     a: app.App
     defer app.cl_chain_clear(&a)
-    app.cl_parse(&a, "gs &&  && ls") // stray empty segment from a double &&
+    app.cl_parse(&a, ":gs &&  && :ls") // stray empty segment from a double &&
     steps := a.cl_chain.steps[:]
     testing.expect_value(t, len(steps), 2)
     testing.expect_value(t, steps[0].text, "gs")
+    testing.expect_value(t, steps[1].text, "ls")
+}
+
+// --- quoting: an `&&` is a chain seam only where the SHELL would see an operator ---
+
+// Every line here is ONE command as the shell reads it, so the parser must not cut it in half.
+// The naive split did, which is how `rm -rf 'a && b.txt'` used to become two broken fragments
+// and an unterminated quote at the shell's prompt.
+@(test)
+test_cl_parse_quoted_ampersands_are_not_seams :: proc(t: ^testing.T) {
+    Case :: struct {
+        line, why: string,
+    }
+    cases := []Case {
+        {`echo "a && b"`, "inside double quotes"},
+        {`echo 'a && b'`, "inside single quotes"},
+        {`echo "it's && fine"`, "an apostrophe inside double quotes opens nothing"},
+        {`echo 'say "hi" && bye'`, "a double quote inside single quotes opens nothing"},
+        {`echo "a \" && b"`, "an escaped quote does not close the string"},
+        {`echo a \&\& b`, "escaped ampersands are characters"},
+        {`(cd src && make)`, "a subshell is one command"},
+        {`echo $(true && echo hi)`, "a command substitution is one command"},
+        {"echo `true && echo hi`", "a backtick substitution is one command"},
+        {`echo "open && never closed`, "an unclosed quote swallows the rest"},
+    }
+    for c in cases {
+        a: app.App
+        defer app.cl_chain_clear(&a)
+        app.cl_parse(&a, c.line)
+        steps := a.cl_chain.steps[:]
+        testing.expectf(t, len(steps) == 1, "%s: %d steps — %s", c.line, len(steps), c.why)
+        if len(steps) == 1 {
+            testing.expect_value(t, steps[0].text, c.line) // handed on verbatim, quotes and all
+        }
+    }
+}
+
+// The seams around a quoted `&&` are still found: this is the line `^d` stages for a file whose
+// NAME contains `&&`, and both halves have to survive — the shell's `rm` with its quoting intact,
+// then our `:ls`.
+@(test)
+test_cl_parse_seam_outside_the_quotes :: proc(t: ^testing.T) {
+    a: app.App
+    defer app.cl_chain_clear(&a)
+    app.cl_parse(&a, `rm -rf 'a && b.txt' && :ls`)
+    steps := a.cl_chain.steps[:]
+    testing.expect_value(t, len(steps), 2)
+    testing.expect(t, steps[0].shell)
+    testing.expect_value(t, steps[0].text, `rm -rf 'a && b.txt'`)
+    testing.expect(t, !steps[1].shell)
+    testing.expect_value(t, steps[1].text, "ls")
+}
+
+// The path builtins take the quoting the shell taught you, even though their argument is already
+// the whole field: `:cd "my dir"` is the directory, not a directory whose name has quotes in it.
+@(test)
+test_cl_cd_accepts_quoted_path :: proc(t: ^testing.T) {
+    dir := "/tmp/slopd cd quoted"
+    os.make_directory(dir)
+    defer os.remove(dir)
+
+    a: app.App
+    defer delete(a.project_root)
+
+    app.cl_exec(&a, `:cd "/tmp/slopd cd quoted"`)
+    testing.expect_value(t, a.project_root, dir)
+
+    app.cl_exec(&a, `:cd '/tmp'`) // single quotes too
+    testing.expect_value(t, a.project_root, "/tmp")
+
+    app.cl_exec(&a, `:cd "/no/such/dir/zzz"`) // still refuses what is not there
+    testing.expect_value(t, a.project_root, "/tmp")
+}
+
+// `:j` is the one builtin whose argument is a FIELD rather than the rest of the line, so a name
+// with spaces has to be quoted — and the line number after it still has to be found.
+@(test)
+test_cl_jump_quoted_filename :: proc(t: ^testing.T) {
+    dir := "/tmp/slopd_jump_quoted"
+    os.make_directory(dir)
+    path := "/tmp/slopd_jump_quoted/my notes.md"
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("a\nb\nc\nd\n")) == nil)
+    defer {os.remove(path);os.remove(dir)}
+
+    a: app.App
+    app.editor_init(&a.editor)
+    defer app.editor_destroy(&a.editor)
+    defer delete(a.project_root)
+    a.project_root = strings.clone(dir)
+
+    app.cl_exec(&a, `:j "my notes.md" 3`)
+    b := app.editor_current(&a.editor)
+    testing.expect_value(t, b.path, path)
+    testing.expect_value(t, b.cursors[b.primary].head.line, 2) // 1-based 3
+}
+
+// A quoted `&&` in a BUILTIN's argument is the builtin's text, not a seam either — the argument
+// reaches it whole, quotes included, since a builtin takes the rest of its segment literally.
+@(test)
+test_cl_parse_quotes_in_builtin_args :: proc(t: ^testing.T) {
+    a: app.App
+    defer app.cl_chain_clear(&a)
+    app.cl_parse(&a, `:grep "a && b" && :ls`)
+    steps := a.cl_chain.steps[:]
+    testing.expect_value(t, len(steps), 2)
+    testing.expect(t, !steps[0].shell)
+    testing.expect_value(t, steps[0].text, `grep "a && b"`)
+    testing.expect_value(t, steps[1].text, "ls")
+}
+
+// Coalescing rejoins adjacent shell segments with a real `&&` — and must not disturb what was
+// inside their quotes on the way through.
+@(test)
+test_cl_parse_coalesce_keeps_quotes :: proc(t: ^testing.T) {
+    a: app.App
+    defer app.cl_chain_clear(&a)
+    app.cl_parse(&a, `echo "x && y" && make && :ls`)
+    steps := a.cl_chain.steps[:]
+    testing.expect_value(t, len(steps), 2)
+    testing.expect_value(t, steps[0].text, `echo "x && y" && make`)
     testing.expect_value(t, steps[1].text, "ls")
 }
 
@@ -393,37 +582,75 @@ test_cl_parse_empty_segments_skipped :: proc(t: ^testing.T) {
 test_cl_parse_put_keeps_args :: proc(t: ^testing.T) {
     a: app.App
     defer app.cl_chain_clear(&a)
-    app.cl_parse(&a, "put cat -n")
+    app.cl_parse(&a, ":put cat -n")
     steps := a.cl_chain.steps[:]
     testing.expect_value(t, len(steps), 1)
-    testing.expect(t, !steps[0].shell, "put is a builtin")
+    testing.expect(t, !steps[0].shell, ":put is a builtin")
     testing.expect_value(t, steps[0].text, "put cat -n")
 }
 
+// Grep is the pair the whole change is about: `:grep` is the project search in our pane,
+// `grep` is the program, in a terminal. Neither is a fallback for the other, and nothing
+// inspects the name to decide — the sigil already did.
 @(test)
-test_cl_parse_grep_is_builtin :: proc(t: ^testing.T) {
-    a: app.App
-    defer app.cl_chain_clear(&a)
-    app.cl_parse(&a, "grep foo") // hijacked into the project search, never the shell
-    steps := a.cl_chain.steps[:]
-    testing.expect_value(t, len(steps), 1)
-    testing.expect(t, !steps[0].shell, "grep is a builtin")
-    testing.expect_value(t, steps[0].text, "grep foo")
-}
-
-// The three view commands are builtins, and `nm` is the one where forgetting to say so is
-// actively dangerous rather than merely broken: `nm` is a real binary on every Linux box (the
-// GNU symbol lister), so a name missing from cl_is_builtin would not fail — it would quietly
-// run something else in t1 and leave the arrangement alone.
-@(test)
-test_cl_parse_view_commands_are_builtins :: proc(t: ^testing.T) {
-    for name in ([]string{"zen", "zm", "full", "fm", "normal", "nm"}) {
+test_cl_parse_grep_sigil_picks_the_pane_or_the_program :: proc(t: ^testing.T) {
+    {
         a: app.App
         defer app.cl_chain_clear(&a)
-        app.cl_parse(&a, name)
+        app.cl_parse(&a, ":grep foo")
         steps := a.cl_chain.steps[:]
         testing.expect_value(t, len(steps), 1)
-        testing.expectf(t, !steps[0].shell, "%s reached the shell instead of the arrangement", name)
+        testing.expect(t, !steps[0].shell, ":grep is the Grep pane")
+        testing.expect_value(t, steps[0].text, "grep foo")
+    }
+    {
+        a: app.App
+        defer app.cl_chain_clear(&a)
+        app.cl_parse(&a, "grep -rn foo src/") // the real grep, flags and all
+        steps := a.cl_chain.steps[:]
+        testing.expect_value(t, len(steps), 1)
+        testing.expect(t, steps[0].shell, "an unsigilled grep is the program")
+        testing.expect_value(t, steps[0].text, "grep -rn foo src/")
+    }
+}
+
+// A sigilled name Slopd does not know STOPS the chain (and says so in t1) rather than doing
+// nothing: `:` was a promise that this word is ours, so a typo has to be answerable. This is
+// also what keeps a name missing from cl_run_builtin's switch from failing silently.
+@(test)
+test_cl_unknown_builtin_stops_the_chain :: proc(t: ^testing.T) {
+    a: app.App
+    fake_sessions(&a, 1) // the report echoes into t1; stand one in so no shell is spawned
+    defer {app.cl_chain_clear(&a);free_sessions(&a)}
+
+    app.cl_exec(&a, ":frobnicate && :ls")
+    testing.expect(t, a.aux_mode != app.AuxMode.FileTree, ":ls must not run after an unknown name")
+    testing.expect_value(t, a.aux_mode, app.AuxMode.Terminal) // the refusal was echoed into t1
+    testing.expect_value(t, len(a.cl_chain.steps), 0)
+}
+
+// The sigil alone names nothing — an empty step, not an unknown one, and not a shell command
+// either. A stray `:` submits as a no-op.
+@(test)
+test_cl_parse_bare_sigil_is_nothing :: proc(t: ^testing.T) {
+    a: app.App
+    defer app.cl_chain_clear(&a)
+    app.cl_parse(&a, ":")
+    testing.expect_value(t, len(a.cl_chain.steps), 0)
+}
+
+// Every view builtin must be a case in cl_run_builtin: an unknown one now stops the chain, so
+// the tail `:ls` reaching the filetree is proof the name was recognised. `nm` is the one worth
+// naming — it is a real binary on every Linux box (the GNU symbol lister), and before the sigil
+// a missing case here would have quietly run THAT instead of rearranging the panes.
+@(test)
+test_cl_view_commands_are_builtins :: proc(t: ^testing.T) {
+    for name in ([]string{"zen", "zm", "full", "fm", "normal", "nm"}) {
+        a: app.App
+        fake_sessions(&a, 1) // an unrecognised name would echo into t1; never spawn one
+        defer {app.cl_chain_clear(&a);free_sessions(&a)}
+        app.cl_exec(&a, strings.concatenate({":", name, " && :ls"}, context.temp_allocator))
+        testing.expectf(t, a.aux_mode == app.AuxMode.FileTree, "%s is not a builtin", name)
     }
 }
 
@@ -459,7 +686,7 @@ test_cl_chain_multi_step_all_succeed :: proc(t: ^testing.T) {
     tm := fake_live(&a)
     defer free_live(&a, tm)
 
-    app.cl_exec(&a, "build && cf && deploy && ls") // shell, builtin, shell, builtin
+    app.cl_exec(&a, "build && :cf && deploy && :ls") // shell, builtin, shell, builtin
     testing.expect(t, a.cl_chain.waiting, "waiting on `build`")
     feed_exit(&a, tm, 0) // build ok -> cf runs -> `deploy` injected
     testing.expect(t, a.cl_chain.waiting, "waiting on `deploy`")
@@ -475,7 +702,7 @@ test_cl_chain_mid_failure_stops_rest :: proc(t: ^testing.T) {
     tm := fake_live(&a)
     defer free_live(&a, tm)
 
-    app.cl_exec(&a, "build && cf && deploy && ls")
+    app.cl_exec(&a, "build && :cf && deploy && :ls")
     feed_exit(&a, tm, 0) // build ok -> cf -> `deploy` waits
     feed_exit(&a, tm, 7) // deploy FAILS -> ls must be skipped
 
@@ -490,7 +717,7 @@ test_cl_chain_first_failure_stops_all :: proc(t: ^testing.T) {
     defer free_live(&a, tm)
     a.aux_mode = app.AuxMode.Grep // a known starting pane
 
-    app.cl_exec(&a, "build && cf && ls")
+    app.cl_exec(&a, "build && :cf && :ls")
     feed_exit(&a, tm, 1) // build fails immediately -> no builtin runs
 
     testing.expect(t, a.aux_mode != app.AuxMode.Config, "cf skipped")
@@ -510,15 +737,16 @@ test_sh_quote :: proc(t: ^testing.T) {
     testing.expect_value(t, q("/tmp/it's"), `'/tmp/it'\''s'`)
 }
 
-// A delete stages one `rm -rf` over every target, tailed by the `ls` builtin so the
-// listing re-reads once it exits 0. No targets stages nothing at all.
+// A delete stages one `rm -rf` over every target, tailed by the `:ls` builtin so the listing
+// re-reads once it exits 0 — the shell's half and ours in one readable line. No targets stages
+// nothing at all.
 @(test)
 test_rm_command :: proc(t: ^testing.T) {
     one := app.rm_command({"/tmp/a b.txt"}, context.temp_allocator)
-    testing.expect_value(t, one, "rm -rf '/tmp/a b.txt' && ls")
+    testing.expect_value(t, one, "rm -rf '/tmp/a b.txt' && :ls")
 
     many := app.rm_command({"/tmp/x", "/tmp/y"}, context.temp_allocator)
-    testing.expect_value(t, many, "rm -rf '/tmp/x' '/tmp/y' && ls")
+    testing.expect_value(t, many, "rm -rf '/tmp/x' '/tmp/y' && :ls")
 
     testing.expect_value(t, app.rm_command(nil, context.temp_allocator), "")
 }

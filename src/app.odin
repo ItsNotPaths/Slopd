@@ -257,10 +257,10 @@ view_refresh :: proc(a: ^App) {
             was := b.conflict
             buffer_reload_if_changed(b, a.conflict_prompt)
             // On a freshly-raised conflict, stage the answer for the user to finish (y/n,
-            // Enter): `reload y` takes the disk version, `reload n` keeps + caches. EDGE-
+            // Enter): `:reload y` takes the disk version, `:reload n` keeps + caches. EDGE-
             // triggered, so it isn't re-injected every poll tick; skipped if the CL is busy.
             if !was && b.conflict && !a.cl_active {
-                cl_inject(a, "reload ")
+                cl_inject(a, ":reload ")
             }
         }
     case .Image:

@@ -33,7 +33,7 @@ test_embedded_language_registry_parses :: proc(t: ^testing.T) {
     }
 }
 
-// An embedded doc is an ordinary buffer except that it has no file: `w` must refuse it, and
+// An embedded doc is an ordinary buffer except that it has no file: `:w` must refuse it, and
 // the disk poller must not stat a path that is really just a name.
 @(test)
 test_embedded_buffer_never_touches_disk :: proc(t: ^testing.T) {
@@ -71,18 +71,24 @@ test_embedded_doc_reopens_in_place :: proc(t: ^testing.T) {
     testing.expect_value(t, app.editor_current(&a.editor).path, "README.md")
 }
 
-// Both spellings of both doc commands must be classified as BUILTIN steps by cl_parse. A
-// missing one does not fail loudly — it runs the name in t1 and leaves the editor alone,
-// which is how the upper-case pair was found. Same guarantee as the view commands' test.
+// Both spellings of both doc builtins must be RECOGNISED by cl_run_builtin — an unknown name
+// stops the chain, so the tail `:ls` reaching the filetree is the proof. A missing one used to
+// fail quietly instead, running the name in t1 and leaving the editor alone, which is how the
+// upper-case pair was found. Same guarantee as the view commands' test.
 @(test)
-test_doc_commands_never_reach_the_shell :: proc(t: ^testing.T) {
+test_doc_commands_are_builtins :: proc(t: ^testing.T) {
     for name in ([]string{"readme", "license", "README", "LICENSE"}) {
         a: app.App
-        defer app.cl_chain_clear(&a)
-        app.cl_parse(&a, name)
-        steps := a.cl_chain.steps[:]
-        testing.expect_value(t, len(steps), 1)
-        testing.expectf(t, !steps[0].shell, "%s reached the shell instead of the editor", name)
+        app.editor_init(&a.editor)
+        append(&a.terminals, new(app.Terminal)) // an unknown name echoes into t1; never spawn one
+        defer {
+            app.cl_chain_clear(&a)
+            app.editor_destroy(&a.editor)
+            free(a.terminals[0])
+            delete(a.terminals)
+        }
+        app.cl_exec(&a, strings.concatenate({":", name, " && :ls"}, context.temp_allocator))
+        testing.expectf(t, a.aux_mode == app.AuxMode.FileTree, "%s is not a builtin", name)
     }
 }
 
@@ -93,17 +99,17 @@ test_license_command_opens_the_doc :: proc(t: ^testing.T) {
     app.editor_init(&a.editor)
     defer app.editor_destroy(&a.editor)
 
-    app.cl_exec(&a, "license")
+    app.cl_exec(&a, ":license")
     b := app.editor_current(&a.editor)
     testing.expect(t, b.embedded)
     testing.expect_value(t, b.path, "LICENSE")
     testing.expect_value(t, a.focus, app.Focus.Editor)
 
-    app.cl_exec(&a, "README")
+    app.cl_exec(&a, ":README")
     testing.expect_value(t, app.editor_current(&a.editor).path, "README.md")
 
     n := len(a.editor.buffers)
-    app.cl_exec(&a, "readme") // the other spelling must reach that buffer, not a second one
+    app.cl_exec(&a, ":readme") // the other spelling must reach that buffer, not a second one
     testing.expect_value(t, len(a.editor.buffers), n)
     testing.expect_value(t, app.editor_current(&a.editor).path, "README.md")
 }

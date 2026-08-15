@@ -76,7 +76,7 @@ count_of :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), kind: clay.RenderCom
 }
 
 // The three-way choice, and the precedence inside it. An open command line beats a pending
-// conflict because the conflict's own answer is typed into that line — a `reload ` staged by
+// conflict because the conflict's own answer is typed into that line — a `:reload ` staged by
 // the conflict must not be hidden behind the prompt telling you to type it.
 @(test)
 test_strip_mode :: proc(t: ^testing.T) {
@@ -211,7 +211,7 @@ test_strip_command_line_command_list :: proc(t: ^testing.T) {
     fixture(&a, "alpha")
     defer teardown(&a)
     a.cl_active = true
-    app.doc_set_text(&a.cl.doc, "reload")
+    app.doc_set_text(&a.cl.doc, ":reload")
 
     cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
 
@@ -228,14 +228,14 @@ test_strip_command_line_command_list :: proc(t: ^testing.T) {
             custom = app.clay_rect(c.boundingBox)
         }
     }
-    testing.expect_value(t, custom, app.Rect{PAD + 20, STRIP.y, 70, STRIP.h}) // 6 runes + 1
+    testing.expect_value(t, custom, app.Rect{PAD + 20, STRIP.y, 80, STRIP.h}) // 7 runes + 1
 
     // The ghost hint starts where that extra cell ends — the same pixel the hand-drawn
     // version put it at, `origin + cw * (len + 1)`.
-    testing.expect_value(t, text_box(&cmds, "(y/n)"), app.Rect{PAD + 20 + 70, TEXT_Y, 50, 16})
+    testing.expect_value(t, text_box(&cmds, "(y/n)"), app.Rect{PAD + 20 + 80, TEXT_Y, 50, 16})
 
     // An argument makes the hint go away, so the field grows into the space it had.
-    app.doc_set_text(&a.cl.doc, "reload y")
+    app.doc_set_text(&a.cl.doc, ":reload y")
     cmds2 := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
     testing.expect_value(t, text_box(&cmds2, "(y/n)"), app.Rect{})
 }
@@ -255,7 +255,7 @@ test_strip_injected_ring :: proc(t: ^testing.T) {
     fixture(&a, "alpha")
     defer teardown(&a)
 
-    app.cl_inject(&a, "reload ")
+    app.cl_inject(&a, ":reload ")
     testing.expect(t, a.cl.injected, "cl_inject did not stage the line")
 
     cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
@@ -297,7 +297,7 @@ test_strip_conflict_command_list :: proc(t: ^testing.T) {
 
     msg := text_box(&cmds, "x.odin changed on disk - ")
     testing.expect_value(t, msg, app.Rect{PAD, TEXT_Y, 250, 16}) // 25 runes
-    keys := text_box(&cmds, "run: reload y (lose edits) / reload n (keep mine)")
+    keys := text_box(&cmds, "run: :reload y (lose edits) / :reload n (keep mine)")
     testing.expect_value(t, keys.x, msg.x + msg.w) // touching, as the arithmetic had them
     testing.expect_value(t, count_of(&cmds, .Border), 1) // always rung: it wants an answer
 }

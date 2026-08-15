@@ -316,10 +316,15 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         case glfw.KEY_A:
 
         case glfw.KEY_C:
-            cl_open(a)
+            cl_open(a) // an empty line: what you type is a SHELL command
+
+        case glfw.KEY_SEMICOLON:
+            // The same line with the builtin sigil pre-typed — the one keystroke, not a second
+            // command line. (A physical key, as GLFW reports it: Alt+; on a US layout.)
+            cl_open(a, ":")
 
         case glfw.KEY_W: // open the command line pre-filled for a line jump
-            cl_inject(a, "j ")
+            cl_inject(a, ":j ")
 
         case glfw.KEY_ENTER, glfw.KEY_KP_ENTER: // editor: follow the token under the caret; filetree: cd
             if a.aux_mode == .FileTree && a.focus == .Aux {
@@ -872,12 +877,12 @@ filebrowser_path_key :: proc(a: ^App, key, mods: i32) {
     }
 }
 
-// Alt+Enter on a selected folder: set the project root via a `cd <path>` command —
+// Alt+Enter on a selected folder: set the project root via a `:cd <path>` command —
 // staged in the command line for review, or run at once, per the folder_cd config.
 // No-op unless a directory is selected.
 filetree_cd_selected :: proc(a: ^App) {
     if e := filetree_selected(&a.tree); e != nil && e.is_dir {
-        cl_dispatch(a, fmt.tprintf("cd %s", e.path), a.folder_cd_run)
+        cl_dispatch(a, fmt.tprintf(":cd %s", e.path), a.folder_cd_run)
     }
 }
 
@@ -934,7 +939,7 @@ filetree_open_selected :: proc(a: ^App) {
     desktop_open(e.path)
 }
 
-// Ctrl+D / Ctrl+Shift+D: stage `rm -rf <paths> && ls` in the command line. The delete is a
+// Ctrl+D / Ctrl+Shift+D: stage `rm -rf <paths> && :ls` in the command line. The delete is a
 // real shell command you read, edit and run with Enter — no modal confirm, and it lands in CL
 // history like anything else. No-op with nothing selected or marked.
 filetree_rm_selected :: proc(a: ^App, marked: bool) {

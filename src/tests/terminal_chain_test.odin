@@ -71,23 +71,23 @@ wait_grid :: proc(a: ^app.App, sub: string) -> bool {
 test_sh_chain_success_advances :: proc(t: ^testing.T) {
     a: app.App
     defer teardown(&a)
-    testing.expect(t, run_cl(&a, "true && ls"), "chain should finish")
-    testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree) // ls ran after `true`
+    testing.expect(t, run_cl(&a, "true && :ls"), "chain should finish")
+    testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree) // :ls ran after `true`
 }
 
 @(test)
 test_sh_chain_failure_short_circuits :: proc(t: ^testing.T) {
     a: app.App
     defer teardown(&a)
-    testing.expect(t, run_cl(&a, "false && ls"), "chain should finish")
-    testing.expect(t, a.aux_mode != app.AuxMode.FileTree, "ls skipped after `false`")
+    testing.expect(t, run_cl(&a, "false && :ls"), "chain should finish")
+    testing.expect(t, a.aux_mode != app.AuxMode.FileTree, ":ls skipped after `false`")
 }
 
 @(test)
 test_sh_chain_specific_exit_code :: proc(t: ^testing.T) {
     a: app.App
     defer teardown(&a)
-    testing.expect(t, run_cl(&a, "sh -c 'exit 3' && ls"), "chain should finish")
+    testing.expect(t, run_cl(&a, "sh -c 'exit 3' && :ls"), "chain should finish")
     testing.expect(t, a.aux_mode != app.AuxMode.FileTree, "non-zero exit skips the goto")
 }
 
@@ -96,7 +96,7 @@ test_sh_chain_multi_wait :: proc(t: ^testing.T) {
     a: app.App
     defer teardown(&a)
     // Two real waited steps (shell, builtin, shell, builtin).
-    testing.expect(t, run_cl(&a, "true && gs && true && ls"), "two-wait chain should finish")
+    testing.expect(t, run_cl(&a, "true && :gs && true && :ls"), "two-wait chain should finish")
     testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree)
 }
 
@@ -105,8 +105,8 @@ test_sh_chain_coalesced_both_run :: proc(t: ^testing.T) {
     a: app.App
     defer teardown(&a)
     // Adjacent shell segments coalesce into one injection joined by &&; reaching the
-    // final `ls` (FileTree) proves both ran and exited 0 in the shell.
-    testing.expect(t, run_cl(&a, "echo a && echo b && ls"), "coalesced chain should finish")
+    // final `:ls` (FileTree) proves both ran and exited 0 in the shell.
+    testing.expect(t, run_cl(&a, "echo a && echo b && :ls"), "coalesced chain should finish")
     testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree)
 }
 
@@ -115,8 +115,8 @@ test_sh_chain_pager_neutralized :: proc(t: ^testing.T) {
     a: app.App
     defer teardown(&a)
     // git status forced to page through a BLOCKING pager. The runner neutralizes the
-    // pager for waited steps, so this must finish (and reach ls) rather than hang.
-    line := "git -c pager.status=true -c core.pager='less -+F' status && ls"
+    // pager for waited steps, so this must finish (and reach :ls) rather than hang.
+    line := "git -c pager.status=true -c core.pager='less -+F' status && :ls"
     testing.expect(t, run_cl(&a, line), "pager-neutralized chain must not hang")
     testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree)
 }
