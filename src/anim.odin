@@ -1,18 +1,23 @@
 package main
 
+import "base:intrinsics"
+import "vendor:glfw"
+
 // Scoped animation for the redraw scheduler. An Anim is a one-shot scalar tween in
 // seconds on the glfw.GetTime() clock: state that wants to move (smooth scroll, the
 // Zen slide, the overlay fades) embeds one, starts it, and reads anim_value() each frame.
 //
 // The main loop polls app_next_wake() after every frame to decide how to wait: a
-// non-negative result is a timeout (spin at vsync while something moves), a negative
-// one means block until the next input event (0% idle when nothing is animating). An
-// external glfw.PostEmptyEvent (a PTY reader thread) unblocks either wait.
+// non-negative result is a timeout (spin at the frame budget while something moves), a
+// negative one means block until the next input event (0% idle when nothing is animating).
+// An external wake_post (a PTY reader thread) unblocks either wait.
 
-// The wait an animating frame asks for: 0 means "don't sleep, redraw now", so SwapBuffers at
-// SwapInterval(1) is the sole pacer and animations run at the full refresh rate. Any non-zero
-// budget floors the wait and caps animation below vsync (1/120 halves scroll on a 240Hz panel).
-VSYNC_PACED :: 0.0
+// The wait an animating frame asks for. 0 means "don't sleep, redraw now", which is right
+// only where SwapBuffers itself blocks until the next refresh and so paces the animation:
+// X11 at SwapInterval(1). On Wayland the swap must NOT be the pacer (see main.odin), so
+// window_pacing_init sets a real per-frame budget here and the wait paces instead. Any
+// budget floors the wait, so it is set just under a refresh period, never above one.
+frame_budget: f64 = 0.0
 
 // Animation timings (seconds) — short by design, in keeping with the spartan ethos.
 BLINK_HALF :: 0.5 // caret on for this long, then off for this long
@@ -50,29 +55,29 @@ anim_value :: proc(an: ^Anim, now: f64) -> f32 {
 app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     wake := f64(-1)
     if anim_active(&editor_current(&a.editor).scroll_anim, now) { // smooth scroll
-        wake = sched_min(wake, VSYNC_PACED)
+        wake = sched_min(wake, frame_budget)
     }
     // The filetree pane's viewport tween, under EITHER presentation — the listing and the
     // browser share `tree.scroll_anim` because they share the viewport. Gated on the aux mode
     // for the overlays' reason: a tween nothing is drawing must not spin the loop, and a target
     // moved without a wake scheduled here leaves the view frozen part-scrolled (rule 9).
     if a.aux_mode == .FileTree && anim_active(&a.tree.scroll_anim, now) {
-        wake = sched_min(wake, VSYNC_PACED)
+        wake = sched_min(wake, frame_budget)
     }
     if a.view == .Zen && anim_active(&a.zen_anim, now) { // aux-pane slide
-        wake = sched_min(wake, VSYNC_PACED)
+        wake = sched_min(wake, frame_budget)
     }
     if a.view == .Split && anim_active(&a.split_anim, now) { // the split widen/narrow
-        wake = sched_min(wake, VSYNC_PACED)
+        wake = sched_min(wake, frame_budget)
     }
     // The two overlay fades, gated on the SAME predicates their draw sites use
     // (overlay_ui.odin) rather than a copy spelled out here: a copy drifts, and the loop
     // then wakes at vsync to animate a render that is refusing to draw.
     if switcher_shown(a) && anim_active(&a.switcher_anim, now) {
-        wake = sched_min(wake, VSYNC_PACED)
+        wake = sched_min(wake, frame_budget)
     }
     if chord_shown(a) && anim_active(&a.chord_anim, now) {
-        wake = sched_min(wake, VSYNC_PACED)
+        wake = sched_min(wake, frame_budget)
     }
     if caret_shown(a) { // a blinking caret must wake at its next on/off edge
         wake = sched_min(wake, blink_next_edge(a, now))
@@ -85,7 +90,7 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     }
     // A drag held past a pane edge (drag.odin) — the only pointer path needing a wake: a
     // click or wheel notch ARRIVES as an event, but a drag parked off the pane bottom emits
-    // none and must keep scrolling. Not VSYNC_PACED: this wake paces DRAG_SCROLL_S, not fps.
+    // none and must keep scrolling. Not frame_budget: this wake paces DRAG_SCROLL_S, not fps.
     if w := drag_next_wake(a, now); w >= 0 {
         wake = sched_min(wake, w)
     }
@@ -98,6 +103,36 @@ sched_min :: proc(wake, cand: f64) -> f64 {
         return cand
     }
     return min(wake, cand)
+}
+
+// "Something actually happened." A wait returning is NOT that: the display server wakes
+// GLFW with traffic of its own — under Wayland a buffer release and a delete_id land for
+// every frame we present — and a frame drawn for those chains straight into the next one,
+// so the loop spins at the refresh rate with nothing on screen changing. The main loop's
+// wait is gated on this flag instead, and only the sources below set it: the input
+// callbacks (input.odin, mouse.odin), the window callbacks main.odin registers, and the
+// worker threads through wake_post. A deadline coming due is the other way through the
+// gate, and app_next_wake owns those.
+@(private = "file")
+wake_flag: bool
+
+// From the main thread — a GLFW callback that changed something worth drawing.
+wake_mark :: proc "contextless" () {
+    intrinsics.atomic_store(&wake_flag, true)
+}
+
+// From a worker thread (a PTY reader, the sysbus): the same mark, plus the PostEmptyEvent
+// that breaks the wait it is sleeping in. Ordered mark-then-post so the loop cannot wake
+// on the post and miss the mark.
+wake_post :: proc "contextless" () {
+    wake_mark()
+    glfw.PostEmptyEvent()
+}
+
+// Take the mark, if there is one. Cleared on the way out so the frame it earns is drawn
+// once; anything arriving during that frame re-marks and earns the next one.
+wake_take :: proc "contextless" () -> bool {
+    return intrinsics.atomic_exchange(&wake_flag, false)
 }
 
 // Caret blink: on for BLINK_HALF, off for BLINK_HALF, measured from the last input

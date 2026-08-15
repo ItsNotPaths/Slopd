@@ -383,15 +383,15 @@ test_filetree_scroll_eases :: proc(t: ^testing.T) {
     // The scheduler has to keep waking while that runs, or the view freezes part-scrolled.
     // Focused on the aux pane, which is the state you scroll this list in, and which silences
     // the disk poll (an unscheduled one is always due, and would answer 0 for the editor
-    // whatever the list is doing). VSYNC_PACED is 0 — the smallest wake there is — so demanding
+    // whatever the list is doing). frame_budget is the smallest wake there is — so demanding
     // it mid-tween is decisive; once settled the soonest deadline is the caret's blink edge,
     // which is strictly later. That difference is the whole claim: spin, then stop spinning.
     a.aux_mode = .FileTree
     a.focus = .Aux
-    testing.expect_value(t, app.app_next_wake(&a, 1 + app.SCROLL_DUR / 2), app.VSYNC_PACED)
+    testing.expect_value(t, app.app_next_wake(&a, 1 + app.SCROLL_DUR / 2), app.frame_budget)
     testing.expect(
         t,
-        app.app_next_wake(&a, 1 + 2 * app.SCROLL_DUR) > app.VSYNC_PACED,
+        app.app_next_wake(&a, 1 + 2 * app.SCROLL_DUR) > app.frame_budget,
         "the scroll went on demanding a vsync-paced redraw after it had settled",
     )
 }

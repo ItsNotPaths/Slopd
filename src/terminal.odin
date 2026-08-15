@@ -724,7 +724,7 @@ term_reader_proc :: proc(th: ^thread.Thread) {
             sync.mutex_lock(&t.lock)
             append(&t.inbuf, ..buf[:n])
             sync.mutex_unlock(&t.lock)
-            glfw.PostEmptyEvent()
+            wake_post()
             continue
         }
         if n < 0 && posix.get_errno() == .EINTR {
@@ -735,7 +735,7 @@ term_reader_proc :: proc(th: ^thread.Thread) {
     sync.mutex_lock(&t.lock)
     t.alive = false
     sync.mutex_unlock(&t.lock)
-    glfw.PostEmptyEvent()
+    wake_post()
 }
 
 // Start capturing scrolled-off lines into this Terminal's scrollback. Stores a self-pointer

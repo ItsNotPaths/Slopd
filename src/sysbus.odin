@@ -381,7 +381,7 @@ sysbus_worker_proc :: proc(th: ^thread.Thread) {
     context.temp_allocator = virtual.arena_allocator(&arena)
 
     sysbus_open(sb) // connect + first snapshot; the blocking work, off the main thread
-    glfw.PostEmptyEvent()
+    wake_post()
     free_all(context.temp_allocator)
 
     for sb.running {
@@ -392,7 +392,7 @@ sysbus_worker_proc :: proc(th: ^thread.Thread) {
         // A tick is news in itself — it is the beat a live graph samples on, and without
         // passing it through, an armed timer would advance a counter nobody ever sees.
         if sysbus_step(sb, ticked) {
-            glfw.PostEmptyEvent()
+            wake_post()
         }
         free_all(context.temp_allocator)
     }

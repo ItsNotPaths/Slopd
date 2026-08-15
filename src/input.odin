@@ -119,6 +119,7 @@ key_callback :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods
     if a == nil {
         return
     }
+    wake_mark() // a keystroke earns a frame, even one handle_key ignores (chord bars, modifiers)
     handle_key(a, key, action, mods)
 }
 
@@ -131,6 +132,7 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     if a == nil || a.alt_held {
         return
     }
+    wake_mark()
     a.last_input_at = glfw.GetTime()
     a.blink_base = a.last_input_at // typing: caret solid, then resumes blinking
     a.move_all_armed = false // typing isn't a motion; cancel a pending move-all
