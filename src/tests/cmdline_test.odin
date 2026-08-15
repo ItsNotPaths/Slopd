@@ -345,6 +345,65 @@ test_cl_workspace :: proc(t: ^testing.T) {
     testing.expect_value(t, a.project_root, "/tmp")
 }
 
+@(private = "file")
+tmp_join :: proc(parts: ..string) -> string {
+    return strings.join(parts, "/", context.temp_allocator)
+}
+
+// `slopd --<path>` on a DIRECTORY: the workspace lands there — the project root new terminals
+// spawn in, and the directory the file panes are browsing.
+@(test)
+test_cl_launch_path_directory :: proc(t: ^testing.T) {
+    dir := tmp_join("/tmp", "slopd_launch_dir")
+    os.make_directory(dir)
+    defer os.remove(dir)
+
+    a: app.App
+    app.filetree_init(&a.tree)
+    defer {app.filetree_destroy(&a.tree);delete(a.project_root)}
+
+    testing.expect(t, app.cl_launch_path(&a, dir))
+    testing.expect_value(t, a.project_root, dir)
+    testing.expect_value(t, a.tree.dir, dir)
+}
+
+// `slopd --<path>` on a FILE: it opens in the editor, and the workspace is the folder holding
+// it — the file is what you asked for, its folder is where you are working.
+@(test)
+test_cl_launch_path_file :: proc(t: ^testing.T) {
+    dir := tmp_join("/tmp", "slopd_launch_file")
+    os.make_directory(dir)
+    defer os.remove(dir)
+    path := tmp_join(dir, "note.txt")
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("hello\n")) == nil)
+    defer os.remove(path)
+
+    a: app.App
+    app.editor_init(&a.editor)
+    app.filetree_init(&a.tree)
+    defer {app.editor_destroy(&a.editor);app.filetree_destroy(&a.tree);delete(a.project_root)}
+
+    testing.expect(t, app.cl_launch_path(&a, path))
+    testing.expect_value(t, a.project_root, dir) // the folder, not the file
+    testing.expect_value(t, a.tree.dir, dir)
+    testing.expect_value(t, app.editor_current(&a.editor).path, path)
+    testing.expect_value(t, a.focus, app.Focus.Editor) // the opened file is what you look at
+}
+
+// A path that is not there is reported (main prints it), and changes nothing: the launch cwd
+// stays the root rather than a window opening as if the argument had been honoured.
+@(test)
+test_cl_launch_path_missing :: proc(t: ^testing.T) {
+    a: app.App
+    a.project_root = strings.clone("/tmp")
+    app.filetree_init(&a.tree)
+    defer {app.filetree_destroy(&a.tree);delete(a.project_root)}
+
+    testing.expect(t, !app.cl_launch_path(&a, "/no/such/dir/zzz/file.txt"))
+    testing.expect(t, !app.cl_launch_path(&a, ""))
+    testing.expect_value(t, a.project_root, "/tmp")
+}
+
 // A config-driven CL action either stages its command (opens the CL, runs nothing) or
 // runs it at once (no CL) — the filetree folder cd via a.folder_cd_run.
 @(test)

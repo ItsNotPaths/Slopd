@@ -52,14 +52,19 @@ main :: proc() {
     // --util: launch into Full (full-window swap) mode on the aux pane, so the filetree fills
     // the window; the editor is still reachable via Alt+E.
     // --perflog: append a per-second frame-timing line to perf.log (off otherwise).
-    perflog := false
+    // --<path>: the launch path (`slopd --~/code/thing`, `slopd --/etc/fstab`) — a directory
+    // becomes the workspace, a file opens with its folder as the workspace. Read here but
+    // APPLIED below, once the panes it loads into exist.
+    perflog, util := false, false
+    launch: string
     for arg in os.args[1:] {
-        if arg == "--util" {
-            app.view = .Full
-            app.focus = .Aux
-        }
-        if arg == "--perflog" {
+        switch {
+        case arg == "--util":
+            util = true
+        case arg == "--perflog":
             perflog = true
+        case len(arg) > 2 && strings.has_prefix(arg, "--"):
+            launch = arg[2:]
         }
     }
 
@@ -101,6 +106,17 @@ main :: proc() {
     defer config_pane_destroy(&app.config_pane)
     highlighter_init(&app.hl)
     defer highlighter_destroy(&app.hl)
+
+    // The launch path, now that the editor and the file panes it moves are up. Ordered before
+    // --util because opening a file focuses the main pane, and --util asked for the aux one.
+    if launch != "" && !cl_launch_path(&app, launch) {
+        fmt.eprintfln("slopd: no such path: %s", launch)
+    }
+    if util {
+        app.view = .Full
+        app.focus = .Aux
+    }
+
     if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {
         app.scale = sx
     }

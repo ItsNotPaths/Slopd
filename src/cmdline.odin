@@ -432,7 +432,7 @@ cl_echo_t1 :: proc(a: ^App, msg: string) {
 // untouched. New terminals spawn here; `:tu` syncs the unlocked ones.
 @(private = "file")
 cl_cd :: proc(a: ^App, args: string) {
-    dir := cl_resolve_dir(a, unquote_arg(strings.trim_space(args)))
+    dir := cl_resolve_path(a, unquote_arg(strings.trim_space(args)))
     defer delete(dir)
     if dir == "" || !os.is_dir(dir) {
         return
@@ -441,9 +441,11 @@ cl_cd :: proc(a: ^App, args: string) {
     a.project_root = strings.clone(dir)
 }
 
-// Resolve a `cd` argument to an absolute, cleaned directory path (owned by caller).
+// Resolve a path argument (`~`, `~/x`, relative to the project root, or already absolute) to an
+// absolute, cleaned path — owned by the caller. Nothing here says the path must exist, or be a
+// directory: `cd` checks that itself, and the launch path below accepts a file too.
 @(private = "file")
-cl_resolve_dir :: proc(a: ^App, arg: string) -> string {
+cl_resolve_path :: proc(a: ^App, arg: string) -> string {
     home := os.get_env("HOME", context.temp_allocator)
     raw: string
     switch {
@@ -483,6 +485,37 @@ cl_workspace :: proc(a: ^App, dir: string) {
     }
     cl_cd(a, dir)
     cl_tu(a)
+}
+
+// `slopd --<path>`: the launch path, applied once at startup (main), before the window's first
+// frame. A DIRECTORY is opened as the workspace; a FILE opens in the editor with its containing
+// folder as the workspace — the same "where am I working" the `^h` chord sets, so launching
+// somewhere and setting the workspace there land in the same state. The file panes are pointed at
+// it too: `^h` runs the other way round (the browsed dir becomes the root), and at launch there is
+// no browsed dir to take it from.
+//
+// Returns false for a path that does not exist, leaving the launch cwd as the root — main says so
+// on stderr rather than opening a window that silently ignored the argument.
+cl_launch_path :: proc(a: ^App, arg: string) -> bool {
+    if arg == "" { // an empty argument is not "home" here, the way a bare `:cd` is — it is nothing
+        return false
+    }
+    path := cl_resolve_path(a, arg)
+    defer delete(path)
+    if path == "" || !os.exists(path) {
+        return false
+    }
+    file := !os.is_dir(path) // a regular file (or anything else): work from its folder
+    dir := file ? filepath.dir(path) : path // slices into path — not owned, never delete it
+    if !os.is_dir(dir) {
+        return false
+    }
+    cl_workspace(a, dir) // :cd + :tu, exactly as the chord and the context menu do it
+    filetree_load(&a.tree, dir)
+    if file {
+        open_file(a, path) // focuses the main pane; a failed load leaves the scratch buffer
+    }
+    return true
 }
 
 // `:reload [y|n]`: settle a pending disk-change conflict, which auto-stages this command in the CL.

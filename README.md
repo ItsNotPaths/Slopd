@@ -172,6 +172,7 @@ slopd --health [lang]        # ✓/✗ table
 | | |
 |---|---|
 | `--version` / `-v` | build version |
+| `--<path>` | launch there: a directory becomes the workspace (`slopd --~/code/thing`), a file opens with its folder as the workspace (`slopd --/etc/fstab`) |
 | `--util` | launch into Full on the aux pane (filetree fills the window) |
 | `--perflog` | append per-second frame timings to `perf.log` (beside the binary) |
 | `--sysbus` | *(parked/WIP)* print one D-Bus snapshot of the watched system services, then exit |
