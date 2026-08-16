@@ -91,7 +91,8 @@ App :: struct {
     cl_wait_seq: u64,
 
     // Live feedback for a builtin line as it is typed — `:j` moves the view to the target line,
-    // `:f` marks every hit — with Esc putting the view back untouched. See cl_preview.odin;
+    // `:f` marks every hit, `:grep` fills the results pane — with Esc putting it all back
+    // untouched, the aux pane you were on included. See cl_preview.odin;
     // cl_preview_on is the config toggle. `find` is the search itself, shared with the `:f`
     // builtin so a submitted line and a previewed one search the same way (find.odin).
     cl_preview:    CLPreview,

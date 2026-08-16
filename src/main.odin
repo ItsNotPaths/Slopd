@@ -209,7 +209,7 @@ main :: proc() {
 
         now := glfw.GetTime()
         view_poll_disk(&app, now) // re-read an externally-changed file into the focused view pane
-        cl_preview_sync(&app) // show what a half-typed builtin line would do (after the reload: a
+        cl_preview_sync(&app, now) // show what a half-typed builtin line would do (after the reload: a
         // file that just changed underneath invalidates what the preview found in it)
         w, h := glfw.GetFramebufferSize(window)
         // Track DPI, then re-bake the atlas if the DPI scale (monitor move) or the

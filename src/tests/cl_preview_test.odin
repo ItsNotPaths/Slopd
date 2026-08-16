@@ -24,13 +24,21 @@ freeapp :: proc(a: ^app.App) {
     app.cl_destroy(a)
     app.cl_preview_destroy(a)
     app.find_destroy(&a.find)
+    app.grep_destroy(&a.grep)
 }
 
-// Type a line into the command line and run the frame's preview tick over it.
+// Type a line into the command line and run the frame's preview tick over it. `now` is the
+// frame's clock — it only matters to `:grep`, whose search waits for a pause in the typing.
 @(private = "file")
-typeln :: proc(a: ^app.App, line: string) {
+typeln :: proc(a: ^app.App, line: string, now := f64(0)) {
     app.doc_set_text(&a.cl.doc, line)
-    app.cl_preview_sync(a)
+    app.cl_preview_sync(a, now)
+}
+
+// A later frame with nothing typed in it: what lets a debounced preview come due.
+@(private = "file")
+tick :: proc(a: ^app.App, now: f64) {
+    app.cl_preview_sync(a, now)
 }
 
 @(private = "file")
@@ -196,6 +204,80 @@ test_preview_find_reports_a_miss :: proc(t: ^testing.T) {
     testing.expect_value(t, len(a.find.matches), 0)
     testing.expect_value(t, caret(&a).line, 0) // nothing to land on: the caret stays put
     testing.expect_value(t, app.cl_ghost_hint(&a, ":f nowhere"), "(no matches)")
+}
+
+// --- the grep preview ---
+//
+// The project root is left EMPTY, so grep_run answers nothing without spawning a process: what
+// is under test is the borrow of the aux pane, not the search itself.
+
+// The pattern half of a `:grep` line, shared with the preview so the two search alike.
+@(test)
+test_cl_grep_query :: proc(t: ^testing.T) {
+    testing.expect_value(t, app.cl_grep_query("  foo bar  "), "foo bar") // kept whole
+    testing.expect_value(t, app.cl_grep_query("-i -w thing"), "thing") // leading flags dropped
+    testing.expect_value(t, app.cl_grep_query("-rn"), "") // flags alone name no pattern
+}
+
+// The Grep pane is BORROWED: what it held is moved aside and put back by the Esc, results and
+// all, and the aux pane the user was on comes back with it.
+@(test)
+test_preview_grep_borrows_the_pane :: proc(t: ^testing.T) {
+    a := mkapp(PREVIEW_PAGE)
+    defer freeapp(&a)
+    app.grep_set(&a.grep, "older", nil) // results already in the pane, from an earlier search
+    a.aux_mode = .FileTree
+
+    typeln(&a, ":grep hello")
+    tick(&a, 1) // the search waits for a pause in the typing
+    testing.expect_value(t, a.aux_mode, app.AuxMode.Grep)
+    testing.expect_value(t, a.focus, app.Focus.Aux)
+    testing.expect_value(t, a.grep.query, "hello")
+    testing.expect_value(t, app.cl_ghost_hint(&a, ":grep hello"), "(no matches)")
+    testing.expect_value(t, caret(&a).line, 0) // the page is not touched at all
+
+    app.cl_cancel(&a)
+    testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree)
+    testing.expect_value(t, a.focus, app.Focus.Editor)
+    testing.expect_value(t, a.grep.query, "older") // the old results, not the preview's
+}
+
+// Enter keeps the pane the preview opened — the builtin then runs its own search over it.
+@(test)
+test_preview_grep_commit_keeps_the_pane :: proc(t: ^testing.T) {
+    a := mkapp(PREVIEW_PAGE)
+    defer freeapp(&a)
+
+    typeln(&a, ":grep hello")
+    tick(&a, 1)
+    app.cl_preview_commit(&a)
+    testing.expect_value(t, a.aux_mode, app.AuxMode.Grep)
+    testing.expect_value(t, a.grep.query, "hello")
+    testing.expect_value(t, app.cl_ghost_hint(&a, ":grep hello"), "") // the preview is over
+
+    app.cl_cancel(&a) // nothing is owed back now
+    testing.expect_value(t, a.aux_mode, app.AuxMode.Grep)
+}
+
+// The search runs on a PAUSE, not on the keystroke: every letter of a pattern would otherwise
+// be a walk of the whole project.
+@(test)
+test_preview_grep_waits_for_a_pause :: proc(t: ^testing.T) {
+    a := mkapp(PREVIEW_PAGE)
+    defer freeapp(&a)
+    a.aux_mode = .FileTree
+
+    typeln(&a, ":grep hel", 10)
+    testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree) // still typing
+    tick(&a, 10 + app.CL_GREP_DELAY / 2)
+    testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree)
+    tick(&a, 10 + app.CL_GREP_DELAY)
+    testing.expect_value(t, a.aux_mode, app.AuxMode.Grep)
+
+    // A pattern too short to mean anything is not searched for at all.
+    typeln(&a, ":grep h", 20)
+    tick(&a, 21)
+    testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree) // and the borrow was returned
 }
 
 // --- the shared line split ---

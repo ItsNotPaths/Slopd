@@ -66,7 +66,7 @@ Config :: struct {
     git_term:         int, // which terminal session to run it in; 0 = spawn it detached
     run_term:         int, // which terminal session an activated executable runs in
     grep_pane_always: bool, // CL grep: always open the results pane vs jump straight on a lone hit
-    cl_preview:       bool, // show a builtin line's effect in the editor while it is typed
+    cl_preview:       bool, // show a builtin line's effect (`:j` `:f` `:grep`) while it is typed
     conflict_prompt:  bool, // disk changed under unsaved edits: prompt (y/n in the CL) vs silently keep my edits
     conflict_stage:   bool, // a raised conflict stages `:reload ` in the CL vs only marking the modeline
     mouse:            bool, // pointer input (wheel, and the clicks that follow it) on/off
@@ -138,7 +138,7 @@ load_config :: proc() -> Config {
         git_term        = 0, // detached by default: a GUI tool wants its own window, not a PTY
         run_term        = 1, // t1, the master CL terminal, unless you point it elsewhere
         grep_pane_always = true, // always show the results pane (no auto-jump on a lone hit)
-        cl_preview      = true, // `:j` / `:f` show their target while you type; Esc puts it back
+        cl_preview      = true, // `:j` `:f` `:grep` show what they would do; Esc puts it back
         conflict_prompt = true, // ask before a disk change is reconciled against unsaved edits
         conflict_stage  = true, // and stage the answer in the CL, rather than only marking it
         mouse           = true, // pointer input on; it is purely additive to the keyboard

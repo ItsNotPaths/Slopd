@@ -719,15 +719,11 @@ cl_find :: proc(a: ^App, args: string) {
 
 // `:grep [flags] <pattern>`: a PROJECT-WIDE search landing in the Grep pane. Asked for by name —
 // an unsigilled `grep` is the real one, in a terminal — so this is the pane, not an interception.
-// Leading `-flags` are discarded (grep_run forces its own); the rest is the pattern, kept whole,
-// as a regex. **A pattern beginning with '-' can't be expressed** — the flag-strip eats it, and
-// plain `grep` is the way to search for one.
+// The live preview runs the same search as you type (cl_preview.odin); Enter re-runs it over
+// whatever the files hold now, and only then may a lone hit skip the pane.
 @(private = "file")
 cl_grep :: proc(a: ^App, args: string) {
-    query := strings.trim_space(args)
-    for query != "" && query[0] == '-' { // drop a leading flag field, then re-trim
-        query = strings.trim_space(query[len(first_field(query)):])
-    }
+    query := cl_grep_query(args)
     if query == "" {
         return
     }
@@ -738,6 +734,20 @@ cl_grep :: proc(a: ^App, args: string) {
     } else {
         set_aux(a, .Grep) // list them (an empty set shows "(no matches)")
     }
+}
+
+// The pattern a `:grep` line is searching for. Leading `-flags` are discarded (grep_run forces
+// its own); the rest is kept whole, as a regex. **A pattern beginning with '-' can't be
+// expressed** — the flag-strip eats it, and plain `grep` is the way to search for one.
+//
+// Shared with the live preview, so the pane you watch fill in is answering the same question
+// Enter asks.
+cl_grep_query :: proc(args: string) -> string {
+    query := strings.trim_space(args)
+    for query != "" && query[0] == '-' { // drop a leading flag field, then re-trim
+        query = strings.trim_space(query[len(first_field(query)):])
+    }
+    return query
 }
 
 // `:put [text]`: type the literal text then the editor's selection into the target terminal,
@@ -976,6 +986,8 @@ cl_ghost_hint :: proc(a: ^App, line: string) -> string {
         return cl_conflict_pending(a) ? "(y = disk / n = mine / :w = overwrite)" : "(y/n)"
     case "f", "find":
         return cl_find_hint(a)
+    case "grep":
+        return cl_grep_hint(a)
     }
     return ""
 }
@@ -992,6 +1004,20 @@ cl_find_hint :: proc(a: ^App) -> string {
     }
     if n := len(a.find.matches); n > 0 {
         return fmt.tprintf("(%d/%d)", a.find.cur + 1, n)
+    }
+    return "(no matches)"
+}
+
+// What the live `:grep` preview found. Keyed on the preview's own kind rather than on the pane
+// holding hits, so it stays silent for results that came from anywhere else — an Alt+Enter
+// definition lookup, or a search already submitted.
+@(private = "file")
+cl_grep_hint :: proc(a: ^App) -> string {
+    if a.cl_preview.kind != .Grep {
+        return ""
+    }
+    if n := len(a.grep.hits); n > 0 {
+        return fmt.tprintf("(%d match%s)", n, n == 1 ? "" : "es")
     }
     return "(no matches)"
 }

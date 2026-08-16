@@ -84,6 +84,11 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     if caret_shown(a) { // a blinking caret must wake at its next on/off edge
         wake = sched_min(wake, blink_next_edge(a, now))
     }
+    // The command line's debounced preview: `:grep` runs its search once the typing pauses, and
+    // without this wake the pause would have to be broken to see the result.
+    if a.cl_preview.pending {
+        wake = sched_min(wake, max(0, a.cl_preview.due - now))
+    }
     if a.font_save_at > 0 { // wake to flush the debounced font-zoom save when it's due
         wake = sched_min(wake, max(0, a.font_save_at - now))
     }
