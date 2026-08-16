@@ -286,8 +286,8 @@ strip_frame :: proc(t: ^Text, a: ^App, strip: Rect, now: f64) {
 }
 
 // Abbreviate a leading $HOME to ~ for display (e.g. /home/me/src -> ~/src). Returns a borrowed
-// slice of `path` when nothing changes, else a fresh string in `alloc`.
-@(private = "file")
+// slice of `path` when nothing changes, else a fresh string in `alloc`. Package-level: the
+// Config pane's install row shows paths the same way (install_state_text).
 home_abbrev :: proc(path: string, alloc := context.allocator) -> string {
     home := os.get_env("HOME", context.temp_allocator)
     if home != "" && strings.has_prefix(path, home) {

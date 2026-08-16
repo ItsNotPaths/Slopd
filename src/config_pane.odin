@@ -3,14 +3,25 @@ package main
 import "core:fmt"
 import "core:strings"
 
-// ConfigPane — the Config aux mode's state: navigation across the settings rows and the
-// language list, the inline settings editor (a one-line Doc sharing the buffer editing core),
-// and each known language's grammar status. **The settings VALUES live on App**; this owns only
-// navigation state and the language list. Status is read from grammars/ at init and on refresh.
+// ConfigPane — the Config aux mode's state: navigation across the install row, the settings
+// rows and the language list, the inline settings editor (a one-line Doc sharing the buffer
+// editing core), and each known language's grammar status. **The settings VALUES live on App**;
+// this owns only navigation state and the language list. Status is read from grammars/ at init
+// and on refresh.
 
 LangStatus :: struct {
     name:    string, // borrowed from the App registry (passed to init) — not owned
     present: bool,   // grammars/<name>.so exists
+}
+
+// What Slopd's own install row offers. The same shape as a language's options, and for the
+// same reason: a program you can install is a thing with an install state, and the pane
+// should not have two ways of saying so. `Where` is the harmless one, so it comes first.
+Install_Option :: enum {
+    Where,
+    Install,
+    Reinstall,
+    Uninstall,
 }
 
 // The dropdown options for a language. Health is always offered; the install state decides
@@ -22,19 +33,22 @@ LangOption :: enum {
     Uninstall,
 }
 
-// What kind of row has its dropdown open. Both kinds share opt_sel + the dropdown navigation;
-// `open_idx` disambiguates which row — a Setting value, or a langs index.
+// What kind of row has its dropdown open. All three share opt_sel + the dropdown navigation;
+// `open_idx` disambiguates which row — a Setting value, or a langs index. The install row is
+// the pane's only one, so it needs no index.
 Open_Kind :: enum {
     None,
     Setting,
     Lang,
+    Install,
 }
 
 // There is no edit "mode": the highlighted row owns the keys directly. Most settings open a
 // dropdown; a FREE-TEXT setting (setting_is_text) is an editor while highlighted, as the search
 // row is. `search` filters the language list live; `edit` commits on Enter or on leaving the row.
 ConfigPane :: struct {
-    // Rows: [0, SETTING_COUNT) settings, then the search row, then the FILTERED langs.
+    // Rows: the install row, the settings, the search row, then the FILTERED langs — see the
+    // ROW_* map below, which is what every accessor here counts with.
     sel:    int, // selected row
     scroll: int, // first visible DISPLAY row — the viewport top (see list_scroll_target)
     // Wheel-detached at this glfw time; 0 = following the selection. See list_scroll_apply.
@@ -59,6 +73,14 @@ ConfigPane :: struct {
 }
 
 SETTING_COUNT :: len(Setting)
+
+// The pane's row map, in display order. Named rather than counted from scratch at each use:
+// every accessor and every test then says which BLOCK it means, so a row added at the top
+// cannot silently shift a setting under a caller that assumed row 0 was the first one.
+ROW_INSTALL :: 0 // Slopd's own install state — first, because it says where every write below lands
+ROW_SETTINGS :: ROW_INSTALL + 1 // the first settings row; Setting(r - ROW_SETTINGS)
+ROW_SEARCH :: ROW_SETTINGS + SETTING_COUNT // the language filter
+ROW_LANGS :: ROW_SEARCH + 1 // the first filtered language
 
 // `grammars` is the App-owned registry; the pane borrows each name for its lang list
 // (the App outlives the pane), so the pane frees only its own langs array.
@@ -105,27 +127,33 @@ config_pane_filter :: proc(cp: ^ConfigPane) {
     cp.sel = clamp(cp.sel, 0, max(0, config_pane_rows(cp) - 1))
 }
 
-// Total navigable rows: the settings block, the search row, one per filtered language.
+// Total navigable rows: the install row, the settings block, the search row, one per
+// filtered language.
 config_pane_rows :: proc(cp: ^ConfigPane) -> int {
-    return SETTING_COUNT + 1 + len(cp.filtered)
+    return ROW_LANGS + len(cp.filtered)
 }
 
 // The Setting at row r, or (_, false) when r is not a settings row.
 config_pane_setting :: proc(r: int) -> (Setting, bool) {
-    if r >= 0 && r < SETTING_COUNT {
-        return Setting(r), true
+    if r >= ROW_SETTINGS && r < ROW_SEARCH {
+        return Setting(r - ROW_SETTINGS), true
     }
     return {}, false
 }
 
+// Slopd's own install row, above the settings.
+config_pane_is_install :: proc(r: int) -> bool {
+    return r == ROW_INSTALL
+}
+
 // The search row sits between the settings and the (filtered) language list.
 config_pane_is_search :: proc(r: int) -> bool {
-    return r == SETTING_COUNT
+    return r == ROW_SEARCH
 }
 
 // The langs index shown at row r, or (_, false) for non-language rows.
 config_pane_lang_index :: proc(cp: ^ConfigPane, r: int) -> (int, bool) {
-    i := r - (SETTING_COUNT + 1)
+    i := r - ROW_LANGS
     if i < 0 || i >= len(cp.filtered) {
         return 0, false
     }
@@ -215,6 +243,15 @@ config_pane_move :: proc(cp: ^ConfigPane, delta: int) {
     cp.sel = clamp(cp.sel + delta, 0, max(0, config_pane_rows(cp) - 1))
 }
 
+// Right / Enter on Slopd's own row: open its install dropdown, highlighting `where` — the
+// one option that only reports. Install and Uninstall are a row further down, deliberately.
+config_pane_open_install :: proc(a: ^App) {
+    cp := &a.config_pane
+    cp.open = .Install
+    cp.open_idx = ROW_INSTALL
+    cp.opt_sel = 0
+}
+
 // Opens the dropdown for the highlighted setting row, pre-selecting its current value.
 config_pane_open_setting :: proc(a: ^App, s: Setting) {
     if setting_is_text(s) {
@@ -256,13 +293,38 @@ lang_option_label :: proc(o: LangOption) -> string {
     return ""
 }
 
+// The options on Slopd's own row, written into buf in display order — the same contract as
+// lang_options. An installed copy can be replaced or removed; anything else can be installed.
+install_options :: proc(m: Install_Mode, buf: []Install_Option) -> []Install_Option {
+    n := 0
+    buf[n] = .Where;n += 1
+    if m == .Installed {
+        buf[n] = .Reinstall;n += 1
+        buf[n] = .Uninstall;n += 1
+    } else {
+        buf[n] = .Install;n += 1
+    }
+    return buf[:n]
+}
+
+install_option_label :: proc(o: Install_Option) -> string {
+    switch o {
+    case .Where:     return "where are my files"
+    case .Install:   return "install to ~/.local/bin"
+    case .Reinstall: return "reinstall (copy this build over it)"
+    case .Uninstall: return "uninstall (settings are kept)"
+    }
+    return ""
+}
+
 // --- the display flattening --- A flat list of DISPLAY rows over a smaller list of NAVIGABLE rows:
 // rules and titles are display-only, and an open dropdown splices its options in under the row that
 // owns them. `item` names the navigable row a click selects, `opt` the choice within it.
 
 Config_Row_Kind :: enum {
     Rule, // a full-width horizontal rule
-    Header, // a section title ("settings", "syntax")
+    Header, // a section title ("slopd", "settings", "syntax")
+    Install, // Slopd's own row: install state + its install/uninstall dropdown
     Setting, // a settings row: key + value column
     Text, // a settings row whose value is FREE TEXT: an editor while it is highlighted
     Search, // the language filter box — always an editor, and always at the same row
@@ -292,6 +354,27 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
         return ConfigRow{kind = kind, text = text, item = -1, opt = -1}
     }
 
+    // Slopd itself, first: it names the folder every setting below is written to, and in
+    // read-only mode it is the row that explains why none of them can be.
+    append(&rows, chrome(.Rule, rule), chrome(.Header, "slopd"), chrome(.Rule, rule))
+    append(
+        &rows,
+        ConfigRow {
+            kind = .Install,
+            text = "install:",
+            value = install_state_text(alloc),
+            item = ROW_INSTALL,
+            opt = -1,
+            indent = 1,
+        },
+    )
+    if cp.open == .Install {
+        buf: [len(Install_Option)]Install_Option
+        for o, oi in install_options(install_mode(), buf[:]) {
+            append(&rows, config_option_row(ROW_INSTALL, oi, install_option_label(o)))
+        }
+    }
+
     append(&rows, chrome(.Rule, rule), chrome(.Header, "settings"), chrome(.Rule, rule))
     for si in 0 ..< SETTING_COUNT {
         s := Setting(si)
@@ -304,14 +387,16 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
                 kind   = setting_is_text(s) ? .Text : .Setting,
                 text   = fmt.aprintf("%s:", setting_key(s), allocator = alloc),
                 value  = val == "" ? "(default)" : strings.clone(val, alloc),
-                item   = si,
+                item   = ROW_SETTINGS + si,
                 opt    = -1,
                 indent = 1,
             },
         )
+        // open_idx is a SETTING index here, not a row: Setting(open_idx) is what the
+        // dropdown commits, and the row it hangs under is ROW_SETTINGS past it.
         if cp.open == .Setting && cp.open_idx == si {
             for o, oi in setting_options(a, s) {
-                append(&rows, config_option_row(si, oi, strings.clone(o, alloc)))
+                append(&rows, config_option_row(ROW_SETTINGS + si, oi, strings.clone(o, alloc)))
             }
         }
     }
@@ -323,7 +408,7 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
             kind   = .Search,
             text   = "search:",
             value  = doc_string(&cp.search, alloc),
-            item   = SETTING_COUNT,
+            item   = ROW_SEARCH,
             opt    = -1,
             indent = 1,
         },
@@ -331,7 +416,7 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
 
     for fi, idx in cp.filtered {
         l := &cp.langs[fi]
-        nav := SETTING_COUNT + 1 + idx
+        nav := ROW_LANGS + idx
         append(
             &rows,
             ConfigRow {
@@ -373,8 +458,10 @@ config_row_selected :: proc(cp: ^ConfigPane, r: ConfigRow) -> bool {
         return false
     case .Search, .Text:
         return true
+    case .Install:
+        return cp.open != .Install
     case .Setting:
-        return cp.open != .Setting || cp.open_idx != r.item
+        return cp.open != .Setting || ROW_SETTINGS + cp.open_idx != r.item
     case .Lang:
         return cp.open != .Lang || cp.opt_sel == -1
     case .Option:
@@ -417,6 +504,12 @@ config_choose :: proc(a: ^App) {
     defer cp.open = .None
     switch cp.open {
     case .None:
+    case .Install:
+        buf: [len(Install_Option)]Install_Option
+        opts := install_options(install_mode(), buf[:])
+        if cp.opt_sel >= 0 && cp.opt_sel < len(opts) {
+            config_run_install(a, opts[cp.opt_sel])
+        }
     case .Setting:
         s := Setting(cp.open_idx)
         opts := setting_options(a, s)
@@ -438,7 +531,8 @@ config_choose :: proc(a: ^App) {
 
 // Move by `delta` through whatever owns the selection: the open dropdown's choices, or the row list.
 // One proc for both, since a wheel notch must mean what Up/Down mean and the dropdown is spliced
-// INTO the list. A settings dropdown CLAMPS at its ends; a language one steps out into the list.
+// INTO the list. A settings or install dropdown CLAMPS at its ends (an install one has a section
+// rule above it and nothing to step onto); a language one steps out into the list.
 config_dropdown_move :: proc(a: ^App, delta: int) {
     cp := &a.config_pane
     step := delta < 0 ? -1 : 1
@@ -446,6 +540,10 @@ config_dropdown_move :: proc(a: ^App, delta: int) {
         switch cp.open {
         case .None:
             config_pane_move(cp, step)
+        case .Install:
+            buf: [len(Install_Option)]Install_Option
+            opts := install_options(install_mode(), buf[:])
+            cp.opt_sel = clamp(cp.opt_sel + step, 0, max(0, len(opts) - 1))
         case .Setting:
             opts := setting_options(a, Setting(cp.open_idx))
             cp.opt_sel = clamp(cp.opt_sel + step, 0, max(0, len(opts) - 1))

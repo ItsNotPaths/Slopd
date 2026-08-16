@@ -107,6 +107,12 @@ config_click :: proc(a: ^App, rows: []ConfigRow, row: int) {
         return
     }
     #partial switch r.kind {
+    case .Install:
+        if cp.open == .Install {
+            cp.open = .None // re-Enter on an open row minimises, as the keyboard does
+        } else {
+            config_pane_open_install(a)
+        }
     case .Setting:
         if s, sok := config_pane_setting(cp.sel); sok {
             config_pane_open_setting(a, s)
@@ -134,6 +140,15 @@ config_row_color :: proc(th: ^Theme, r: ConfigRow, sel: bool) -> [3]f32 {
         return th.accent
     case .Lang:
         return r.present ? th.code_return_type : th.fg
+    case .Install:
+        // Read-only is the one state that is a PROBLEM rather than a choice, so it is the one
+        // that takes a colour of its own; installed reads like an installed grammar.
+        switch install_mode() {
+        case .ReadOnly:  return th.code_keyword
+        case .Installed: return th.code_return_type
+        case .Portable:  return sel ? th.fg : th.muted
+        }
+        return th.fg
     case .Setting, .Text, .Search, .Option:
         return sel ? th.fg : th.muted
     }

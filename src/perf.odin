@@ -48,7 +48,7 @@ perf_init :: proc(p: ^Perf, enabled: bool) {
         return
     }
     gl.GenQueries(2, &p.queries[0])
-    path := asset_path("perf.log", context.temp_allocator) // beside the exe (self-contained release)
+    path := data_asset("perf.log", context.temp_allocator) // a data file: see install.odin
     if f, err := os.open(path, os.O_WRONLY | os.O_CREATE | os.O_APPEND); err == nil {
         p.file = f
     } else {

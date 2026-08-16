@@ -61,8 +61,10 @@ if [ $DO_LOCAL -eq 1 ]; then
     # The release is the BINARY plus its config, and nothing else. The language registry,
     # the default theme, the README and the LICENSE are all #load-ed into the executable
     # (`readme` / `license` in the command line open the last two). themes/ and grammars/
-    # are user-added, created next to the binary on first use — a language is installed
-    # from the Config pane (cf) or `slopd --grammar install`, which keeps the dist tiny.
+    # are user-added, created on first use — a language is installed from the Config pane
+    # (cf) or `slopd --grammar install`, which keeps the dist tiny. This folder is a
+    # PORTABLE install: it runs from here, files beside the binary, until `slopd --install`
+    # copies it to ~/.local/bin and moves those files to the XDG folders (see install.odin).
     [ -f "$PROJECT_DIR/slopd.config" ]  && cp "$PROJECT_DIR/slopd.config"  "$RELEASE_DIR/" || true
     echo "==> Local done: $RELEASE_DIR"
 fi

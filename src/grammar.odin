@@ -11,8 +11,9 @@ import "core:strings"
 // language is installed at runtime (one Enter in the Config pane, or the CLI),
 // which keeps the dist tiny. Each installed grammar is a compiled shared library
 // grammars/<lang>.so plus the grammar's own highlights query grammars/<lang>.scm.
-// Self-contained: grammars/ (and the optional themes/) resolve next to the
-// executable and are CREATED on demand, so a release folder runs from any cwd.
+// grammars/ is a DATA folder: beside the binary while Slopd is portable, under
+// ~/.local/share/slopd once it is installed (see install.odin), and CREATED on
+// demand either way, so a release folder runs from any cwd.
 // The `languages` registry itself is baked into the binary — see load_grammars.
 
 // One installable language: name, tree-sitter source repo, pinned rev, an optional subpath
@@ -26,40 +27,11 @@ Grammar :: struct {
     exts:    []string, // owned (file extensions, no dot)
 }
 
-// The directory holding compiled grammar libs, resolved next to the binary (a release
-// ships Slopd + slopd.config, and grows grammars/ on the first install). The caller
-// owns the result.
+// The directory holding compiled grammar libs — a data folder, so install.odin decides
+// whether it sits beside the binary or under ~/.local/share/slopd. Returned whether or not
+// it exists: the first install creates it. The caller owns the result.
 grammars_dir :: proc(allocator := context.allocator) -> string {
-    return asset_path("grammars", allocator)
-}
-
-// Resolves an asset (file or folder) shipped beside the executable. Prefers <exe_dir>/<name>,
-// falls back to ./<name> for `odin run`. Returns <exe_dir>/<name> even when it doesn't exist
-// — that's the write target, since grammars are created on install. The caller owns it.
-asset_path :: proc(name: string, allocator := context.allocator) -> string {
-    exe := exe_dir(context.temp_allocator)
-    beside := filepath.join({exe, name}, context.temp_allocator) or_else strings.clone(name, context.temp_allocator)
-    if os.exists(beside) {
-        return strings.clone(beside, allocator)
-    }
-    if os.exists(name) {
-        return strings.clone(name, allocator)
-    }
-    return strings.clone(beside, allocator)
-}
-
-// The directory containing the running executable (Linux: the /proc/self/exe link),
-// falling back to argv[0]'s directory. The caller owns the result.
-exe_dir :: proc(allocator := context.allocator) -> string {
-    path := os.read_link("/proc/self/exe", context.temp_allocator) or_else os.args[0]
-    return strings.clone(filepath.dir(path), allocator) // filepath.dir slices path; clone to own
-}
-
-// The full path to the running executable (Linux: the /proc/self/exe link),
-// falling back to argv[0]. Used to re-invoke ourselves (e.g. `<exe> --grammar
-// install <lang>`) without relying on slopd being on PATH. The caller owns the result.
-exe_path :: proc(allocator := context.allocator) -> string {
-    return strings.clone(os.read_link("/proc/self/exe", context.temp_allocator) or_else os.args[0], allocator)
+    return data_asset("grammars", allocator)
 }
 
 // grammars/<lang>.so for a given grammars dir. The caller owns the result.

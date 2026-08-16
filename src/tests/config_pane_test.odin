@@ -17,23 +17,27 @@ test_config_pane_nav :: proc(t: ^testing.T) {
     append(&cp.langs, app.LangStatus{name = "a"}, app.LangStatus{name = "b"}, app.LangStatus{name = "c"})
     app.config_pane_filter(&cp)
 
-    // Layout: settings, the search row, then one row per (filtered) language.
+    // Layout: the install row, the settings, the search row, then one row per (filtered)
+    // language.
     rows := app.config_pane_rows(&cp)
-    testing.expect_value(t, rows, app.SETTING_COUNT + 1 + 3)
+    testing.expect_value(t, rows, app.ROW_LANGS + 3)
 
-    // Up at the top clamps to 0.
+    // Up at the top clamps to the install row.
     app.config_pane_move(&cp, -5)
-    testing.expect_value(t, cp.sel, 0)
+    testing.expect_value(t, cp.sel, app.ROW_INSTALL)
 
-    // Row 0 is a setting; SETTING_COUNT is the search row (neither setting nor lang);
-    // the first language is right after it.
-    _, is_setting := app.config_pane_setting(0)
+    // Each block answers for its own rows and no others: the install row is not a setting,
+    // the search row is neither a setting nor a language, and the languages start after it.
+    testing.expect(t, app.config_pane_is_install(app.ROW_INSTALL))
+    _, install_is_setting := app.config_pane_setting(app.ROW_INSTALL)
+    testing.expect(t, !install_is_setting)
+    _, is_setting := app.config_pane_setting(app.ROW_SETTINGS)
     testing.expect(t, is_setting)
-    testing.expect(t, app.config_pane_is_search(app.SETTING_COUNT))
-    _, past := app.config_pane_setting(app.SETTING_COUNT)
+    testing.expect(t, app.config_pane_is_search(app.ROW_SEARCH))
+    _, past := app.config_pane_setting(app.ROW_SEARCH)
     testing.expect(t, !past)
-    testing.expect(t, app.config_pane_lang(&cp, app.SETTING_COUNT) == nil)
-    testing.expect(t, app.config_pane_lang(&cp, app.SETTING_COUNT + 1) != nil)
+    testing.expect(t, app.config_pane_lang(&cp, app.ROW_SEARCH) == nil)
+    testing.expect(t, app.config_pane_lang(&cp, app.ROW_LANGS) != nil)
 
     // Down past the end clamps to the last row.
     app.config_pane_move(&cp, rows + 10)
@@ -67,7 +71,7 @@ test_config_pane_filter :: proc(t: ^testing.T) {
     testing.expect_value(t, len(cp.filtered), 1)
 
     // The first filtered language resolves through the search-row offset.
-    l := app.config_pane_lang(&cp, app.SETTING_COUNT + 1)
+    l := app.config_pane_lang(&cp, app.ROW_LANGS)
     testing.expect(t, l != nil)
     testing.expect_value(t, l.name, "python")
 
@@ -221,7 +225,7 @@ test_config_text_setting_edit :: proc(t: ^testing.T) {
     app.config_pane_init(&a.config_pane, nil)
     defer app.config_pane_destroy(&a.config_pane)
     cp := &a.config_pane
-    row := int(app.Setting.GitTool)
+    row := app.ROW_SETTINGS + int(app.Setting.GitTool)
 
     // Off the row: no Doc is live, and nothing is committed.
     app.config_edit_sync(&a)
@@ -276,7 +280,7 @@ test_config_text_setting_rejects_comment :: proc(t: ^testing.T) {
     defer app.config_pane_destroy(&a.config_pane)
     cp := &a.config_pane
 
-    cp.sel = int(app.Setting.GitTool)
+    cp.sel = app.ROW_SETTINGS + int(app.Setting.GitTool)
     app.config_edit_sync(&a)
     app.doc_set_text(&cp.edit, "sh -c foo # bar")
     testing.expect(t, !app.config_edit_commit(&a))
@@ -299,7 +303,7 @@ test_config_caret_live :: proc(t: ^testing.T) {
     app.config_pane_init(&a.config_pane, nil)
     defer app.config_pane_destroy(&a.config_pane)
     cp := &a.config_pane
-    cp.sel = app.SETTING_COUNT // the search row
+    cp.sel = app.ROW_SEARCH
 
     a.focus = .Aux
     a.aux_mode = .Config
@@ -310,12 +314,15 @@ test_config_caret_live :: proc(t: ^testing.T) {
     testing.expect(t, !app.config_caret_live(&a))
     cp.open = .None
 
-    cp.sel = 0 // a settings row: a dropdown, nothing to type into
+    cp.sel = app.ROW_SETTINGS // a settings row: a dropdown, nothing to type into
     testing.expect(t, !app.config_caret_live(&a))
 
-    cp.sel = int(app.Setting.GitTool) // the free-text setting is an editor too
+    cp.sel = app.ROW_INSTALL // and neither is Slopd's own row
+    testing.expect(t, !app.config_caret_live(&a))
+
+    cp.sel = app.ROW_SETTINGS + int(app.Setting.GitTool) // the free-text setting is an editor too
     testing.expect(t, app.config_caret_live(&a))
-    cp.sel = app.SETTING_COUNT
+    cp.sel = app.ROW_SEARCH
 
     a.focus = .Editor // the pane is on screen but not taking keys
     testing.expect(t, !app.config_caret_live(&a))

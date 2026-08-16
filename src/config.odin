@@ -41,8 +41,9 @@ File_Pane :: enum {
 }
 
 // Config — Slopd's own simple `key: value` file. Points at a theme file and holds a few
-// editor settings. It lives beside the binary and nowhere else (see config_file), like
-// themes/ and grammars/. Anything missing keeps the defaults below.
+// editor settings. It lives in ONE directory, which install.odin picks (see config_file) —
+// beside the binary, or ~/.config/slopd once installed. Anything missing keeps the defaults
+// below.
 //
 // **One `[section]` block exists, and it is not a setting**: `[places]` holds the file browser's
 // sidebar shortcuts, `Name: /path` per line. It is deliberately outside the key/value space the
@@ -236,23 +237,24 @@ config_destroy :: proc(cfg: ^Config) {
 // on the shipped file. Not reachable from a config value, a flag, or the environment.
 config_path_override: string
 
-// The config file: slopd.config beside the binary (asset_path falls back to ./slopd.config
-// for `odin run`). Returned whether or not it exists, since it is also the WRITE target —
-// config_set creates it on the first settings change. Temp-allocated.
+// The config file: slopd.config beside the binary while Slopd is portable, and
+// ~/.config/slopd/slopd.config once it is installed (install.odin owns that choice).
+// Returned whether or not it exists, since it is also the WRITE target — config_set creates
+// it on the first settings change. Temp-allocated.
 //
-// There is deliberately no search path. Slopd reads and writes its own files in one
-// directory, its own; nothing of ours lives in ~/.config, and no value in the config can
-// point the config, a theme, or a grammar anywhere else.
+// There is deliberately no search path. One mode picks ONE directory and Slopd reads and
+// writes there; no value in the config can point the config, a theme, or a grammar anywhere
+// else.
 config_file :: proc() -> string {
     if config_path_override != "" {
         return strings.clone(config_path_override, context.temp_allocator)
     }
-    return asset_path("slopd.config", context.temp_allocator)
+    return config_asset("slopd.config", context.temp_allocator)
 }
 
 // Resolves a theme config token (from the Config pane's dropdown) to a file path for load_theme:
-//   "" / "default"  -> themes/default.theme beside the binary (else baked-in)
-//   "<name>"        -> themes/<name>.theme beside the binary
+//   "" / "default"  -> themes/default.theme in the themes folder (else baked-in)
+//   "<name>"        -> themes/<name>.theme there
 // A token is a NAME, never a path: a '/' in it would reach outside themes/, so it is refused
 // and the baked-in default stands. Result is temp-allocated; "" means the baked-in default.
 theme_resolve :: proc(token: string) -> string {
@@ -261,11 +263,11 @@ theme_resolve :: proc(token: string) -> string {
     }
     name := token == "" ? "default" : token
     file := fmt.tprintf("%s.theme", name)
-    p := filepath.join({asset_path("themes", context.temp_allocator), file}, context.temp_allocator) or_else ""
+    p := filepath.join({data_asset("themes", context.temp_allocator), file}, context.temp_allocator) or_else ""
     return os.exists(p) ? p : ""
 }
 
-// The dropdown choices for a setting. Theme is derived (themes/ beside the binary, plus
+// The dropdown choices for a setting. Theme is derived (the themes folder, plus
 // the "default" baked-in palette); the others are fixed presets. The theme list is
 // temp-allocated; the fixed ones are static.
 setting_options :: proc(a: ^App, s: Setting) -> []string {
@@ -304,13 +306,13 @@ STAGE_RUN_OPTS := [?]string{"stage", "run"}
 PROMPT_KEEP_OPTS := [?]string{"prompt", "keep"}
 FILE_PANE_OPTS := [?]string{"ls", "browser"}
 
-// "default" first, then every themes/<name>.theme beside the binary, sorted.
+// "default" first, then every themes/<name>.theme in the themes folder, sorted.
 // Names are cloned into `allocator`; the returned slice is too.
 @(private = "file")
 theme_options :: proc(allocator := context.allocator) -> []string {
     out := make([dynamic]string, 0, 16, allocator)
     append(&out, "default") // the baked-in palette
-    dir := asset_path("themes", context.temp_allocator)
+    dir := data_asset("themes", context.temp_allocator)
     if f, oerr := os.open(dir); oerr == nil {
         defer os.close(f)
         it := os.read_directory_iterator_create(f)
@@ -574,6 +576,9 @@ config_places :: proc(alloc := context.allocator) -> []Place {
 // edited in place: it is a LIST, so an add is an append and a remove is a hole, and neither is a
 // line-for-line replacement the way `config_set` does a setting.
 config_places_write :: proc(places: []Place) -> bool {
+    if !config_writable() {
+        return false // read-only: the binary sits somewhere we may not write (install.odin)
+    }
     path := config_file()
     b := strings.builder_make(context.temp_allocator)
 
@@ -606,6 +611,7 @@ config_places_write :: proc(places: []Place) -> bool {
     for p in places {
         fmt.sbprintf(&b, "%s: %s\n", p.name, p.path)
     }
+    ensure_parent(path)
     return os.write_entire_file(path, transmute([]byte)strings.to_string(b)) == nil
 }
 
@@ -664,6 +670,9 @@ on_off :: proc(b: bool) -> string {
 // is inserted ABOVE the block rather than appended after it — where load_config, which stops at
 // the same line, would never read it back.
 config_set :: proc(key, val: string) -> bool {
+    if !config_writable() {
+        return false // read-only: the binary sits somewhere we may not write (install.odin)
+    }
     path := config_file()
 
     b := strings.builder_make(context.temp_allocator)
@@ -693,6 +702,7 @@ config_set :: proc(key, val: string) -> bool {
     if !replaced {
         config_write_line(&b, key, val, "", 0)
     }
+    ensure_parent(path)
     err := os.write_entire_file(path, transmute([]byte)strings.to_string(b))
     return err == nil
 }

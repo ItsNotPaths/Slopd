@@ -985,6 +985,15 @@ config_key :: proc(a: ^App, key, mods: i32) {
         return
     }
 
+    // Slopd's own row: Right / Enter opens its install dropdown.
+    if config_pane_is_install(cp.sel) {
+        switch key {
+        case glfw.KEY_RIGHT, glfw.KEY_ENTER, glfw.KEY_KP_ENTER:
+            config_pane_open_install(a)
+        }
+        return
+    }
+
     // A setting row: Right / Enter opens its choice dropdown — unless the setting is free
     // text, in which case the row IS an editor and owns these keys itself.
     if s, ok := config_pane_setting(cp.sel); ok {
@@ -1064,6 +1073,23 @@ config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
         cmd = fmt.tprintf("'%s' --grammar update %s", self, lang)
     case .Uninstall:
         cmd = fmt.tprintf("'%s' --grammar uninstall %s", self, lang)
+    }
+    run_in_t1(a, cmd)
+}
+
+// Slopd's own install options, run the same way a language's are: a `slopd ...` line in t1.
+// Installing MOVES the binary Slopd is running from, which no editor should do behind its own
+// back — so it happens in a terminal you are looking at, and prints every path it touched.
+config_run_install :: proc(a: ^App, opt: Install_Option) {
+    self := exe_path(context.temp_allocator)
+    cmd: string
+    switch opt {
+    case .Where:
+        cmd = fmt.tprintf("'%s' --where", self)
+    case .Install, .Reinstall:
+        cmd = fmt.tprintf("'%s' --install", self)
+    case .Uninstall:
+        cmd = fmt.tprintf("'%s' --uninstall", self)
     }
     run_in_t1(a, cmd)
 }

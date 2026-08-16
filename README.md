@@ -112,17 +112,43 @@ want them back in step (`^h` in the file panes is those two builtins in one keys
 </tr>
 </table>
 
+## Install
+
+Slopd runs two ways, and where the binary sits decides which. **Unzip it anywhere** and it is
+portable: `slopd.config`, `themes/`, `grammars/` and `perf.log` all sit beside the binary, and
+moving the folder moves its whole world. **Install it** and the files take their native places.
+
+```sh
+slopd --install      # copy this binary to ~/.local/bin/slopd, and move its files in
+slopd --uninstall    # remove that copy; settings, themes and grammars are kept
+slopd --where        # which mode, and every path in use
+```
+
+| | |
+|---|---|
+| `~/.local/bin/slopd` | the binary |
+| `~/.config/slopd/slopd.config` | settings (`$XDG_CONFIG_HOME` if you set it) |
+| `~/.local/share/slopd/` | `themes/`, `grammars/`, `perf.log` (`$XDG_DATA_HOME` if you set it) |
+
+The first `--install` moves a portable folder's files in, and never overwrites one already
+there, so a reinstall from a fresh build keeps your settings. Install and uninstall are also
+the Config pane's first row (`:cf`), which is where the mode in force is shown — they run in
+terminal 1 and print every path they touch, because installing moves the binary Slopd is
+running from.
+
+There is still **no search path**: one mode picks one directory per kind of file and Slopd
+reads and writes only there. Copy the binary into `/usr/bin` by hand and it says so and
+writes nothing, because a setting it could not save is worse than one it refuses.
+
 ## Config
 
-`slopd.config`, simple `key: value` with `#` comments. It sits **beside the binary**, and so
-does everything else Slopd owns: `themes/`, `grammars/`, `perf.log`. No search path, no
-`~/.config/slopd`, and no setting can point outside that directory. Move the binary and its
-whole world moves with it. Editing a setting in the Config pane rewrites its line in place
-and leaves the comment alone.
+`slopd.config`, simple `key: value` with `#` comments. Editing a setting in the Config pane
+rewrites its line in place and leaves the comment alone. No setting can point outside Slopd's
+own directories.
 
 | key | values | |
 |---|---|---|
-| `theme` | `default` \| `<name>` | a name, never a path: `themes/<name>.theme` beside the binary. A value with a `/` is refused |
+| `theme` | `default` \| `<name>` | a name, never a path: `themes/<name>.theme`. A value with a `/` is refused |
 | `indent` | `tab` \| `spaces2` \| `spaces4` … | what Tab inserts |
 | `line_numbers` | `global` \| `relative` | gutter |
 | `scroll_mode` | `follow` \| `middle` | every line view: move only when the target would leave, or pin it to the middle row |
@@ -143,7 +169,7 @@ and leaves the comment alone.
 
 `key: #rrggbb`, `#` comments, unknown keys ignored, so theme files are
 interchangeable. Missing keys fall back to the baked-in Gruvbox Material default. Drop
-files into `themes/` beside the binary.
+files into the `themes/` folder (`slopd --where` names it).
 
 ```
 bg fg accent muted urgent
@@ -173,8 +199,10 @@ slopd --health [lang]        # ✓/✗ table
 |---|---|
 | `--version` / `-v` | build version |
 | `--<path>` | launch there: a directory becomes the workspace (`slopd --~/code/thing`), a file opens with its folder as the workspace (`slopd --/etc/fstab`) |
+| `--install` / `--uninstall` | copy this binary to `~/.local/bin/slopd` and move its files to the XDG folders / remove that copy, keeping the files |
+| `--where` | the mode in force, and every path in use |
 | `--util` | launch into Full on the aux pane (filetree fills the window) |
-| `--perflog` | append per-second frame timings to `perf.log` (beside the binary) |
+| `--perflog` | append per-second frame timings to `perf.log` (in the data folder) |
 | `--sysbus` | *(parked/WIP)* print one D-Bus snapshot of the watched system services, then exit |
 | `$SLOPD_FONT` | `.ttf` to use instead of the bundled Iosevka subset |
 
