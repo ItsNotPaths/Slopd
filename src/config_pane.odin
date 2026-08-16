@@ -577,3 +577,45 @@ config_dropdown_move :: proc(a: ^App, delta: int) {
         }
     }
 }
+
+// A chosen language option builds a `slopd ...` command and runs it in t1 (the master CL
+// terminal), through the same seam the command line's shell path uses. The pointer reaches these
+// options too, which is why the verb lives beside the choice rather than in the input layer.
+config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
+    // Re-invoke ourselves by absolute path (single-quoted for the shell) so these work in the
+    // self-contained release where slopd isn't on PATH.
+    self := exe_path(context.temp_allocator)
+    cmd: string
+    switch opt {
+    case .Health:
+        cmd = fmt.tprintf("'%s' --health %s", self, lang)
+    case .Install:
+        cmd = fmt.tprintf("'%s' --grammar install %s", self, lang)
+    case .Update:
+        cmd = fmt.tprintf("'%s' --grammar update %s", self, lang)
+    case .Uninstall:
+        cmd = fmt.tprintf("'%s' --grammar uninstall %s", self, lang)
+    }
+    run_in_t1(a, cmd)
+}
+
+// Slopd's own install options, run the same way a language's are: a `slopd ...` line in t1.
+// Installing MOVES the binary Slopd is running from, which no editor should do behind its own
+// back — so it happens in a terminal you are looking at, and prints every path it touched.
+config_run_install :: proc(a: ^App, opt: Install_Option) {
+    self := exe_path(context.temp_allocator)
+    cmd: string
+    switch opt {
+    case .Where:
+        cmd = fmt.tprintf("'%s' --where", self)
+    case .Install, .Reinstall:
+        cmd = fmt.tprintf("'%s' --install", self)
+    case .Uninstall:
+        cmd = fmt.tprintf("'%s' --uninstall", self)
+    case .DesktopAdd:
+        cmd = fmt.tprintf("'%s' --desktop add", self)
+    case .DesktopRemove:
+        cmd = fmt.tprintf("'%s' --desktop remove", self)
+    }
+    run_in_t1(a, cmd)
+}

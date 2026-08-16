@@ -204,7 +204,7 @@ ctxmenu_choose :: proc(a: ^App) {
 }
 
 // The file-ops dispatch. Every branch is the SAME call the chord makes (input.odin's
-// filetree_key), which is the property that keeps the menu discoverability rather than a second
+// action.odin), which is the property that keeps the menu discoverability rather than a second
 // implementation — a verb that behaved differently here would be a bug with two sources.
 @(private = "file")
 ctxmenu_file_action :: proc(a: ^App, action: Menu_Action, on: Menu_Target) {

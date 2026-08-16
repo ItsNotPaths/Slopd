@@ -171,7 +171,7 @@ CHORD_GAP :: 2
 // Package-level so the packing and the declaration cannot disagree about how many items there
 // are. `@(rodata)` rather than a constant: the packing indexes it with a loop variable.
 //
-// The file ops come first and are the same in both presentations (filetree_ops_key); the four
+// The file ops come first and are the same in both presentations (the Surface binds); the four
 // after the rule are the BROWSER's, and chord_hints drops them for the dired listing, where
 // there is no top bar or sidebar for them to drive.
 @(rodata)

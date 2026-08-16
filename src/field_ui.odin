@@ -18,7 +18,7 @@ import clay "../bindings/clay"
 //
 // The POINTER half is the editor's, one line deep: a press captures through drag.odin, the grade
 // fixes what a motion extends by, and the window follows the caret out of either edge. The KEYS
-// are edit_keys (input.odin) — motion, deletes, cut, copy, paste — so a field is a text box in
+// are the Text binds (bind.odin) — motion, deletes, cut, copy, paste — so a field is a text box in
 // the ways a text box is expected to be, in whichever pane it is standing.
 
 // What the painter needs. Temp-allocated by field_declare, so it outlives EndLayout.

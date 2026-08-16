@@ -153,7 +153,7 @@ media_image_float :: proc(fit, area: Rect) -> clay.FloatingElementConfig {
 
 // The media viewer: the decoded image fit into the pane (contain letterbox), pannable by drag
 // and zoomable by wheel, both bounded by MEDIA_ZOOM_MIN/MAX. Arrows pan, =/- zoom, 0/f reset
-// (media_key). Frame order: geometry, claim the click, apply the drag, declare. No scroll apply.
+// (the Surface binds). Frame order: geometry, claim the click, apply the drag, declare. No scroll apply.
 media_frame :: proc(t: ^Text, a: ^App, pane: Rect) {
     area := media_geom(pane, a.scale)
     if area.w <= 0 || area.h <= 0 {

@@ -14,7 +14,7 @@ import "core:testing"
 test_config_default_source :: proc(t: ^testing.T) {
     src := app.DEFAULT_CONFIG_SRC
     testing.expect(t, len(src) > 1000, "slopd.config did not get #load-ed")
-    for key in ([]string{"theme:", "indent:", "term_ctrl_c:", "mouse:", "file_pane:"}) {
+    for key in ([]string{"theme:", "indent:", "scroll_mode:", "mouse:", "file_pane:"}) {
         testing.expect(t, strings.contains(src, key), key)
     }
 }
@@ -34,27 +34,21 @@ test_config_default_is_the_default :: proc(t: ^testing.T) {
     // accident: the floor says .Ls and no git tool, the shipped file says browser and lazygit.
     testing.expect_value(t, cfg.file_pane, app.File_Pane.Browser)
     testing.expect_value(t, cfg.git_tool, "lazygit")
-    testing.expect_value(t, cfg.term_ctrl_c, app.Term_Ctrl_C.Stop)
     testing.expect_value(t, cfg.indent.width, 4)
 }
 
-// The one per-distribution difference, and it is a KEY BINDING rather than a package
-// manager: Omarchy binds SUPER+C desktop-wide, and the compositor tags whole windows — it
-// cannot see that one pane of ours is a terminal, so the chord reaches us as a plain ^C.
+// **The default config is one text for every machine.** It used to diverge on Omarchy, and the
+// difference was a KEY BINDING: Omarchy binds SUPER+C desktop-wide, and the compositor tags whole
+// windows — it cannot see that one pane of ours is a terminal, so the chord reached us as a plain
+// ^C. ^C now copies when a terminal has a selection and interrupts when it has none, which is
+// right on every desktop, so the setting and the per-distribution branch both went with it.
 @(test)
-test_config_default_omarchy :: proc(t: ^testing.T) {
-    plain := app.config_default_text("debian", context.temp_allocator)
-    testing.expect_value(t, plain, app.DEFAULT_CONFIG_SRC) // every other distro gets the file verbatim
-
-    om := app.config_default_text("omarchy", context.temp_allocator)
-    testing.expect(t, strings.contains(om, "term_ctrl_c: copy"), "omarchy must get the swapped pair")
-    testing.expect(t, !strings.contains(om, "term_ctrl_c: stop"))
-
-    // It is a REWRITE of the one line, not a different file: the comment that documents the
-    // setting has to survive, or the config Omarchy users read is the undocumented one.
-    testing.expect(t, strings.contains(om, "# stop | copy"))
-    testing.expect(t, strings.contains(om, "file_pane: browser"), "no other setting may change")
-    testing.expect(t, len(om) >= len(app.DEFAULT_CONFIG_SRC) - 8, "the rest of the file must be intact")
+test_config_default_has_no_per_distro_branch :: proc(t: ^testing.T) {
+    testing.expect(
+        t,
+        !strings.contains(app.DEFAULT_CONFIG_SRC, "term_ctrl_c"),
+        "the swapped-pair setting is gone; ^C decides on the selection instead",
+    )
 }
 
 // config_set's rewrite, over text rather than a file. The Config pane edits by this rule and

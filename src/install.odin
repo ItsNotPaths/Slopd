@@ -144,31 +144,6 @@ install_subdir :: proc(base: string, allocator := context.allocator) -> string {
     return filepath.join({base, INSTALL_BIN}, allocator) or_else strings.clone("", allocator)
 }
 
-// --- which distribution this is ---
-
-// The one distribution Slopd changes a default for, and the reason is a KEY BINDING, not a
-// package manager: Omarchy binds SUPER+C desktop-wide (see config_default_text).
-OS_ID_OMARCHY :: "omarchy"
-
-// /etc/os-release's `ID=`, lower case, or "" where the file is missing or has no ID. The
-// field os-release calls "a lower-case string identifying the operating system" — the one
-// name a machine answers to. `ID_LIKE` is deliberately not read: a family tells you which
-// package manager to name, and Slopd installs no packages.
-os_id :: proc(allocator := context.allocator) -> string {
-    src := os.read_entire_file_from_path("/etc/os-release", context.temp_allocator) or_else nil
-    rest := string(src)
-    for line in strings.split_lines_iterator(&rest) {
-        if !strings.has_prefix(line, "ID=") {
-            continue
-        }
-        // The value may be quoted ("omarchy") or bare (omarchy); os-release allows both.
-        v := strings.trim_space(line[len("ID="):])
-        v = strings.trim(v, `"'`)
-        return strings.to_lower(v, allocator)
-    }
-    return strings.clone("", allocator)
-}
-
 // --- resolving one file ---
 
 // The config file (slopd.config), in whichever directory the mode chose. Returned whether or
@@ -362,9 +337,6 @@ install_run :: proc() -> (ok: bool, msg: string) {
         fmt.sbprintfln(&b, "  slopd.config -> %s (moved in from %s)", cfgdst, from)
     } else if config_default_write(cfgdst) {
         fmt.sbprintfln(&b, "  slopd.config -> %s (defaults, from the binary)", cfgdst)
-        if os_id(context.temp_allocator) == OS_ID_OMARCHY {
-            fmt.sbprintfln(&b, "    omarchy: term_ctrl_c: copy — its SUPER+C reaches a terminal pane as a plain ^C")
-        }
     }
     for name in ([?]string{"themes", "grammars"}) {
         srcdir := filepath.join({from, name}, context.temp_allocator) or_else ""

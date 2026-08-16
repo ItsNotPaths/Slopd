@@ -227,10 +227,10 @@ test_filebrowser_places :: proc(t: ^testing.T) {
     testing.expect_value(t, home, os.get_env("HOME", context.temp_allocator) != "")
 }
 
-// **One chord table, two presentations.** The file ops are `filetree_ops_key` and both panes
-// call it, so this asserts the claim `file_pane` rests on: the browser changes what the arrows
-// and the top bar do, and nothing about what `^c` does. The negatives are the load-bearing
-// half — a key the ops table swallowed could never be bound by the browser on top of it.
+// **One chord table, two presentations.** The file ops are Surface binds and BOTH faces are the
+// Surface context, so this asserts the claim `file_pane` rests on: the browser changes what the
+// arrows and the top bar do, and nothing about what `^c` does. Driven through `action_run`, the
+// one seam a key, a click and a menu item all reach — nothing here calls a key handler.
 @(test)
 test_filetree_ops_chords :: proc(t: ^testing.T) {
     dir := tmpdir("slopd_fb_chords")
@@ -245,6 +245,7 @@ test_filetree_ops_chords :: proc(t: ^testing.T) {
     testing.expect(t, os.write_entire_file(filepath.join({dir, "a.txt"}, context.temp_allocator) or_else "", transmute([]byte)string("hi")) == nil)
 
     a: app.App
+    a.focus = .Aux // the file pane has the keys; without this every op below is a no-op
     app.filetree_load(&a.tree, dir)
     defer app.filetree_destroy(&a.tree)
     for e, i in a.tree.entries {
@@ -252,32 +253,33 @@ test_filetree_ops_chords :: proc(t: ^testing.T) {
             a.tree.selected = i
         }
     }
+    run :: proc(a: ^app.App, act: app.Action) -> bool {
+        return app.action_run(a, act, 0, false, false)
+    }
 
     // ^y marks, ^u clears — marking is now only ever "what does an op act on".
-    testing.expect(t, app.filetree_ops_key(&a, glfw.KEY_Y, false))
+    testing.expect(t, run(&a, .File_Mark))
     testing.expect_value(t, len(a.tree.marks), 1)
-    testing.expect(t, app.filetree_ops_key(&a, glfw.KEY_U, false))
+    testing.expect(t, run(&a, .File_Marks_Clear))
     testing.expect_value(t, len(a.tree.marks), 0)
 
     // ^c fills the clipboard from the row under the cursor when nothing is marked, and says
     // what the paste will be. There is no mode left to leave set from an hour ago.
-    testing.expect(t, app.filetree_ops_key(&a, glfw.KEY_C, false))
+    testing.expect(t, run(&a, .Clip_Copy))
     testing.expect_value(t, len(a.tree.clip), 1)
     testing.expect_value(t, a.tree.clip_mode, app.Clip_Mode.Copy)
-    testing.expect(t, app.filetree_ops_key(&a, glfw.KEY_X, false))
+    testing.expect(t, run(&a, .Clip_Cut))
     testing.expect_value(t, a.tree.clip_mode, app.Clip_Mode.Cut)
 
     // ^v pastes. A copy survives its paste, so the same set can go into several directories.
-    testing.expect(t, app.filetree_ops_key(&a, glfw.KEY_C, false))
-    testing.expect(t, app.filetree_ops_key(&a, glfw.KEY_V, false))
+    testing.expect(t, run(&a, .Clip_Copy))
+    testing.expect(t, run(&a, .Clip_Paste))
     testing.expect(t, os.exists(filepath.join({dir, "a_copy.txt"}, context.temp_allocator) or_else ""))
     testing.expect_value(t, len(a.tree.clip), 1)
 
-    // ^p was the old paste and is not bound any more; the browser's own chords must reach the
-    // browser rather than being eaten here, which is what "returns false" is for.
-    testing.expect(t, !app.filetree_ops_key(&a, glfw.KEY_P, false), "^p is not a file op any more")
-    testing.expect(t, !app.filetree_ops_key(&a, glfw.KEY_G, false), "^g belongs to the view toggle")
-    testing.expect(t, !app.filetree_ops_key(&a, glfw.KEY_R, false), "^r belongs to reload")
-    testing.expect(t, !app.filetree_ops_key(&a, glfw.KEY_LEFT, false), "^Left belongs to back")
-    testing.expect(t, !app.filetree_ops_key(&a, glfw.KEY_1, false), "^1 belongs to the places")
+    // A file op DECLINES when the file pane is not the one with the keys, rather than acting on
+    // a listing you cannot see. That guard is what lets ^y be Redo in the editor and Mark here.
+    a.focus = .Editor
+    testing.expect(t, !run(&a, .File_Mark), "^y in the editor must not reach the listing")
+    testing.expect_value(t, len(a.tree.marks), 0)
 }

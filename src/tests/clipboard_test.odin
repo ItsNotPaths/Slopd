@@ -36,39 +36,20 @@ test_copy_line_when_no_selection :: proc(t: ^testing.T) {
     testing.expect_value(t, joined, "hello\n") // whole line + newline
 }
 
-// The terminal's copy chord is one of the Ctrl+C / Ctrl+Shift+C pair, and `term_ctrl_c` says
-// which. The other half must fall through in BOTH modes — that is what reaches the shell.
+// ^C is ONE bind everywhere and the terminal is the one surface that can decline it: with a span
+// it copies, and with nothing selected the chord is the job's interrupt instead. `term_has_span`
+// is the question both halves ask, so the copy and the fall-through can never disagree.
 @(test)
-test_term_clip_chord_swaps_with_config :: proc(t: ^testing.T) {
-    CTRL :: i32(glfw.MOD_CONTROL)
-    SHIFT :: i32(glfw.MOD_SHIFT)
-    a: app.App
+test_term_has_span_decides_copy_or_interrupt :: proc(t: ^testing.T) {
+    term: app.Terminal
+    testing.expect(t, !app.term_has_span(&term), "a fresh session has nothing to copy")
 
-    a.term_ctrl_c = .Stop
-    testing.expect(t, app.term_clip_chord(&a, CTRL | SHIFT)) // ^Shift+C copies
-    testing.expect(t, !app.term_clip_chord(&a, CTRL)) // ^C is the job's
+    term.sel_active = true // the keyboard's line range
+    testing.expect(t, app.term_has_span(&term))
 
-    a.term_ctrl_c = .Copy
-    testing.expect(t, app.term_clip_chord(&a, CTRL)) // ^C copies
-    testing.expect(t, !app.term_clip_chord(&a, CTRL | SHIFT)) // ^Shift+C is the job's
-
-    // No Ctrl, no chord — in either mode a bare or Shift-only key is text.
-    testing.expect(t, !app.term_clip_chord(&a, 0))
-    testing.expect(t, !app.term_clip_chord(&a, SHIFT))
-}
-
-@(test)
-test_parse_term_ctrl_c :: proc(t: ^testing.T) {
-    m, ok := app.parse_term_ctrl_c("copy")
-    testing.expect(t, ok)
-    testing.expect_value(t, m, app.Term_Ctrl_C.Copy)
-
-    m, ok = app.parse_term_ctrl_c("stop")
-    testing.expect(t, ok)
-    testing.expect_value(t, m, app.Term_Ctrl_C.Stop)
-
-    _, ok = app.parse_term_ctrl_c("yes") // junk keeps the old value: ok=false
-    testing.expect(t, !ok)
+    term.sel_active = false
+    term.msel_on = true // the mouse's span, collapsed — still nothing to copy
+    testing.expect(t, !app.term_has_span(&term))
 }
 
 @(test)

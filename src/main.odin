@@ -100,7 +100,6 @@ main :: proc() {
     app.git_tool = strings.clone(cfg.git_tool) // owned: the Config pane can rewrite it
     app.git_term = cfg.git_term
     app.run_term = cfg.run_term
-    app.term_ctrl_c = cfg.term_ctrl_c
     app.grep_pane_always = cfg.grep_pane_always
     app.cl_preview_on = cfg.cl_preview
     app.conflict_prompt = cfg.conflict_prompt

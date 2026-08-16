@@ -211,7 +211,7 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
 
 // The grep results pane (the FIND aux mode): a header naming the query + hit count, then each
 // hit as a `grep -rn`-style CONTEXT BLOCK — a project-relative "path:line" title over the lines
-// around the match, blocks parted by a blank row. Up/Down select, Enter jumps (grep_key).
+// around the match, blocks parted by a blank row. Up/Down select, Enter jumps (Nav_* / Activate).
 grep_frame :: proc(t: ^Text, a: ^App, pane: Rect) {
     area, _, max_rows := grep_geom(pane, a.scale, t.font.line_height)
     if area.w <= 0 || area.h <= 0 {

@@ -297,36 +297,20 @@ test_config_file_pane :: proc(t: ^testing.T) {
     testing.expect_value(t, bad.file_pane, app.File_Pane.Browser)
 }
 
-// The terminal's Ctrl+C mapping: a file value, a junk value, and the Config pane row. The pane
-// must offer it as a DROPDOWN of both modes, because a settings row nobody can reach is the
-// same as no setting at all.
+// A key the config no longer knows is IGNORED, not an error: `term_ctrl_c` was removed when ^C
+// stopped being a mode, and an old file still carrying the line must load every other setting
+// exactly as before rather than falling over on it.
 @(test)
-test_config_term_ctrl_c :: proc(t: ^testing.T) {
-    path := "/tmp/slopd_config_termctrlc.config"
-    testing.expect(t, os.write_entire_file(path, transmute([]byte)string("term_ctrl_c: copy\n")) == nil)
+test_config_ignores_a_retired_key :: proc(t: ^testing.T) {
+    path := "/tmp/slopd_config_retired_key.config"
+    src := "term_ctrl_c: copy\nindent: spaces2\n"
+    testing.expect(t, os.write_entire_file(path, transmute([]byte)src) == nil)
     defer os.remove(path)
     config_override(path)
     defer config_override_release()
 
     cfg := app.load_config()
     defer app.config_destroy(&cfg)
-    testing.expect_value(t, cfg.term_ctrl_c, app.Term_Ctrl_C.Copy)
-
-    testing.expect(t, os.write_entire_file(path, transmute([]byte)string("term_ctrl_c: nonsense\n")) == nil)
-    bad := app.load_config()
-    defer app.config_destroy(&bad)
-    testing.expect_value(t, bad.term_ctrl_c, app.Term_Ctrl_C.Stop) // the default stands
-
-    // The pane's side: a named key, a dropdown (not a text field), both modes offered, and a
-    // value that reads back what the App holds.
-    a: app.App
-    testing.expect_value(t, app.setting_key(.TermCtrlC), "term_ctrl_c")
-    testing.expect(t, !app.setting_is_text(.TermCtrlC))
-    opts := app.setting_options(&a, .TermCtrlC)
-    testing.expect_value(t, len(opts), 2)
-    testing.expect_value(t, opts[0], "stop")
-    testing.expect_value(t, opts[1], "copy")
-    testing.expect_value(t, app.setting_value(&a, .TermCtrlC), "stop")
-    a.term_ctrl_c = .Copy
-    testing.expect_value(t, app.setting_value(&a, .TermCtrlC), "copy")
+    testing.expect_value(t, cfg.indent.width, 2) // the line after the dead key still applies
 }
+

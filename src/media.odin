@@ -160,25 +160,3 @@ media_destroy :: proc(m: ^Media) {
     m^ = {}
 }
 
-// Bare keys while the image pane is focused — nothing to type into an image, so the pane
-// owns them all. Alt chords stay global and are handled before this in handle_key.
-media_key :: proc(a: ^App, key, mods: i32) {
-    m := &a.media
-    step := 40 * a.scale
-    switch key {
-    case glfw.KEY_EQUAL, glfw.KEY_KP_ADD:
-        media_zoom(m, MEDIA_ZOOM_STEP)
-    case glfw.KEY_MINUS, glfw.KEY_KP_SUBTRACT:
-        media_zoom(m, 1.0 / MEDIA_ZOOM_STEP)
-    case glfw.KEY_0, glfw.KEY_KP_0, glfw.KEY_F:
-        media_fit(m)
-    case glfw.KEY_LEFT:
-        media_pan(m, step, 0) // reveal the left edge: content slides right
-    case glfw.KEY_RIGHT:
-        media_pan(m, -step, 0)
-    case glfw.KEY_UP:
-        media_pan(m, 0, step)
-    case glfw.KEY_DOWN:
-        media_pan(m, 0, -step)
-    }
-}

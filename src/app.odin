@@ -193,11 +193,6 @@ App :: struct {
     // double-click has output you want to see. See open_or_run.
     run_term: int,
 
-    // Which chord a focused terminal reads as COPY, and which one the shell gets (config
-    // `term_ctrl_c`). The two always swap, so exactly one of them reaches the job. See
-    // Term_Ctrl_C (config.odin) and term_clip_chord (input.odin).
-    term_ctrl_c: Term_Ctrl_C,
-
     // Mouse (mouse.odin). `mouse` mirrors the GLFW pointer callbacks; `mouse_on` is the config
     // toggle. `lay` is the layout the LAST FRAME PAINTED, cached by render: pointer events
     // arrive between frames and must resolve against what is on screen. Zero rects until then.
@@ -313,6 +308,23 @@ set_focus :: proc(a: ^App, who: Focus) {
     // or another editor rewriting the open file) flows in at once rather than waiting for
     // the poll — and can't be silently overwritten by a later save.
     view_refresh(a)
+}
+
+// Jumping to an aux mode focuses the aux pane, the way the command line's goto does: showing a
+// pane you asked for and leaving the arrows somewhere else is two answers to one request.
+set_aux :: proc(a: ^App, mode: AuxMode) {
+    a.aux_mode = mode
+    set_focus(a, .Aux)
+}
+
+clampf :: proc(v, lo, hi: f32) -> f32 {
+    if v < lo {
+        return lo
+    }
+    if v > hi {
+        return hi
+    }
+    return v
 }
 
 // Toggle zen on/off (the `zen` / `zm` command line builtin). Works from any view —
