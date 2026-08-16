@@ -30,8 +30,15 @@ test_clay_arena_aligned :: proc(t: ^testing.T) {
 // outgrows CLAY_ARENA_BYTES (a Clay bump, or raising its max element count) the app
 // refuses to start. Catch that here instead. MinMemorySize is legal before Initialize
 // precisely because it only reads Clay's configured limits.
+//
+// It reads them off the CURRENT CONTEXT when one exists, though, so this test is a reader
+// of the same library global every pane test writes — and takes the same lock for it. See
+// clay_harness.odin.
 @(test)
 test_clay_arena_fits :: proc(t: ^testing.T) {
+    clay_test_lock()
+    defer clay_test_unlock()
+
     need := int(clay.MinMemorySize())
     testing.expectf(
         t,

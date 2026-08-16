@@ -312,9 +312,9 @@ test_filebrowser_click_verbs :: proc(t: ^testing.T) {
     testing.expect(t, !a.mouse.click, "a press that hit a row must be claimed")
 
     // The view toggle flips on a single press — and writes the choice back, so it is the one
-    // button that persists. (config_path_override keeps that off the shipped file.)
-    app.config_path_override = "/tmp/slopd_fb_view.config"
-    defer app.config_path_override = ""
+    // button that persists. (config_override keeps that off the shipped file.)
+    config_override("/tmp/slopd_fb_view.config")
+    defer config_override_release()
     a.mouse.click = true
     app.filebrowser_click(&a, segs, app.FB_Hit{kind = .Button, index = -1, btn = .View}, PATH, 10)
     testing.expect_value(t, a.filebrowser.view, app.Browse_View.Grid)

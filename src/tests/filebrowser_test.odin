@@ -183,8 +183,8 @@ test_filebrowser_places :: proc(t: ^testing.T) {
     path := "/tmp/slopd_fb_places.config"
     os.remove(path)
     defer os.remove(path)
-    app.config_path_override = path
-    defer app.config_path_override = ""
+    config_override(path)
+    defer config_override_release()
 
     br: app.FileBrowser
     defer app.filebrowser_destroy(&br)

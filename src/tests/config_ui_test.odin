@@ -611,8 +611,8 @@ test_config_click_chooses_option :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_ui_test.config"
     testing.expect(t, os.write_entire_file(path, transmute([]byte)string("# scratch\n")) == nil)
     defer os.remove(path)
-    app.config_path_override = path
-    defer app.config_path_override = ""
+    config_override(path)
+    defer config_override_release()
 
     a: app.App
     fixture(&a)

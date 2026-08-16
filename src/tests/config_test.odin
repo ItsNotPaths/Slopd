@@ -69,8 +69,8 @@ git_tool:             # e.g. lazygit
     testing.expect(t, os.write_entire_file(path, transmute([]byte)src) == nil)
     defer os.remove(path)
 
-    app.config_path_override = path
-    defer app.config_path_override = ""
+    config_override(path)
+    defer config_override_release()
 
     testing.expect(t, app.config_set("mouse", "off"))
     testing.expect(t, app.config_set("git_tool", "lazygit"))
@@ -106,8 +106,8 @@ test_config_set_empty_value :: proc(t: ^testing.T) {
     testing.expect(t, os.write_entire_file(path, transmute([]byte)string("git_tool: lazygit  # e.g. lazygit\n")) == nil)
     defer os.remove(path)
 
-    app.config_path_override = path
-    defer app.config_path_override = ""
+    config_override(path)
+    defer config_override_release()
 
     testing.expect(t, app.config_set("git_tool", ""))
 
@@ -130,8 +130,8 @@ test_config_git_detached_token :: proc(t: ^testing.T) {
     testing.expect(t, os.write_entire_file(path, transmute([]byte)src) == nil)
     defer os.remove(path)
 
-    app.config_path_override = path
-    defer app.config_path_override = ""
+    config_override(path)
+    defer config_override_release()
 
     cfg := app.load_config()
     defer app.config_destroy(&cfg)
@@ -148,8 +148,8 @@ test_config_run_term :: proc(t: ^testing.T) {
     testing.expect(t, os.write_entire_file(path, transmute([]byte)string("run_term: 3\n")) == nil)
     defer os.remove(path)
 
-    app.config_path_override = path
-    defer app.config_path_override = ""
+    config_override(path)
+    defer config_override_release()
 
     cfg := app.load_config()
     defer app.config_destroy(&cfg)
@@ -184,8 +184,8 @@ theme: /home/me/themes
 `
     testing.expect(t, os.write_entire_file(path, transmute([]byte)src) == nil)
     defer os.remove(path)
-    app.config_path_override = path
-    defer app.config_path_override = ""
+    config_override(path)
+    defer config_override_release()
 
     cfg := app.load_config()
     defer app.config_destroy(&cfg)
@@ -235,8 +235,8 @@ Old: /old
 `
     testing.expect(t, os.write_entire_file(path, transmute([]byte)src) == nil)
     defer os.remove(path)
-    app.config_path_override = path
-    defer app.config_path_override = ""
+    config_override(path)
+    defer config_override_release()
 
     places := [?]app.Place{{"Home", "/home/me"}, {"Src", "/home/me/src"}}
     testing.expect(t, app.config_places_write(places[:]))
@@ -275,8 +275,8 @@ test_config_file_pane :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_filepane.config"
     testing.expect(t, os.write_entire_file(path, transmute([]byte)string("file_pane: browser\nfile_view: grid\n")) == nil)
     defer os.remove(path)
-    app.config_path_override = path
-    defer app.config_path_override = ""
+    config_override(path)
+    defer config_override_release()
 
     cfg := app.load_config()
     defer app.config_destroy(&cfg)

@@ -216,8 +216,8 @@ test_config_text_setting_edit :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_text_edit_test.config"
     testing.expect(t, os.write_entire_file(path, transmute([]byte)string("git_tool: tig\n")) == nil)
     defer os.remove(path)
-    app.config_path_override = path // a commit PERSISTS; keep it off the real config
-    defer app.config_path_override = ""
+    config_override(path) // a commit PERSISTS; keep it off the real config
+    defer config_override_release()
 
     a: app.App
     a.git_tool = strings.clone("tig") // owned, as main's clone makes it
@@ -270,8 +270,8 @@ test_config_text_setting_rejects_comment :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_text_reject_test.config"
     testing.expect(t, os.write_entire_file(path, transmute([]byte)string("git_tool: tig\n")) == nil)
     defer os.remove(path)
-    app.config_path_override = path
-    defer app.config_path_override = ""
+    config_override(path)
+    defer config_override_release()
 
     a: app.App
     a.git_tool = strings.clone("tig")
@@ -377,8 +377,8 @@ test_config_writeback :: proc(t: ^testing.T) {
     testing.expect(t, os.write_entire_file(path, transmute([]byte)seed) == nil)
     defer os.remove(path)
 
-    app.config_path_override = path
-    defer app.config_path_override = ""
+    config_override(path)
+    defer config_override_release()
 
     testing.expect(t, app.config_set("line_numbers", "relative")) // replace in place
     testing.expect(t, app.config_set("indent", "spaces2")) // append (was absent)

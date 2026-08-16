@@ -109,7 +109,7 @@ config_strip_comment :: proc(line: string) -> string {
 load_config :: proc() -> Config {
     cfg := Config {
         indent          = {.Spaces, 4}, // matches the project's 4-space convention
-        line_numbers    = .Global,
+        line_numbers    = .Relative,
         scroll_mode     = .Follow, // the view moves only when the caret would leave it
         font_px         = FONT_BASE_PX,
         jump_lines      = 10,
@@ -235,6 +235,8 @@ config_destroy :: proc(cfg: ^Config) {
 // TEST SEAM, empty in a real run: the config file to use instead of the one beside the
 // binary. Only the suite sets it — a settings write PERSISTS, and a test must never land
 // on the shipped file. Not reachable from a config value, a flag, or the environment.
+// Tests set it through config_override in src/tests/config_harness.odin, never directly:
+// it is one string for a multi-threaded runner, so it needs a lock around it.
 config_path_override: string
 
 // The config file: slopd.config beside the binary while Slopd is portable, and
