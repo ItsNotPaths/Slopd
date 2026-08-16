@@ -491,6 +491,37 @@ test_terminal_wheel_scrolls_the_view_only :: proc(t: ^testing.T) {
     testing.expect_value(t, app.terminal_view_top(&term), term.sb_total)
 }
 
+// The view CATCHES at the live bottom and follows the output again — the wheel walked back
+// down, or a bare click that pinned the view where it already was. Both used to freeze the
+// pane: `view_top` is an absolute line, so every line pushed off left the parked view one
+// further behind, and a terminal you had merely looked at stopped following for good.
+@(test)
+test_terminal_view_follows_the_bottom_again :: proc(t: ^testing.T) {
+    term := mkterm(2, 20)
+    defer app.terminal_vt_destroy(&term)
+    app.terminal_enable_scrollback(&term)
+    feed(&term, "L0\r\nL1\r\nL2\r\nL3\r\nL4") // 2-row grid: L0..L2 into history
+
+    // Up into history, then all the way back down: the notch that lands on the bottom
+    // re-attaches, so the next line of output moves the view with it.
+    app.terminal_scroll_by(&term, -2)
+    app.terminal_scroll_by(&term, 99)
+    testing.expect(t, !term.view_detached, "back at the bottom is not scrolled")
+    feed(&term, "\r\nL5")
+    testing.expect_value(t, app.terminal_view_top(&term), term.sb_total)
+
+    // A bare click pins the view too, and pinning it AT the bottom must not stop it following.
+    app.terminal_msel_set(&term, app.Pos{term.sb_total, 0}, app.Pos{term.sb_total, 0})
+    feed(&term, "\r\nL6")
+    testing.expect_value(t, app.terminal_view_top(&term), term.sb_total)
+
+    // Parked above the bottom it still holds its line, which is the whole point of the park.
+    app.terminal_scroll_by(&term, -2)
+    parked := app.terminal_view_top(&term)
+    feed(&term, "\r\nL7")
+    testing.expect_value(t, app.terminal_view_top(&term), parked)
+}
+
 // A mouse selection SURVIVES a scroll — which is what both reference terminals do, and what
 // you want when the thing you are selecting runs off the top of the pane. It could not,
 // while the wheel was a copy-cursor move: that dropped the selection on every notch.

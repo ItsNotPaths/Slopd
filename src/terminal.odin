@@ -62,7 +62,7 @@ Terminal :: struct {
     view_top:   int,  // absolute line drawn at the top row while scrolled
     // The WHEEL cut the view loose from the live bottom (terminal_scroll_by) — the twin of
     // every list pane's `scroll_detached` and of the editor's. Cleared by any keystroke that
-    // reaches the shell, exactly as they all are.
+    // reaches the shell, exactly as they all are, and by a notch that walks it back down.
     view_detached: bool,
 
     // The MOUSE's per-character selection, beside the keyboard's copy cursor rather than
@@ -253,7 +253,9 @@ terminal_scroll_by :: proc(t: ^Terminal, delta: int) {
         return
     }
     t.view_top = clamp(terminal_view_top(t) + delta, terminal_oldest(t), t.sb_total)
-    t.view_detached = true
+    // Detached means PARKED ABOVE the live bottom, never "the wheel was touched": a notch that
+    // lands back on the bottom is the user saying "follow again", so the pane catches there.
+    t.view_detached = t.view_top < t.sb_total
 }
 
 // The width of absolute line `n`: a captured line keeps the width it was captured at, a live
@@ -812,7 +814,16 @@ term_sb_pushline_cb :: proc "c" (cols: c.int, cells: [^]vt.ScreenCell, continuat
     }
     copy(line.cells, cells[:n])
     append(&t.scrollback, line)
+    // A view sitting AT the live bottom rides with it. `view_top` is an ABSOLUTE line and
+    // sb_total is about to move, so leaving it alone drops the view one line behind per
+    // scrolled-off line: the pane freezes and reads as "still scrolled" though nobody scrolled
+    // it. That is what a bare click (msel_on, pinning at the bottom) or a wheel walked back down
+    // used to do. A view parked above the bottom is below sb_total and keeps its line.
+    following := t.view_top >= t.sb_total
     t.sb_total += 1
+    if following {
+        t.view_top = t.sb_total
+    }
     if len(t.scrollback) > SCROLLBACK_MAX + SCROLLBACK_TRIM {
         for i in 0 ..< SCROLLBACK_TRIM {
             delete(t.scrollback[i].cells)
