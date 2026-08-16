@@ -2,8 +2,11 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_NAME="$(basename "$PROJECT_DIR")"
 RELEASE_DIR="$PROJECT_DIR/build"
+# The binary is `slopd`, not the folder's name: lower case, because it is what you type. It is
+# also the app-id the window reports (APP_ID in src/main.odin), the name `--install` writes to
+# ~/.local/bin, and the name slopd.desktop calls in Exec. One spelling, everywhere.
+BIN_NAME="slopd"
 
 usage() {
     cat <<EOF
@@ -38,7 +41,7 @@ if [ $DO_LOCAL -eq 0 ] && [ $DO_PUBLIC -eq 0 ]; then
 fi
 
 if [ $DO_LOCAL -eq 1 ]; then
-    echo "==> Local build: $PROJECT_NAME -> $RELEASE_DIR"
+    echo "==> Local build: $BIN_NAME -> $RELEASE_DIR"
     # Empty the folder rather than replacing it. A rebuilt directory is a NEW directory:
     # a shell sitting in it lands on a deleted inode, and anything pointing at it (a file
     # manager tab, a symlink, a bookmark) has to be re-opened. -mindepth 1 spares the
@@ -52,12 +55,12 @@ if [ $DO_LOCAL -eq 1 ]; then
     # Requires ./download-deps.sh to have built the static archive first.
     # SLOPD_VERSION stamps `slopd --version`; a local build is not a tagged one, so it
     # says so rather than claiming a release number.
-    odin build "$PROJECT_DIR/src" -out:"$RELEASE_DIR/$PROJECT_NAME" \
+    odin build "$PROJECT_DIR/src" -out:"$RELEASE_DIR/$BIN_NAME" \
         -o:speed -define:GLFW_SHARED=false -define:SLOPD_VERSION="dev-local"
     # ~150KB of a ~1.9MB binary is .symtab/.strtab. A -o:speed build carries no .debug_*
     # sections to begin with, so --strip-all costs no debuggability that this build had.
     # release.yml already strips; do it here too so a local build matches the download.
-    strip --strip-all "$RELEASE_DIR/$PROJECT_NAME"
+    strip --strip-all "$RELEASE_DIR/$BIN_NAME"
     # The release is the BINARY plus its config, and nothing else. The language registry,
     # the default theme, the README and the LICENSE are all #load-ed into the executable
     # (`readme` / `license` in the command line open the last two). themes/ and grammars/

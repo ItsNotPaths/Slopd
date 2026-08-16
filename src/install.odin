@@ -30,8 +30,10 @@ Install_Mode :: enum {
     ReadOnly,
 }
 
-// The installed binary's name: lower case, because it is what you type. The build output is
-// `Slopd` (the project folder's name) and the copy is renamed on the way in.
+// The installed binary's name: lower case, because it is what you type. It is the same name
+// the build writes (release.sh, release.yml) and the same name the window reports as its
+// app-id (APP_ID in main.odin), so a desktop entry's Exec, the installed copy and the window
+// rule all say `slopd`. The copy keeps its name; nothing is renamed on the way in.
 INSTALL_BIN :: "slopd"
 
 // The folder the installed binary goes in. Not an XDG variable: XDG standardises config,

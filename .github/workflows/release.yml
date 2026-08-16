@@ -18,7 +18,10 @@ on:
         default: false
 
 env:
-  PROJECT_NAME: Slopd
+  # The binary is `slopd`, not the project's name: lower case, because it is what you type.
+  # It is also the app-id the window reports (APP_ID in src/main.odin), the name `--install`
+  # writes to ~/.local/bin, and the name slopd.desktop calls in Exec. Matches release.sh.
+  BIN_NAME: slopd
 
 # Linux only, deliberately. Slopd owns its PTY through core:sys/posix and the libvterm
 # bindings #panic off POSIX; the Clay bindings do the same (bindings/clay/clay.odin).
@@ -71,9 +74,9 @@ jobs:
           # binary uses the GLFW we vendor rather than whatever libglfw the runner has
           # (and users then need at run time). Matches release.sh --local.
           # SLOPD_VERSION stamps the tag into `slopd --version`.
-          odin build src -out:"$PROJECT_NAME" -o:speed -define:GLFW_SHARED=false \
+          odin build src -out:"$BIN_NAME" -o:speed -define:GLFW_SHARED=false \
               -define:SLOPD_VERSION="${{ inputs.version }}"
-          strip --strip-all "$PROJECT_NAME"
+          strip --strip-all "$BIN_NAME"
 
       - name: Stage artifacts
         run: |
@@ -82,7 +85,7 @@ jobs:
           # default theme, the README and the LICENSE are all baked into the executable
           # (`readme` / `license` open the last two in the editor). themes/ and grammars/
           # are user-added and created next to the binary on first use.
-          cp "$PROJECT_NAME" dist/
+          cp "$BIN_NAME" dist/
           cp slopd.config dist/
 
       - uses: actions/upload-artifact@v4
@@ -103,7 +106,7 @@ jobs:
 
       - name: Package
         run: |
-          (cd linux-zip && zip -r "../${PROJECT_NAME}-linux.zip" .)
+          (cd linux-zip && zip -r "../${BIN_NAME}-linux.zip" .)
 
       # This job never checks out, so gh has no git remote to infer the repo from:
       # GH_REPO supplies it, and --target pins the new tag to the dispatched commit
@@ -118,7 +121,7 @@ jobs:
             PRERELEASE_FLAG="--prerelease"
           fi
           gh release create "${{ inputs.version }}" \
-              "${PROJECT_NAME}-linux.zip" \
+              "${BIN_NAME}-linux.zip" \
               --target "${{ github.sha }}" \
               --title "${{ inputs.version }}" \
               --notes "${{ inputs.notes }}" \
