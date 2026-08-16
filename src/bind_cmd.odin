@@ -53,41 +53,41 @@ rebind_parse :: proc(args: string) -> (op: Rebind_Op, n: int, action, chord: str
 }
 
 cl_rebind :: proc(a: ^App, args: string) {
+    bp := &a.binds_pane
     op, n, name, chord_text, ok := rebind_parse(args)
     if !ok {
-        cl_echo_t1(a, "rebind: :rebind [+|-|N] <action> [chord]")
+        binds_note(bp, "rebind: :rebind [+|-|N] <action> [chord]")
         return
     }
     act, known := action_from_name(name)
     if !known || act == .None {
-        cl_echo_t1(a, fmt.tprintf("rebind: %s is not an action (see the binds pane)", name))
+        binds_note(bp, fmt.tprintf("rebind: %s is not an action (see the binds pane)", name))
         return
     }
-    bp := &a.binds_pane
 
     if op == .Clear {
         if !bind_clear(bp, act, n) {
-            cl_echo_t1(a, fmt.tprintf("rebind: %s has no chord %d", name, n))
+            binds_note(bp, fmt.tprintf("rebind: %s has no chord %d", name, n))
             return
         }
-        cl_echo_t1(a, fmt.tprintf("rebind: %s lost chord %d (unsaved: ^s in :binds)", name, n))
+        binds_note(bp, fmt.tprintf("rebind: %s lost chord %d — unsaved, ^s to write", name, n))
         return
     }
 
     c, parsed := chord_parse(chord_text)
     if !parsed {
-        cl_echo_t1(a, fmt.tprintf("rebind: %q is not a chord (ctrl/alt/shift + a key)", chord_text))
+        binds_note(bp, fmt.tprintf("rebind: %q is not a chord (ctrl/alt/shift + a key)", chord_text))
         return
     }
     took, why, applied := bind_set(bp, act, n, c, op == .Add)
     if !applied {
-        cl_echo_t1(a, fmt.tprintf("rebind: %s — %s", chord_text, bind_fault_text(why)))
+        binds_note(bp, fmt.tprintf("rebind: %s — %s", chord_text, bind_fault_text(why)))
         return
     }
     if took != .None {
         from := action_name(took)
-        cl_echo_t1(a, fmt.tprintf("rebind: %s took %s from %s (unsaved)", name, chord_text, from))
+        binds_note(bp, fmt.tprintf("rebind: %s took %s from %s — unsaved, ^s to write", name, chord_text, from))
         return
     }
-    cl_echo_t1(a, fmt.tprintf("rebind: %s on %s (unsaved: ^s in :binds)", chord_text, name))
+    binds_note(bp, fmt.tprintf("rebind: %s on %s — unsaved, ^s to write", chord_text, name))
 }

@@ -56,16 +56,10 @@ binds_val_off :: proc() -> f32 {
     return f32(w + 2)
 }
 
-// `act`'s chords, with the highlighted one marked when the row is selected. The mark is text
-// rather than colour: a chord list is a row of small words, and a tint on one of them reads as
-// noise next to the selection bar already under the whole row.
+// `act`'s chords, space-joined. One string, so the flattening stays free of the palette; the
+// highlighted one is picked out in colour by binds_chord_spans at declaration time.
 @(private = "file")
-binds_chord_text :: proc(
-    bp: ^BindsPane,
-    act: Action,
-    sel: bool,
-    alloc: runtime.Allocator,
-) -> string {
+binds_chord_text :: proc(bp: ^BindsPane, act: Action, alloc: runtime.Allocator) -> string {
     at := binds_of(bp, act)
     if len(at) == 0 {
         return strings.clone("—", alloc)
@@ -77,13 +71,31 @@ binds_chord_text :: proc(
         }
         strings.write_string(&b, chord_string(bp.working[i].chord, context.temp_allocator))
     }
-    if !sel {
-        return strings.to_string(b)
+    return strings.to_string(b)
+}
+
+// The same chords as coloured runs, with the one Left/Right has landed on lit. Only the SELECTED
+// row needs them; every other row is one colour and stays a plain string.
+@(private = "file")
+binds_chord_spans :: proc(
+    bp: ^BindsPane,
+    act: Action,
+    th: ^Theme,
+    alloc: runtime.Allocator,
+) -> []Pane_Span {
+    at := binds_of(bp, act)
+    if len(at) == 0 {
+        return nil
     }
-    // The highlighted chord, called out under the row's own bar.
-    n := clamp(bp.chord, 0, len(at) - 1)
-    one := chord_string(bp.working[at[n]].chord, context.temp_allocator)
-    return fmt.aprintf("%s   [%s]", strings.to_string(b), one, allocator = alloc)
+    out := make([]Pane_Span, len(at), alloc)
+    for i, k in at {
+        text := chord_string(bp.working[i].chord, alloc)
+        if k > 0 {
+            text = strings.concatenate({" ", text}, alloc)
+        }
+        out[k] = {text, k == bp.chord ? th.accent : th.fg}
+    }
+    return out
 }
 
 // What the pane is waiting for, or what Ctrl+S would do — shown on the save row, so neither a
@@ -105,6 +117,8 @@ binds_state_text :: proc(bp: ^BindsPane, alloc: runtime.Allocator) -> string {
     switch {
     case len(bp.errs) > 0:
         return strings.clone("blocked: clear the errors above first", alloc)
+    case bp.note != "":
+        return strings.clone(bp.note, alloc) // what `:rebind` just did, until you move off
     case bp.dirty:
         return strings.clone("unsaved changes", alloc)
     }
@@ -177,7 +191,7 @@ binds_rows :: proc(bp: ^BindsPane, cols: int, alloc := context.allocator) -> []B
             BindsRow {
                 kind = .Action,
                 text = fmt.aprintf("%s:", name, allocator = alloc),
-                value = binds_chord_text(bp, act, bp.sel == nav, alloc),
+                value = binds_chord_text(bp, act, alloc),
                 item = nav,
                 indent = 1,
             },
@@ -228,9 +242,17 @@ binds_draw_rows :: proc(a: ^App, rows: []BindsRow, alloc := context.allocator) -
     out := make([]Pane_Row, len(rows), alloc)
     for r, i in rows {
         sel := r.item >= 0 && r.item == sel_row
+        // Only the lit row splits its chords, since only there is one of them picked out.
+        spans: []Pane_Span
+        if sel && r.kind == .Action {
+            if act, ok := binds_pane_action(&a.binds_pane, r.item); ok {
+                spans = binds_chord_spans(&a.binds_pane, act, th, alloc)
+            }
+        }
         out[i] = Pane_Row {
             text   = r.text,
             value  = r.value,
+            spans  = spans,
             item   = r.item,
             indent = r.indent,
             flush  = r.kind == .Rule || r.kind == .Header || r.kind == .Note,

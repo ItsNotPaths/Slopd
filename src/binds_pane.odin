@@ -43,6 +43,7 @@ BindsPane :: struct {
     pending_add:     bool, // ...and whether it was an add
     steal:           Action, // who holds it
     fault:           Bind_Fault, // why a Rejected capture was refused
+    note:            string, // what `:rebind` last did, owned; shown until you move off
     working:         [dynamic]Bind, // the edit copy; Ctrl+S applies it
     errs:            [dynamic]Bind_Error, // refused lines, owned; save is blocked while any stand
     dirty:           bool,
@@ -65,6 +66,7 @@ binds_pane_init :: proc(bp: ^BindsPane, binds: []Bind, errs: []Bind_Error) {
 }
 
 binds_pane_destroy :: proc(bp: ^BindsPane) {
+    delete(bp.note)
     delete(bp.working)
     for e in bp.errs {
         delete(e.text)
@@ -108,6 +110,14 @@ binds_pane_move :: proc(bp: ^BindsPane, delta: int) {
     bp.sel = clamp(bp.sel + delta, 0, max(0, binds_pane_rows(bp) - 1))
     bp.chord = 0
     bp.capture = .None
+    binds_note(bp, "")
+}
+
+// What `:rebind` last did, said on the pane's own status row. **Not a t1 echo**: that surfaces
+// the terminal, and a command you ran from this pane must not throw you out of it.
+binds_note :: proc(bp: ^BindsPane, msg: string) {
+    delete(bp.note)
+    bp.note = strings.clone(msg)
 }
 
 // Left/Right walk the chords ON the selected action's row — with ^C and ^Y both on clip.copy,
@@ -124,8 +134,10 @@ binds_pane_cycle :: proc(bp: ^BindsPane, delta: int) {
 
 // --- the edits, shared by the pane and the `:rebind` builtin ---
 
-// Put `c` on `act`: at slot `n` when replacing, beside what is there when adding. Whoever else
-// held it in a context they share loses it, and is named back — the typed line was the confirm.
+// Put `c` on `act` at slot `n`, or past the end when adding. **A slot one past the end is an
+// APPEND**, which is what makes an action you unbound to nothing bindable again: replacing its
+// first chord and giving it a first chord are the same gesture. Whoever else held the chord in a
+// context they share loses it, and is named back.
 bind_set :: proc(
     bp: ^BindsPane,
     act: Action,
@@ -141,23 +153,24 @@ bind_set :: proc(
         return .None, .Bare_In_Text, false // the loader refuses this too
     }
     at := binds_of(bp, act)
-    if !add && (n < 0 || n >= len(at)) {
-        return .None, .Already_Bound, false // no such slot to replace
+    slot := add ? len(at) : n
+    if slot < 0 || slot > len(at) {
+        return .None, .No_Slot, false
     }
     took, _ = bind_holder(bp.working[:], c, act)
+    // Only OTHER actions lose rows here, so `slot` stays in range; the indices shift under it.
     for i := len(bp.working) - 1; i >= 0; i -= 1 {
         if bp.working[i].act != act && bind_clash(bp.working[i], Bind{c, act}) {
             ordered_remove(&bp.working, i)
         }
     }
-    at = binds_of(bp, act) // the removals above may have shifted them
-    if add {
-        bp.chord = len(at)
+    at = binds_of(bp, act)
+    if slot == len(at) {
         append(&bp.working, Bind{c, act})
     } else {
-        bp.working[at[n]] = {c, act}
-        bp.chord = n
+        bp.working[at[slot]] = {c, act}
     }
+    bp.chord = slot
     bp.dirty = true
     return took, {}, true
 }

@@ -340,7 +340,7 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
     case "cf":
         set_aux(a, .Config)
         config_pane_refresh(&a.config_pane)
-    case "binds":
+    case "bind", "binds":
         set_aux(a, .Binds)
     case "rebind":
         cl_rebind(a, args)

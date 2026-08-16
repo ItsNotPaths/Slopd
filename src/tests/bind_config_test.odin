@@ -68,7 +68,18 @@ test_chord_round_trip :: proc(t: ^testing.T) {
         testing.expect_value(t, app.chord_string(p, context.temp_allocator), s)
     }
 
-    for s in ([]string{"", "ctrl+", "meta+a", "ctrl+ctrl+a", "ctrl+nope", "+"}) {
+    // Spaces around the + are read, and printed back out of them: tolerant in, canonical out.
+    for s in ([]string{"alt + right", "ctrl +alt+ shift + z", "  alt+;  "}) {
+        p, pok := app.chord_parse(s)
+        testing.expectf(t, pok, "%q did not parse", s)
+        tight, _ := app.chord_parse(strings.trim_space(strings.concatenate(
+            strings.split(s, " ", context.temp_allocator),
+            context.temp_allocator,
+        )))
+        testing.expect_value(t, p, tight)
+    }
+
+    for s in ([]string{"", "ctrl+", "meta+a", "ctrl+ctrl+a", "ctrl+nope", "+", "alt + + right"}) {
         _, pok := app.chord_parse(s)
         testing.expectf(t, !pok, "%q should not parse", s)
     }

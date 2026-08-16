@@ -83,7 +83,7 @@ gesture renders in the alert colour until you touch it.
 | `:f` / `:find` | literal search of the open buffer; smart case, `Up`/`Down` cycle the hits |
 | `:grep <re>` | project-wide search into the Grep pane |
 | `:cd [dir]` | set the project root · `:tu` syncs unlocked terminals |
-| `:ls` `:cf` `:gs` `:binds` | filetree (also: refresh) · config · git tool · key bindings |
+| `:ls` `:cf` `:gs` `:bind` | filetree (also: refresh) · config · git tool · key bindings (`:binds` too) |
 | `:rebind [+\|-\|N] <action> [chord]` | edit a binding — `:rebind + nav.down alt+j` |
 | `:put [text]` | type text + the editor selection into the target terminal, no newline |
 | `:reload y\|n` | answer a disk conflict: take the disk version, or keep mine (`:w` overwrites) |
@@ -191,7 +191,7 @@ browser's sidebar, and `[binds]` is the key table.
 
 ## Rebinding
 
-`:binds` (or the Config pane's `bindings` row) opens the binds pane: one row per action, its
+`:bind` / `:binds` (or the Config pane's `bindings` row) opens the binds pane: one row per action, its
 chords beside it. Its own keys are fixed, so rebinding cannot lock you out of it.
 
 | | |

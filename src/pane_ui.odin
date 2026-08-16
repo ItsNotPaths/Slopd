@@ -27,9 +27,17 @@ list_geom :: proc(
     return area, row_h, max(1, int(area.h / row_h)), int(f32(area.w) / cell_w)
 }
 
+// A run of the value column with its own colour, for a value made of several small words —
+// which is how the binds pane lights the one chord Left/Right has landed on.
+Pane_Span :: struct {
+    text:  string,
+    color: [3]f32,
+}
+
 Pane_Row :: struct {
     text:   string,
-    value:  string, // drawn at the shared value column, unless `field` replaces it
+    value:  string, // drawn at the shared value column, unless `spans` or `field` replaces it
+    spans:  []Pane_Span, // several coloured runs instead of `value`, when one needs picking out
     item:   int, // the navigable row this selects, or -1 for chrome
     indent: i32,
     flush:  bool, // spans from the margin with no value column: a rule or a title
@@ -143,12 +151,17 @@ pane_declare :: proc(a: ^App, f: ^Font, d: Pane_Draw, rows: []Pane_Row) {
                         clay.Text(r.text, clay_text_config(r.color, lh))
                     }
                     // A Custom, because carets are over-quads (field_ui.odin).
-                    if r.field != nil {
+                    switch {
+                    case r.field != nil:
                         field_declare(
                             clay.ID(d.ids.edit, u32(i)),
                             {doc = r.field, now = d.now, caret = r.caret},
                         )
-                    } else if r.value != "" {
+                    case len(r.spans) > 0:
+                        for s in r.spans {
+                            clay.Text(s.text, clay_text_config(s.color, lh))
+                        }
+                    case r.value != "":
                         clay.Text(r.value, clay_text_config(r.vcolor, lh))
                     }
                 }

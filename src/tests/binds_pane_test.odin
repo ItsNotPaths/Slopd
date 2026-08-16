@@ -224,10 +224,40 @@ test_binds_rows_flatten :: proc(t: ^testing.T) {
     testing.expect_value(t, actions, len(app.Action) - 1)
     testing.expect(t, headers > 2, "one header per action group, plus the two blocks above")
 
-    // Both chords are listed, and the highlighted one is called out.
-    testing.expect(t, strings.contains(chords, "ctrl+c"))
-    testing.expect(t, strings.contains(chords, "ctrl+y"))
-    testing.expect(t, strings.contains(chords, "[ctrl+c]"))
+    // Both chords are listed, once each — the highlight is a colour, not a second copy.
+    testing.expect_value(t, chords, "ctrl+c ctrl+y")
+}
+
+// The lit row splits its chords into coloured runs so ←/→ pick one out IN PLACE; every other row
+// stays one string. An appended copy of the selected chord would read as a third binding.
+@(test)
+test_binds_highlights_the_selected_chord_in_place :: proc(t: ^testing.T) {
+    a: app.App
+    fixture(&a)
+    defer app.binds_pane_destroy(&a.binds_pane)
+    a.theme = app.default_theme()
+    bp := &a.binds_pane
+    bp.sel = row_of(bp, .Clip_Copy)
+    bp.chord = 1 // ^y
+
+    rows := app.binds_rows(bp, 40, context.temp_allocator)
+    ui := app.binds_draw_rows(&a, rows, context.temp_allocator)
+    lit, other: app.Pane_Row
+    for r in ui {
+        if r.sel && len(r.spans) > 0 {
+            lit = r
+        } else if r.item > app.ROW_BINDS_ERRS && len(r.spans) == 0 && r.value != "" {
+            other = r
+        }
+    }
+    testing.expect_value(t, len(lit.spans), 2)
+    testing.expect_value(t, lit.spans[0].text, "ctrl+c")
+    testing.expect_value(t, lit.spans[1].text, " ctrl+y") // the run carries its own separator
+    testing.expect_value(t, lit.spans[1].color, a.theme.accent)
+    testing.expect_value(t, lit.spans[0].color, a.theme.fg)
+    testing.expect(t, lit.spans[0].color != lit.spans[1].color)
+
+    testing.expect(t, other.value != "", "an unlit row keeps its one-colour string")
 }
 
 // The pane must refuse what the LOADER refuses, or Ctrl+S writes a file that will not read back.
@@ -318,7 +348,7 @@ test_bind_set_replaces_adds_and_takes :: proc(t: ^testing.T) {
     testing.expect_value(t, len(at), 2)
     testing.expect_value(t, bp.working[at[1]].chord, app.Chord{glfw.KEY_J, A})
 
-    // A slot that is not there is refused rather than appended by accident.
+    // A slot well past the end is a mistake, not an append.
     _, _, miss := app.bind_set(bp, .Clip_Copy, 7, app.Chord{glfw.KEY_K, A}, false)
     testing.expect(t, !miss)
 
@@ -355,4 +385,82 @@ test_rebind_line_and_mode_toggle :: proc(t: ^testing.T) {
     testing.expect_value(t, bp.mode, app.Bind_Edit.Capture)
     app.binds_pane_activate(&a)
     testing.expect_value(t, bp.mode, app.Bind_Edit.Fill)
+}
+
+// **Unbinding must not be a one-way door.** With its last chord gone an action has no slot 0, so
+// a replace has to land as the first chord rather than refusing — which is exactly what happens
+// when you clear focus.aux and then try to give it a key again.
+@(test)
+test_rebind_an_action_with_no_chords :: proc(t: ^testing.T) {
+    a: app.App
+    fixture(&a)
+    defer app.binds_pane_destroy(&a.binds_pane)
+    bp := &a.binds_pane
+
+    // clip.copy down to nothing.
+    testing.expect(t, app.bind_clear(bp, .Clip_Copy, 0))
+    testing.expect(t, app.bind_clear(bp, .Clip_Copy, 0))
+    testing.expect_value(t, len(app.binds_of(bp, .Clip_Copy)), 0)
+    testing.expect_value(t, bp.chord, 0)
+
+    // Capture on the empty row: a replace of slot 0 puts the first chord back.
+    bp.sel = row_of(bp, .Clip_Copy)
+    app.binds_pane_capture(bp, false)
+    app.binds_pane_take(bp, app.Chord{glfw.KEY_J, C})
+    testing.expect_value(t, bp.capture, app.Bind_Capture.None)
+    at := app.binds_of(bp, .Clip_Copy)
+    testing.expect_value(t, len(at), 1)
+    testing.expect_value(t, bp.working[at[0]].chord, app.Chord{glfw.KEY_J, C})
+
+    // One past the end appends; further out is a mistake worth reporting.
+    _, _, ok := app.bind_set(bp, .Clip_Copy, 1, app.Chord{glfw.KEY_K, C}, false)
+    testing.expect(t, ok)
+    testing.expect_value(t, len(app.binds_of(bp, .Clip_Copy)), 2)
+
+    _, why, far := app.bind_set(bp, .Clip_Copy, 6, app.Chord{glfw.KEY_L, C}, false)
+    testing.expect(t, !far)
+    testing.expect_value(t, why, app.Bind_Fault.No_Slot)
+    testing.expect(t, app.bind_fault_text(why) != "")
+}
+
+// `:rebind` reports on the PANE, never in t1 — a t1 echo surfaces the terminal, and a command
+// staged from this pane must not throw you out of it to read its own answer.
+@(test)
+test_rebind_reports_on_the_pane :: proc(t: ^testing.T) {
+    a: app.App
+    fixture(&a)
+    defer app.binds_pane_destroy(&a.binds_pane)
+    bp := &a.binds_pane
+
+    app.cl_rebind(&a, "+ file.mark alt+j")
+    testing.expect(t, strings.contains(bp.note, "alt+j"), bp.note)
+    testing.expect_value(t, len(app.binds_of(bp, .File_Mark)), 1)
+
+    // A taken chord names who lost it.
+    app.cl_rebind(&a, "+ file.mark ctrl+c")
+    testing.expect(t, strings.contains(bp.note, "clip.copy"), bp.note)
+
+    // And a typo says so rather than going quiet.
+    app.cl_rebind(&a, "+ file.nonsense alt+k")
+    testing.expect(t, strings.contains(bp.note, "not an action"), bp.note)
+
+    // Moving the selection clears it: the row goes back to reporting the save state.
+    app.binds_pane_move(bp, 1)
+    testing.expect_value(t, bp.note, "")
+}
+
+// `:bind` and `:binds` both open the pane — the singular is what your fingers reach for after
+// typing `:rebind`, and an alias costs one case in the registry.
+@(test)
+test_bind_builtin_opens_the_pane :: proc(t: ^testing.T) {
+    for name in ([]string{":bind", ":binds"}) {
+        a: app.App
+        fixture(&a)
+        defer app.binds_pane_destroy(&a.binds_pane)
+        a.aux_mode = .FileTree
+
+        app.cl_dispatch(&a, name, true)
+        testing.expectf(t, a.aux_mode == .Binds, "%s did not open the pane", name)
+        testing.expect_value(t, a.focus, app.Focus.Aux)
+    }
 }

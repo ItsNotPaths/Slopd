@@ -152,13 +152,14 @@ chord_parse :: proc(s: string) -> (c: Chord, ok: bool) {
     if rest == "" {
         return {}, false
     }
-    // The key is the last field; a '+' KEY does not exist, so splitting on it is unambiguous.
+    // The key is the last field; a '+' KEY does not exist, so splitting on it is unambiguous —
+    // which is also what lets each piece be trimmed, so `alt + right` reads as `alt+right`.
     for {
         plus := strings.index_byte(rest, '+')
         if plus < 0 {
             break
         }
-        name := rest[:plus]
+        name := strings.trim_space(rest[:plus])
         bit := i32(0)
         for m in MOD_NAMES {
             if m.name == name {
@@ -169,7 +170,7 @@ chord_parse :: proc(s: string) -> (c: Chord, ok: bool) {
             return {}, false // not a modifier, or named twice
         }
         c.mods |= bit
-        rest = rest[plus + 1:]
+        rest = strings.trim_space(rest[plus + 1:])
     }
     c.key = key_from_name(rest) or_return
     return c, true
@@ -196,13 +197,15 @@ action_from_name :: proc(s: string) -> (Action, bool) {
     return .None, false
 }
 
-// --- what a bad `[binds]` line reports ---
+// --- why an edit was refused --- The `[binds]` loader and the pane's own edits report the same
+// set, so a chord the file rejects is one the pane rejects too.
 
 Bind_Fault :: enum {
     Bad_Chord, // the left side names no key
     Bad_Action, // the right side names no verb
     Bare_In_Text, // a bare key where typing happens: it would eat a letter
     Already_Bound, // an earlier line in the block took the chord
+    No_Slot, // `:rebind N` named a chord this action does not have
 }
 
 // A line the loader refused. It is NOT a live bind, so it carries its own text: the config pane
@@ -219,6 +222,7 @@ bind_fault_text :: proc(why: Bind_Fault) -> string {
     case .Bad_Action:    return "no such action"
     case .Bare_In_Text:  return "a bare key would stop this letter typing"
     case .Already_Bound: return "this chord is already bound above"
+    case .No_Slot:       return "this action has no chord there"
     }
     return ""
 }
