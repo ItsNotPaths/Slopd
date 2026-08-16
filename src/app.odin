@@ -183,6 +183,11 @@ App :: struct {
     // double-click has output you want to see. See open_or_run.
     run_term: int,
 
+    // Which chord a focused terminal reads as COPY, and which one the shell gets (config
+    // `term_ctrl_c`). The two always swap, so exactly one of them reaches the job. See
+    // Term_Ctrl_C (config.odin) and term_clip_chord (input.odin).
+    term_ctrl_c: Term_Ctrl_C,
+
     // Mouse (mouse.odin). `mouse` mirrors the GLFW pointer callbacks; `mouse_on` is the config
     // toggle. `lay` is the layout the LAST FRAME PAINTED, cached by render: pointer events
     // arrive between frames and must resolve against what is on screen. Zero rects until then.

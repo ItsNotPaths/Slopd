@@ -40,6 +40,22 @@ File_Pane :: enum {
     Browser,
 }
 
+// What Ctrl+C does at a FOCUSED TERMINAL, and with it what Ctrl+Shift+C does — the two always
+// swap, so exactly one of them reaches the shell and the other copies. Everywhere else in Slopd
+// Ctrl+C is copy and this changes nothing.
+//
+//   Stop  the terminal reflex: ^C interrupts the job, ^Shift+C copies the selection.
+//   Copy  the desktop reflex: ^C copies, ^Shift+C interrupts. This is the mode for a
+//         desktop-wide copy chord (Omarchy's SUPER+C, which reaches us as a plain Ctrl+C —
+//         the compositor cannot see that a PANE inside our window is a terminal).
+//
+// In Copy mode a ^C with no selection copies nothing and does NOT fall through: the interrupt
+// lives on ^Shift+C and nowhere else, which is the price of a fixed mapping.
+Term_Ctrl_C :: enum {
+    Stop,
+    Copy,
+}
+
 // Config — Slopd's own simple `key: value` file. Points at a theme file and holds a few
 // editor settings. It lives in ONE directory, which install.odin picks (see config_file) —
 // beside the binary, or ~/.config/slopd once installed. Anything missing keeps the defaults
@@ -63,6 +79,7 @@ Config :: struct {
     git_tool:         string, // external git tool Alt+G hands the project root to (owned); "" = none
     git_term:         int, // which terminal session to run it in; 0 = spawn it detached
     run_term:         int, // which terminal session an activated executable runs in
+    term_ctrl_c:      Term_Ctrl_C, // focused terminal: does ^C interrupt or copy (^Shift+C takes the other)
     grep_pane_always: bool, // CL grep: always open the results pane vs jump straight on a lone hit
     conflict_prompt:  bool, // disk changed under unsaved edits: prompt (y/n in the CL) vs silently keep my edits
     mouse:            bool, // pointer input (wheel, and the clicks that follow it) on/off
@@ -119,6 +136,7 @@ load_config :: proc() -> Config {
         folder_cd_run   = false, // stage the cd in the CL by default (reviewable)
         git_term        = 0, // detached by default: a GUI tool wants its own window, not a PTY
         run_term        = 1, // t1, the master CL terminal, unless you point it elsewhere
+        term_ctrl_c     = .Stop, // ^C interrupts, as it does in every other terminal
         grep_pane_always = true, // always show the results pane (no auto-jump on a lone hit)
         conflict_prompt = true, // ask before a disk change is reconciled against unsaved edits
         mouse           = true, // pointer input on; it is purely additive to the keyboard
@@ -194,6 +212,8 @@ load_config :: proc() -> Config {
             // A session number and nothing else — unlike git_term there is no detached case,
             // because a program you double-click has output you want to SEE. Junk keeps t1.
             if v, ok := strconv.parse_int(val); ok && v > 0 {cfg.run_term = v}
+        case "term_ctrl_c":
+            if v, ok := parse_term_ctrl_c(val); ok {cfg.term_ctrl_c = v}
         case "grep_pane":
             if v, ok := parse_on_off(val); ok {cfg.grep_pane_always = v}
         case "disk_conflict":
@@ -292,6 +312,8 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return ON_OFF_OPTS[:]
     case .FilePane:
         return FILE_PANE_OPTS[:]
+    case .TermCtrlC:
+        return TERM_CTRL_C_OPTS[:]
     case .FolderCd:
         return STAGE_RUN_OPTS[:]
     case .DiskConflict:
@@ -307,6 +329,7 @@ ON_OFF_OPTS := [?]string{"on", "off"}
 STAGE_RUN_OPTS := [?]string{"stage", "run"}
 PROMPT_KEEP_OPTS := [?]string{"prompt", "keep"}
 FILE_PANE_OPTS := [?]string{"ls", "browser"}
+TERM_CTRL_C_OPTS := [?]string{"stop", "copy"}
 
 // "default" first, then every themes/<name>.theme in the themes folder, sorted.
 // Names are cloned into `allocator`; the returned slice is too.
@@ -374,6 +397,7 @@ Setting :: enum {
     Whitespace,
     FolderCd,
     RunTerm,
+    TermCtrlC,
     GitTool,
     GitTerm,
     GrepPane,
@@ -402,6 +426,7 @@ setting_key :: proc(s: Setting) -> string {
     case .Whitespace:   return "whitespace"
     case .FolderCd:     return "folder_cd"
     case .RunTerm:      return "run_term"
+    case .TermCtrlC:    return "term_ctrl_c"
     case .GitTool:      return "git_tool"
     case .GitTerm:      return "git_term"
     case .GrepPane:     return "grep_pane"
@@ -428,6 +453,7 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .Whitespace:   return on_off(a.show_whitespace)
     case .FolderCd:     return a.folder_cd_run ? "run" : "stage"
     case .RunTerm:      return fmt.tprintf("%d", max(1, a.run_term))
+    case .TermCtrlC:    return a.term_ctrl_c == .Copy ? "copy" : "stop"
     case .GitTool:      return a.git_tool // free text; "" is unset (Alt+G opens a shell)
     case .GitTerm:      return a.git_term <= 0 ? GIT_TERM_DETACHED : fmt.tprintf("%d", a.git_term)
     case .GrepPane:     return on_off(a.grep_pane_always)
@@ -476,6 +502,8 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
             return false // every value is a session; there is no detached case here
         }
         a.run_term = n
+    case .TermCtrlC:
+        a.term_ctrl_c = parse_term_ctrl_c(val) or_return
     case .GitTool:
         // Free text, so this is the one setting that can be typed UNREADABLE: a value carrying a
         // comment-opening '#' writes whole but reads back truncated, and the pane would show a
@@ -637,6 +665,17 @@ parse_scroll_mode :: proc(s: string) -> (mode: Scroll_Mode, ok: bool) {
     case "middle": return .Middle, true
     }
     return .Follow, false
+}
+
+// Parses which chord a focused terminal reads as copy: "stop" leaves ^C to the job and copies
+// on ^Shift+C; "copy" swaps the pair. ok=false on anything else (an invalid edit keeps the old
+// value, like the other settings).
+parse_term_ctrl_c :: proc(s: string) -> (mode: Term_Ctrl_C, ok: bool) {
+    switch s {
+    case "stop": return .Stop, true
+    case "copy": return .Copy, true
+    }
+    return .Stop, false
 }
 
 // Parses the folder-cd action's stage/run value; ok=false on anything else (an invalid

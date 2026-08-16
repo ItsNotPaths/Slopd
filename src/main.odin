@@ -9,6 +9,7 @@ import "vendor:glfw"
 WIDTH :: 1200
 HEIGHT :: 760
 TITLE :: "Slopd"
+APP_ID :: "slopd" // Wayland app-id / X11 instance name — what a window rule names us by
 
 GL_MAJOR :: 3
 GL_MINOR :: 3
@@ -37,6 +38,15 @@ main :: proc() {
     glfw.WindowHint(glfw.CONTEXT_VERSION_MINOR, GL_MINOR)
     glfw.WindowHint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
     glfw.WindowHint(glfw.OPENGL_FORWARD_COMPAT, true) // required on macOS
+
+    // The window's IDENTITY to the desktop, and the one thing a window manager matches rules on:
+    // app-id on Wayland, WM_CLASS on X11. GLFW leaves all three empty unless they are set here,
+    // and an empty app-id is INVISIBLE to a rule — `hyprctl clients` shows a blank class, and no
+    // window rule, tag or theme can ever name Slopd. APP_ID is the binary's name, which is also
+    // what a slopd.desktop would be called, so a launcher can match the window to its entry.
+    glfw.WindowHintString(glfw.WAYLAND_APP_ID, APP_ID)
+    glfw.WindowHintString(glfw.X11_CLASS_NAME, TITLE)
+    glfw.WindowHintString(glfw.X11_INSTANCE_NAME, APP_ID)
 
     window := glfw.CreateWindow(WIDTH, HEIGHT, TITLE, nil, nil)
     if window == nil {
@@ -88,6 +98,7 @@ main :: proc() {
     app.git_tool = strings.clone(cfg.git_tool) // owned: the Config pane can rewrite it
     app.git_term = cfg.git_term
     app.run_term = cfg.run_term
+    app.term_ctrl_c = cfg.term_ctrl_c
     app.grep_pane_always = cfg.grep_pane_always
     app.conflict_prompt = cfg.conflict_prompt
     app.mouse_on = cfg.mouse

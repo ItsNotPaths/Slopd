@@ -113,6 +113,18 @@ key_is_modifier :: proc(key: i32) -> bool {
     return false
 }
 
+// Is this the terminal pane's CLIPBOARD half of the Ctrl+C / Ctrl+Shift+C pair? The config
+// setting `term_ctrl_c` swaps which half copies (see Term_Ctrl_C, config.odin), and the other
+// half falls through to the shell — so the two chords never both mean the same thing, and one
+// of them always reaches the job. Ctrl is required either way; the answer is Shift's state.
+term_clip_chord :: proc(a: ^App, mods: i32) -> bool {
+    if mods & glfw.MOD_CONTROL == 0 {
+        return false
+    }
+    shift := mods & glfw.MOD_SHIFT != 0
+    return shift == (a.term_ctrl_c == .Stop)
+}
+
 key_callback :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: i32) {
     context = runtime.default_context()
     a := (^App)(glfw.GetWindowUserPointer(window))
@@ -407,20 +419,18 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         }
     }
 
-    // Ctrl+Shift+C copies the terminal's line selection to the clipboard (the shell
-    // gets plain Ctrl+C; Shift carves out the copy). Checked before the routing below
-    // so libvterm never sees it.
-    if ts := term_sel_target(a);
-       ts != nil && key == glfw.KEY_C && mods & glfw.MOD_CONTROL != 0 && mods & glfw.MOD_SHIFT != 0 {
+    // The terminal's clipboard chord copies its line selection (Ctrl+Shift+C by default, Ctrl+C
+    // under `term_ctrl_c: copy`). Checked before the routing below so libvterm never sees it;
+    // the OTHER half of the pair falls through and reaches the shell as ^C.
+    if ts := term_sel_target(a); ts != nil && key == glfw.KEY_C && term_clip_chord(a, mods) {
         term_copy(a, ts)
         return
     }
 
-    // Ctrl+Shift+V pastes into the terminal, the mirror of the copy above. Gated on the PANE
-    // rather than on a live shell so a dead session swallows it: falling through would reach
-    // terminal_input_key, which sees only the Ctrl and sends ^V — readline's quoted-insert.
-    if ts := term_sel_target(a);
-       ts != nil && key == glfw.KEY_V && mods & glfw.MOD_CONTROL != 0 && mods & glfw.MOD_SHIFT != 0 {
+    // The paste chord, the mirror of the copy above. Gated on the PANE rather than on a live
+    // shell so a dead session swallows it: falling through would reach terminal_input_key,
+    // which sees only the Ctrl and sends ^V — readline's quoted-insert.
+    if ts := term_sel_target(a); ts != nil && key == glfw.KEY_V && term_clip_chord(a, mods) {
         term_paste(a, ts)
         return
     }

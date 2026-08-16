@@ -2,6 +2,7 @@ package tests
 
 import app ".."
 import "core:testing"
+import "vendor:glfw"
 
 @(private = "file")
 mkdoc :: proc(s: string) -> app.Doc {
@@ -33,6 +34,41 @@ test_copy_line_when_no_selection :: proc(t: ^testing.T) {
     defer app.doc_destroy(&d)
     joined, _ := app.doc_copy(&d, context.temp_allocator)
     testing.expect_value(t, joined, "hello\n") // whole line + newline
+}
+
+// The terminal's copy chord is one of the Ctrl+C / Ctrl+Shift+C pair, and `term_ctrl_c` says
+// which. The other half must fall through in BOTH modes — that is what reaches the shell.
+@(test)
+test_term_clip_chord_swaps_with_config :: proc(t: ^testing.T) {
+    CTRL :: i32(glfw.MOD_CONTROL)
+    SHIFT :: i32(glfw.MOD_SHIFT)
+    a: app.App
+
+    a.term_ctrl_c = .Stop
+    testing.expect(t, app.term_clip_chord(&a, CTRL | SHIFT)) // ^Shift+C copies
+    testing.expect(t, !app.term_clip_chord(&a, CTRL)) // ^C is the job's
+
+    a.term_ctrl_c = .Copy
+    testing.expect(t, app.term_clip_chord(&a, CTRL)) // ^C copies
+    testing.expect(t, !app.term_clip_chord(&a, CTRL | SHIFT)) // ^Shift+C is the job's
+
+    // No Ctrl, no chord — in either mode a bare or Shift-only key is text.
+    testing.expect(t, !app.term_clip_chord(&a, 0))
+    testing.expect(t, !app.term_clip_chord(&a, SHIFT))
+}
+
+@(test)
+test_parse_term_ctrl_c :: proc(t: ^testing.T) {
+    m, ok := app.parse_term_ctrl_c("copy")
+    testing.expect(t, ok)
+    testing.expect_value(t, m, app.Term_Ctrl_C.Copy)
+
+    m, ok = app.parse_term_ctrl_c("stop")
+    testing.expect(t, ok)
+    testing.expect_value(t, m, app.Term_Ctrl_C.Stop)
+
+    _, ok = app.parse_term_ctrl_c("yes") // junk keeps the old value: ok=false
+    testing.expect(t, !ok)
 }
 
 @(test)

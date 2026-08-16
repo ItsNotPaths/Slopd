@@ -38,6 +38,7 @@ Non-modal / Alt-rooted: bare keys type, arrows navigate, chords live under Alt.
 | `Alt+1..9`, `Alt+Up/Down` | terminal session N / prev / next (switcher shows while Alt is held) |
 | `Alt+N` `Alt+Q` `Alt+L` | terminal: new · close · lock its cwd |
 | `Ctrl+Alt+Up/Down`, `PageUp/Down` | terminal copy cursor (`Shift+Alt+Up/Down` extends, `Ctrl+Shift+C` copies) |
+| `term_ctrl_c: copy` | swaps that pair in the terminal: `Ctrl+C` copies, `Ctrl+Shift+C` interrupts — for a desktop-wide copy chord such as Omarchy's `Super+C` |
 | `Alt+G` | hand the project root to the configured git tool |
 | `Alt+A` + arrow | drop a multi-cursor trail (`Alt+M` = next motion moves all, `Esc` collapses) |
 | `Ctrl+Up/Down` | jump `jump_lines` lines · `Ctrl+Enter` fold/unfold the block |
