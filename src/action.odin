@@ -20,6 +20,7 @@ Action :: enum {
     Aux_Filetree,
     Aux_Terminal,
     Aux_Grep,
+    Ws_Find,
     Split_Grow,
     Split_Shrink,
     Escape,
@@ -105,6 +106,7 @@ Editable :: enum {
     Buffer,
     Command_Line,
     Browse_Path,
+    Workspace_Find,
     Config_Search,
     Config_Value,
 }
@@ -112,6 +114,10 @@ Editable :: enum {
 active_editable :: proc(a: ^App) -> (Editable, ^Doc) {
     if a.cl_active {
         return .Command_Line, &a.cl.doc // a transient overlay that owns the keys while it is up
+    }
+    if wsfind_live(a) {
+        // Ahead of the path line: opening the prompt closes that one, so they are never both up.
+        return .Workspace_Find, &a.wsfind.query
     }
     if filebrowser_path_live(a) {
         return .Browse_Path, &a.filebrowser.path
@@ -206,6 +212,8 @@ action_run :: proc(a: ^App, act: Action, n: int, extend, all: bool) -> (handled:
         term_ensure(a) // spawn t1 on first reveal of the terminal pane
     case .Aux_Grep:
         set_aux(a, .Grep) // re-focus the results pane (last search)
+    case .Ws_Find:
+        wsfind_open(a) // the file pane, with its top bar as the WORKSPACE/ prompt
     case .Split_Shrink:
         a.split = clampf(a.split - 0.02, SPLIT_MIN, SPLIT_MAX)
     case .Split_Grow:
@@ -480,6 +488,18 @@ nav_run :: proc(a: ^App, n: Nav, extend, all: bool) -> bool {
         }
         doc_step(d, n, extend, all)
         return true
+    case .Workspace_Find:
+        // The other one-line bar with a LIST under it, so Up/Down are the list's, as the config
+        // pane's text rows hand theirs to the rows.
+        switch n {
+        case .Up:
+            wsfind_move(&a.wsfind, -1)
+        case .Down:
+            wsfind_move(&a.wsfind, 1)
+        case .Left, .Right:
+            doc_step(d, n, extend, all)
+        }
+        return true
     case .Config_Search, .Config_Value:
         // A text row still walks ROWS on Up/Down: leaving the row is how you commit it.
         switch n {
@@ -537,6 +557,9 @@ activate_run :: proc(a: ^App, extend: bool) -> bool {
     case .Browse_Path:
         filebrowser_path_commit(a)
         return true
+    case .Workspace_Find:
+        wsfind_activate(a) // open the highlighted row; the prompt closes with it
+        return true
     case .Config_Value:
         config_edit_commit(a)
         return true
@@ -582,7 +605,7 @@ clip_take :: proc(a: ^App, cut: bool) -> bool {
     case .Buffer:
         if cut {editor_cut(a)} else {editor_copy(a)}
         return true
-    case .Command_Line, .Browse_Path, .Config_Search, .Config_Value:
+    case .Command_Line, .Browse_Path, .Workspace_Find, .Config_Search, .Config_Value:
         field_copy(a, d, cut) // a field with nothing selected copies nothing, and still claims it
         return true
     case .None:
@@ -608,7 +631,7 @@ clip_put :: proc(a: ^App) -> bool {
     case .Buffer:
         editor_paste(a)
         return true
-    case .Command_Line, .Browse_Path, .Config_Search, .Config_Value:
+    case .Command_Line, .Browse_Path, .Workspace_Find, .Config_Search, .Config_Value:
         field_paste(a, d)
         return true
     case .None:
@@ -687,6 +710,8 @@ escape_run :: proc(a: ^App, move_all_pending: bool) {
         cl_cancel(a)
     case kind == .Browse_Path:
         filebrowser_path_cancel(a) // the path bar goes back to being buttons
+    case kind == .Workspace_Find:
+        wsfind_close(a) // the prompt comes down; the listing it covered is as you left it
     case move_all_pending:
     // handle_key already spent the prefix; swallowing the key here IS the cancel.
     case kind == .Buffer && len(d.cursors) > 1:

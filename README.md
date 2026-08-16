@@ -33,6 +33,7 @@ Non-modal / Alt-rooted: bare keys type, arrows navigate, chords live under Alt.
 |---|---|
 | `Alt+Left/Right`, `Alt+E` | focus editor / aux |
 | `Alt+F` `Alt+T` `Alt+R` | aux mode: filetree, terminal, grep results |
+| `Alt+P` | workspace jump: the file pane's top bar becomes `WORKSPACE/` — the unsaved ring, then fuzzy matches over the project's files as you type |
 | `Alt+C` `Alt+;` | command line: a shell line · the same line with the builtin `:` typed |
 | `Alt+W` | open it pre-filled with `:j `, ready for a line number |
 | `Alt+Enter` | editor: follow the token under the caret (def / URL / `[[file]]` / colour) · filetree: `:cd` to the folder |
@@ -49,8 +50,16 @@ Non-modal / Alt-rooted: bare keys type, arrows navigate, chords live under Alt.
 
 Filetree file ops are `Ctrl` chords (`^y` mark, `^u` unmark all, `^c` copy, `^x` cut, `^v`
 paste, `^d` delete, `^w` path, `^h` set the workspace to the browsed folder — `:cd` plus `:tu` in
-one keystroke); hold `Ctrl` for the cheat-sheet bar, or **right-click** for the same list as
-buttons.
+one keystroke); hold `Ctrl` for the cheat-sheet bar under EITHER face, or **right-click** for the
+same list as buttons.
+
+`Alt+P` puts a `WORKSPACE/` prompt in that pane's top bar, under either face. With nothing typed
+it lists the unsaved ring (red, starred); type and it lists fuzzy matches over every file under
+the project root. `Up`/`Down` pick, `Enter` opens, `Esc` puts the listing back untouched.
+
+What it walks is the config's `exclude:` line, a one comma-separated list of directory names in
+grep's own `--exclude-dir` syntax (`exclude: .git, vendor, node_modules`), shared by the prompt,
+`:grep`, Alt+Enter and the by-name file lookups, and editable as a text row in the Config pane.
 
 ## File browser
 

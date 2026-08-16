@@ -74,6 +74,7 @@ Config :: struct {
     file_pane:        File_Pane, // which presentation the filetree pane wears
     file_view:        Browse_View, // the browser's contents: list or grid (its toggle writes this back)
     file_icons:       bool, // per-type icons in the browser (needs the vendored icon face)
+    exclude:          string, // directories the project-wide tools skip, comma separated (owned)
 }
 
 // The config file's one section header. Everything below it is data rather than settings, and
@@ -147,6 +148,8 @@ load_config :: proc() -> Config {
         file_view       = .List,
         file_icons      = true, // free where the icon face was vendored, and inert where it wasn't
     }
+    // `exclude` has no floor here: the shipped file names it, and an empty list is a legitimate
+    // value (search everything) that a floor could never be told apart from.
     config_parse(DEFAULT_CONFIG_SRC, &cfg)
     if src, _ := os.read_entire_file_from_path(config_file(), context.temp_allocator); src != nil {
         config_parse(string(src), &cfg)
@@ -241,6 +244,9 @@ config_parse :: proc(src: string, cfg: ^Config) {
             if v, ok := parse_file_view(val); ok {cfg.file_view = v}
         case "file_icons":
             if v, ok := parse_on_off(val); ok {cfg.file_icons = v}
+        case "exclude":
+            delete(cfg.exclude)
+            cfg.exclude = strings.clone(val)
         }
     }
 }
@@ -262,6 +268,7 @@ parse_indent :: proc(s: string) -> (Indent, bool) {
 config_destroy :: proc(cfg: ^Config) {
     delete(cfg.theme_path)
     delete(cfg.git_tool)
+    delete(cfg.exclude)
 }
 
 // TEST SEAM, empty in a real run: the config file to use instead of the one beside the
@@ -332,7 +339,7 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return INDENT_OPTS[:]
     case .Theme:
         return theme_options(context.temp_allocator)
-    case .GitTool:
+    case .GitTool, .Exclude:
         return nil // free text, not a choice — see setting_is_text
     case .GitTerm:
         return term_options(a.git_term, true, term_count(a), context.temp_allocator)
@@ -441,13 +448,15 @@ Setting :: enum {
     Hover,
     FilePane,
     FileIcons,
+    Exclude,
 }
 
 // Whether a setting is FREE TEXT rather than a choice — the row is an editor, not a dropdown.
-// Only git_tool: it is a command line, flags and wrapper scripts included, so a menu could only
-// guess. Everything else is genuinely closed and stays a dropdown.
+// Two of them, and for the same reason: git_tool is a command line and `exclude` a list of
+// directory patterns, so neither has a menu of answers to offer. Everything else is genuinely
+// closed and stays a dropdown.
 setting_is_text :: proc(s: Setting) -> bool {
-    return s == .GitTool
+    return s == .GitTool || s == .Exclude
 }
 
 setting_key :: proc(s: Setting) -> string {
@@ -471,6 +480,7 @@ setting_key :: proc(s: Setting) -> string {
     case .Hover:        return "hover"
     case .FilePane:     return "file_pane"
     case .FileIcons:    return "file_icons"
+    case .Exclude:      return "exclude"
     }
     return ""
 }
@@ -499,6 +509,7 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .Hover:        return on_off(a.hover_on)
     case .FilePane:     return a.file_pane == .Browser ? "browser" : "ls"
     case .FileIcons:    return on_off(a.file_icons)
+    case .Exclude:      return a.exclude // free text; "" searches everything
     }
     return ""
 }
@@ -577,6 +588,14 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.file_pane = parse_file_pane(val) or_return
     case .FileIcons:
         a.file_icons = parse_on_off(val) or_return
+    case .Exclude:
+        // Free text, so it carries git_tool's one limit: a value with a comment-opening '#'
+        // would write whole and read back truncated.
+        if _, comment := config_split_comment(val); comment != "" {
+            return false
+        }
+        delete(a.exclude) // App owns its copy (main clones the Config's) — see app_destroy
+        a.exclude = strings.clone(val)
     }
     config_set(setting_key(s), val)
     return true

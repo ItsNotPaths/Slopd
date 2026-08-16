@@ -74,7 +74,9 @@ jump_resolve_path :: proc(a: ^App, arg: string) -> (string, bool) {
         p := filepath.join({a.project_root, arg}, context.temp_allocator) or_else arg
         return p, os.is_file(p)
     case:
-        return find_nearest_file(a.project_root, arg) // bare name: nearest under the root
+        // Bare name: the nearest under the root, past the excluded directories — a `:j app.odin`
+        // must not land in `vendor/` when a search for it would never look there.
+        return find_nearest_file(a.project_root, arg, exclude_dirs(a))
     }
 }
 
@@ -98,7 +100,7 @@ parse_line_spec :: proc(s: string, base: int) -> (int, bool) {
 // straight there with no picker, several open the grep pane to pick from.
 @(private = "file")
 link_jump_definition :: proc(a: ^App, ident: string) {
-    hits := grep_run(a.project_root, ident, word = true, fixed = true)
+    hits := grep_project(a, ident, word = true, fixed = true)
     if len(hits) == 0 {
         return
     }
@@ -125,7 +127,7 @@ link_open_wiki :: proc(a: ^App, name: string) {
         return
     }
     filename := strings.contains(target, ".") ? target : strings.concatenate({target, ".md"}, context.temp_allocator)
-    if path, ok := find_nearest_file(a.project_root, filename); ok {
+    if path, ok := find_nearest_file(a.project_root, filename, exclude_dirs(a)); ok {
         jump_to(a, path, 0, 0) // open at the top, via the shared jump primitive
     }
 }
@@ -135,9 +137,11 @@ link_open_wiki :: proc(a: ^App, name: string) {
 FIND_DIR_BUDGET :: 4096
 
 // Breadth-first search from `root` for a file whose base name equals `filename`, returning the
-// shallowest match. Skips dotted directories and caps how many are visited. Temp-allocated.
+// shallowest match. Skips dotted directories and the configured exclusions (exclude.odin — the
+// same list `:grep` and the workspace prompt read), and caps how many are visited.
+// Temp-allocated.
 @(private = "file")
-find_nearest_file :: proc(root, filename: string) -> (string, bool) {
+find_nearest_file :: proc(root, filename: string, exclude: []string = nil) -> (string, bool) {
     queue := make([dynamic]string, context.temp_allocator)
     append(&queue, strings.clone(root, context.temp_allocator))
     for i := 0; i < len(queue) && i < FIND_DIR_BUDGET; i += 1 {
@@ -149,7 +153,8 @@ find_nearest_file :: proc(root, filename: string) -> (string, bool) {
         it := os.read_directory_iterator_create(f)
         for fi in os.read_directory_iterator(&it) {
             if fi.type == .Directory {
-                if len(fi.name) > 0 && fi.name[0] != '.' {
+                dotted := len(fi.name) == 0 || fi.name[0] == '.'
+                if !dotted && !exclude_hit(exclude, fi.name) {
                     if sub, jerr := filepath.join({dir, fi.name}, context.temp_allocator); jerr == nil {
                         append(&queue, sub)
                     }

@@ -116,6 +116,11 @@ App :: struct {
     file_icons:  bool, // per-type icons in the browser; inert without the vendored icon face
     filebrowser: FileBrowser,
 
+    // The workspace prompt (Alt+P): the file pane's top bar as a `WORKSPACE/` line, listing the
+    // unsaved ring until you type and a fuzzy match over the project's files once you do. Shared
+    // by both faces of the pane, and covering the listing rather than replacing it (wsfind.odin).
+    wsfind:      WS_Find,
+
     // The one popup in the program (contextmenu.odin): a right-press opens a list of buttons for
     // the chords, at the pointer, above everything. Owned here rather than by a pane because it
     // outlives the frame that opened it and is meant to serve more than one of them.
@@ -190,6 +195,11 @@ App :: struct {
     // folder_cd_run is set it executes at once; otherwise it's staged in the CL for
     // the user to review and run with Enter (the reviewable default). See cl_dispatch.
     folder_cd_run:   bool,
+
+    // The directories every project-wide tool skips (config `exclude`), one comma-separated
+    // line: the workspace prompt's scan and every `:grep`. Owned; split at each use by
+    // exclude_dirs (exclude.odin), which is also where what a pattern MEANS is written down.
+    exclude: string,
 
     // The external git tool Alt+G hands the project root to (config `git_tool`). Owned; empty
     // means none configured, and Alt+G opens a plain shell at the root instead. git_term picks
@@ -386,6 +396,7 @@ app_init :: proc(a: ^App) {
     cwd, err := os.get_working_directory(context.allocator) // owned; the launch cwd
     a.project_root = err == nil ? cwd : strings.clone(".")
     cl_init(&a.cl)
+    wsfind_init(&a.wsfind) // the workspace prompt's line; its file list is scanned when it opens
     // No sysbus here: the D-Bus stack is parked (see the banner in src/system/sysbus.odin) and the
     // App owns none of it. `slopd --sysbus` is its only entry point.
 }
@@ -430,12 +441,14 @@ app_destroy :: proc(a: ^App) {
     cl_chain_clear(a) // frees any pending chain (incl. its backing array)
     cl_destroy(a)
     cl_preview_destroy(a) // the cursor set a live preview was holding for the restore
+    wsfind_destroy(&a.wsfind) // the workspace prompt's line, scanned tree and listed rows
     find_destroy(&a.find)
     ctxmenu_destroy(a) // the popup's item list + the path it was opened on
     grep_destroy(&a.grep) // frees any stashed jump-to-definition results
     delete(a.project_root)
     delete(a.theme_path)
     delete(a.git_tool)
+    delete(a.exclude)
     delete(a.clip_joined)
     for p in a.clip_pieces {
         delete(p)

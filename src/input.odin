@@ -71,7 +71,9 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     case .Config_Search:
         doc_insert_rune(d, codepoint)
         config_pane_filter(&a.config_pane) // live filter as you type
-    case .Command_Line, .Browse_Path, .Config_Value:
+    case .Command_Line, .Browse_Path, .Workspace_Find, .Config_Value:
+        // The prompt's rows follow its line on a version compare (wsfind_sync), so typing into
+        // it is the plain insert every other field's is.
         doc_insert_rune(d, codepoint)
     }
 }

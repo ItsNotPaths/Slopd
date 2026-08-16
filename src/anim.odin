@@ -65,6 +65,11 @@ app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     if a.aux_mode == .FileTree && anim_active(&a.tree.scroll_anim, now) {
         wake = sched_min(wake, frame_budget)
     }
+    // The workspace prompt's list scrolls on a tween of its own, gated on the same predicate its
+    // draw site uses — the listing's tween is a different list under the same pane.
+    if wsfind_shown(a) && anim_active(&a.wsfind.scroll_anim, now) {
+        wake = sched_min(wake, frame_budget)
+    }
     if a.view == .Zen && anim_active(&a.zen_anim, now) { // aux-pane slide
         wake = sched_min(wake, frame_budget)
     }
@@ -130,7 +135,7 @@ blink_next_edge :: proc(a: ^App, now: f64) -> f64 {
 
 // Whether a caret is on screen this frame (so the loop knows to keep blinking it).
 caret_shown :: proc(a: ^App) -> bool {
-    if a.cl_active || filebrowser_path_live(a) {
+    if a.cl_active || filebrowser_path_live(a) || wsfind_live(a) {
         return true
     }
     if a.focus == .Aux && a.aux_mode == .Config {

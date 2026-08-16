@@ -206,8 +206,12 @@ chord_hints :: proc(a: ^App) -> [][2]string {
 // Whether the chord bar is up: the filetree pane (either presentation), with Ctrl down, holding
 // the arrows. It sits INSIDE the pane rather than in the status strip, so the command line is
 // never co-opted by a cheat-sheet.
+//
+// Not over the workspace prompt: with a line being typed into, every chord below is a Text bind
+// and none of the file ops resolve at all — a cheat-sheet for keys that do nothing is worse than
+// none (bind_ctx, bind.odin).
 chord_shown :: proc(a: ^App) -> bool {
-    return a.aux_mode == .FileTree && a.ctrl_held && a.focus == .Aux
+    return a.aux_mode == .FileTree && a.ctrl_held && a.focus == .Aux && !a.wsfind.open
 }
 
 // One packed item: a key and its label, or (key == "") the state readout, at a row and a

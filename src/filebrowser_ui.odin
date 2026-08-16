@@ -507,7 +507,11 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, n
                 }
             }
 
-            if clay.UI(clay.ID("fb_content"))(
+            // The prompt's rows take the contents' region, leaving the bar and the sidebar
+            // standing: what it covers is the LISTING, not the pane.
+            if wsfind_shown(a) {
+                wsfind_declare_body(a, content, row_h, lh, cw, now)
+            } else if clay.UI(clay.ID("fb_content"))(
                 {
                     layout = {
                         // Fixed, not Grow, for the sidebar's reason: the row easing into view
@@ -529,6 +533,13 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, n
                     filebrowser_declare_grid(a, f, top, visible, cols, lh, cw, content.w)
                 }
             }
+        }
+
+        // The chord bar goes LAST and inside the pane — the same overlay the listing face puts
+        // up, over the same chords, because the ops under them are the same ops (rule: one
+        // model, two presentations). See filetree_declare.
+        if chord_shown(a) {
+            chord_declare(a, f, area, now)
         }
     }
 }
@@ -566,10 +577,13 @@ filebrowser_declare_bar :: proc(a: ^App, bar: Rect, bar_h, lh: i32, cw: f32, now
                 clip = {horizontal = true},
             },
         ) {
-            // The bar's two states. The line is the shared one-line Field (field_ui.odin), the
+            // The bar's states. The line is the shared one-line Field (field_ui.odin), the
             // config pane's text rows being the other instance — with a WINDOW, since a path is
-            // read from its end.
-            if br.path_edit {
+            // read from its end. The workspace prompt is a third: the `ls` face gives it that
+            // face's one line of chrome, and this is the same trade one box along.
+            if wsfind_shown(a) {
+                wsfind_declare_bar(a, lh, now)
+            } else if br.path_edit {
                 field_declare(
                     clay.ID("fb_edit"),
                     {doc = &br.path, off = br.path_off, now = now, caret = filebrowser_path_live(a)},
@@ -873,12 +887,25 @@ filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     }
     rows, cols := filebrowser_rows(content, br.view, row_h, a.scale, t.font.line_height, t.font.cell_w)
     br.cols = cols
+    wsfind_sync(a)
+    cw := t.font.cell_w
+    path := filebrowser_path_rect(bar, bar_h)
+    top, off := a.tree.scroll, i32(0) // the listing's window; the prompt's is its own (wsfind_ui)
+
+    // The prompt takes the WHOLE pane's input while it is up — the chrome around it stays on
+    // screen but inert, for filetree_frame's reason: the listing it acts on is not declared.
+    if wsfind_shown(a) {
+        br.hover_row, br.hover_place, br.hover_seg, br.hover_btn = -1, -1, -1, .None
+        wsfind_frame(a, wsfind_field_rect(path, cw), content, row_h, cw, now)
+        filebrowser_declare(a, &t.font, pane, top, off, now)
+        return
+    }
 
     // The window the LAST frame painted is what the pointer is over, so the hit resolves
     // against the ANIMATED top; smooth_scroll re-aims the tween, and app_next_wake schedules
     // the next frame off it. The view is read twice for the editor's reason (editor_frame).
-    unit := filebrowser_row_h(br.view, row_h, a.scale, t.font.line_height, t.font.cell_w)
-    top, off0 := smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
+    unit := filebrowser_row_h(br.view, row_h, a.scale, t.font.line_height, cw)
+    top0, off0 := smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
 
     // The open line is the pane's, not the program's: whatever took the keyboard away from this
     // pane also closed the line, or it would be waiting for keys that go somewhere else now.
@@ -887,15 +914,14 @@ filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     }
 
     segs := filebrowser_segments(a.tree.dir)
-    path := filebrowser_path_rect(bar, bar_h)
-    first_seg := filebrowser_seg_first(segs, filebrowser_path_cells(bar, bar_h, t.font.cell_w))
-    hit := filebrowser_hit(a, segs, first_seg, top, list_visible_rows(content.h, off0, unit), cols)
+    first_seg := filebrowser_seg_first(segs, filebrowser_path_cells(bar, bar_h, cw))
+    hit := filebrowser_hit(a, segs, first_seg, top0, list_visible_rows(content.h, off0, unit), cols)
     br.hover_row = hit.kind == .Row ? hit.index : -1
     br.hover_place = hit.kind == .Place ? hit.index : -1
     br.hover_seg = hit.kind == .Segment ? hit.index : -1
     br.hover_btn = hit.kind == .Button ? hit.btn : .None
 
-    filebrowser_click(a, segs, hit, path, t.font.cell_w)
+    filebrowser_click(a, segs, hit, path, cw)
     filebrowser_rclick(a, segs, hit)
     filebrowser_scroll_apply(a, rows, cols, a.scroll_mode == .Middle)
 
@@ -903,17 +929,16 @@ filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     // gesture that walks the caret off the end must move the window in the frame that moved it,
     // which is the next two statements in order.
     if br.path_edit {
-        field_drag(a, filebrowser_path_box(a, path, t.font.cell_w), now)
+        field_drag(a, filebrowser_path_box(a, path, cw), now)
     }
     // The window follows the caret the way the listing's follows the selection, and for the same
     // reason: an edit that put the caret off the end must not leave you typing blind.
     if br.path_edit && len(br.path.lines) > 0 {
         n := line_len(&br.path.lines[0])
         cur := br.path.cursors[br.path.primary].head.col
-        br.path_off = field_scroll(br.path_off, n, cur, field_cells(path, t.font.cell_w))
+        br.path_off = field_scroll(br.path_off, n, cur, field_cells(path, cw))
     }
 
-    off: i32
     top, off = smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
     filebrowser_declare(a, &t.font, pane, top, off, now)
 }

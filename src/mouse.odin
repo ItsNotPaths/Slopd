@@ -221,7 +221,13 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
         now := glfw.GetTime()
         switch a.aux_mode {
         case .FileTree:
-            list_scroll_by(&a.tree.scroll, &a.tree.scroll_detached, notch * WHEEL_LINES_FILE, now)
+            // The workspace prompt's rows are the list on screen while it is up, so they are
+            // what a notch moves — the listing under it is not being drawn.
+            if wsfind_shown(a) {
+                list_scroll_by(&a.wsfind.scroll, &a.wsfind.scroll_detached, d, now)
+            } else {
+                list_scroll_by(&a.tree.scroll, &a.tree.scroll_detached, notch * WHEEL_LINES_FILE, now)
+            }
         case .Grep:
             list_scroll_by(&a.grep.scroll, &a.grep.scroll_detached, d, now)
         case .Config:

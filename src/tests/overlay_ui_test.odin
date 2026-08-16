@@ -157,6 +157,45 @@ test_overlay_shown_predicates :: proc(t: ^testing.T) {
     b.ctrl_held = true
     b.aux_mode = .Grep
     testing.expect(t, !app.chord_shown(&b), "the bar belongs to the filetree pane")
+
+    // …and not over the workspace prompt: with a line being typed into, every chord it lists is
+    // a Text bind and none of the file ops resolve at all.
+    b.aux_mode = .FileTree
+    b.wsfind.open = true
+    testing.expect(t, !app.chord_shown(&b), "the bar must not advertise chords the prompt has taken")
+}
+
+// The bar belongs to the PANE, not to one of its faces: the browser puts up the same overlay
+// over the same chords, because `file_pane` changes what the arrows do and nothing about what
+// `^c` does. Its rows differ — the browser's hints include the navigation ones — so what is
+// asserted is the anchoring both share, not one height.
+@(test)
+test_chord_bar_in_both_faces :: proc(t: ^testing.T) {
+    raw := clay_test_context(500, 400)
+    defer clay_test_context_free(raw)
+    f := clay_test_font()
+    app.clay_use_font(&f)
+
+    a: app.App
+    chord_app(&a, 20)
+    defer delete(a.tree.entries)
+    a.filebrowser.hover_row, a.filebrowser.hover_place, a.filebrowser.hover_seg = -1, -1, -1
+
+    ls := app.filetree_layout(&a, &f, PANE, 500, 400)
+    ls_bar, lok := box_of(&ls, clay.ID("ch_bar"), .Rectangle)
+    testing.expect(t, lok, "the listing face declared no chord bar")
+
+    a.file_pane = .Browser
+    br := app.filebrowser_layout(&a, &f, PANE, 500, 400)
+    br_bar, bok := box_of(&br, clay.ID("ch_bar"), .Rectangle)
+    testing.expect(t, bok, "the browser face declared no chord bar")
+
+    for r in ([?]app.Rect{ls_bar, br_bar}) {
+        testing.expect_value(t, r.x, AREA.x)
+        testing.expect_value(t, r.w, AREA.w)
+        testing.expect_value(t, r.y + r.h, AREA.y + AREA.h) // pinned to the pane's bottom
+    }
+    testing.expect(t, br_bar.h >= ls_bar.h, "the browser lists MORE chords, never fewer")
 }
 
 // ---------------------------------------------------------------------------------------

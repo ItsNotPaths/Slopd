@@ -196,7 +196,7 @@ preview_grep :: proc(a: ^App, args: string) {
     set_aux(a, .Grep)
     a.cl_preview.saved.grep = a.grep
     a.grep = {}
-    grep_set(&a.grep, query, grep_run(a.project_root, query))
+    grep_set(&a.grep, query, grep_project(a, query))
 }
 
 // Up/Down while a find preview holds hits: step through them, wrapping. Returns false when

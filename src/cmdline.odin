@@ -727,7 +727,7 @@ cl_grep :: proc(a: ^App, args: string) {
     if query == "" {
         return
     }
-    hits := grep_run(a.project_root, query)
+    hits := grep_project(a, query)
     grep_set(&a.grep, query, hits)
     if len(hits) == 1 && !a.grep_pane_always {
         grep_open_hit(a, hits[0]) // sole match, shortcut enabled: jump straight, no pane

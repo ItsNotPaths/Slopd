@@ -128,19 +128,9 @@ filetree_rclick :: proc(a: ^App, row: int) {
 filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now: f64 = 0) {
     ft := &a.tree
     th := &a.theme
-    area, row_h, rows := filetree_geom(pane, a.scale, f.line_height)
+    area, row_h, _ := filetree_geom(pane, a.scale, f.line_height)
     cw := f.cell_w
     lh := i32(f.line_height)
-
-    // The window is the TWEEN's top and the remainder is the clip's childOffset — never a term
-    // in each row's y, which would put the rows off the cell grid and leave the clip cutting
-    // the wrong pixels.
-    //
-    // The COUNT is the rows the body touches (list_visible_rows), not the whole rows that fit:
-    // the partial row at the bottom edge is on screen and has to be declared, whether the
-    // remainder comes from the body's height or from a scroll in progress.
-    first := clamp(top, 0, max(0, len(ft.entries)))
-    visible := max(0, min(len(ft.entries) - first, list_visible_rows(area.h - row_h, off, row_h)))
 
     // No backgroundColor: panel() already filled the pane, so the fills that do appear mean
     // something — a marked row, the selection.
@@ -154,64 +144,22 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now:
                 },
             },
         ) {
-            clay.Text(ft.dir, clay_text_config(th.muted, lh))
+            // The header is the pane's ONE line of chrome, so the workspace prompt takes it —
+            // the browser's path bar is the same trade, one box along (wsfind_ui.odin).
+            if wsfind_shown(a) {
+                wsfind_declare_bar(a, lh, now)
+            } else {
+                clay.Text(ft.dir, clay_text_config(th.muted, lh))
+            }
         }
 
-        if clay.UI(clay.ID("ft_body"))(
-            {
-                layout = {
-                    // FIXED height, not Grow: `SizingGrow` means "at least fit your content", so
-                    // the row scrolling into view would stretch the clip group past the pane and
-                    // take its scissor with it (rule 8, from the animation's side).
-                    sizing          = {clay.SizingGrow(), clay.SizingFixed(f32(max(0, area.h - row_h)))},
-                    layoutDirection = .TopToBottom,
-                },
-                clip = {horizontal = true, vertical = true, childOffset = {0, -f32(off)}},
-            },
-        ) {
-            for k in 0 ..< visible {
-                i := first + k
-                e := &ft.entries[i]
-                marked := filetree_marked(ft, e.path)
-                ringed := ring_contains(a, e.path)
-
-                // One background per element, so the precedence is stated rather than
-                // implied by draw order.
-                bg: clay.Color
-                if i == ft.selected {
-                    bg = clay_rgb(th.separator)
-                } else if marked {
-                    bg = clay_rgb(th.line_highlight)
-                } else if hover_shown(a) && i == ft.hover {
-                    bg = clay_rgb(hover_bg(th)) // last, so it never masks a mark
-                }
-
-                if clay.UI(clay.ID("ft_row", u32(i)))(
-                    {
-                        layout = {
-                            sizing         = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
-                            padding        = {left = u16(cw)},
-                            childAlignment = {y = .Center},
-                        },
-                        backgroundColor = bg,
-                    },
-                ) {
-                    // A marked entry takes the prefix slot (accent '+'); else the
-                    // unsaved-ring star or a dash.
-                    prefix := marked ? "+" : ringed ? "*" : "-"
-                    pcol := marked ? th.accent : ringed ? th.urgent : th.muted
-
-                    // A fixed TWO-cell column, not a gap: the prefix is one cell and the
-                    // name starts on the next but one. Sized in cells (a float, cell_w is
-                    // exact) rather than as padding, which Clay takes as whole pixels.
-                    if clay.UI(clay.ID("ft_pre", u32(i)))(
-                        {layout = {sizing = {width = clay.SizingFixed(2 * cw)}}},
-                    ) {
-                        clay.Text(prefix, clay_text_config(pcol, lh))
-                    }
-                    clay.Text(e.display, clay_text_config(e.is_dir ? th.code_return_type : th.fg, lh))
-                }
-            }
+        // The body is the prompt's list or the listing's rows — one or the other, never both,
+        // since the prompt COVERS the listing rather than sitting beside it.
+        body := filetree_body_rect(area, row_h)
+        if wsfind_shown(a) {
+            wsfind_declare_body(a, body, row_h, lh, cw, now)
+        } else {
+            filetree_declare_rows(a, body, top, off, row_h, lh, cw)
         }
 
         // The chord bar goes LAST and inside the pane, which is what makes it an overlay:
@@ -219,6 +167,83 @@ filetree_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now:
         // group of its own — without which its backdrop would paint BEHIND the names it covers.
         if chord_shown(a) {
             chord_declare(a, f, area, now)
+        }
+    }
+}
+
+// The region under the header: what the rows scroll inside, whosever rows they are.
+filetree_body_rect :: proc(area: Rect, row_h: i32) -> Rect {
+    return Rect{area.x, area.y + row_h, area.w, max(0, area.h - row_h)}
+}
+
+// The listing's rows, in a clip group `body` tall.
+//
+// The window is the TWEEN's top and the remainder is the clip's childOffset — never a term in
+// each row's y, which would put the rows off the cell grid and leave the clip cutting the wrong
+// pixels. The COUNT is the rows the body TOUCHES (list_visible_rows), not the whole rows that
+// fit: the partial row at the bottom edge is on screen and has to be declared, whether the
+// remainder comes from the body's height or from a scroll in progress.
+@(private = "file")
+filetree_declare_rows :: proc(a: ^App, body: Rect, top: int, off, row_h, lh: i32, cw: f32) {
+    ft := &a.tree
+    th := &a.theme
+    first := clamp(top, 0, max(0, len(ft.entries)))
+    visible := max(0, min(len(ft.entries) - first, list_visible_rows(body.h, off, row_h)))
+
+    if clay.UI(clay.ID("ft_body"))(
+        {
+            layout = {
+                // FIXED height, not Grow: `SizingGrow` means "at least fit your content", so
+                // the row scrolling into view would stretch the clip group past the pane and
+                // take its scissor with it (rule 8, from the animation's side).
+                sizing          = {clay.SizingGrow(), clay.SizingFixed(f32(body.h))},
+                layoutDirection = .TopToBottom,
+            },
+            clip = {horizontal = true, vertical = true, childOffset = {0, -f32(off)}},
+        },
+    ) {
+        for k in 0 ..< visible {
+            i := first + k
+            e := &ft.entries[i]
+            marked := filetree_marked(ft, e.path)
+            ringed := ring_contains(a, e.path)
+
+            // One background per element, so the precedence is stated rather than
+            // implied by draw order.
+            bg: clay.Color
+            if i == ft.selected {
+                bg = clay_rgb(th.separator)
+            } else if marked {
+                bg = clay_rgb(th.line_highlight)
+            } else if hover_shown(a) && i == ft.hover {
+                bg = clay_rgb(hover_bg(th)) // last, so it never masks a mark
+            }
+
+            if clay.UI(clay.ID("ft_row", u32(i)))(
+                {
+                    layout = {
+                        sizing         = {clay.SizingGrow(), clay.SizingFixed(f32(row_h))},
+                        padding        = {left = u16(cw)},
+                        childAlignment = {y = .Center},
+                    },
+                    backgroundColor = bg,
+                },
+            ) {
+                // A marked entry takes the prefix slot (accent '+'); else the
+                // unsaved-ring star or a dash.
+                prefix := marked ? "+" : ringed ? "*" : "-"
+                pcol := marked ? th.accent : ringed ? th.urgent : th.muted
+
+                // A fixed TWO-cell column, not a gap: the prefix is one cell and the
+                // name starts on the next but one. Sized in cells (a float, cell_w is
+                // exact) rather than as padding, which Clay takes as whole pixels.
+                if clay.UI(clay.ID("ft_pre", u32(i)))(
+                    {layout = {sizing = {width = clay.SizingFixed(2 * cw)}}},
+                ) {
+                    clay.Text(prefix, clay_text_config(pcol, lh))
+                }
+                clay.Text(e.display, clay_text_config(e.is_dir ? th.code_return_type : th.fg, lh))
+            }
         }
     }
 }
@@ -250,20 +275,33 @@ filetree_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     if area.w <= 0 || area.h <= 0 {
         return
     }
-    // The window the LAST frame painted is what the pointer is over, so the click resolves
-    // against the ANIMATED top rather than the target — the editor's shape, and the reason the
-    // view is built twice here too. smooth_scroll re-aims the tween, which is what makes
-    // anim_active true and what app_next_wake schedules the next frame off.
-    top, off0 := smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, row_h)
-    hit := filetree_hit(&a.tree, top, list_visible_rows(area.h - row_h, off0, row_h))
-    a.tree.hover = hit // resolved against the same (last) frame the click is
-    filetree_click(a, hit)
-    filetree_rclick(a, hit)
-    filetree_scroll_apply(&a.tree, rows, a.scroll_mode == .Middle, pane_input_at(a))
+    cw := t.font.cell_w
+    wsfind_sync(a)
+    top, off := a.tree.scroll, i32(0) // the listing's window; the prompt's is its own (wsfind_ui)
 
-    // Then re-read it over the moved target, so a click that scrolled the list starts easing
-    // in the frame it was made rather than a frame later.
-    off: i32
-    top, off = smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, row_h)
+    if wsfind_shown(a) {
+        // The prompt takes the WHOLE pane's input: the listing it covers is not on screen, and
+        // offering it the press would act on rows the last frame stopped declaring.
+        a.tree.hover = -1
+        // The header's box past its one-cell margin, which is where the prompt was declared.
+        head := Rect{area.x + i32(cw), area.y, max(0, area.w - i32(cw)), row_h}
+        body := filetree_body_rect(area, row_h)
+        wsfind_frame(a, wsfind_field_rect(head, cw), body, row_h, cw, now)
+    } else {
+        // The window the LAST frame painted is what the pointer is over, so the click resolves
+        // against the ANIMATED top rather than the target — the editor's shape, and the reason the
+        // view is built twice here too. smooth_scroll re-aims the tween, which is what makes
+        // anim_active true and what app_next_wake schedules the next frame off.
+        top0, off0 := smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, row_h)
+        hit := filetree_hit(&a.tree, top0, list_visible_rows(area.h - row_h, off0, row_h))
+        a.tree.hover = hit // resolved against the same (last) frame the click is
+        filetree_click(a, hit)
+        filetree_rclick(a, hit)
+        filetree_scroll_apply(&a.tree, rows, a.scroll_mode == .Middle, pane_input_at(a))
+
+        // Then re-read it over the moved target, so a click that scrolled the list starts easing
+        // in the frame it was made rather than a frame later.
+        top, off = smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, row_h)
+    }
     filetree_declare(a, &t.font, pane, top, off, now)
 }

@@ -7,8 +7,10 @@ import "core:strings"
 import "core:unicode/utf8"
 
 // Project search + its results model. grep_run is the ONE canonical entry point: run grep
-// with a forced, info-rich flag set and parse the output into structured GrepHits. Both
-// consumers go through it, so the parse + shape is defined once:
+// with a forced, info-rich flag set and parse the output into structured GrepHits — and
+// grep_project is how the app reaches it, since a search also carries the project root and the
+// excluded directories (exclude.odin). Both consumers go through it, so the parse + shape is
+// defined once:
 //   - Alt+Enter "jump to definition" (link.odin): grep_run narrows to every line mentioning
 //     the symbol, then tree-sitter (ts_filter_definitions) keeps only the lines that DEFINE
 //     it, not the invocations.
@@ -66,24 +68,21 @@ grep_open_selected :: proc(a: ^App) {
     }
 }
 
+// A project search, with the App's root and its excluded directories filled in — the entry
+// point the three callers use, so none of them has to remember that a search skips `vendor`.
+grep_project :: proc(a: ^App, query: string, word := false, fixed := false) -> []GrepHit {
+    return grep_run(a.project_root, query, exclude_dirs(a), word, fixed)
+}
+
 // Run grep with FORCED flags and parse stdout into hits. `-H` matters: a single-file result then
 // parses the same as a tree. `word` adds -w (symbol lookup), `fixed` adds -F (literal). Execs grep
 // directly, not via a shell, so pattern + paths need no quoting and `--` guards a leading '-'.
-grep_run :: proc(root, query: string, word := false, fixed := false) -> []GrepHit {
+grep_run :: proc(root, query: string, exclude: []string = nil, word := false, fixed := false) -> []GrepHit {
     if root == "" || query == "" {
         return nil
     }
-    argv := make([dynamic]string, 0, 8, context.temp_allocator)
-    append(&argv, "grep", "-rnIH", "--exclude-dir=.git")
-    if word {
-        append(&argv, "-w")
-    }
-    if fixed {
-        append(&argv, "-F")
-    }
-    append(&argv, "--", query, root)
-
-    _, sout, _, err := os.process_exec(os.Process_Desc{command = argv[:]}, context.temp_allocator)
+    argv := grep_argv(root, query, exclude, word, fixed)
+    _, sout, _, err := os.process_exec(os.Process_Desc{command = argv}, context.temp_allocator)
     if err != nil {
         return nil
     }
@@ -95,6 +94,25 @@ grep_run :: proc(root, query: string, word := false, fixed := false) -> []GrepHi
         }
     }
     return hits[:]
+}
+
+// The command line a search runs, built rather than inlined so the flags can be ASSERTED without
+// a grep on the machine. One `--exclude-dir` per configured pattern, which is the whole of the
+// unification: grep's own syntax is the syntax the config line is written in (exclude.odin).
+grep_argv :: proc(root, query: string, exclude: []string, word, fixed: bool, alloc := context.temp_allocator) -> []string {
+    argv := make([dynamic]string, 0, 8 + len(exclude), alloc)
+    append(&argv, "grep", "-rnIH")
+    for p in exclude {
+        append(&argv, fmt.tprintf("--exclude-dir=%s", p))
+    }
+    if word {
+        append(&argv, "-w")
+    }
+    if fixed {
+        append(&argv, "-F")
+    }
+    append(&argv, "--", query, root)
+    return argv[:]
 }
 
 // Parse one `path:line:content` grep line, splitting on the first two colons only (a POSIX
