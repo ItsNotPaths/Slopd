@@ -118,6 +118,8 @@ App :: struct {
     media:           Media, // the viewed image (main pane, Image surface); see media.odin
     disk_poll_at:    f64, // glfw time of the next view-pane staleness check (see view_poll_disk)
     conflict_prompt: bool, // disk change under unsaved edits: prompt (y/n in the CL) vs silently keep (config)
+    conflict_stage:  bool, // and when it prompts: stage `:reload ` in the CL, or only mark the modeline (config)
+    save_seq:        int, // names the private copy a staged `sudo cp` save reads (see save_stage_sudo)
 
     // Alt+Enter link jumping (link.odin). grep holds a multi-result jump-to-definition,
     // rendered by the Grep aux mode (grep_ui.odin); a single result jumps straight in the
@@ -262,9 +264,15 @@ view_refresh :: proc(a: ^App) {
             was := b.conflict
             buffer_reload_if_changed(b, a.conflict_prompt)
             // On a freshly-raised conflict, stage the answer for the user to finish (y/n,
-            // Enter): `:reload y` takes the disk version, `:reload n` keeps + caches. EDGE-
-            // triggered, so it isn't re-injected every poll tick; skipped if the CL is busy.
-            if !was && b.conflict && !a.cl_active {
+            // Enter): `:reload y` takes the disk version, `:reload n` keeps + caches, and a
+            // `:w` typed over the staged line makes MY version the disk. EDGE-triggered, so it
+            // isn't re-injected every poll tick; skipped if the CL is busy, and turned off
+            // entirely by `conflict_stage: off` — the modeline's `!` marker still reports it.
+            // A chain in flight is skipped too, and that is the sudo save: `sudo cp ... &&
+            // :saved` changes the file under a still-dirty buffer BY DESIGN, and a `:reload `
+            // injected into the second between the copy and the `:saved` would ask about a
+            // conflict that is already being settled.
+            if a.conflict_stage && !was && b.conflict && !a.cl_active && !cl_chain_busy(a) {
                 cl_inject(a, ":reload ")
             }
         }

@@ -611,7 +611,9 @@ buffer_key :: proc(a: ^App, key, mods: i32, all: bool) {
         buffer_motion(b, .Down, shift, all, ctrl ? a.jump_lines : 1)
     case glfw.KEY_S:
         if ctrl {
-            _ = buffer_save(b)
+            // A file we may read and not write stages a `sudo cp` line in the CL rather than
+            // failing silently — cl_save is the one save gesture `:w` shares.
+            _ = cl_save(a, b)
         }
     case glfw.KEY_Z:
         if ctrl && shift {

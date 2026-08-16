@@ -358,6 +358,8 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         cl_cd(a, args)
     case "reload":
         cl_reload(a, args)
+    case "saved":
+        cl_saved(a)
     case "tu":
         cl_tu(a)
     case "w", "wa", "q", "q!", "wq", "wqa", "waq":
@@ -369,6 +371,90 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
     return true
 }
 
+// --- saving --- Every save GESTURE goes through cl_save (Ctrl+S, `:w`), so the two can never
+// disagree about what a locked file does. `:wa` and friends stay on the plain buffer_save: a
+// write-all that hit three unwritable files has no one line to stage.
+
+// Save the document buffer, and when permissions were the only thing in the way, stage the line
+// that gets it there anyway. Returns the result so the caller can word its own refusal.
+cl_save :: proc(a: ^App, b: ^Buffer) -> Save_Result {
+    res := buffer_save(b)
+    // A staged line IS the report, so a denial that stages says nothing further. One that
+    // CANNOT stage has to speak, or Ctrl+S on a locked file would do nothing whatsoever.
+    if res == .Denied && !save_stage_sudo(a, b) {
+        cl_echo_t1(a, "save: permission denied, and no private folder to stage a sudo copy in")
+    }
+    return res
+}
+
+// A save refused for permissions is not a failure to report and forget: the bytes are fine, the
+// door is locked. Write them to a private copy and PREFILL the line that carries them over as
+// root — the same review-then-Enter gesture the disk conflict uses, and the shell half of the CL
+// is the one place a password prompt can actually be typed, since it runs in a real terminal.
+//
+// False (staging nothing) when there is nowhere private to put the copy, or the copy itself
+// fails. The caller has already reported the denial; this only ever ADDS a way forward.
+save_stage_sudo :: proc(a: ^App, b: ^Buffer) -> bool {
+    dir := save_tmp_dir()
+    if dir == "" || !buffer_on_disk(b) {
+        return false
+    }
+    // The pid and the counter are not decoration: a staged line can sit in the CL — or in
+    // history — while another buffer is saved, and a copy named for the file alone would hand
+    // the older line the newer file's bytes.
+    a.save_seq += 1
+    name := fmt.tprintf("slopd-%d-%d-%s", os.get_pid(), a.save_seq, filepath.base(b.path))
+    tmp := filepath.join({dir, name}, context.temp_allocator) or_else ""
+    if tmp == "" {
+        return false
+    }
+    buffer_drop_save_tmp(b) // one staged copy per buffer; the last one is spent
+    if os.write_entire_file(tmp, transmute([]u8)buffer_bytes(b), {.Read_User, .Write_User}) != nil {
+        return false
+    }
+    b.save_tmp = strings.clone(tmp)
+    line := sudo_save_command(tmp, b.path, context.temp_allocator)
+    cl_inject(a, line)
+    return true
+}
+
+// Where that private copy goes: $XDG_RUNTIME_DIR, else ~/.cache. "" if neither is there, and
+// then nothing is staged at all.
+//
+// **/tmp is not on the list, and that is a security decision.** Root is about to READ this file.
+// A shared /tmp lets another local user create the path first and own it, and then swap the
+// contents between our write and root's copy — which puts their bytes into the file we were
+// asked to save. Both folders here are ours alone.
+@(private = "file")
+save_tmp_dir :: proc() -> string {
+    if d := os.get_env("XDG_RUNTIME_DIR", context.temp_allocator); strings.has_prefix(d, "/") && os.is_dir(d) {
+        return d
+    }
+    home := os.get_env("HOME", context.temp_allocator)
+    if home == "" {
+        return ""
+    }
+    cache := filepath.join({home, ".cache"}, context.temp_allocator) or_else ""
+    return os.is_dir(cache) ? cache : ""
+}
+
+// `:saved`: stop calling this buffer dirty, because the disk already holds what it would write.
+// The tail of the staged sudo line, and the reason it can be a PLAIN builtin anybody may type:
+// it verifies rather than trusts. On a buffer whose bytes are not on disk it does nothing at
+// all, so it cannot be used — or mistyped — into marking real work as saved.
+@(private = "file")
+cl_saved :: proc(a: ^App) {
+    if a.main != .Text || len(a.editor.buffers) == 0 {
+        return
+    }
+    b := editor_current(&a.editor)
+    if !buffer_matches_disk(b) {
+        cl_echo_t1(a, ":saved: the file on disk is not what this buffer holds — nothing changed")
+        return
+    }
+    buffer_mark_saved(b)
+}
+
 // Quit/write builtins — the ONLY way to close Slopd (Esc never quits), guarded by the unsaved RING
 // so a mistyped quit can't throw away work. buffer_save can't write an unnamed buffer, so a write
 // leaving work dirty refuses. Refusals ECHO into t1 (cl_echo_t1), naming what to type WITH the
@@ -377,8 +463,12 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
 cl_quit :: proc(a: ^App, cmd: string) {
     switch cmd {
     case "w":
-        if !buffer_save(editor_current(&a.editor)) {
-            cl_echo_t1(a, ":w: no filename (save-as not yet supported)")
+        // A denial stages its own `sudo cp` line (cl_save), which IS the message — echoing
+        // "permission denied" as well would only bury the line that fixes it.
+        switch cl_save(a, editor_current(&a.editor)) {
+        case .No_Path: cl_echo_t1(a, ":w: no filename (save-as not yet supported)")
+        case .Failed:  cl_echo_t1(a, ":w: could not write the file")
+        case .Ok, .Denied:
         }
     case "wa":
         cl_write_all(a)
@@ -521,6 +611,8 @@ cl_launch_path :: proc(a: ^App, arg: string) -> bool {
 // `:reload [y|n]`: settle a pending disk-change conflict, which auto-stages this command in the CL.
 //   :reload y   re-reads the file, DISCARDING the unsaved edits
 //   :reload n   keeps your edits and CACHES it, so it stops asking until the file changes again
+// The third way out is not this builtin at all: `:w` over the staged line writes MY version and
+// clears the conflict with it (buffer_save), which is why the hint names it.
 // A bare `:reload` while conflicted is deliberately a NO-OP: an accidental Enter on the staged line
 // must not silently discard edits. With no conflict it is a manual refresh (vim's :e!).
 @(private = "file")
@@ -652,6 +744,33 @@ rm_command :: proc(paths: []string, alloc := context.allocator) -> string {
     return strings.to_string(b)
 }
 
+// The staged line for a save that permissions refused: `sudo cp '<tmp>' '<path>' && :saved`.
+//
+// `cp` and not `mv`, deliberately. cp writes THROUGH to the destination's existing inode, so the
+// file keeps its owner, mode, ACLs and hardlinks, and a symlinked path is followed to what it
+// points at. A mv out of the runtime dir crosses a filesystem, which is copy-then-unlink: the
+// result is a NEW inode carrying the temp file's root-owned 0600, and /etc/nginx.conf silently
+// stops being readable by nginx.
+//
+// The `&& :saved` is the other half of the design: cl_chain_pump waits on the shell step's exit
+// code, so a wrong password — or a Ctrl+C at the prompt — stops the chain before `:saved` runs,
+// and the buffer stays dirty. Nothing here claims a save that did not happen.
+sudo_save_command :: proc(tmp, path: string, alloc := context.allocator) -> string {
+    if tmp == "" || path == "" {
+        return ""
+    }
+    return strings.concatenate(
+        {
+            "sudo cp ",
+            sh_quote(tmp, context.temp_allocator),
+            " ",
+            sh_quote(path, context.temp_allocator),
+            " && :saved",
+        },
+        alloc,
+    )
+}
+
 // The line a Properties gesture runs in t1: one `stat` cut to the fields a properties box shows —
 // mode, size, owner, and the two timestamps. **--printf, not -c**: only the former interprets the
 // `\n`s, and -c would print them literally on one long line.
@@ -679,6 +798,13 @@ run_command :: proc(path: string, executable: bool, alloc := context.allocator) 
         return strings.concatenate({"bash ", quoted, " "}, alloc)
     }
     return ""
+}
+
+// Whether a submitted line is still running: steps left to take, or a shell step whose exit code
+// has not come back yet. The disk poll asks, so a chain that rewrites the open file (the sudo
+// save) is not interrupted by a prompt about the change it is making.
+cl_chain_busy :: proc(a: ^App) -> bool {
+    return a.cl_chain.waiting || len(a.cl_chain.steps) > 0
 }
 
 cl_chain_clear :: proc(a: ^App) {
@@ -770,7 +896,12 @@ is_term_token :: proc(s: string) -> bool {
 // recognised, dropped once you start typing the argument so it never overlaps real input. Give a
 // builtin a hint by adding a case. "" = no hint — and an unsigilled line never has one, since a
 // shell command is the shell's to explain, not ours.
-cl_ghost_hint :: proc(line: string) -> string {
+//
+// It takes the App because `:reload` means two different things: a manual refresh, or the answer
+// to a pending disk conflict — and only the second one has a third option worth naming, `:w`.
+// The staged line IS the whole conflict prompt now (strip_ui.odin), so the hint is where the
+// three ways out get said.
+cl_ghost_hint :: proc(a: ^App, line: string) -> string {
     if !strings.has_prefix(line, ":") {
         return ""
     }
@@ -780,9 +911,16 @@ cl_ghost_hint :: proc(line: string) -> string {
         return "" // no builtin yet, or an argument is already typed
     }
     switch name {
-    case "reload": return "(y/n)"
+    case "reload":
+        return cl_conflict_pending(a) ? "(y = disk / n = mine / :w = overwrite)" : "(y/n)"
     }
     return ""
+}
+
+// Whether the document pane's buffer is holding a disk-change conflict — the state the staged
+// `:reload ` was raised for. Guarded for the bare App the tests build (no buffers at all).
+cl_conflict_pending :: proc(a: ^App) -> bool {
+    return a.main == .Text && len(a.editor.buffers) > 0 && editor_current(&a.editor).conflict
 }
 
 // Switch to terminal session n (1-based), surfacing the terminal pane. Shared by the command

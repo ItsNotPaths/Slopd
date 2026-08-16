@@ -46,7 +46,7 @@ test_embedded_buffer_never_touches_disk :: proc(t: ^testing.T) {
     testing.expect(t, b.embedded)
     testing.expect_value(t, b.path, "LICENSE")
     testing.expect(t, !app.buffer_on_disk(b))
-    testing.expect(t, !app.buffer_save(b), "an embedded doc must not be writable to ./LICENSE")
+    testing.expect_value(t, app.buffer_save(b), app.Save_Result.No_Path) // an embedded doc must not write to ./LICENSE
     testing.expect(t, !app.buffer_reload_if_changed(b, true))
     testing.expect(t, !app.buffer_reload_keep_view(b))
 }

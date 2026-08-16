@@ -18,7 +18,6 @@ import "core:testing"
 //   draw_status:         left at strip.x + pad; right ending at strip.x + strip.w - pad;
 //                        root at strip.x + (strip.w - cw * len) / 2   <- centred in the STRIP,
 //                        which is why it is a floating slot and not a row cell
-//   draw_conflict_prompt: message at the pad, keys immediately after it
 
 @(private = "file")
 STRIP :: app.Rect{0, 280, 500, 20}
@@ -75,9 +74,9 @@ count_of :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), kind: clay.RenderCom
     return n
 }
 
-// The three-way choice, and the precedence inside it. An open command line beats a pending
-// conflict because the conflict's own answer is typed into that line — a `:reload ` staged by
-// the conflict must not be hidden behind the prompt telling you to type it.
+// The two-way choice: the command line while it is open, the modeline otherwise. A pending disk
+// conflict is NOT a third thing down here — its answer is typed into the command line, which the
+// conflict itself stages, so the strip reports it in the modeline's marker column instead.
 @(test)
 test_strip_mode :: proc(t: ^testing.T) {
     a: app.App
@@ -88,19 +87,10 @@ test_strip_mode :: proc(t: ^testing.T) {
 
     b := app.editor_current(&a.editor)
     b.conflict = true
-    testing.expect_value(t, app.strip_mode(&a), app.Strip_Mode.Conflict)
+    testing.expect_value(t, app.strip_mode(&a), app.Strip_Mode.Status) // no line of its own
 
     a.cl_active = true
-    testing.expect_value(t, app.strip_mode(&a), app.Strip_Mode.Command) // the CL wins
-    a.cl_active = false
-
-    // A conflict is the DOCUMENT pane's business: it is not reported while the aux pane holds
-    // focus (you are not looking at the file) or while the surface is an image.
-    a.focus = .Aux
-    testing.expect_value(t, app.strip_mode(&a), app.Strip_Mode.Status)
-    a.focus = .Editor
-    a.main = .Image
-    testing.expect_value(t, app.strip_mode(&a), app.Strip_Mode.Status)
+    testing.expect_value(t, app.strip_mode(&a), app.Strip_Mode.Command)
 }
 
 // The modeline: three labels at three anchors, each on the pixel the hand-drawn version put it.
@@ -277,10 +267,12 @@ test_strip_injected_ring :: proc(t: ^testing.T) {
     testing.expect_value(t, count_of(&cmds2, .Border), 0)
 }
 
-// The conflict prompt: the alert ring plus two labels that touch, so the sentence reads as one
-// line in two colours.
+// A disk conflict is reported by the modeline's marker column and nothing else: the `*` that
+// means "unsaved" becomes a `!` that means "unsaved, and the file moved under you". The strip
+// grows no extra label and no ring — the ring belongs to the staged `:reload `, which lives in
+// the command line the marker is telling you to finish.
 @(test)
-test_strip_conflict_command_list :: proc(t: ^testing.T) {
+test_strip_conflict_marks_the_modeline :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
     f := clay_test_font()
@@ -291,15 +283,16 @@ test_strip_conflict_command_list :: proc(t: ^testing.T) {
     defer teardown(&a)
     b := app.editor_current(&a.editor)
     b.path = strings.clone("/tmp/x.odin") // owned: buffer_destroy frees it
-    b.conflict = true
+    b.dirty = true
 
     cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
+    testing.expect_value(t, text_box(&cmds, "* x.odin"), app.Rect{PAD, TEXT_Y, 80, 16})
 
-    msg := text_box(&cmds, "x.odin changed on disk - ")
-    testing.expect_value(t, msg, app.Rect{PAD, TEXT_Y, 250, 16}) // 25 runes
-    keys := text_box(&cmds, "run: :reload y (lose edits) / :reload n (keep mine)")
-    testing.expect_value(t, keys.x, msg.x + msg.w) // touching, as the arithmetic had them
-    testing.expect_value(t, count_of(&cmds, .Border), 1) // always rung: it wants an answer
+    b.conflict = true
+    cmds2 := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
+    testing.expect_value(t, text_box(&cmds2, "! x.odin"), app.Rect{PAD, TEXT_Y, 80, 16})
+    testing.expect_value(t, text_box(&cmds2, "* x.odin"), app.Rect{}) // one marker, not two
+    testing.expect_value(t, count_of(&cmds2, .Border), 0) // no ring: nothing here wants an answer
 }
 
 // No editor on screen (Full on the aux surface): the strip names the aux pane and reports

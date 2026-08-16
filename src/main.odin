@@ -101,6 +101,7 @@ main :: proc() {
     app.term_ctrl_c = cfg.term_ctrl_c
     app.grep_pane_always = cfg.grep_pane_always
     app.conflict_prompt = cfg.conflict_prompt
+    app.conflict_stage = cfg.conflict_stage
     app.mouse_on = cfg.mouse
     app.hover_on = cfg.hover
     app.file_pane = cfg.file_pane

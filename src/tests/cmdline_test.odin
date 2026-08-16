@@ -185,13 +185,28 @@ test_cl_open_prefix :: proc(t: ^testing.T) {
 // line never hints — `reload` without the sigil is somebody else's program, not ours to gloss.
 @(test)
 test_cl_ghost_hint :: proc(t: ^testing.T) {
-    testing.expect_value(t, app.cl_ghost_hint(":reload"), "(y/n)")
-    testing.expect_value(t, app.cl_ghost_hint(":reload "), "(y/n)") // trailing space, no arg yet
-    testing.expect_value(t, app.cl_ghost_hint(":reload y"), "") // argument typed -> no hint
-    testing.expect_value(t, app.cl_ghost_hint(":ls"), "") // recognised builtin, no hint defined
-    testing.expect_value(t, app.cl_ghost_hint("reload"), "") // no sigil: a shell command
-    testing.expect_value(t, app.cl_ghost_hint(":"), "") // the sigil alone names nothing
-    testing.expect_value(t, app.cl_ghost_hint(""), "") // empty line
+    a: app.App // no buffers: nothing is conflicted, so `:reload` reads as a manual refresh
+    testing.expect_value(t, app.cl_ghost_hint(&a, ":reload"), "(y/n)")
+    testing.expect_value(t, app.cl_ghost_hint(&a, ":reload "), "(y/n)") // trailing space, no arg yet
+    testing.expect_value(t, app.cl_ghost_hint(&a, ":reload y"), "") // argument typed -> no hint
+    testing.expect_value(t, app.cl_ghost_hint(&a, ":ls"), "") // recognised builtin, no hint defined
+    testing.expect_value(t, app.cl_ghost_hint(&a, "reload"), "") // no sigil: a shell command
+    testing.expect_value(t, app.cl_ghost_hint(&a, ":"), "") // the sigil alone names nothing
+    testing.expect_value(t, app.cl_ghost_hint(&a, ""), "") // empty line
+}
+
+// The same builtin, staged against a real conflict, hints the THREE ways out rather than two:
+// the staged line is the whole prompt now, and `:w` (overwrite with my version) is not a
+// `:reload` argument, so nothing else would ever name it.
+@(test)
+test_cl_ghost_hint_conflict :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    defer app.editor_destroy(&a.editor)
+
+    testing.expect_value(t, app.cl_ghost_hint(&a, ":reload "), "(y/n)")
+    app.editor_current(&a.editor).conflict = true
+    testing.expect_value(t, app.cl_ghost_hint(&a, ":reload "), "(y = disk / n = mine / :w = overwrite)")
 }
 
 // The `:reload` builtin settles a pending disk-change conflict: `:reload n` keeps the edits
@@ -840,4 +855,116 @@ test_run_command :: proc(t: ^testing.T) {
     testing.expect_value(t, bashed, "bash '/tmp/a.sh' ")
     testing.expect_value(t, app.run_command("/tmp/notes.md", false, context.temp_allocator), "")
     testing.expect_value(t, app.run_command("/tmp/clip.mp4", false, context.temp_allocator), "")
+}
+
+// --- the sudo save --- Ctrl+S (and `:w`) on a file permissions refuse stages ONE line that
+// carries the buffer over as root. The line is a real chain, and every property that makes it
+// safe is a property of the chain: the shell half runs where a password can be typed, and the
+// `&&` gates the bookkeeping on its exit code.
+
+@(test)
+test_sudo_save_command :: proc(t: ^testing.T) {
+    line := app.sudo_save_command("/run/user/1000/slopd-9-1-hosts", "/etc/hosts", context.temp_allocator)
+    testing.expect_value(t, line, "sudo cp '/run/user/1000/slopd-9-1-hosts' '/etc/hosts' && :saved")
+
+    // Both paths are quoted, so a space or a metacharacter in either is the shell's text and
+    // not its syntax — `cp` must see two arguments whatever the file is called.
+    odd := app.sudo_save_command("/tmp/a b", "/etc/x'y && rm -rf ~", context.temp_allocator)
+    testing.expect_value(t, odd, `sudo cp '/tmp/a b' '/etc/x'\''y && rm -rf ~' && :saved`)
+
+    testing.expect_value(t, app.sudo_save_command("", "/etc/hosts", context.temp_allocator), "")
+    testing.expect_value(t, app.sudo_save_command("/tmp/x", "", context.temp_allocator), "")
+}
+
+// The staged line parses into a GATED chain: a shell step, then our builtin. cl_chain_pump runs
+// the second only once the first reports exit 0, so a wrong sudo password leaves the buffer
+// dirty instead of marking it saved. The `&&` inside the quoted path above is not a seam.
+@(test)
+test_sudo_save_line_is_a_gated_chain :: proc(t: ^testing.T) {
+    a: app.App
+    defer app.cl_chain_clear(&a)
+
+    app.cl_parse(&a, app.sudo_save_command("/run/x", "/etc/hosts", context.temp_allocator))
+    steps := a.cl_chain.steps[:]
+    testing.expect_value(t, len(steps), 2)
+    testing.expect(t, steps[0].shell, "the copy is the shell's, and needs a TTY for the password")
+    testing.expect_value(t, steps[0].text, "sudo cp '/run/x' '/etc/hosts'")
+    testing.expect(t, !steps[1].shell, "the tail is our builtin")
+    testing.expect_value(t, steps[1].text, "saved")
+}
+
+// Staging writes the buffer to a PRIVATE copy and prefills the line pointing at it. The copy is
+// byte-for-byte what a save would have written — it is the save, carried by another process.
+@(test)
+test_save_stage_sudo :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    app.cl_init(&a.cl)
+    defer {app.editor_destroy(&a.editor);app.cl_destroy(&a)}
+
+    b := app.editor_current(&a.editor)
+    app.buffer_set_text(b, "one\ntwo")
+    b.final_newline = true
+    b.path = strings.clone("/etc/slopd-not-written.conf") // never touched: only the LINE names it
+    b.dirty = true
+
+    testing.expect(t, app.save_stage_sudo(&a, b))
+    testing.expect(t, b.save_tmp != "", "the staged copy was not recorded on the buffer")
+    tmp := b.save_tmp
+
+    data, err := os.read_entire_file_from_path(tmp, context.temp_allocator)
+    testing.expect(t, err == nil, "the staged copy is not on disk")
+    testing.expect_value(t, string(data), "one\ntwo\n")
+
+    // The CL now holds the line, staged (ringed) rather than run — nothing happens until Enter.
+    testing.expect(t, a.cl_active)
+    testing.expect(t, a.cl.injected)
+    testing.expect_value(
+        t,
+        app.doc_string(&a.cl.doc, context.temp_allocator),
+        app.sudo_save_command(tmp, b.path, context.temp_allocator),
+    )
+
+    // Restaging replaces the copy rather than leaving a second one behind, and closing the
+    // buffer takes the last one with it: root-readable copies of your work do not accumulate.
+    testing.expect(t, app.save_stage_sudo(&a, b))
+    testing.expect(t, b.save_tmp != tmp, "a restaging must not reuse the name")
+    _, gone := os.read_entire_file_from_path(tmp, context.temp_allocator)
+    testing.expect(t, gone != nil, "the superseded copy was left on disk")
+
+    last := strings.clone(b.save_tmp, context.temp_allocator)
+    app.buffer_drop_save_tmp(b)
+    _, gone2 := os.read_entire_file_from_path(last, context.temp_allocator)
+    testing.expect(t, gone2 != nil, "the staged copy outlived the buffer")
+}
+
+// `:saved` is the chain's last step: it verifies before it believes. The disk holding what the
+// buffer holds is the whole claim — which is what the `sudo cp` just made true.
+@(test)
+test_cl_saved_verifies :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    defer {app.editor_destroy(&a.editor);app.cl_chain_clear(&a)}
+
+    path := "slopd_cl_saved.tmp"
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("mine\n")) == nil)
+    defer os.remove(path)
+
+    b := app.editor_current(&a.editor)
+    app.buffer_set_text(b, "mine")
+    b.final_newline = true
+    b.path = strings.clone(path) // freed by editor_destroy
+    b.dirty = true
+    b.conflict = true
+
+    app.cl_exec(&a, ":saved")
+    testing.expect(t, !b.dirty, "the file on disk IS this buffer; it is not dirty")
+    testing.expect(t, !b.conflict)
+
+    // And on a buffer the disk does not match, it changes nothing at all. (The refusal echoes
+    // into t1, which needs a terminal, so the claim is checked through buffer_matches_disk.)
+    app.buffer_insert_rune(b, 'X')
+    b.dirty = true
+    testing.expect(t, !app.buffer_matches_disk(b))
+    testing.expect(t, b.dirty)
 }

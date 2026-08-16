@@ -1,6 +1,7 @@
 package tests
 
 import app ".."
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -67,7 +68,7 @@ test_buffer_save_preserves_final_newline :: proc(t: ^testing.T) {
         b: app.Buffer
         defer app.buffer_destroy(&b)
         testing.expect(t, app.buffer_load(&b, path))
-        testing.expect(t, app.buffer_save(&b))
+        testing.expect_value(t, app.buffer_save(&b), app.Save_Result.Ok)
 
         out, err := os.read_entire_file_from_path(path, context.temp_allocator)
         testing.expect(t, err == nil)
@@ -162,7 +163,7 @@ test_buffer_reload_preserves_path :: proc(t: ^testing.T) {
 
     // The clinching check: an edit saved after the reload must land on the same file.
     app.buffer_insert_rune(&b, 'Z')
-    testing.expect(t, app.buffer_save(&b))
+    testing.expect_value(t, app.buffer_save(&b), app.Save_Result.Ok)
     saved, serr := os.read_entire_file_from_path(path, context.temp_allocator)
     testing.expect(t, serr == nil)
     testing.expect(t, strings.has_prefix(string(saved), "Z"))
@@ -325,4 +326,71 @@ test_scroll_detached_bounds :: proc(t: ^testing.T) {
     app.buffer_set_text(&b, "one\ntwo\n")
     testing.expect_value(t, b.scroll_detached, f64(0))
     testing.expect_value(t, b.scroll, 0)
+}
+
+// --- the sudo save --- A file we may read and not write is the ONE save failure with a way
+// forward, so it is the one the editor acts on rather than reporting: `.Denied` is what tells
+// Ctrl+S and `:w` to stage the `sudo cp` line (cl_save / save_stage_sudo).
+@(test)
+test_buffer_save_denied :: proc(t: ^testing.T) {
+    path := "slopd_denied.tmp"
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("disk\n")) == nil)
+    defer os.remove(path)
+    testing.expect(t, os.chmod(path, {.Read_User}) == nil)
+
+    // Running as root, an unwritable mode is not unwritable at all. There is nothing to assert
+    // then — the case under test cannot be produced — so say so rather than fail.
+    if os.write_entire_file(path, transmute([]u8)string("probe\n")) == nil {
+        fmt.println("[skip] running as root: a 0400 file is still writable")
+        return
+    }
+
+    b: app.Buffer
+    defer app.buffer_destroy(&b)
+    testing.expect(t, app.buffer_load(&b, path))
+    app.buffer_insert_rune(&b, 'X')
+    testing.expect_value(t, app.buffer_save(&b), app.Save_Result.Denied)
+    testing.expect(t, b.dirty, "a refused save must leave the buffer dirty")
+
+    // The other two results are their own cases, and neither is a permission problem: an
+    // embedded doc has nowhere to write to, a vanished folder is a plain failure.
+    e: app.Buffer
+    defer app.buffer_destroy(&e)
+    app.buffer_set_text(&e, "x")
+    testing.expect_value(t, app.buffer_save(&e), app.Save_Result.No_Path)
+    e.path = strings.clone("/no-such-folder-zz/x.txt")
+    testing.expect_value(t, app.buffer_save(&e), app.Save_Result.Failed)
+}
+
+// `:saved` rests on this: the bytes the buffer WOULD write, compared against the file. It is
+// what lets a builtin that marks work clean be safe to type anywhere — on any buffer whose
+// content is not already on disk it is simply false.
+@(test)
+test_buffer_matches_disk :: proc(t: ^testing.T) {
+    path := "slopd_matches.tmp"
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("one\ntwo\n")) == nil)
+    defer os.remove(path)
+
+    b: app.Buffer
+    defer app.buffer_destroy(&b)
+    testing.expect(t, app.buffer_load(&b, path))
+    testing.expect(t, app.buffer_matches_disk(&b))
+
+    app.buffer_insert_rune(&b, 'X') // edited, and the disk has not moved
+    testing.expect(t, !app.buffer_matches_disk(&b))
+
+    // Somebody else (root, via the staged cp) writes exactly what we hold: now it matches, and
+    // marking it saved is honest — the file really is this buffer.
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("Xone\ntwo\n")) == nil)
+    testing.expect(t, app.buffer_matches_disk(&b))
+    b.dirty = true
+    app.buffer_mark_saved(&b)
+    testing.expect(t, !b.dirty)
+    testing.expect(t, !b.conflict)
+
+    // An unnamed buffer never matches: there is no file to be equal to.
+    u: app.Buffer
+    defer app.buffer_destroy(&u)
+    app.buffer_set_text(&u, "x")
+    testing.expect(t, !app.buffer_matches_disk(&u))
 }

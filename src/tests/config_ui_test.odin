@@ -32,12 +32,12 @@ COLS :: 29
 @(private = "file")
 INSTALL_ROWS :: 4
 
-// The shared value column, in cells: the widest setting key ("indent_guides" /
-// "disk_conflict", 13) plus ": ". Derived by hand and pinned, because every column
-// assertion below multiplies it out — if a longer key is ever added, exactly this
-// assertion fails rather than a dozen mysterious pixel ones.
+// The shared value column, in cells: the widest setting key ("conflict_stage", 14) plus
+// ": ". Derived by hand and pinned, because every column assertion below multiplies it
+// out — if a longer key is ever added, exactly this assertion fails rather than a dozen
+// mysterious pixel ones.
 @(private = "file")
-VAL_OFF :: 15
+VAL_OFF :: 16
 
 // Three settings-independent columns, in framebuffer pixels: chrome sits at the one-cell
 // margin, an indent-1 row one cell further in, an indent-4 option row three past that.

@@ -82,6 +82,7 @@ Config :: struct {
     term_ctrl_c:      Term_Ctrl_C, // focused terminal: does ^C interrupt or copy (^Shift+C takes the other)
     grep_pane_always: bool, // CL grep: always open the results pane vs jump straight on a lone hit
     conflict_prompt:  bool, // disk changed under unsaved edits: prompt (y/n in the CL) vs silently keep my edits
+    conflict_stage:   bool, // a raised conflict stages `:reload ` in the CL vs only marking the modeline
     mouse:            bool, // pointer input (wheel, and the clicks that follow it) on/off
     hover:            bool, // tint the row under the pointer; needs `mouse` to mean anything
     file_pane:        File_Pane, // which presentation the filetree pane wears
@@ -139,6 +140,7 @@ load_config :: proc() -> Config {
         term_ctrl_c     = .Stop, // ^C interrupts, as it does in every other terminal
         grep_pane_always = true, // always show the results pane (no auto-jump on a lone hit)
         conflict_prompt = true, // ask before a disk change is reconciled against unsaved edits
+        conflict_stage  = true, // and stage the answer in the CL, rather than only marking it
         mouse           = true, // pointer input on; it is purely additive to the keyboard
         hover           = true, // the tint is deliberately faint — see HOVER_MIX (render.odin)
         file_pane       = .Ls, // the browser is opt-in: the dired listing is what Slopd has always been
@@ -218,6 +220,8 @@ load_config :: proc() -> Config {
             if v, ok := parse_on_off(val); ok {cfg.grep_pane_always = v}
         case "disk_conflict":
             if v, ok := parse_prompt_keep(val); ok {cfg.conflict_prompt = v}
+        case "conflict_stage":
+            if v, ok := parse_on_off(val); ok {cfg.conflict_stage = v}
         case "mouse":
             if v, ok := parse_on_off(val); ok {cfg.mouse = v}
         case "hover":
@@ -308,7 +312,7 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return term_options(a.git_term, true, term_count(a), context.temp_allocator)
     case .RunTerm:
         return term_options(a.run_term, false, term_count(a), context.temp_allocator)
-    case .Folding, .IndentGuides, .Whitespace, .GrepPane, .Mouse, .Hover, .FileIcons:
+    case .Folding, .IndentGuides, .Whitespace, .GrepPane, .ConflictStage, .Mouse, .Hover, .FileIcons:
         return ON_OFF_OPTS[:]
     case .FilePane:
         return FILE_PANE_OPTS[:]
@@ -402,6 +406,7 @@ Setting :: enum {
     GitTerm,
     GrepPane,
     DiskConflict,
+    ConflictStage,
     Mouse,
     Hover,
     FilePane,
@@ -430,7 +435,8 @@ setting_key :: proc(s: Setting) -> string {
     case .GitTool:      return "git_tool"
     case .GitTerm:      return "git_term"
     case .GrepPane:     return "grep_pane"
-    case .DiskConflict: return "disk_conflict"
+    case .DiskConflict:  return "disk_conflict"
+    case .ConflictStage: return "conflict_stage"
     case .Mouse:        return "mouse"
     case .Hover:        return "hover"
     case .FilePane:     return "file_pane"
@@ -457,7 +463,8 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .GitTool:      return a.git_tool // free text; "" is unset (Alt+G opens a shell)
     case .GitTerm:      return a.git_term <= 0 ? GIT_TERM_DETACHED : fmt.tprintf("%d", a.git_term)
     case .GrepPane:     return on_off(a.grep_pane_always)
-    case .DiskConflict: return a.conflict_prompt ? "prompt" : "keep"
+    case .DiskConflict:  return a.conflict_prompt ? "prompt" : "keep"
+    case .ConflictStage: return on_off(a.conflict_stage)
     case .Mouse:        return on_off(a.mouse_on)
     case .Hover:        return on_off(a.hover_on)
     case .FilePane:     return a.file_pane == .Browser ? "browser" : "ls"
@@ -527,6 +534,8 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.grep_pane_always = parse_on_off(val) or_return
     case .DiskConflict:
         a.conflict_prompt = parse_prompt_keep(val) or_return
+    case .ConflictStage:
+        a.conflict_stage = parse_on_off(val) or_return
     case .Mouse:
         a.mouse_on = parse_on_off(val) or_return
     case .Hover:

@@ -6,12 +6,15 @@ import "core:path/filepath"
 import "core:strings"
 import clay "../bindings/clay"
 
-// The status strip: one row along the bottom of the window showing exactly one of three
-// things:
+// The status strip: one row along the bottom of the window showing one of two things:
 //
-//   the command line    while it is open — a prompt, an editable line, a ghosted hint
-//   the conflict prompt when the open file changed on disk and the CL is closed
-//   the modeline        otherwise — file, project root, language / caret / line count
+//   the command line while it is open — a prompt, an editable line, a ghosted hint
+//   the modeline     otherwise — file, project root, language / caret / line count
+//
+// **A disk conflict has no line of its own down here.** The file changing on disk under unsaved
+// edits stages `:reload ` in the COMMAND LINE (view_refresh), because that is where its answer
+// is typed — a second prompt telling you to type the line already sitting in front of you is
+// one banner too many. What the modeline carries is the state: the name's `*` becomes a `!`.
 //
 // The strip has no hit test and no click verb: nothing in it is clickable, and the obvious
 // candidate — click-to-caret — is a question about one-line TEXT FIELDS, not about the strip.
@@ -25,23 +28,15 @@ import clay "../bindings/clay"
 // The strip's left/right margin in logical pixels, shared by all three of its modes.
 STRIP_PAD :: 8
 
-// Which of the three things the strip is showing. Pure, because it is a decision with a
-// precedence in it: an open command line beats a pending conflict, since the conflict's own
-// answer is typed INTO that line.
+// Which of the two things the strip is showing. Pure, and kept as a named decision because two
+// of the strip's phases ask it — the ring and the declaration.
 Strip_Mode :: enum {
     Status,
     Command,
-    Conflict,
 }
 
 strip_mode :: proc(a: ^App) -> Strip_Mode {
-    if a.cl_active {
-        return .Command
-    }
-    if a.focus == .Editor && a.main == .Text && len(a.editor.buffers) > 0 && editor_current(&a.editor).conflict {
-        return .Conflict
-    }
-    return .Status
+    return a.cl_active ? .Command : .Status
 }
 
 // The strip's geometry: the region itself and the margin, in the units Clay wants them. No
@@ -118,10 +113,7 @@ strip_paint_cl :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user
 //                st_edit    the typed line, as a Custom — runes, selection spans, carets
 //                st_hint    the ghosted argument hint, one cell past the text
 //                (a border on st_pane while an injected line is still pristine)
-//     .Conflict  st_msg     "<file> changed on disk - ", in the alert colour
-//                st_keys    what to type, muted
-//                (a border on st_pane, always)
-//     .Status    st_left    the modified marker + file name, pinned left
+//     .Status    st_left    the modified marker (`!` on a disk conflict) + file name, pinned left
 //                st_root    the project root, pinned to the strip's centre
 //                st_right   language / caret / line count / cursors / scroll, pinned right
 strip_declare :: proc(a: ^App, f: ^Font, strip: Rect, now: f64 = 0) {
@@ -134,10 +126,10 @@ strip_declare :: proc(a: ^App, f: ^Font, strip: Rect, now: f64 = 0) {
     lh := i32(f.line_height)
     mode := strip_mode(a)
 
-    // The strip is rung in the alert colour when it holds something that wants an answer: a
-    // pending conflict, or an injected command line the user has not touched yet. Any edit
-    // bumps doc.version past the mark and the ring clears itself, so there is no per-edit hook.
-    ring := mode == .Conflict || (mode == .Command && a.cl.injected && a.cl.doc.version == a.cl.inject_ver)
+    // The strip is rung in the alert colour when it holds something that wants an answer: an
+    // injected command line the user has not touched yet (the staged `:reload ` among them).
+    // Any edit bumps doc.version past the mark and the ring clears itself — no per-edit hook.
+    ring := mode == .Command && a.cl.injected && a.cl.doc.version == a.cl.inject_ver
     bw := u16(2 * a.scale)
 
     box := clay_pane_box(area)
@@ -153,8 +145,6 @@ strip_declare :: proc(a: ^App, f: ^Font, strip: Rect, now: f64 = 0) {
         switch mode {
         case .Command:
             strip_declare_command(a, cw, lh, now)
-        case .Conflict:
-            strip_declare_conflict(a, lh)
         case .Status:
             strip_declare_status(a, lh, pad)
         }
@@ -190,25 +180,10 @@ strip_declare_command :: proc(a: ^App, cw: f32, lh: i32, now: f64) {
 
     // Ghosted per-builtin argument hint (e.g. `:reload` -> "(y/n)"), until an argument is
     // entered. cl_ghost_hint is the extensible registry and stays where it is.
-    if hint := cl_ghost_hint(line_string(l, context.temp_allocator)); hint != "" {
+    if hint := cl_ghost_hint(a, line_string(l, context.temp_allocator)); hint != "" {
         if clay.UI(clay.ID("st_hint"))({layout = {childAlignment = {y = .Center}}}) {
             clay.Text(hint, clay_text_config(th.muted, lh))
         }
-    }
-}
-
-// The unsaved-edits-vs-disk-change hint, in the strip because the answer is a COMMAND: `:reload
-// y` (re-read, losing edits) or `:reload n` (keep + cache, stops asking until the file changes
-// again). Shown while the conflict is pending and the CL is closed, until answered or saved.
-@(private = "file")
-strip_declare_conflict :: proc(a: ^App, lh: i32) {
-    th := &a.theme
-    name := filepath.base(editor_current(&a.editor).path)
-    if clay.UI(clay.ID("st_msg"))({layout = {childAlignment = {y = .Center}}}) {
-        clay.Text(fmt.tprintf("%s changed on disk - ", name), clay_text_config(th.urgent, lh))
-    }
-    if clay.UI(clay.ID("st_keys"))({layout = {childAlignment = {y = .Center}}}) {
-        clay.Text("run: :reload y (lose edits) / :reload n (keep mine)", clay_text_config(th.muted, lh))
     }
 }
 
@@ -241,8 +216,13 @@ strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
     } else {
         b := editor_current(&a.editor)
         name := b.path == "" ? "untitled" : filepath.base(b.path)
-        left = fmt.tprintf("%s %s", b.dirty ? "*" : " ", name) // a dirty buffer reads brighter
-        left_col = b.dirty ? th.fg : th.muted
+        // One marker column, three states: clean, `*` unsaved, `!` unsaved AND the file changed
+        // under them. `!` is the whole report of a pending conflict now that the strip has no
+        // line for it, so it takes the alert colour — the answer is `:reload y` / `:reload n`,
+        // or a `:w` to make this version the disk one.
+        mark := b.conflict ? "!" : b.dirty ? "*" : " "
+        left = fmt.tprintf("%s %s", mark, name) // a dirty buffer reads brighter
+        left_col = b.conflict ? th.urgent : b.dirty ? th.fg : th.muted
         head := b.cursors[b.primary].head
         nlines := len(b.lines)
         cursors := len(b.cursors) > 1 ? fmt.tprintf("   %d cursors", len(b.cursors)) : ""

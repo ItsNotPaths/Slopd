@@ -20,6 +20,9 @@ Buffer :: struct {
     fold_nlines:     int, // line count the folds were valid at (drop them when it changes)
     disk_mtime:      time.Time, // file mtime at our last load/save; detects external rewrites (see buffer_reload_if_changed)
     conflict:        bool, // the file changed on disk under unsaved edits: a decision is pending (the prompt; see buffer_conflict_resolve)
+    // The private copy a staged `sudo cp` line reads (owned; "" = none staged). Held so the
+    // NEXT staging can delete the last one — see save_stage_sudo.
+    save_tmp:        string,
     // Content came from the binary, not the filesystem (the `readme` / `license` builtins).
     // `path` is then a DISPLAY NAME, not a location: nothing may save to it or stat it.
     embedded:        bool,
@@ -125,6 +128,7 @@ buffer_destroy :: proc(b: ^Buffer) {
     doc_destroy(&b.doc)
     delete(b.folds)
     delete(b.path)
+    buffer_drop_save_tmp(b) // a staged sudo line dies with its buffer; the copy must not outlive it
 }
 
 buffer_set_text :: proc(b: ^Buffer, text: string) {
@@ -163,23 +167,74 @@ buffer_on_disk :: proc(b: ^Buffer) -> bool {
     return b.path != "" && !b.embedded
 }
 
-buffer_save :: proc(b: ^Buffer) -> bool {
+// Why a save did not happen. `.Denied` is the one an ordinary user hits on purpose — a file they
+// may read and not write — and it is the only failure with a way forward, so it is the only one
+// the callers act on rather than report (the staged `sudo cp`; see save_stage_sudo).
+Save_Result :: enum {
+    Ok,
+    No_Path, // unnamed scratch, or an embedded doc: there is nothing to write to
+    Denied, // EACCES / EPERM, on the file or on the folder it would be created in
+    Failed, // anything else: a full disk, a vanished folder, an I/O error
+}
+
+// The bytes a save writes: the shared serializer (lines joined by '\n', no trailing one), plus
+// the trailing newline back if the file we loaded had one. THREE callers must agree byte for
+// byte — the save, the private copy the sudo line carries, and the compare in `:saved` — which
+// is why the rule lives in one proc instead of being spelled out at each of them.
+buffer_bytes :: proc(b: ^Buffer, allocator := context.temp_allocator) -> string {
+    data := doc_string(&b.doc, allocator)
+    if !b.final_newline {
+        return data
+    }
+    out := strings.concatenate({data, "\n"}, allocator)
+    delete(data, allocator)
+    return out
+}
+
+buffer_save :: proc(b: ^Buffer) -> Save_Result {
     if !buffer_on_disk(b) {
-        return false // unnamed (save-as not implemented yet), or an embedded doc
+        return .No_Path // unnamed (save-as not implemented yet), or an embedded doc
     }
-    // doc_string is the single serializer (lines joined by '\n', no trailing one);
-    // re-add the trailing newline only if the loaded file had one.
-    data := doc_string(&b.doc, context.temp_allocator)
-    if b.final_newline {
-        data = strings.concatenate({data, "\n"}, context.temp_allocator)
+    data := buffer_bytes(b)
+    if err := os.write_entire_file(b.path, transmute([]u8)data); err != nil {
+        // EACCES and EPERM both arrive as Permission_Denied, from the file OR from a folder we
+        // may not create in. EROFS does not: a read-only mount is not a door sudo can open.
+        return err == .Permission_Denied ? .Denied : .Failed
     }
-    if os.write_entire_file(b.path, transmute([]u8)data) != nil {
-        return false
-    }
+    buffer_mark_saved(b)
+    return .Ok
+}
+
+// Adopt the disk as ours: clean, unconflicted, and stamped with the file's CURRENT mtime so the
+// staleness poll does not read our own write back as somebody else's. Shared by the save and by
+// `:saved` — the builtin that ends a staged sudo line, where the write was root's, not ours.
+buffer_mark_saved :: proc(b: ^Buffer) {
     b.dirty = false
     b.conflict = false // our write IS the disk now, so any pending conflict is resolved
-    b.disk_mtime = file_mtime(b.path) or_else {} // adopt our own write's stamp so it isn't read back as an external change
-    return true
+    b.disk_mtime = file_mtime(b.path) or_else {}
+    buffer_drop_save_tmp(b) // the staged copy has served its purpose
+}
+
+// Whether the file on disk already holds exactly what this buffer would write. The check that
+// makes `:saved` safe to type anywhere: on any other buffer it is simply false, so a builtin
+// that marks work clean can never be pointed at work that is not.
+buffer_matches_disk :: proc(b: ^Buffer) -> bool {
+    if !buffer_on_disk(b) {
+        return false
+    }
+    disk, err := os.read_entire_file_from_path(b.path, context.temp_allocator)
+    return err == nil && string(disk) == buffer_bytes(b)
+}
+
+// Remove the private copy staged for a sudo save, on disk and from the buffer. Safe to call
+// when there is none; called on every restaging, on `:saved`, and on close.
+buffer_drop_save_tmp :: proc(b: ^Buffer) {
+    if b.save_tmp == "" {
+        return
+    }
+    os.remove(b.save_tmp)
+    delete(b.save_tmp)
+    b.save_tmp = ""
 }
 
 // The file's on-disk modification time, ok=false if it can't be stat'd (gone/unreadable).

@@ -43,7 +43,7 @@ Non-modal / Alt-rooted: bare keys type, arrows navigate, chords live under Alt.
 | `Alt+A` + arrow | drop a multi-cursor trail (`Alt+M` = next motion moves all, `Esc` collapses) |
 | `Ctrl+Up/Down` | jump `jump_lines` lines · `Ctrl+Enter` fold/unfold the block |
 | `Alt+[` `Alt+]` | nudge the split · `Ctrl+=` `Ctrl+-` `Ctrl+0` font zoom |
-| `Ctrl+S/Z/Y/C/X/V` | save, undo, redo, clipboard |
+| `Ctrl+S/Z/Y/C/X/V` | save, undo, redo, clipboard — a save permissions refuse stages a `sudo` line in the CL |
 
 Filetree file ops are `Ctrl` chords (`^y` mark, `^u` unmark all, `^c` copy, `^x` cut, `^v`
 paste, `^d` delete, `^w` path, `^h` set the workspace to the browsed folder — `:cd` plus `:tu` in
@@ -89,10 +89,24 @@ gesture renders in the alert colour until you touch it.
 | `:cd [dir]` | set the project root · `:tu` syncs unlocked terminals |
 | `:ls` `:cf` `:gs` | filetree (also: refresh) · config pane · git tool |
 | `:put [text]` | type text + the editor selection into the target terminal, no newline |
-| `:reload y\|n` | answer a disk-conflict prompt |
+| `:reload y\|n` | answer a disk conflict: take the disk version, or keep mine (`:w` overwrites) |
 | `:readme` `:license` | open the embedded docs |
 | `:zen` `:full` `:normal` | view arrangement |
 | `:w :wa :q :q! :wq :wqa` | write / quit, the only way out; guarded by the unsaved ring |
+| `:saved` | the tail of the staged sudo save: mark clean IF the disk already holds this buffer |
+
+**Saving a file you do not own.** `Ctrl+S` (or `:w`) on a file the filesystem refuses does not
+fail quietly: the buffer is written to a private copy under `$XDG_RUNTIME_DIR`, and the line that
+carries it over is staged for you to read and run —
+
+```
+sudo cp '/run/user/1000/slopd-4213-1-hosts' '/etc/hosts' && :saved
+```
+
+The shell half runs in a real terminal, which is where `sudo` can ask for the password, and the
+`&&` gates the rest: a wrong password stops the chain, so the buffer stays dirty and nothing
+claims a save that did not happen. `:saved` then checks the file against the buffer before it
+marks it clean.
 
 **The two `cd`s.** `:cd src` moves Slopd's project root — what `:grep` searches, what the file
 panes list, where a new terminal starts. A bare `cd src` is the shell's own, moving that one
@@ -131,16 +145,6 @@ slopd --where        # which mode, and every path in use
 | `~/.config/slopd/slopd.config` | settings (`$XDG_CONFIG_HOME` if you set it) |
 | `~/.local/share/slopd/` | `themes/`, `grammars/`, `perf.log` (`$XDG_DATA_HOME` if you set it) |
 
-The first `--install` moves a portable folder's files in, and never overwrites one already
-there, so a reinstall from a fresh build keeps your settings. Install and uninstall are also
-the Config pane's first row (`:cf`), which is where the mode in force is shown — they run in
-terminal 1 and print every path they touch, because installing moves the binary Slopd is
-running from.
-
-There is still **no search path**: one mode picks one directory per kind of file and Slopd
-reads and writes only there. Copy the binary into `/usr/bin` by hand and it says so and
-writes nothing, because a setting it could not save is worse than one it refuses.
-
 ## Config
 
 `slopd.config`, simple `key: value` with `#` comments. Editing a setting in the Config pane
@@ -161,6 +165,7 @@ own directories.
 | `git_term` | int \| empty | terminal session to run it in; empty = spawn detached (for a GUI tool) |
 | `grep_pane` | `on` \| `off` | `:grep`: always open the results pane vs jump straight on a lone hit |
 | `disk_conflict` | `prompt` \| `keep` | file changed on disk under unsaved edits |
+| `conflict_stage` | `on` \| `off` | a conflict stages `:reload ` in the CL; the modeline marks it `!` either way |
 | `mouse`, `hover` | `on` \| `off` | pointer input; hover tints the row under it |
 | `file_pane` | `ls` \| `browser` | the filetree pane's face: the dired listing, or the file browser |
 | `file_view` | `list` \| `grid` | the browser's contents; its toggle button writes this back |
