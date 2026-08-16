@@ -32,6 +32,10 @@ COLS :: 29
 @(private = "file")
 INSTALL_ROWS :: 4
 
+// The bindings row, between the settings block and the syntax section.
+@(private = "file")
+BINDS_ROWS :: 1
+
 // The shared value column, in cells: the widest setting key ("conflict_stage", 14) plus
 // ": ". Derived by hand and pinned, because every column assertion below multiplies it
 // out — if a longer key is ever added, exactly this assertion fails rather than a dozen
@@ -96,7 +100,7 @@ test_config_rows_flatten :: proc(t: ^testing.T) {
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
     // 3 chrome rows per section, Slopd's own row, one row per setting, the search row, one
     // row per language.
-    testing.expect_value(t, len(rows), sc + 10 + INSTALL_ROWS)
+    testing.expect_value(t, len(rows), sc + 10 + INSTALL_ROWS + BINDS_ROWS)
 
     // Chrome selects nothing: a press on a rule or a section title is dead space, the way
     // grep's spacers are.
@@ -125,8 +129,15 @@ test_config_rows_flatten :: proc(t: ^testing.T) {
     testing.expect_value(t, rows[first].value, "(default)") // "" reads as the default
     testing.expect_value(t, rows[first].opt, -1)
 
+    // The bindings row closes the settings block; it is the whole of the binds pane's entry.
+    binds := INSTALL_ROWS + 3 + sc
+    testing.expect_value(t, rows[binds].kind, app.Config_Row_Kind.Binds)
+    testing.expect_value(t, rows[binds].item, app.ROW_BINDS)
+    testing.expect_value(t, rows[binds].text, "bindings:")
+    testing.expect_value(t, rows[binds].value, "change bindings") // no errors on a zero App
+
     // The search row, then the languages, numbered as config_pane_rows numbers them.
-    search := INSTALL_ROWS + 3 + sc + 3
+    search := INSTALL_ROWS + 3 + sc + BINDS_ROWS + 3
     testing.expect_value(t, rows[search].kind, app.Config_Row_Kind.Search)
     testing.expect_value(t, rows[search].item, app.ROW_SEARCH)
     testing.expect_value(t, rows[search + 1].kind, app.Config_Row_Kind.Lang)
@@ -212,7 +223,7 @@ test_config_rows_dropdown_splices :: proc(t: ^testing.T) {
     app.config_pane_open_setting(&a, .LineNumbers) // 2 options: global / relative
 
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
-    testing.expect_value(t, len(rows), sc + 12 + INSTALL_ROWS) // two rows longer than the closed pane
+    testing.expect_value(t, len(rows), sc + 12 + INSTALL_ROWS + BINDS_ROWS) // two rows longer than closed
 
     // The options sit directly under the row that owns them, carrying its item plus their
     // own index — the second coordinate a click needs.
@@ -254,7 +265,7 @@ test_config_selected_and_anchor :: proc(t: ^testing.T) {
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
     first := INSTALL_ROWS + 3
     testing.expect(t, app.config_row_selected(cp, rows[first]), "the selected setting row is not lit")
-    testing.expect_value(t, app.config_anchor(cp, rows), first)
+    testing.expect_value(t, app.pane_anchor(app.config_draw_rows(&a, rows, context.temp_allocator)), first)
 
     // Open: the setting row goes dark and the chosen OPTION lights instead.
     ln := int(app.Setting.LineNumbers)
@@ -265,7 +276,7 @@ test_config_selected_and_anchor :: proc(t: ^testing.T) {
     own := INSTALL_ROWS + 3 + ln
     testing.expect(t, !app.config_row_selected(cp, rows[own]), "an open setting row kept the highlight")
     testing.expect(t, app.config_row_selected(cp, rows[own + 2]), "the chosen option is not lit")
-    testing.expect_value(t, app.config_anchor(cp, rows), own + 2)
+    testing.expect_value(t, app.pane_anchor(app.config_draw_rows(&a, rows, context.temp_allocator)), own + 2)
 
     // The install row behaves as a setting row does: open, the highlight moves to the choice.
     cp.open = .None
@@ -285,9 +296,9 @@ test_config_selected_and_anchor :: proc(t: ^testing.T) {
     app.config_pane_open_lang(&a)
     testing.expect_value(t, cp.opt_sel, -1)
     rows = app.config_rows(cp, &a, COLS, context.temp_allocator)
-    root := INSTALL_ROWS + 3 + sc + 3 + 1
+    root := INSTALL_ROWS + 3 + sc + BINDS_ROWS + 3 + 1
     testing.expect(t, app.config_row_selected(cp, rows[root]), "an open language root lost the highlight")
-    testing.expect_value(t, app.config_anchor(cp, rows), root)
+    testing.expect_value(t, app.pane_anchor(app.config_draw_rows(&a, rows, context.temp_allocator)), root)
 }
 
 // The end-to-end claim: the declared tree resolves to the columns the hand-drawn pane used
@@ -389,7 +400,7 @@ test_config_search_is_custom :: proc(t: ^testing.T) {
     sc := app.SETTING_COUNT
 
     // Scroll the syntax section into view: the search row is the fourth visible row.
-    cp.scroll = INSTALL_ROWS + 3 + sc
+    cp.scroll = INSTALL_ROWS + 3 + sc + BINDS_ROWS
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
     cmds := app.config_layout(&a, &f, PANE, rows, 500, 300)
 
@@ -537,7 +548,8 @@ test_config_hit_with_scroll :: proc(t: ^testing.T) {
     hit_at :: proc(a: ^app.App, f: ^app.Font, rows: []app.ConfigRow, visible_row: int) -> int {
         clay.SetPointerState({f32(AREA.x + 30), f32(AREA.y + i32(visible_row) * ROW_H + 4)}, false)
         _ = app.config_layout(a, f, PANE, rows, 500, 300)
-        return app.config_hit(rows, a.config_pane.scroll, MAX_ROWS)
+        ui := app.config_draw_rows(a, rows, context.temp_allocator)
+        return app.pane_hit(app.CONFIG_IDS, ui, a.config_pane.scroll, MAX_ROWS)
     }
 
     // The third visible row is the first setting — a display row, not a visible-row index.
@@ -551,7 +563,8 @@ test_config_hit_with_scroll :: proc(t: ^testing.T) {
     // Below the last declared row, and off the pane entirely.
     clay.SetPointerState({f32(AREA.x + 30), f32(AREA.y + AREA.h + 20)}, false)
     _ = app.config_layout(&a, &f, PANE, rows, 500, 300)
-    testing.expect_value(t, app.config_hit(rows, cp.scroll, MAX_ROWS), -1)
+    ui := app.config_draw_rows(&a, rows, context.temp_allocator)
+    testing.expect_value(t, app.pane_hit(app.CONFIG_IDS, ui, cp.scroll, MAX_ROWS), -1)
 }
 
 // The verb half. Single click selects a row, double click opens its dropdown, and a press
@@ -567,7 +580,7 @@ test_config_click_selects_and_opens :: proc(t: ^testing.T) {
 
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
 
-    lang2 := INSTALL_ROWS + 3 + sc + 3 + 2 // the second language
+    lang2 := INSTALL_ROWS + 3 + sc + BINDS_ROWS + 3 + 2 // the second language
 
     // A single click on a language row selects it, and claims the press.
     a.mouse.click, a.mouse.click_count = true, 1

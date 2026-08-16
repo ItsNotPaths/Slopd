@@ -15,7 +15,7 @@ import "vendor:glfw"
 
 @(private = "file")
 act_of :: proc(key, mods: i32, ctx: app.Bind_Ctx) -> app.Action {
-    b, ok := app.bind_find(app.Chord{key, mods}, ctx)
+    b, ok := app.bind_find(app.BIND_DEFAULTS[:], app.Chord{key, mods}, ctx)
     return ok ? b.act : .None
 }
 
@@ -94,25 +94,26 @@ test_the_cursor_chords_are_text_binds :: proc(t: ^testing.T) {
         act: app.Action,
     }
     for p in ([]Pair{{glfw.KEY_A, .Cursor_Drop}, {glfw.KEY_M, .Move_All}}) {
-        b, ok := app.bind_find(app.Chord{p.key, ALT}, .Text)
+        b, ok := app.bind_find(app.BIND_DEFAULTS[:], app.Chord{p.key, ALT}, .Text)
         testing.expect(t, ok)
         testing.expect_value(t, b.act, p.act)
-        testing.expect(t, app.Bind_Ctx.Global not_in b.ctx, "a global row would be swallowed")
+        ctxs := app.bind_ctxs(b.act)
+        testing.expect(t, app.Bind_Ctx.Global not_in ctxs, "a global row would be swallowed")
     }
 }
 
 // One row covers Alt+1..9, and the offset is what names the session.
 @(test)
 test_a_run_row_covers_its_whole_span :: proc(t: ^testing.T) {
-    b, ok := app.bind_find(app.Chord{glfw.KEY_3, ALT}, .Surface)
+    b, ok := app.bind_find(app.BIND_DEFAULTS[:], app.Chord{glfw.KEY_3, ALT}, .Surface)
     testing.expect(t, ok)
     testing.expect_value(t, b.act, app.Action.Term_Goto)
     testing.expect_value(t, glfw.KEY_3 - b.chord.key, 2) // session 3 is offset 2
 
-    _, ok = app.bind_find(app.Chord{glfw.KEY_0, ALT}, .Surface)
+    _, ok = app.bind_find(app.BIND_DEFAULTS[:], app.Chord{glfw.KEY_0, ALT}, .Surface)
     testing.expect(t, !ok, "the run starts at 1; Alt+0 is not a session")
 
-    b, ok = app.bind_find(app.Chord{glfw.KEY_9, CTRL}, .Surface)
+    b, ok = app.bind_find(app.BIND_DEFAULTS[:], app.Chord{glfw.KEY_9, CTRL}, .Surface)
     testing.expect(t, ok)
     testing.expect_value(t, b.act, app.Action.Browse_Place)
 }
@@ -121,20 +122,10 @@ test_a_run_row_covers_its_whole_span :: proc(t: ^testing.T) {
 // make the second row unreachable and no compiler would say so.
 @(test)
 test_no_chord_is_bound_twice_in_one_context :: proc(t: ^testing.T) {
-    for x, i in app.BINDS {
-        for y in app.BINDS[i + 1:] {
-            if x.ctx & y.ctx == {} || x.chord.mods != y.chord.mods {
-                continue
-            }
-            overlap := x.chord.key <= y.chord.key + y.run && y.chord.key <= x.chord.key + x.run
-            testing.expectf(
-                t,
-                !overlap,
-                "key %d is bound twice in one context: %v and %v",
-                x.chord.key,
-                x.act,
-                y.act,
-            )
+    for x, i in app.BIND_DEFAULTS {
+        for y in app.BIND_DEFAULTS[i + 1:] {
+            ok := !app.bind_clash(x, y)
+            testing.expectf(t, ok, "%v and %v fight over one chord", x.act, y.act)
         }
     }
 }

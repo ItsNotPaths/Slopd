@@ -3,19 +3,13 @@ package main
 import "core:strings"
 import "vendor:glfw"
 
-// Actions — every verb Slopd has, named once. bind.odin turns a keystroke into one of these and
-// `action_run` is the only thing that performs one, so a verb reached from a key, a click, a menu
-// or (next) a config line is the same verb and cannot drift.
+// Actions — every verb Slopd has, named once. action_run is the only thing that performs one, so
+// a key, a click and a menu item reach the same verb and cannot drift.
 //
-// **Most actions are answered by whichever surface has the keys.** `Nav_Down` moves the caret in
-// the editor, the selection in a list, the result in grep, and pans an image; `Clip_Copy` copies
-// text, or files, or a terminal's selection. That is what keeps the arrows and the clipboard out
-// of the bind table six times over — and it is why the bind contexts (bind.odin) only have to say
-// where a chord may MEAN something, never which pane acts.
-//
-// A pane-specific action asks for its own target first (`tree_target`, `media_target`, ...) and
-// does nothing when that pane is not the one with the keys. Those helpers are the guard rail: ^Y
-// pressed in the grep pane must not mark a file in a listing you cannot see.
+// Most actions are answered by whichever surface has the keys: Nav_Down moves the caret, or the
+// selection, or pans an image. That is what keeps the arrows and the clipboard out of the bind
+// table six times over. A pane-specific action asks its own target first (tree_target, ...) and
+// declines elsewhere — ^Y in the grep pane must not mark a file you cannot see.
 
 Action :: enum {
     None,
@@ -102,13 +96,10 @@ Action :: enum {
     Media_Fit,
 }
 
-// --- who has the keys --- Six small questions, each asked in one place. They are the reason the
-// bind table needs four contexts rather than one per pane: a chord says WHAT to do, and these say
-// WHERE, so an action pressed at the wrong surface is a no-op instead of a surprise.
+// --- who has the keys --- A chord says WHAT; these say WHERE, so a verb pressed at the wrong
+// surface is a no-op rather than a surprise.
 
-// Which editable owns the keystrokes, and its Doc. Where this is not `.None`, a bare key TYPES —
-// which is the whole of the Text/Surface split. char_callback asks the same question, so the keys
-// that type and the keys that edit can never disagree about which box they are in.
+// The editable with the keystrokes. Not .None means a bare key TYPES — the Text/Surface split.
 Editable :: enum {
     None,
     Buffer,
@@ -126,9 +117,8 @@ active_editable :: proc(a: ^App) -> (Editable, ^Doc) {
         return .Browse_Path, &a.filebrowser.path
     }
     if a.focus == .Aux && a.aux_mode == .Config {
-        // Two kinds of row take text — the language filter and a free-text setting. An open
-        // dropdown is a closed list, so it takes none. (config_edit_sync must have settled
-        // `edit` against the highlighted row before this is read; handle_key does that.)
+        // The filter and a free-text setting take text; an open dropdown is a closed list and
+        // takes none. config_edit_sync must have settled `edit` first — handle_key does that.
         cp := &a.config_pane
         if cp.open == .None {
             if config_pane_is_search(cp.sel) {
@@ -146,8 +136,7 @@ active_editable :: proc(a: ^App) -> (Editable, ^Doc) {
     return .None, nil
 }
 
-// The buffer the editor's own chords act on, or nil when the editor is not the surface with the
-// keys — so ^Z typed into the config pane's search box does not undo behind it.
+// nil when the editor lacks the keys, so ^Z in a search box does not undo behind it.
 buffer_target :: proc(a: ^App) -> ^Buffer {
     if a.cl_active || a.focus != .Editor || a.main != .Text {
         return nil
@@ -155,7 +144,6 @@ buffer_target :: proc(a: ^App) -> ^Buffer {
     return editor_current(&a.editor)
 }
 
-// The listing the file chords act on, or nil when the file pane is not the one with the keys.
 // One model under both faces, so this does not care which is being drawn.
 tree_target :: proc(a: ^App) -> ^FileTree {
     if a.cl_active || a.focus != .Aux || a.aux_mode != .FileTree {
@@ -164,8 +152,7 @@ tree_target :: proc(a: ^App) -> ^FileTree {
     return &a.tree
 }
 
-// The browser's own state — history, places, which view — or nil when the file pane is absent or
-// wearing the `ls` face. What the LISTING has no concept of lives here and nowhere else.
+// History, places and which view — what the listing has no concept of. nil under the `ls` face.
 browse_target :: proc(a: ^App) -> ^FileBrowser {
     if tree_target(a) == nil || a.file_pane != .Browser {
         return nil
@@ -196,12 +183,11 @@ config_target :: proc(a: ^App) -> ^ConfigPane {
 
 // --- the dispatcher ---
 
-// Perform one action. `n` is the offset within a bind covering a run of keys (Alt+3 is Term_Goto
-// with n == 2), `extend` says Shift was down, and `all` that an Alt+M prefix is being spent.
+// `n` is the offset within a run bind (Alt+3 is Term_Goto with n == 2), `extend` says Shift was
+// down, `all` that an Alt+M prefix is being spent.
 //
-// Returns false when the action DECLINED — it had no target, or the surface it found wants the
-// keystroke to go somewhere else. Only the terminal does anything with that answer: a declined
-// key reaches the job, which is how ^C interrupts when there is no selection to copy.
+// false means DECLINED — no target, or the surface wants the keystroke elsewhere. Only the
+// terminal acts on that: a declined key reaches the job, which is how ^C interrupts.
 action_run :: proc(a: ^App, act: Action, n: int, extend, all: bool) -> (handled: bool) {
     handled = true
     switch act {
@@ -235,8 +221,7 @@ action_run :: proc(a: ^App, act: Action, n: int, extend, all: bool) -> (handled:
     case .Git_Tool:
         git_tool_open(a) // hand the project root to the configured external tool
     case .Follow:
-        // The same gesture at either surface: go to what is under the cursor. In the editor
-        // that is a definition, a URL, a [[file]] or a colour; in the file pane it is a folder.
+        // Go to what is under the cursor: a def / URL / [[file]] / colour, or a folder.
         if tree_target(a) != nil {
             filetree_cd_selected(a)
         } else if buffer_target(a) != nil {
@@ -251,8 +236,7 @@ action_run :: proc(a: ^App, act: Action, n: int, extend, all: bool) -> (handled:
     case .Term_New, .Term_Close, .Term_Lock, .Term_Prev, .Term_Next:
         return term_pane_run(a, act)
     case .Term_Sel_Up, .Term_Sel_Down:
-        // The copy cursor is a cursor IN a pane, so unlike the session verbs it wants that pane
-        // FOCUSED — the rule PageUp has always been on (term_sel_target).
+        // A cursor IN a pane, so unlike the session verbs it wants that pane focused.
         ts := term_sel_target(a)
         if ts == nil {
             return false
@@ -267,7 +251,6 @@ action_run :: proc(a: ^App, act: Action, n: int, extend, all: bool) -> (handled:
         }
         doc_drop_anchor(d)
     case .Move_All:
-        // The one-shot prefix: the next motion moves every cursor instead of the free caret.
         // handle_key has already spent whatever was pending, so this only ever arms.
         kind, _ := active_editable(a)
         a.move_all_armed = kind != .None
@@ -304,9 +287,7 @@ action_run :: proc(a: ^App, act: Action, n: int, extend, all: bool) -> (handled:
     case .Move_End:
         return motion_run(a, .End, extend, all)
     case .Jump_Up, .Jump_Down:
-        // In the editor ^Up/^Down jump `jump_lines` at a time. Anywhere else there is nothing
-        // to jump OVER, so they are the plain move — which is what the command line's history
-        // and a list's selection have always done with them.
+        // Elsewhere there is nothing to jump over, so ^Up/^Down are the plain move.
         up := act == .Jump_Up
         if b := buffer_target(a); b != nil {
             buffer_motion(b, up ? .Up : .Down, extend, all, a.jump_lines)
@@ -336,12 +317,9 @@ action_run :: proc(a: ^App, act: Action, n: int, extend, all: bool) -> (handled:
     return
 }
 
-// --- the pane families --- One guard each, so "does this verb reach this pane" is asked once
-// per family rather than once per verb, and a family added later cannot forget to ask.
+// --- the pane families --- One guard each, asked once per family rather than once per verb.
 
-// The terminal PANE's verbs. They want the pane UP, not focused: closing or switching a session
-// while you type in the editor is a pane-level choice, which is the line between these and the
-// copy cursor.
+// The pane UP, not focused: switching a session while you type is a pane-level choice.
 @(private = "file")
 term_pane_run :: proc(a: ^App, act: Action) -> bool {
     if a.aux_mode != .Terminal {
@@ -364,9 +342,7 @@ term_pane_run :: proc(a: ^App, act: Action) -> bool {
     return true
 }
 
-// The editor's own verbs — the ones needing a Buffer's dirty flag, undo history or folds rather
-// than just a Doc. They decline everywhere else, so ^S in the config pane's search box does not
-// save the file behind it.
+// The verbs needing a Buffer's dirty flag, undo history or folds rather than just a Doc.
 @(private = "file")
 buffer_run :: proc(a: ^App, act: Action) -> bool {
     b := buffer_target(a)
@@ -377,13 +353,9 @@ buffer_run :: proc(a: ^App, act: Action) -> bool {
     case .Indent:
         buffer_tab(b, a.indent)
     case .Fold_Toggle:
-        // With folding off ^Enter is still an Enter: a chord that silently does nothing reads
-        // as a broken key rather than as a disabled feature.
-        if a.folding {buffer_fold_toggle(a, b)} else {buffer_enter(a, b)}
+        if a.folding {buffer_fold_toggle(a, b)} else {buffer_enter(a, b)} // off: still an Enter
     case .Save:
-        // A file we may read and not write stages a `sudo cp` line in the CL rather than failing
-        // silently — cl_save is the one save gesture `:w` shares.
-        _ = cl_save(a, b)
+        _ = cl_save(a, b) // unwritable files stage a `sudo cp` line; `:w` shares this
     case .Undo:
         buffer_undo(b)
     case .Redo:
@@ -392,9 +364,8 @@ buffer_run :: proc(a: ^App, act: Action) -> bool {
     return true
 }
 
-// The file pane's ops, identical under both faces. Extending is the second half of the pair
-// wherever there is one: the marked SET rather than the row, the browsed DIRECTORY rather than
-// the entry — which is what `e` being nil says below.
+// Identical under both faces. Extending takes the second half of the pair: the marked SET, or the
+// browsed DIRECTORY — which is what `e` being nil says below.
 @(private = "file")
 file_run :: proc(a: ^App, act: Action, extend: bool) -> bool {
     ft := tree_target(a)
@@ -411,7 +382,7 @@ file_run :: proc(a: ^App, act: Action, extend: bool) -> bool {
     case .File_Marks_Clear:
         filetree_marks_reset(ft)
     case .File_Delete:
-        filetree_rm_selected(a, extend)
+        filetree_rm_selected(a, extend) // stages an `rm -rf` in the CL: that line is the confirm
     case .File_Copy_Path:
         clipboard_set(a, strings.clone(e != nil ? e.path : ft.dir), nil) // owned: it takes them
     case .File_Props:
@@ -421,15 +392,13 @@ file_run :: proc(a: ^App, act: Action, extend: bool) -> bool {
     case .File_Edit:
         filetree_edit_selected(a) // open in the editor even when Enter would run it
     case .Parent:
-        // The only way out of a GRID, where Left/Right step a tile. It works in the listing too:
-        // the two faces differ in pixels, never in what you can reach.
+        // The only way out of a GRID, where Left/Right step a tile. Works in the listing too.
         if browse_target(a) != nil {filebrowser_parent(a)} else {filetree_parent(ft)}
     }
     return true
 }
 
-// The browser's top bar and sidebar — absent under the `ls` face, where there is no chrome for
-// them to drive, so the whole family declines there.
+// Absent under the `ls` face, where there is no chrome to drive, so the family declines there.
 @(private = "file")
 browse_run :: proc(a: ^App, act: Action, n: int) -> bool {
     if browse_target(a) == nil {
@@ -450,7 +419,7 @@ browse_run :: proc(a: ^App, act: Action, n: int) -> bool {
     return true
 }
 
-// The image surface. Bare keys, which only a surface with nothing to type into can have.
+// Bare keys, which only a surface with nothing to type into can have.
 @(private = "file")
 media_run :: proc(a: ^App, act: Action) -> bool {
     m := media_target(a)
@@ -468,10 +437,9 @@ media_run :: proc(a: ^App, act: Action) -> bool {
     return true
 }
 
-// --- the polymorphic verbs --- One proc each, holding every surface's answer, so adding a pane
-// means writing its rows here rather than finding four switch statements.
+// --- the polymorphic verbs --- One proc each, holding every surface's answer.
 
-// The four arrows. Not a motion: it is "step, the way this surface steps".
+// "Step, the way this surface steps" — not a motion.
 Nav :: enum {
     Up,
     Down,
@@ -484,9 +452,7 @@ nav_run :: proc(a: ^App, n: Nav, extend, all: bool) -> bool {
     kind, d := active_editable(a)
     switch kind {
     case .Command_Line:
-        // A live `:f` preview BORROWS Up/Down to cycle its matches — cycling results is what
-        // those keys mean everywhere else a result list is up, and a find query is one. History
-        // is still there the moment the preview has nothing to cycle.
+        // A live `:f` preview borrows Up/Down to cycle matches; history is there when it has none.
         switch n {
         case .Up:
             if !cl_preview_step(a, -1) {cl_history_prev(a)}
@@ -508,16 +474,14 @@ nav_run :: proc(a: ^App, n: Nav, extend, all: bool) -> bool {
         }
         return true
     case .Browse_Path:
-        // The open path line is ONE line: it has no rows to walk, and the listing under it must
-        // not walk either while you are typing a destination.
+        // One line, no rows to walk — and the listing under it must not walk while you type.
         if n == .Up || n == .Down {
             return false
         }
         doc_step(d, n, extend, all)
         return true
     case .Config_Search, .Config_Value:
-        // A text row still walks the ROWS on Up/Down — the pane is a form, and leaving the row
-        // is how you commit it. Left/Right are the caret's, as in any other one-line box.
+        // A text row still walks ROWS on Up/Down: leaving the row is how you commit it.
         switch n {
         case .Up:
             config_pane_move(&a.config_pane, -1)
@@ -562,8 +526,7 @@ nav_run :: proc(a: ^App, n: Nav, extend, all: bool) -> bool {
     return false
 }
 
-// Enter: whatever this surface calls "do the thing I am pointing at". Extending is the second
-// half of the pair wherever there is one — a file opens in the DESKTOP's app rather than ours.
+// "Do the thing I am pointing at". Extending opens a file in the DESKTOP's app rather than ours.
 @(private = "file")
 activate_run :: proc(a: ^App, extend: bool) -> bool {
     kind, _ := active_editable(a)
@@ -600,7 +563,7 @@ activate_run :: proc(a: ^App, extend: bool) -> bool {
     if ft := tree_target(a); ft != nil {
         switch {
         case extend:
-            filetree_open_selected(a) // hand it to the desktop, or stage its run command
+            filetree_open_selected(a) // to the desktop, or stage its run command
         case browse_target(a) != nil:
             filebrowser_activate(a) // into the folder, through the history
         case:
@@ -611,8 +574,7 @@ activate_run :: proc(a: ^App, extend: bool) -> bool {
     return false
 }
 
-// Copy / cut. The editable answers first: with the browser's path line open, ^C is the TEXT you
-// are typing, not the file the listing happens to be on.
+// The editable answers first: with the path line open, ^C is the TEXT, not the file under it.
 @(private = "file")
 clip_take :: proc(a: ^App, cut: bool) -> bool {
     kind, d := active_editable(a)
@@ -626,13 +588,12 @@ clip_take :: proc(a: ^App, cut: bool) -> bool {
     case .None:
     }
     if ft := tree_target(a); ft != nil {
-        // FILL the clipboard from the marked set, or from the row under the cursor when nothing
-        // is marked, and say which the paste will be. A cut is spent by its paste; a copy is not.
+        // From the marked set, or the row under the cursor. A cut is spent by its paste.
         filetree_clip_take(ft, cut ? .Cut : .Copy)
         return true
     }
-    // A terminal has a selection to copy and nothing to cut. **With nothing selected ^C is not a
-    // copy at all** — it is the interrupt, so this declines and the job gets the keystroke.
+    // A terminal has nothing to cut, and with nothing SELECTED ^C is not a copy at all — it is
+    // the interrupt, so this declines and the job gets the keystroke.
     if ts := term_sel_target(a); ts != nil && !cut && term_has_span(ts) {
         term_copy(a, ts)
         return true
@@ -656,8 +617,7 @@ clip_put :: proc(a: ^App) -> bool {
         filetree_paste(ft) // apply the clipboard to the browsed dir
         return true
     }
-    // Claimed on the PANE rather than on a live shell, so a dead session swallows it: falling
-    // through would reach the job as ^V, which is readline's quoted-insert.
+    // Claimed on the PANE, not a live shell: falling through would reach the job as ^V.
     if ts := term_sel_target(a); ts != nil {
         term_paste(a, ts)
         return true
@@ -665,8 +625,7 @@ clip_put :: proc(a: ^App) -> bool {
     return false
 }
 
-// A motion with no vertical meaning (words, Home/End). Every editable takes these the same way,
-// which is why they need no per-surface branch.
+// Words and Home/End: every editable takes these the same way, so no per-surface branch.
 @(private = "file")
 motion_run :: proc(a: ^App, m: Motion, extend, all: bool) -> bool {
     kind, d := active_editable(a)
@@ -686,8 +645,7 @@ delete_run :: proc(a: ^App, act: Action) -> bool {
     // Two axes, not four verbs: which side of the caret, and whether Ctrl widens it to a word.
     back := act == .Delete_Back || act == .Delete_Word_Back
     word := act == .Delete_Word_Back || act == .Delete_Word_Forward
-    // The buffer keeps its own dirty flag and undo history, so it has its own four; every
-    // one-line field shares the Doc's.
+    // The buffer keeps its own dirty flag and undo, so it has its own four.
     if b := buffer_target(a); b != nil {
         switch {
         case back && word: buffer_delete_word_back(b)
@@ -703,18 +661,16 @@ delete_run :: proc(a: ^App, act: Action) -> bool {
     case word:         doc_delete_word_forward(d)
     case:              doc_delete(d)
     }
-    // The language filter re-runs on an edit rather than on a motion, which is what this is.
+    // The filter re-runs on an edit, not on a motion.
     if kind == .Config_Search {
         config_pane_filter(&a.config_pane)
     }
     return true
 }
 
-// --- the per-pane answers --- Kept beside the dispatcher rather than in each pane's file, so
-// "what do the arrows do here" is one page to read.
+// --- the per-pane answers --- Beside the dispatcher, so "what do the arrows do here" is one page.
 
-// Escape's cascade: it cancels the innermost thing there is to cancel, and drives Zen only when
-// there is nothing. A focused live terminal gets it FIRST, so vim and its kin see it.
+// Cancels the innermost thing there is to cancel, and drives Zen only when there is nothing.
 @(private = "file")
 escape_run :: proc(a: ^App, move_all_pending: bool) {
     kind, d := active_editable(a)
@@ -732,7 +688,7 @@ escape_run :: proc(a: ^App, move_all_pending: bool) {
     case kind == .Browse_Path:
         filebrowser_path_cancel(a) // the path bar goes back to being buttons
     case move_all_pending:
-    // The prefix was armed and this keystroke spent it. Swallowing it here IS the cancel.
+    // handle_key already spent the prefix; swallowing the key here IS the cancel.
     case kind == .Buffer && len(d.cursors) > 1:
         doc_collapse_to_primary(d)
     case:
@@ -740,9 +696,8 @@ escape_run :: proc(a: ^App, move_all_pending: bool) {
     }
 }
 
-// The config pane's arrows. An open dropdown owns them; otherwise Up/Down walk the rows and
-// Right opens whatever the highlighted row offers. A free-text row never reaches here — it is
-// Text, not Surface — so Left has nothing to do but cancel a dropdown.
+// An open dropdown owns them; otherwise Up/Down walk rows and Right opens what the row offers.
+// A free-text row is Text, not Surface, so it never reaches here.
 @(private = "file")
 config_nav :: proc(a: ^App, cp: ^ConfigPane, n: Nav) {
     if cp.open != .None {
@@ -769,10 +724,11 @@ config_nav :: proc(a: ^App, cp: ^ConfigPane, n: Nav) {
     }
 }
 
-// Right / Enter on the highlighted row: open whatever choices it has. Package-level because the
-// pointer's double click means the same thing (config_click).
+// Right / Enter on the highlighted row. Package-level: the double click means the same thing.
 config_open_selected :: proc(a: ^App, cp: ^ConfigPane) {
     switch {
+    case config_pane_is_binds(cp.sel):
+        set_aux(a, .Binds)
     case config_pane_is_install(cp.sel):
         config_pane_open_install(a)
     case config_pane_lang(cp, cp.sel) != nil:
@@ -784,9 +740,8 @@ config_open_selected :: proc(a: ^App, cp: ^ConfigPane) {
     }
 }
 
-// The file pane's arrows — the one place the two faces genuinely differ. A GRID row is `br.cols`
-// entries wide (filebrowser_frame writes it: only the geometry knows how many tiles fit), and
-// there Left/Right step a tile rather than leaving the folder.
+// The one place the two faces genuinely differ: in a GRID (br.cols wide, written by
+// filebrowser_frame) Left/Right step a tile rather than leaving the folder.
 @(private = "file")
 filetree_nav :: proc(a: ^App, ft: ^FileTree, n: Nav, extend: bool) {
     br := browse_target(a)
@@ -819,8 +774,7 @@ filetree_nav :: proc(a: ^App, ft: ^FileTree, n: Nav, extend: bool) {
     }
 }
 
-// Left/Right on a Doc, with the Alt+M prefix applied. The two horizontal arrows are the only
-// motion every editable shares with every list, so this is where the Nav enum meets Motion.
+// Left/Right on a Doc, with the Alt+M prefix applied: where the Nav enum meets Motion.
 @(private = "file")
 doc_step :: proc(d: ^Doc, n: Nav, extend, all: bool) {
     m: Motion = n == .Left ? .Left : .Right

@@ -208,6 +208,8 @@ window_frame :: proc(t: ^Text, a: ^App, lay: Layout, win_w, win_h: i32, now: f64
             terminal_frame(t, a, lay.aux, now)
         case .Grep:
             grep_frame(t, a, lay.aux)
+        case .Binds:
+            binds_frame(t, a, lay.aux)
         }
         // The strip declares last; the overlays outrank it by zIndex (overlay_ui.odin).
         strip_frame(t, a, lay.strip, now)

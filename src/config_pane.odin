@@ -1,5 +1,6 @@
 package main
 
+import "base:runtime"
 import "core:fmt"
 import "core:strings"
 
@@ -86,7 +87,8 @@ SETTING_COUNT :: len(Setting)
 // cannot silently shift a setting under a caller that assumed row 0 was the first one.
 ROW_INSTALL :: 0 // Slopd's own install state — first, because it says where every write below lands
 ROW_SETTINGS :: ROW_INSTALL + 1 // the first settings row; Setting(r - ROW_SETTINGS)
-ROW_SEARCH :: ROW_SETTINGS + SETTING_COUNT // the language filter
+ROW_BINDS :: ROW_SETTINGS + SETTING_COUNT // the key table, edited in its own pane
+ROW_SEARCH :: ROW_BINDS + 1 // the language filter
 ROW_LANGS :: ROW_SEARCH + 1 // the first filtered language
 
 // `grammars` is the App-owned registry; the pane borrows each name for its lang list
@@ -151,6 +153,10 @@ config_pane_setting :: proc(r: int) -> (Setting, bool) {
 // Slopd's own install row, above the settings.
 config_pane_is_install :: proc(r: int) -> bool {
     return r == ROW_INSTALL
+}
+
+config_pane_is_binds :: proc(r: int) -> bool {
+    return r == ROW_BINDS
 }
 
 // The search row sits between the settings and the (filtered) language list.
@@ -337,6 +343,7 @@ Config_Row_Kind :: enum {
     Header, // a section title ("slopd", "settings", "syntax")
     Install, // Slopd's own row: install state + its install/uninstall dropdown
     Setting, // a settings row: key + value column
+    Binds, // the key table's row: opens the block, and carries any load error
     Text, // a settings row whose value is FREE TEXT: an editor while it is highlighted
     Search, // the language filter box — always an editor, and always at the same row
     Lang, // a language row: status mark + name
@@ -412,6 +419,18 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
         }
     }
 
+    append(
+        &rows,
+        ConfigRow {
+            kind = .Binds,
+            text = "bindings:",
+            value = binds_row_text(len(a.binds_pane.errs), alloc),
+            item = ROW_BINDS,
+            opt = -1,
+            indent = 1,
+        },
+    )
+
     append(&rows, chrome(.Rule, rule), chrome(.Header, "syntax"), chrome(.Rule, rule))
     append(
         &rows,
@@ -451,6 +470,14 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
     return rows[:]
 }
 
+@(private = "file")
+binds_row_text :: proc(n: int, alloc: runtime.Allocator) -> string {
+    if n == 0 {
+        return strings.clone("change bindings", alloc)
+    }
+    return fmt.aprintf("! %d error%s in binding config", n, n == 1 ? "" : "s", allocator = alloc)
+}
+
 // A dropdown choice, indented past the row that owns it so the options read as nested.
 @(private = "file")
 config_option_row :: proc(item, opt: int, text: string) -> ConfigRow {
@@ -467,7 +494,7 @@ config_row_selected :: proc(cp: ^ConfigPane, r: ConfigRow) -> bool {
     switch r.kind {
     case .Rule, .Header:
         return false
-    case .Search, .Text:
+    case .Search, .Text, .Binds:
         return true
     case .Install:
         return cp.open != .Install
@@ -479,17 +506,6 @@ config_row_selected :: proc(cp: ^ConfigPane, r: ConfigRow) -> bool {
         return cp.opt_sel == r.opt
     }
     return false
-}
-
-// The display row the scroll policy frames — the selected one. An open dropdown splices
-// rows in above and below, so this is a search rather than arithmetic over the nav index.
-config_anchor :: proc(cp: ^ConfigPane, rows: []ConfigRow) -> int {
-    for r, i in rows {
-        if config_row_selected(cp, r) {
-            return i
-        }
-    }
-    return 0
 }
 
 // --- the verbs, shared by the keyboard and the pointer --- They live here rather than in

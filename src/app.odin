@@ -35,6 +35,7 @@ AuxMode :: enum {
     Terminal,
     Config,
     Grep,
+    Binds,
 }
 
 Focus :: enum {
@@ -104,6 +105,7 @@ App :: struct {
 
     tree:        FileTree, // filetree aux mode (initialised in main, needs IO)
     config_pane: ConfigPane, // config / syntax aux mode (initialised in main, needs IO)
+    binds_pane:  BindsPane, // the key table's editor; holds its own copy until you save it
 
     // How the filetree aux mode PRESENTS that listing (config `file_pane`): the dired-style
     // rows, or the file browser — top bar, places sidebar, list or grid. One model, two
@@ -144,6 +146,12 @@ App :: struct {
     // config pane (lang list) and the highlighter (ext -> grammar)
     gram_ext: map[string]string, // ext -> language name over `grammars`; borrows its strings
     hl:       Highlighter, // tree-sitter syntax highlighting (loaded grammars, cached)
+
+    // The live key table, BIND_DEFAULTS with the config's `[binds]` block over it, and every
+    // line that block got wrong. Errors are shown on the config pane's bindings row and block a
+    // write-back; they can only come from hand-editing slopd.config.
+    binds:       [dynamic]Bind,
+    bind_errors: []Bind_Error,
 
     // Multi-cursor drop chord (no mode/toggle): Alt+A held + a direction drops a
     // cursor and steps that way, so holding Alt+A and tapping arrows lays a trail.
@@ -432,4 +440,7 @@ app_destroy :: proc(a: ^App) {
         delete(p)
     }
     delete(a.clip_pieces)
+    delete(a.binds)
+    bind_errors_destroy(a.bind_errors)
+    binds_pane_destroy(&a.binds_pane)
 }

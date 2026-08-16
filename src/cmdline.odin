@@ -340,6 +340,10 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
     case "cf":
         set_aux(a, .Config)
         config_pane_refresh(&a.config_pane)
+    case "binds":
+        set_aux(a, .Binds)
+    case "rebind":
+        cl_rebind(a, args)
     case "readme", "README":
         open_embedded_doc(a, .Readme)
     case "license", "LICENSE":
@@ -515,7 +519,6 @@ cl_write_all :: proc(a: ^App) -> int {
 // Surface a Slopd message in t1 by running an `echo`, so feedback lands in a real terminal
 // (lazily spawning t1) rather than the status strip. sh_quote does the quoting, so a message
 // carrying the user's own text — an unrecognised builtin name — can hold anything at all.
-@(private = "file")
 cl_echo_t1 :: proc(a: ^App, msg: string) {
     run_in_t1(a, fmt.tprintf("echo %s", sh_quote(msg, context.temp_allocator)))
 }
@@ -889,7 +892,6 @@ editor_selection_text :: proc(a: ^App, alloc := context.temp_allocator) -> strin
     return ""
 }
 
-@(private = "file")
 first_field :: proc(s: string) -> string {
     i := 0
     for i < len(s) && s[i] != ' ' && s[i] != '\t' {

@@ -19,7 +19,7 @@ odin build src -out:slopd -define:GLFW_SHARED=false
 | | |
 |---|---|
 | **main surfaces** | `Text` (the buffer ring) · `Image` (the media viewer) |
-| **aux modes** | `FileTree` (as an `ls` listing or a file browser) · `Terminal` · `Config` · `Grep` |
+| **aux modes** | `FileTree` (as an `ls` listing or a file browser) · `Terminal` · `Config` · `Grep` · `Binds` |
 | **views** | `Split` both panes · `Zen` full-width editor, aux slides in while focused · `Full` one surface fills the window |
 
 Views are toggled from the command line: `:zen`/`:zm`, `:full`/`:fm`, `:normal`/`:nm`. `Esc` with
@@ -83,7 +83,8 @@ gesture renders in the alert colour until you touch it.
 | `:f` / `:find` | literal search of the open buffer; smart case, `Up`/`Down` cycle the hits |
 | `:grep <re>` | project-wide search into the Grep pane |
 | `:cd [dir]` | set the project root · `:tu` syncs unlocked terminals |
-| `:ls` `:cf` `:gs` | filetree (also: refresh) · config pane · git tool |
+| `:ls` `:cf` `:gs` `:binds` | filetree (also: refresh) · config · git tool · key bindings |
+| `:rebind [+\|-\|N] <action> [chord]` | edit a binding — `:rebind + nav.down alt+j` |
 | `:put [text]` | type text + the editor selection into the target terminal, no newline |
 | `:reload y\|n` | answer a disk conflict: take the disk version, or keep mine (`:w` overwrites) |
 | `:readme` `:license` | open the embedded docs |
@@ -184,6 +185,34 @@ file and this one applies again.
 | `file_pane` | `ls` \| `browser` | the filetree pane's face: the dired listing, or the file browser |
 | `file_view` | `list` \| `grid` | the browser's contents; its toggle button writes this back |
 | `file_icons` | `on` \| `off` | per-type icons in the browser (needs the vendored icon face) |
+
+Two `[section]` blocks sit below the settings and are data rather than knobs: `[places]` is the
+browser's sidebar, and `[binds]` is the key table.
+
+## Rebinding
+
+`:binds` (or the Config pane's `bindings` row) opens the binds pane: one row per action, its
+chords beside it. Its own keys are fixed, so rebinding cannot lock you out of it.
+
+| | |
+|---|---|
+| `↑` `↓` | move · `←` `→` cycle which of the row's chords is highlighted |
+| `Enter` | edit the highlighted chord, by whichever mode the top toggle is on |
+| `Alt+=` `Alt+-` | add a chord to this action · delete the highlighted one (`Backspace` too) |
+| `Ctrl+S` | write the block. Blocked while any line is in error |
+
+The top toggle picks how `Enter` edits. **fill in the command line** stages
+`:rebind 1 clip.copy ` for you to finish and read before it runs; **capture a keystroke** takes
+the next key you press, and asks first if something else holds it. Either way the edit stays in
+the pane until you save, so rebinding an arrow does not change the pane under you.
+
+`:rebind` works from anywhere: `+` adds, `-` (or `-N`) clears, a bare `N` replaces the Nth chord,
+and no selector replaces the first.
+
+The file half is a `[binds]` block of `chord: action` lines over the defaults, `none` to unbind.
+A chord is `ctrl`/`alt`/`shift` then the key (`alt+f`, `ctrl+shift+z`, `alt+[`, `f5`), physical.
+Shift is not usually written: a Shift chord that matches nothing retries without it and the action
+extends, which is what makes `Shift+Down` sweep marks and `^Shift+D` take the marked set.
 
 ## Theme
 

@@ -110,6 +110,8 @@ main :: proc() {
     app.file_icons = cfg.file_icons
     app.filebrowser.view = cfg.file_view
     app.font_px = cfg.font_px // persisted font zoom; text_init bakes the atlas at it
+    app.binds, app.bind_errors = load_binds()
+    binds_pane_init(&app.binds_pane, app.binds[:], app.bind_errors)
 
     editor_init(&app.editor)
     defer editor_destroy(&app.editor)

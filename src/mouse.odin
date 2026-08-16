@@ -15,6 +15,13 @@ import clay "../bindings/clay"
 // they resolve against the one target — Shift, or a device with a second axis of its own,
 // picks which — because a gesture is over one pane whichever way it travels.
 //
+// FOUR RULES, the whole of the pointer's behaviour:
+//   1. A WHEEL SCROLLS A VIEW — never a selection, a caret, or focus; and it DETACHES.
+//   2. A CLICK ACTS ON PRESS AND NAMES ONE THING; an unclaimed press dies with the frame.
+//   3. FOCUS FOLLOWS THE CLICK, and only the click — never a wheel, never the divider.
+//   4. THE KEYBOARD OUTRANKS THE POINTER: any key that does something stands it down. A bare
+//      modifier is excluded — Alt+click needs the cursor on screen to aim with.
+//
 // Two coordinate traps, handled at the callback so nothing downstream repeats them:
 //   1. GLFW reports WINDOW (logical) coords; Layout, Rect and Clay use FRAMEBUFFER pixels.
 //      mouse_to_fb converts once on the way in, deriving the ratio from the two sizes rather
@@ -165,7 +172,7 @@ wheel_target :: proc(a: ^App, lay: Layout, mx, my: i32) -> Wheel_Target {
     switch a.aux_mode {
     case .Terminal:
         return .Terminal
-    case .FileTree, .Grep, .Config:
+    case .FileTree, .Grep, .Config, .Binds:
         return .List
     }
     return .None
@@ -220,6 +227,8 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
             // Including with a dropdown open: its options are spliced into the row list, so
             // scrolling the view carries them along.
             list_scroll_by(&a.config_pane.scroll, &a.config_pane.scroll_detached, d, now)
+        case .Binds:
+            list_scroll_by(&a.binds_pane.scroll, &a.binds_pane.scroll_detached, d, now)
         case .Terminal:
         // Not a list pane; wheel_target never routes it here.
         }
