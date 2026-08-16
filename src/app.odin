@@ -386,7 +386,7 @@ app_init :: proc(a: ^App) {
     cwd, err := os.get_working_directory(context.allocator) // owned; the launch cwd
     a.project_root = err == nil ? cwd : strings.clone(".")
     cl_init(&a.cl)
-    // No sysbus here: the D-Bus stack is parked (see the banner in src/sysbus.odin) and the
+    // No sysbus here: the D-Bus stack is parked (see the banner in src/system/sysbus.odin) and the
     // App owns none of it. `slopd --sysbus` is its only entry point.
 }
 

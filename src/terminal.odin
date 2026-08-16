@@ -9,6 +9,7 @@ import "core:sys/posix"
 import "core:thread"
 import vt "../bindings/libvterm"
 import "vendor:glfw"
+import "wake"
 
 // A terminal session: the libvterm VT state machine plus the PTY and child shell. A
 // per-session reader thread does the one blocking read() on the master fd; vterm_* stays
@@ -726,7 +727,7 @@ term_reader_proc :: proc(th: ^thread.Thread) {
             sync.mutex_lock(&t.lock)
             append(&t.inbuf, ..buf[:n])
             sync.mutex_unlock(&t.lock)
-            wake_post()
+            wake.post()
             continue
         }
         if n < 0 && posix.get_errno() == .EINTR {
@@ -737,7 +738,7 @@ term_reader_proc :: proc(th: ^thread.Thread) {
     sync.mutex_lock(&t.lock)
     t.alive = false
     sync.mutex_unlock(&t.lock)
-    wake_post()
+    wake.post()
 }
 
 // Start capturing scrolled-off lines into this Terminal's scrollback. Stores a self-pointer

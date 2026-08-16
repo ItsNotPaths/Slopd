@@ -1,6 +1,6 @@
 package tests
 
-import app ".."
+import "../system"
 import "core:fmt"
 import "core:strings"
 import "core:testing"
@@ -43,8 +43,8 @@ hex :: proc(b: []u8) -> string {
 
 // Marshals and asserts the exact bytes.
 @(private = "file")
-expect_marshal :: proc(t: ^testing.T, sig: string, args: []app.Dbus_Value, want: []u8, label: string) {
-    got, ok := app.dbus_marshal_bytes(sig, args)
+expect_marshal :: proc(t: ^testing.T, sig: string, args: []system.Dbus_Value, want: []u8, label: string) {
+    got, ok := system.dbus_marshal_bytes(sig, args)
     if !testing.expectf(t, ok, "%s: marshal failed", label) {
         return
     }
@@ -55,26 +55,26 @@ expect_marshal :: proc(t: ^testing.T, sig: string, args: []app.Dbus_Value, want:
 
 @(test)
 test_dbus_sig_next :: proc(t: ^testing.T) {
-    testing.expect_value(t, app.dbus_sig_next("s"), 1)
-    testing.expect_value(t, app.dbus_sig_next("su"), 1) // only the FIRST complete type
-    testing.expect_value(t, app.dbus_sig_next("as"), 2)
-    testing.expect_value(t, app.dbus_sig_next("aas"), 3)
-    testing.expect_value(t, app.dbus_sig_next("a{sv}"), 5)
-    testing.expect_value(t, app.dbus_sig_next("(ii)"), 4)
-    testing.expect_value(t, app.dbus_sig_next("(i(us))x"), 7) // nested, stops at its own close
-    testing.expect_value(t, app.dbus_sig_next("a{oa{sa{sv}}}"), 13) // the ObjectManager shape
+    testing.expect_value(t, system.dbus_sig_next("s"), 1)
+    testing.expect_value(t, system.dbus_sig_next("su"), 1) // only the FIRST complete type
+    testing.expect_value(t, system.dbus_sig_next("as"), 2)
+    testing.expect_value(t, system.dbus_sig_next("aas"), 3)
+    testing.expect_value(t, system.dbus_sig_next("a{sv}"), 5)
+    testing.expect_value(t, system.dbus_sig_next("(ii)"), 4)
+    testing.expect_value(t, system.dbus_sig_next("(i(us))x"), 7) // nested, stops at its own close
+    testing.expect_value(t, system.dbus_sig_next("a{oa{sa{sv}}}"), 13) // the ObjectManager shape
 
     // Malformed input must report 0, never a length that would walk off the end.
-    testing.expect_value(t, app.dbus_sig_next(""), 0)
-    testing.expect_value(t, app.dbus_sig_next("("), 0)
-    testing.expect_value(t, app.dbus_sig_next("(ii"), 0)
-    testing.expect_value(t, app.dbus_sig_next("a"), 0) // an array with no element type
-    testing.expect_value(t, app.dbus_sig_next("z"), 0) // not a type code
+    testing.expect_value(t, system.dbus_sig_next(""), 0)
+    testing.expect_value(t, system.dbus_sig_next("("), 0)
+    testing.expect_value(t, system.dbus_sig_next("(ii"), 0)
+    testing.expect_value(t, system.dbus_sig_next("a"), 0) // an array with no element type
+    testing.expect_value(t, system.dbus_sig_next("z"), 0) // not a type code
 }
 
 @(test)
 test_dbus_sig_split :: proc(t: ^testing.T) {
-    parts, ok := app.dbus_sig_split("sa{sv}u")
+    parts, ok := system.dbus_sig_split("sa{sv}u")
     testing.expect(t, ok)
     testing.expect_value(t, len(parts), 3)
     if len(parts) == 3 {
@@ -83,27 +83,27 @@ test_dbus_sig_split :: proc(t: ^testing.T) {
         testing.expect_value(t, parts[2], "u")
     }
 
-    empty, eok := app.dbus_sig_split("")
+    empty, eok := system.dbus_sig_split("")
     testing.expect(t, eok)
     testing.expect_value(t, len(empty), 0)
 
-    _, bad := app.dbus_sig_split("s(ii")
+    _, bad := system.dbus_sig_split("s(ii")
     testing.expect(t, !bad, "an unterminated struct must not split")
 }
 
 @(test)
 test_dbus_sig_align :: proc(t: ^testing.T) {
-    testing.expect_value(t, app.dbus_sig_align("y"), 1)
-    testing.expect_value(t, app.dbus_sig_align("g"), 1)
-    testing.expect_value(t, app.dbus_sig_align("v"), 1) // a variant carries its own sig first
-    testing.expect_value(t, app.dbus_sig_align("q"), 2)
-    testing.expect_value(t, app.dbus_sig_align("u"), 4)
-    testing.expect_value(t, app.dbus_sig_align("s"), 4) // the u32 length leads
-    testing.expect_value(t, app.dbus_sig_align("as"), 4) // ...as does an array's
-    testing.expect_value(t, app.dbus_sig_align("t"), 8)
-    testing.expect_value(t, app.dbus_sig_align("d"), 8)
-    testing.expect_value(t, app.dbus_sig_align("(yy)"), 8) // structs always, however small
-    testing.expect_value(t, app.dbus_sig_align("{sv}"), 8)
+    testing.expect_value(t, system.dbus_sig_align("y"), 1)
+    testing.expect_value(t, system.dbus_sig_align("g"), 1)
+    testing.expect_value(t, system.dbus_sig_align("v"), 1) // a variant carries its own sig first
+    testing.expect_value(t, system.dbus_sig_align("q"), 2)
+    testing.expect_value(t, system.dbus_sig_align("u"), 4)
+    testing.expect_value(t, system.dbus_sig_align("s"), 4) // the u32 length leads
+    testing.expect_value(t, system.dbus_sig_align("as"), 4) // ...as does an array's
+    testing.expect_value(t, system.dbus_sig_align("t"), 8)
+    testing.expect_value(t, system.dbus_sig_align("d"), 8)
+    testing.expect_value(t, system.dbus_sig_align("(yy)"), 8) // structs always, however small
+    testing.expect_value(t, system.dbus_sig_align("{sv}"), 8)
 }
 
 // --- exact wire vectors ---
@@ -130,14 +130,14 @@ test_dbus_marshal_basics :: proc(t: ^testing.T) {
     )
 
     // s: u32 length NOT counting the terminator, then the bytes, then a NUL.
-    expect_marshal(t, "s", {app.Dbus_String("abc")}, {3, 0, 0, 0, 'a', 'b', 'c', 0}, "string")
-    expect_marshal(t, "s", {app.Dbus_String("")}, {0, 0, 0, 0, 0}, "empty string still has its NUL")
+    expect_marshal(t, "s", {system.Dbus_String("abc")}, {3, 0, 0, 0, 'a', 'b', 'c', 0}, "string")
+    expect_marshal(t, "s", {system.Dbus_String("")}, {0, 0, 0, 0, 0}, "empty string still has its NUL")
 
     // g: a SINGLE byte length and no alignment — the one string type that differs.
-    expect_marshal(t, "g", {app.Dbus_Signature("a{sv}")}, {5, 'a', '{', 's', 'v', '}', 0}, "signature")
+    expect_marshal(t, "g", {system.Dbus_Signature("a{sv}")}, {5, 'a', '{', 's', 'v', '}', 0}, "signature")
 
     // o marshals exactly like s, but the type is distinct so the two can't be swapped.
-    expect_marshal(t, "o", {app.Dbus_Path("/a")}, {2, 0, 0, 0, '/', 'a', 0}, "object path")
+    expect_marshal(t, "o", {system.Dbus_Path("/a")}, {2, 0, 0, 0, '/', 'a', 0}, "object path")
 }
 
 @(test)
@@ -149,9 +149,9 @@ test_dbus_marshal_array :: proc(t: ^testing.T) {
     //   12..18 "bc" (len 2, 'b', 'c', NUL)
     // Length 15 counts bytes 4..18 — the interior padding IS included, being between
     // elements, unlike the leading padding tested below.
-    a := app.Dbus_Value(app.Dbus_String("a"))
-    b := app.Dbus_Value(app.Dbus_String("bc"))
-    arr := app.Dbus_Value(app.Dbus_Array{sig = "s", items = {a, b}})
+    a := system.Dbus_Value(system.Dbus_String("a"))
+    b := system.Dbus_Value(system.Dbus_String("bc"))
+    arr := system.Dbus_Value(system.Dbus_Array{sig = "s", items = {a, b}})
     expect_marshal(
         t,
         "as",
@@ -170,8 +170,8 @@ test_dbus_marshal_array_padding_not_counted :: proc(t: ^testing.T) {
     //   0..3   length = 8   (one u64, not 12)
     //   4..7   padding, uncounted
     //   8..15  the u64
-    one := app.Dbus_Value(u64(1))
-    arr := app.Dbus_Value(app.Dbus_Array{sig = "t", items = {one}})
+    one := system.Dbus_Value(u64(1))
+    arr := system.Dbus_Value(system.Dbus_Array{sig = "t", items = {one}})
     expect_marshal(
         t,
         "at",
@@ -182,11 +182,11 @@ test_dbus_marshal_array_padding_not_counted :: proc(t: ^testing.T) {
 
     // And the padding is present even when there is nothing to align — an EMPTY array of
     // an 8-aligned type is still eight bytes on the wire, not four.
-    empty := app.Dbus_Value(app.Dbus_Array{sig = "t", items = {}})
+    empty := system.Dbus_Value(system.Dbus_Array{sig = "t", items = {}})
     expect_marshal(t, "at", {empty}, {0, 0, 0, 0, 0, 0, 0, 0}, "empty array of u64 keeps its pad")
 
     // A 4-aligned element needs no such padding: the length word already leaves us there.
-    e4 := app.Dbus_Value(app.Dbus_Array{sig = "u", items = {}})
+    e4 := system.Dbus_Value(system.Dbus_Array{sig = "u", items = {}})
     expect_marshal(t, "au", {e4}, {0, 0, 0, 0}, "empty array of u32 is just the length")
 }
 
@@ -199,11 +199,11 @@ test_dbus_marshal_dict_and_variant :: proc(t: ^testing.T) {
     //   16..18 the variant's signature: len 1, 'u', NUL
     //   19     padding to the u32's 4-boundary
     //   20..23 the u32 value 7
-    seven := app.Dbus_Value(u32(7))
-    key := app.Dbus_Value(app.Dbus_String("Foo"))
-    var := app.Dbus_Value(app.Dbus_Variant{sig = "u", val = &seven})
-    ent := app.Dbus_Value(app.Dbus_Entry{key = &key, val = &var})
-    dict := app.Dbus_Value(app.Dbus_Array{sig = "{sv}", items = {ent}})
+    seven := system.Dbus_Value(u32(7))
+    key := system.Dbus_Value(system.Dbus_String("Foo"))
+    var := system.Dbus_Value(system.Dbus_Variant{sig = "u", val = &seven})
+    ent := system.Dbus_Value(system.Dbus_Entry{key = &key, val = &var})
+    dict := system.Dbus_Value(system.Dbus_Array{sig = "{sv}", items = {ent}})
     expect_marshal(
         t,
         "a{sv}",
@@ -216,8 +216,8 @@ test_dbus_marshal_dict_and_variant :: proc(t: ^testing.T) {
     //   0..2  len 1, 's', NUL
     //   3     padding to 4
     //   4..   the string
-    hi := app.Dbus_Value(app.Dbus_String("hi"))
-    v := app.Dbus_Value(app.Dbus_Variant{sig = "s", val = &hi})
+    hi := system.Dbus_Value(system.Dbus_String("hi"))
+    v := system.Dbus_Value(system.Dbus_Variant{sig = "s", val = &hi})
     expect_marshal(t, "v", {v}, {1, 's', 0, 0, 2, 0, 0, 0, 'h', 'i', 0}, "variant of string")
 }
 
@@ -225,13 +225,13 @@ test_dbus_marshal_dict_and_variant :: proc(t: ^testing.T) {
 test_dbus_marshal_struct :: proc(t: ^testing.T) {
     // (yu) — a struct aligns to 8 even though its widest member is 4, but at offset 0
     // that costs nothing; the interior byte->u32 padding still applies.
-    one := app.Dbus_Value(u8(1))
-    two := app.Dbus_Value(u32(2))
-    st := app.Dbus_Value(app.Dbus_Struct{fields = {one, two}})
+    one := system.Dbus_Value(u8(1))
+    two := system.Dbus_Value(u32(2))
+    st := system.Dbus_Value(system.Dbus_Struct{fields = {one, two}})
     expect_marshal(t, "(yu)", {st}, {1, 0, 0, 0, 2, 0, 0, 0}, "struct")
 
     // A byte before a struct proves the 8-alignment: 7 bytes of padding, not 3.
-    st2 := app.Dbus_Value(app.Dbus_Struct{fields = {one, two}})
+    st2 := system.Dbus_Value(system.Dbus_Struct{fields = {one, two}})
     expect_marshal(
         t,
         "y(yu)",
@@ -244,33 +244,33 @@ test_dbus_marshal_struct :: proc(t: ^testing.T) {
 @(test)
 test_dbus_marshal_rejects_mismatch :: proc(t: ^testing.T) {
     // A value that doesn't match its signature is caught here rather than by the daemon.
-    _, ok := app.dbus_marshal_bytes("u", {app.Dbus_String("nope")})
+    _, ok := system.dbus_marshal_bytes("u", {system.Dbus_String("nope")})
     testing.expect(t, !ok, "string marshalled as u32 must be rejected")
 
-    _, ok2 := app.dbus_marshal_bytes("s", {app.Dbus_Path("/x")})
+    _, ok2 := system.dbus_marshal_bytes("s", {system.Dbus_Path("/x")})
     testing.expect(t, !ok2, "object path is not interchangeable with string")
 
-    _, ok3 := app.dbus_marshal_bytes("uu", {u32(1)})
+    _, ok3 := system.dbus_marshal_bytes("uu", {u32(1)})
     testing.expect(t, !ok3, "argument count must match the signature")
 
-    _, ok4 := app.dbus_marshal_bytes("a", {u32(1)})
+    _, ok4 := system.dbus_marshal_bytes("a", {u32(1)})
     testing.expect(t, !ok4, "an array needs an element type")
 }
 
 // --- round trips ---
 
 @(private = "file")
-round_trip :: proc(t: ^testing.T, sig: string, args: []app.Dbus_Value) -> []app.Dbus_Value {
-    bytes, ok := app.dbus_marshal_bytes(sig, args)
+round_trip :: proc(t: ^testing.T, sig: string, args: []system.Dbus_Value) -> []system.Dbus_Value {
+    bytes, ok := system.dbus_marshal_bytes(sig, args)
     if !testing.expectf(t, ok, "%s: marshal failed", sig) {
         return nil
     }
-    r := app.Dbus_Reader {
+    r := system.Dbus_Reader {
         data = bytes,
         pos  = 0,
         big  = false,
     }
-    out, uok := app.dbus_unmarshal(&r, sig)
+    out, uok := system.dbus_unmarshal(&r, sig)
     if !testing.expectf(t, uok, "%s: unmarshal failed", sig) {
         return nil
     }
@@ -293,9 +293,9 @@ test_dbus_round_trip_basics :: proc(t: ^testing.T) {
             i64(-5000000000),
             u64(18000000000000000000),
             f64(3.5),
-            app.Dbus_String("str"),
-            app.Dbus_Path("/obj/path"),
-            app.Dbus_Signature("a{sv}"),
+            system.Dbus_String("str"),
+            system.Dbus_Path("/obj/path"),
+            system.Dbus_Signature("a{sv}"),
         },
     )
     if len(out) != 12 {
@@ -311,9 +311,9 @@ test_dbus_round_trip_basics :: proc(t: ^testing.T) {
     testing.expect_value(t, out[6].(i64), i64(-5000000000))
     testing.expect_value(t, out[7].(u64), u64(18000000000000000000))
     testing.expect_value(t, out[8].(f64), f64(3.5))
-    testing.expect_value(t, string(out[9].(app.Dbus_String)), "str")
-    testing.expect_value(t, string(out[10].(app.Dbus_Path)), "/obj/path")
-    testing.expect_value(t, string(out[11].(app.Dbus_Signature)), "a{sv}")
+    testing.expect_value(t, string(out[9].(system.Dbus_String)), "str")
+    testing.expect_value(t, string(out[10].(system.Dbus_Path)), "/obj/path")
+    testing.expect_value(t, string(out[11].(system.Dbus_Signature)), "a{sv}")
 }
 
 @(test)
@@ -322,23 +322,23 @@ test_dbus_round_trip_object_manager :: proc(t: ^testing.T) {
     // the whole feature: every pane's device tree arrives in it. Built three levels deep
     // here so the nested alignment is exercised for real.
     //   /dev/0 -> { "org.example.Device": { "Name": <"wlan0">, "Powered": <true> } }
-    name_v := app.Dbus_Value(app.Dbus_String("wlan0"))
-    powered_v := app.Dbus_Value(bool(true))
-    name_k := app.Dbus_Value(app.Dbus_String("Name"))
-    powered_k := app.Dbus_Value(app.Dbus_String("Powered"))
-    name_var := app.Dbus_Value(app.Dbus_Variant{sig = "s", val = &name_v})
-    powered_var := app.Dbus_Value(app.Dbus_Variant{sig = "b", val = &powered_v})
-    name_e := app.Dbus_Value(app.Dbus_Entry{key = &name_k, val = &name_var})
-    powered_e := app.Dbus_Value(app.Dbus_Entry{key = &powered_k, val = &powered_var})
-    props := app.Dbus_Value(app.Dbus_Array{sig = "{sv}", items = {name_e, powered_e}})
+    name_v := system.Dbus_Value(system.Dbus_String("wlan0"))
+    powered_v := system.Dbus_Value(bool(true))
+    name_k := system.Dbus_Value(system.Dbus_String("Name"))
+    powered_k := system.Dbus_Value(system.Dbus_String("Powered"))
+    name_var := system.Dbus_Value(system.Dbus_Variant{sig = "s", val = &name_v})
+    powered_var := system.Dbus_Value(system.Dbus_Variant{sig = "b", val = &powered_v})
+    name_e := system.Dbus_Value(system.Dbus_Entry{key = &name_k, val = &name_var})
+    powered_e := system.Dbus_Value(system.Dbus_Entry{key = &powered_k, val = &powered_var})
+    props := system.Dbus_Value(system.Dbus_Array{sig = "{sv}", items = {name_e, powered_e}})
 
-    iface_k := app.Dbus_Value(app.Dbus_String("org.example.Device"))
-    iface_e := app.Dbus_Value(app.Dbus_Entry{key = &iface_k, val = &props})
-    ifaces := app.Dbus_Value(app.Dbus_Array{sig = "{sa{sv}}", items = {iface_e}})
+    iface_k := system.Dbus_Value(system.Dbus_String("org.example.Device"))
+    iface_e := system.Dbus_Value(system.Dbus_Entry{key = &iface_k, val = &props})
+    ifaces := system.Dbus_Value(system.Dbus_Array{sig = "{sa{sv}}", items = {iface_e}})
 
-    path_k := app.Dbus_Value(app.Dbus_Path("/dev/0"))
-    path_e := app.Dbus_Value(app.Dbus_Entry{key = &path_k, val = &ifaces})
-    tree := app.Dbus_Value(app.Dbus_Array{sig = "{oa{sa{sv}}}", items = {path_e}})
+    path_k := system.Dbus_Value(system.Dbus_Path("/dev/0"))
+    path_e := system.Dbus_Value(system.Dbus_Entry{key = &path_k, val = &ifaces})
+    tree := system.Dbus_Value(system.Dbus_Array{sig = "{oa{sa{sv}}}", items = {path_e}})
 
     out := round_trip(t, "a{oa{sa{sv}}}", {tree})
     if len(out) != 1 {
@@ -346,46 +346,46 @@ test_dbus_round_trip_object_manager :: proc(t: ^testing.T) {
     }
 
     // Walk it back out the way a pane would, through the accessors.
-    top := out[0].(app.Dbus_Array)
+    top := out[0].(system.Dbus_Array)
     testing.expect_value(t, len(top.items), 1)
-    obj := top.items[0].(app.Dbus_Entry)
-    testing.expect_value(t, string(obj.key.(app.Dbus_Path)), "/dev/0")
+    obj := top.items[0].(system.Dbus_Entry)
+    testing.expect_value(t, string(obj.key.(system.Dbus_Path)), "/dev/0")
 
-    dev, dok := app.dbus_dict_get(obj.val^, "org.example.Device")
+    dev, dok := system.dbus_dict_get(obj.val^, "org.example.Device")
     testing.expect(t, dok, "interface lookup")
     if !dok {
         return
     }
-    n, nok := app.dbus_dict_string(dev, "Name")
+    n, nok := system.dbus_dict_string(dev, "Name")
     testing.expect(t, nok)
     testing.expect_value(t, n, "wlan0")
 
     // dbus_dict_get unwraps the variant, so a bool property arrives as a bool.
-    p, pok := app.dbus_dict_get(dev, "Powered")
+    p, pok := system.dbus_dict_get(dev, "Powered")
     testing.expect(t, pok)
     testing.expect_value(t, p.(bool), true)
 
-    _, missing := app.dbus_dict_get(dev, "Nope")
+    _, missing := system.dbus_dict_get(dev, "Nope")
     testing.expect(t, !missing, "a missing key must report not-found, not a zero value")
 }
 
 @(test)
 test_dbus_round_trip_nested_arrays :: proc(t: ^testing.T) {
     // aas — an array of arrays, where the inner arrays' own length words must align.
-    a := app.Dbus_Value(app.Dbus_String("x"))
-    b := app.Dbus_Value(app.Dbus_String("yy"))
-    inner1 := app.Dbus_Value(app.Dbus_Array{sig = "s", items = {a, b}})
-    inner2 := app.Dbus_Value(app.Dbus_Array{sig = "s", items = {}})
-    outer := app.Dbus_Value(app.Dbus_Array{sig = "as", items = {inner1, inner2}})
+    a := system.Dbus_Value(system.Dbus_String("x"))
+    b := system.Dbus_Value(system.Dbus_String("yy"))
+    inner1 := system.Dbus_Value(system.Dbus_Array{sig = "s", items = {a, b}})
+    inner2 := system.Dbus_Value(system.Dbus_Array{sig = "s", items = {}})
+    outer := system.Dbus_Value(system.Dbus_Array{sig = "as", items = {inner1, inner2}})
 
     out := round_trip(t, "aas", {outer})
     if len(out) != 1 {
         return
     }
-    got := out[0].(app.Dbus_Array)
+    got := out[0].(system.Dbus_Array)
     testing.expect_value(t, len(got.items), 2)
-    testing.expect_value(t, len(got.items[0].(app.Dbus_Array).items), 2)
-    testing.expect_value(t, len(got.items[1].(app.Dbus_Array).items), 0)
+    testing.expect_value(t, len(got.items[0].(system.Dbus_Array).items), 2)
+    testing.expect_value(t, len(got.items[1].(system.Dbus_Array).items), 0)
 }
 
 // --- byte order ---
@@ -395,12 +395,12 @@ test_dbus_unmarshal_big_endian :: proc(t: ^testing.T) {
     // We always WRITE little-endian, but a peer may write big-endian and we must read it.
     // Hand-built here since our own encoder can't produce it.
     be := []u8{0, 0, 0, 42, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9}
-    r := app.Dbus_Reader {
+    r := system.Dbus_Reader {
         data = be,
         pos  = 0,
         big  = true,
     }
-    out, ok := app.dbus_unmarshal(&r, "uqt", context.temp_allocator)
+    out, ok := system.dbus_unmarshal(&r, "uqt", context.temp_allocator)
     testing.expect(t, ok)
     if !ok || len(out) != 3 {
         return
@@ -417,26 +417,26 @@ test_dbus_unmarshal_rejects_malformed :: proc(t: ^testing.T) {
     // Everything here arrives from another process, so truncation and absurd lengths must
     // fail cleanly rather than read past the buffer.
     short := []u8{1, 0}
-    r1 := app.Dbus_Reader{data = short, pos = 0}
-    _, ok1 := app.dbus_unmarshal(&r1, "u")
+    r1 := system.Dbus_Reader{data = short, pos = 0}
+    _, ok1 := system.dbus_unmarshal(&r1, "u")
     testing.expect(t, !ok1, "a truncated u32 must fail")
 
     // A string claiming more bytes than the message holds.
     huge := []u8{0xff, 0xff, 0xff, 0x7f, 'a', 0}
-    r2 := app.Dbus_Reader{data = huge, pos = 0}
-    _, ok2 := app.dbus_unmarshal(&r2, "s")
+    r2 := system.Dbus_Reader{data = huge, pos = 0}
+    _, ok2 := system.dbus_unmarshal(&r2, "s")
     testing.expect(t, !ok2, "an over-long string length must fail")
 
     // An array whose declared length runs past the buffer.
     over := []u8{100, 0, 0, 0, 1, 0, 0, 0}
-    r3 := app.Dbus_Reader{data = over, pos = 0}
-    _, ok3 := app.dbus_unmarshal(&r3, "au")
+    r3 := system.Dbus_Reader{data = over, pos = 0}
+    _, ok3 := system.dbus_unmarshal(&r3, "au")
     testing.expect(t, !ok3, "an over-long array length must fail")
 
     // A variant announcing a signature that isn't a single complete type.
     badvar := []u8{2, 'u', 'u', 0, 0, 0, 0, 0}
-    r4 := app.Dbus_Reader{data = badvar, pos = 0}
-    _, ok4 := app.dbus_unmarshal(&r4, "v")
+    r4 := system.Dbus_Reader{data = badvar, pos = 0}
+    _, ok4 := system.dbus_unmarshal(&r4, "v")
     testing.expect(t, !ok4, "a variant carrying two types must fail")
 }
 
@@ -444,8 +444,8 @@ test_dbus_unmarshal_rejects_malformed :: proc(t: ^testing.T) {
 
 @(test)
 test_dbus_msg_round_trip :: proc(t: ^testing.T) {
-    arg := app.Dbus_Value(app.Dbus_String("hello"))
-    raw, ok := app.dbus_msg_call(
+    arg := system.Dbus_Value(system.Dbus_String("hello"))
+    raw, ok := system.dbus_msg_call(
         7,
         "org.freedesktop.DBus",
         "/org/freedesktop/DBus",
@@ -464,14 +464,14 @@ test_dbus_msg_round_trip :: proc(t: ^testing.T) {
     testing.expect_value(t, raw[0], u8('l')) // we emit little-endian
     testing.expect_value(t, raw[1], u8(1)) // METHOD_CALL
     testing.expect_value(t, raw[3], u8(1)) // protocol version
-    testing.expect_value(t, app.dbus_msg_size(raw), len(raw))
+    testing.expect_value(t, system.dbus_msg_size(raw), len(raw))
 
-    msg, dok := app.dbus_msg_decode(raw)
+    msg, dok := system.dbus_msg_decode(raw)
     testing.expect(t, dok, "decode")
     if !dok {
         return
     }
-    testing.expect_value(t, msg.type, app.Dbus_Msg_Type.Method_Call)
+    testing.expect_value(t, msg.type, system.Dbus_Msg_Type.Method_Call)
     testing.expect_value(t, msg.serial, u32(7))
     testing.expect_value(t, msg.path, "/org/freedesktop/DBus")
     testing.expect_value(t, msg.iface, "org.freedesktop.DBus")
@@ -484,18 +484,18 @@ test_dbus_msg_round_trip :: proc(t: ^testing.T) {
     body_at := len(msg.raw) - len(msg.body)
     testing.expectf(t, body_at % 8 == 0, "body starts at %d, not an 8-boundary", body_at)
 
-    args, aok := app.dbus_msg_args(&msg)
+    args, aok := system.dbus_msg_args(&msg)
     testing.expect(t, aok, "args")
     if !aok || len(args) != 1 {
         return
     }
-    testing.expect_value(t, string(args[0].(app.Dbus_String)), "hello")
+    testing.expect_value(t, string(args[0].(system.Dbus_String)), "hello")
 }
 
 @(test)
 test_dbus_msg_no_body :: proc(t: ^testing.T) {
     // Hello: the mandatory first message, and the no-argument case.
-    raw, ok := app.dbus_msg_call(
+    raw, ok := system.dbus_msg_call(
         1,
         "org.freedesktop.DBus",
         "/org/freedesktop/DBus",
@@ -509,7 +509,7 @@ test_dbus_msg_no_body :: proc(t: ^testing.T) {
     if !ok {
         return
     }
-    msg, dok := app.dbus_msg_decode(raw)
+    msg, dok := system.dbus_msg_decode(raw)
     testing.expect(t, dok)
     if !dok {
         return
@@ -518,7 +518,7 @@ test_dbus_msg_no_body :: proc(t: ^testing.T) {
     testing.expect_value(t, msg.signature, "") // no SIGNATURE field for an empty body
     testing.expect_value(t, len(msg.body), 0)
 
-    args, aok := app.dbus_msg_args(&msg)
+    args, aok := system.dbus_msg_args(&msg)
     testing.expect(t, aok, "an empty body parses to no arguments, not a failure")
     testing.expect_value(t, len(args), 0)
 }
@@ -526,7 +526,7 @@ test_dbus_msg_no_body :: proc(t: ^testing.T) {
 @(test)
 test_dbus_msg_error_reply :: proc(t: ^testing.T) {
     // The serve-side primitive: an error answering a call carries the caller's serial.
-    call, _ := app.dbus_msg_call(
+    call, _ := system.dbus_msg_call(
         11,
         "",
         "/slopd/agent",
@@ -536,9 +536,9 @@ test_dbus_msg_error_reply :: proc(t: ^testing.T) {
         nil,
         context.temp_allocator,
     )
-    incoming, _ := app.dbus_msg_decode(call)
+    incoming, _ := system.dbus_msg_decode(call)
 
-    raw, ok := app.dbus_msg_error(
+    raw, ok := system.dbus_msg_error(
         12,
         &incoming,
         "net.connman.iwd.Agent.Error.Canceled",
@@ -549,41 +549,41 @@ test_dbus_msg_error_reply :: proc(t: ^testing.T) {
     if !ok {
         return
     }
-    reply, dok := app.dbus_msg_decode(raw)
+    reply, dok := system.dbus_msg_decode(raw)
     testing.expect(t, dok)
     if !dok {
         return
     }
-    testing.expect_value(t, reply.type, app.Dbus_Msg_Type.Error)
+    testing.expect_value(t, reply.type, system.Dbus_Msg_Type.Error)
     testing.expect_value(t, reply.reply_serial, u32(11))
     testing.expect_value(t, reply.error_name, "net.connman.iwd.Agent.Error.Canceled")
 
-    args, aok := app.dbus_msg_args(&reply)
+    args, aok := system.dbus_msg_args(&reply)
     testing.expect(t, aok)
     if aok && len(args) == 1 {
-        testing.expect_value(t, string(args[0].(app.Dbus_String)), "user cancelled")
+        testing.expect_value(t, string(args[0].(system.Dbus_String)), "user cancelled")
     }
 }
 
 @(test)
 test_dbus_msg_decode_rejects_junk :: proc(t: ^testing.T) {
-    testing.expect_value(t, app.dbus_msg_size({}), 0)
-    testing.expect_value(t, app.dbus_msg_size({1, 2, 3}), 0) // shorter than the fixed header
+    testing.expect_value(t, system.dbus_msg_size({}), 0)
+    testing.expect_value(t, system.dbus_msg_size({1, 2, 3}), 0) // shorter than the fixed header
 
     // A bad endianness byte is the first thing checked.
     bad := make([]u8, 16, context.temp_allocator)
     bad[0] = 'x'
-    testing.expect_value(t, app.dbus_msg_size(bad), 0)
+    testing.expect_value(t, system.dbus_msg_size(bad), 0)
 
     // A valid size but a wrong protocol version.
-    raw, _ := app.dbus_msg_call(1, "d", "/p", "i", "m", "", nil, context.temp_allocator)
+    raw, _ := system.dbus_msg_call(1, "d", "/p", "i", "m", "", nil, context.temp_allocator)
     raw[3] = 99
-    _, ok := app.dbus_msg_decode(raw)
+    _, ok := system.dbus_msg_decode(raw)
     testing.expect(t, !ok, "an unknown protocol version must be refused")
 
     // Truncation: a message that claims more than it delivers.
-    raw2, _ := app.dbus_msg_call(1, "d", "/p", "i", "m", "", nil, context.temp_allocator)
-    _, ok2 := app.dbus_msg_decode(raw2[:len(raw2) - 1])
+    raw2, _ := system.dbus_msg_call(1, "d", "/p", "i", "m", "", nil, context.temp_allocator)
+    _, ok2 := system.dbus_msg_decode(raw2[:len(raw2) - 1])
     testing.expect(t, !ok2, "a truncated message must be refused")
 }
 
@@ -592,31 +592,31 @@ test_dbus_msg_decode_rejects_junk :: proc(t: ^testing.T) {
 @(test)
 test_dbus_parse_address :: proc(t: ^testing.T) {
     // The exact form this dev box exports.
-    p, abs, ok := app.dbus_parse_address("unix:path=/tmp/dbus-0F0REzHrmL,guid=4133537ed1")
+    p, abs, ok := system.dbus_parse_address("unix:path=/tmp/dbus-0F0REzHrmL,guid=4133537ed1")
     testing.expect(t, ok)
     testing.expect_value(t, p, "/tmp/dbus-0F0REzHrmL")
     testing.expect_value(t, abs, false)
 
     // Linux abstract sockets — no filesystem entry, a leading NUL in sun_path.
-    p2, abs2, ok2 := app.dbus_parse_address("unix:abstract=/tmp/dbus-Xy,guid=aa")
+    p2, abs2, ok2 := system.dbus_parse_address("unix:abstract=/tmp/dbus-Xy,guid=aa")
     testing.expect(t, ok2)
     testing.expect_value(t, p2, "/tmp/dbus-Xy")
     testing.expect_value(t, abs2, true)
 
     // %XX escapes in a value.
-    p3, _, ok3 := app.dbus_parse_address("unix:path=/tmp/a%20b")
+    p3, _, ok3 := system.dbus_parse_address("unix:path=/tmp/a%20b")
     testing.expect(t, ok3)
     testing.expect_value(t, p3, "/tmp/a b")
 
     // A `;` list: skip transports we can't speak, take the first unix entry.
-    p4, _, ok4 := app.dbus_parse_address("tcp:host=localhost,port=1;unix:path=/run/x")
+    p4, _, ok4 := system.dbus_parse_address("tcp:host=localhost,port=1;unix:path=/run/x")
     testing.expect(t, ok4)
     testing.expect_value(t, p4, "/run/x")
 
     // Nothing usable.
-    _, _, ok5 := app.dbus_parse_address("tcp:host=localhost,port=1")
+    _, _, ok5 := system.dbus_parse_address("tcp:host=localhost,port=1")
     testing.expect(t, !ok5)
-    _, _, ok6 := app.dbus_parse_address("")
+    _, _, ok6 := system.dbus_parse_address("")
     testing.expect(t, !ok6)
 }
 
@@ -625,9 +625,9 @@ test_dbus_auth_line :: proc(t: ^testing.T) {
     // EXTERNAL's credential is the uid in DECIMAL, then that ASCII hex-encoded:
     // uid 0 -> "0" -> 0x30 -> "30". Getting the double encoding wrong is the classic
     // reason a hand-written client can't authenticate.
-    testing.expect_value(t, app.dbus_auth_line(0), "AUTH EXTERNAL 30\r\n")
-    testing.expect_value(t, app.dbus_auth_line(1000), "AUTH EXTERNAL 31303030\r\n")
-    testing.expect_value(t, app.dbus_auth_line(42), "AUTH EXTERNAL 3432\r\n")
+    testing.expect_value(t, system.dbus_auth_line(0), "AUTH EXTERNAL 30\r\n")
+    testing.expect_value(t, system.dbus_auth_line(1000), "AUTH EXTERNAL 31303030\r\n")
+    testing.expect_value(t, system.dbus_auth_line(42), "AUTH EXTERNAL 3432\r\n")
 }
 
 // --- live bus (layer 3) ---
@@ -639,12 +639,12 @@ test_dbus_auth_line :: proc(t: ^testing.T) {
 
 @(test)
 test_dbus_live_session_bus :: proc(t: ^testing.T) {
-    conn, ok := app.dbus_open(.Session)
+    conn, ok := system.dbus_open(.Session)
     if !ok {
         fmt.println("[skip] no session bus reachable; see dbus_test.odin")
         return
     }
-    defer app.dbus_close(conn)
+    defer system.dbus_close(conn)
 
     // Hello succeeded during open, so the daemon accepted our auth, our header layout and
     // our serial — and handed back the unique name it assigned us.
@@ -652,7 +652,7 @@ test_dbus_live_session_bus :: proc(t: ^testing.T) {
 
     // ListNames returns "as" — a real array of real strings, decoded from bytes we did
     // not produce.
-    reply, rok := app.dbus_call(
+    reply, rok := system.dbus_call(
         conn,
         "org.freedesktop.DBus",
         "/org/freedesktop/DBus",
@@ -663,21 +663,21 @@ test_dbus_live_session_bus :: proc(t: ^testing.T) {
     if !rok {
         return
     }
-    defer app.dbus_msg_free(&reply)
+    defer system.dbus_msg_free(&reply)
     testing.expect_value(t, reply.signature, "as")
 
-    args, aok := app.dbus_msg_args(&reply)
+    args, aok := system.dbus_msg_args(&reply)
     testing.expect(t, aok)
     if !aok || len(args) != 1 {
         return
     }
-    names := args[0].(app.Dbus_Array)
+    names := args[0].(system.Dbus_Array)
     testing.expectf(t, len(names.items) > 0, "the bus should own at least its own name")
 
     // The daemon's own name is always present, and ours must be in the list it just sent.
     found_bus, found_self := false, false
     for n in names.items {
-        s, sok := app.dbus_as_string(n)
+        s, sok := system.dbus_as_string(n)
         if !sok {
             continue
         }
@@ -692,7 +692,7 @@ test_dbus_live_session_bus :: proc(t: ^testing.T) {
     testing.expect(t, found_self, "our own unique name should be in ListNames")
 
     // An error reply must come back as an error, not as a hang or a bogus return.
-    bad, berr := app.dbus_call(
+    bad, berr := system.dbus_call(
         conn,
         "org.freedesktop.DBus",
         "/org/freedesktop/DBus",
@@ -701,25 +701,25 @@ test_dbus_live_session_bus :: proc(t: ^testing.T) {
     )
     testing.expect(t, !berr, "an unknown method must not report success")
     if bad.type != .Invalid {
-        testing.expect_value(t, bad.type, app.Dbus_Msg_Type.Error)
+        testing.expect_value(t, bad.type, system.Dbus_Msg_Type.Error)
         testing.expectf(t, bad.error_name != "", "an error reply should name its error")
-        app.dbus_msg_free(&bad)
+        system.dbus_msg_free(&bad)
     }
 }
 
 @(test)
 test_dbus_live_system_bus :: proc(t: ^testing.T) {
-    conn, ok := app.dbus_open(.System)
+    conn, ok := system.dbus_open(.System)
     if !ok {
         fmt.println("[skip] no system bus reachable; see dbus_test.odin")
         return
     }
-    defer app.dbus_close(conn)
+    defer system.dbus_close(conn)
 
     // A call WITH a body, against the system bus: GetNameOwner takes "s" and answers "s".
     // This is the path every pane's method calls take.
-    arg := app.Dbus_Value(app.Dbus_String("org.freedesktop.DBus"))
-    reply, rok := app.dbus_call(
+    arg := system.Dbus_Value(system.Dbus_String("org.freedesktop.DBus"))
+    reply, rok := system.dbus_call(
         conn,
         "org.freedesktop.DBus",
         "/org/freedesktop/DBus",
@@ -732,12 +732,12 @@ test_dbus_live_system_bus :: proc(t: ^testing.T) {
     if !rok {
         return
     }
-    defer app.dbus_msg_free(&reply)
+    defer system.dbus_msg_free(&reply)
 
-    args, aok := app.dbus_msg_args(&reply)
+    args, aok := system.dbus_msg_args(&reply)
     testing.expect(t, aok)
     if aok && len(args) == 1 {
-        owner, sok := app.dbus_as_string(args[0])
+        owner, sok := system.dbus_as_string(args[0])
         testing.expect(t, sok)
         testing.expectf(t, owner != "", "the bus daemon should own its own name (got %q)", owner)
     }
@@ -746,7 +746,7 @@ test_dbus_live_system_bus :: proc(t: ^testing.T) {
     // fails loudly if our string marshalling is off — the daemon parses the rule.
     testing.expect(
         t,
-        app.dbus_add_match(conn, "type='signal',interface='org.freedesktop.DBus'"),
+        system.dbus_add_match(conn, "type='signal',interface='org.freedesktop.DBus'"),
         "AddMatch should be accepted",
     )
 }

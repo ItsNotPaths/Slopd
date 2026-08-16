@@ -5,6 +5,9 @@ import "core:os"
 import "core:strings"
 import gl "vendor:OpenGL"
 import "vendor:glfw"
+import "perf"
+import "system"
+import "wake"
 
 WIDTH :: 1200
 HEIGHT :: 760
@@ -25,7 +28,7 @@ main :: proc() {
        grammar_cli(os.args[1:]) ||
        install_cli(os.args[1:]) ||
        desktop_cli(os.args[1:]) ||
-       sysbus_cli(os.args[1:]) {
+       system.sysbus_cli(os.args[1:]) {
         return
     }
 
@@ -168,9 +171,9 @@ main :: proc() {
 
     // Frame-timing log (no-op unless --perflog was passed). Needs the GL context for its
     // timer queries, so it's set up after text_init.
-    perf: Perf
-    perf_init(&perf, perflog)
-    defer perf_destroy(&perf)
+    plog: perf.Perf
+    perf.init(&plog, perflog, data_asset("perf.log", context.temp_allocator))
+    defer perf.destroy(&plog)
 
     // The window owns the App so the "c" key callback can reach it.
     app.window = window
@@ -230,15 +233,15 @@ main :: proc() {
         // draws, swap = the SwapBuffers (vsync) block. perf_frame reads back the previous
         // frame's gpu timer and logs a window once a second. All no-ops unless --perflog.
         build_start := glfw.GetTime()
-        perf_gpu_begin(&perf)
+        perf.gpu_begin(&plog)
         render(&app, &text, w, h, now)
-        perf_gpu_end(&perf)
+        perf.gpu_end(&plog)
         cpu_ms := f32((glfw.GetTime() - build_start) * 1000)
 
         swap_start := glfw.GetTime()
         glfw.SwapBuffers(window)
         swap_ms := f32((glfw.GetTime() - swap_start) * 1000)
-        perf_frame(&perf, glfw.GetTime(), cpu_ms, swap_ms, w, h, text.frame_verts, app.last_input_at)
+        perf.frame(&plog, glfw.GetTime(), cpu_ms, swap_ms, w, h, text.frame_verts, app.last_input_at)
 
         // Debounced font-zoom save: once the size has sat unchanged for FONT_SAVE_DELAY
         // (the deadline app_next_wake also wakes us for), write it to config and disarm.
@@ -255,23 +258,23 @@ main :: proc() {
         // own per-frame traffic (a buffer release, a delete_id) wakes GLFW every time we
         // present, and drawing a frame for that presents again, which wakes us again — a
         // loop that pins the editor at the refresh rate with nothing changing on screen.
-        // A frame is earned by a marked event (wake_take) or by the scheduled deadline
+        // A frame is earned by a marked event (wake.take) or by the scheduled deadline
         // actually coming due; anything else goes back to waiting. The close box is the
         // third way out — it sets no mark, so the loop condition has to see it.
         for !glfw.WindowShouldClose(window) {
             // Tested BEFORE the wait as well as after it: a reader thread can mark while the
             // frame above is still drawing, and its PostEmptyEvent would then be the only
             // thing standing between that mark and a wait with no deadline to end it.
-            if wake_take() {
+            if wake.take() {
                 break
             }
-            wake := app_next_wake(&app, glfw.GetTime())
-            if wake < 0 {
+            timeout := app_next_wake(&app, glfw.GetTime())
+            if timeout < 0 {
                 glfw.WaitEvents()
                 continue
             }
-            deadline := glfw.GetTime() + wake
-            glfw.WaitEventsTimeout(wake)
+            deadline := glfw.GetTime() + timeout
+            glfw.WaitEventsTimeout(timeout)
             // WAKE_SLACK absorbs the wait returning a hair early (ppoll rounds to the
             // timer's granularity); without it the deadline needs a second, tiny wait.
             if glfw.GetTime() >= deadline - WAKE_SLACK {
@@ -320,20 +323,20 @@ window_pacing_init :: proc() {
 // every frame, and focus lives in App).
 @(private = "file")
 window_event_callback :: proc "c" (window: glfw.WindowHandle) {
-    wake_mark()
+    wake.mark()
 }
 
 @(private = "file")
 framebuffer_size_callback :: proc "c" (window: glfw.WindowHandle, width, height: i32) {
-    wake_mark()
+    wake.mark()
 }
 
 @(private = "file")
 content_scale_callback :: proc "c" (window: glfw.WindowHandle, xscale, yscale: f32) {
-    wake_mark()
+    wake.mark()
 }
 
 @(private = "file")
 window_focus_callback :: proc "c" (window: glfw.WindowHandle, focused: i32) {
-    wake_mark()
+    wake.mark()
 }

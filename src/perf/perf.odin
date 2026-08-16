@@ -1,4 +1,4 @@
-package main
+package perf
 
 import "core:fmt"
 import "core:os"
@@ -22,7 +22,7 @@ import "vendor:glfw"
 // (last frame's, ready by now since we just waited on vsync), so the read never stalls. A
 // second of samples aggregates to one avg/p99/max line — p99 surfaces spikes an avg smears.
 
-PERF_FLUSH_INTERVAL :: 1.0 // seconds of samples per aggregated log line
+FLUSH_INTERVAL :: 1.0 // seconds of samples per aggregated log line
 
 Perf :: struct {
     enabled:    bool,
@@ -41,14 +41,15 @@ Perf :: struct {
 }
 
 // Arms the log when `enabled` (the `--perflog` flag). Generates the timer queries and
-// opens perf.log for append; a failed open degrades to stderr rather than disabling.
-perf_init :: proc(p: ^Perf, enabled: bool) {
+// opens `path` for append; a failed open degrades to stderr rather than disabling.
+// The caller resolves the path (install.odin's data_asset), so this package needs no
+// notion of where the program was installed.
+init :: proc(p: ^Perf, enabled: bool, path: string) {
     p.enabled = enabled
     if !enabled {
         return
     }
     gl.GenQueries(2, &p.queries[0])
-    path := data_asset("perf.log", context.temp_allocator) // a data file: see install.odin
     if f, err := os.open(path, os.O_WRONLY | os.O_CREATE | os.O_APPEND); err == nil {
         p.file = f
     } else {
@@ -56,11 +57,11 @@ perf_init :: proc(p: ^Perf, enabled: bool) {
     }
 }
 
-perf_destroy :: proc(p: ^Perf) {
+destroy :: proc(p: ^Perf) {
     if !p.enabled {
         return
     }
-    perf_flush(p, glfw.GetTime()) // emit a final partial window so the tail isn't lost (real now: keeps fps honest)
+    flush(p, glfw.GetTime()) // emit a final partial window so the tail isn't lost (real now: keeps fps honest)
     gl.DeleteQueries(2, &p.queries[0])
     if p.file != nil {
         os.close(p.file)
@@ -73,14 +74,14 @@ perf_destroy :: proc(p: ^Perf) {
 
 // Brackets the frame's GPU work: begin before render's draw calls, end after them. The
 // query measures the GPU timeline for the commands issued between, independent of vsync.
-perf_gpu_begin :: proc(p: ^Perf) {
+gpu_begin :: proc(p: ^Perf) {
     if !p.enabled {
         return
     }
     gl.BeginQuery(gl.TIME_ELAPSED, p.queries[p.parity])
 }
 
-perf_gpu_end :: proc(p: ^Perf) {
+gpu_end :: proc(p: ^Perf) {
     if !p.enabled {
         return
     }
@@ -91,7 +92,7 @@ perf_gpu_end :: proc(p: ^Perf) {
 // Records one frame's CPU/swap samples, reads back the previous frame's GPU timer, and
 // flushes an aggregated line once the window fills a second. Call once per frame, after
 // SwapBuffers.
-perf_frame :: proc(p: ^Perf, now: f64, cpu_ms, swap_ms: f32, w, h: i32, verts: int, input_at: f64) {
+frame :: proc(p: ^Perf, now: f64, cpu_ms, swap_ms: f32, w, h: i32, verts: int, input_at: f64) {
     if !p.enabled {
         return
     }
@@ -126,15 +127,15 @@ perf_frame :: proc(p: ^Perf, now: f64, cpu_ms, swap_ms: f32, w, h: i32, verts: i
     }
     p.parity = other // next frame writes the slot we just drained
 
-    if now - p.win_start >= PERF_FLUSH_INTERVAL {
-        perf_flush(p, now)
+    if now - p.win_start >= FLUSH_INTERVAL {
+        flush(p, now)
     }
 }
 
 // Appends one aggregated line (avg/p99/max per metric) and reopens the window. A window
 // with no frames just resets its clock.
 @(private = "file")
-perf_flush :: proc(p: ^Perf, now: f64) {
+flush :: proc(p: ^Perf, now: f64) {
     n := len(p.cpu)
     if n == 0 {
         p.win_start = now
@@ -142,10 +143,10 @@ perf_flush :: proc(p: ^Perf, now: f64) {
     }
     elapsed := now - p.win_start
     fps := f64(n) / max(elapsed, 1e-6)
-    ca, cp, cm := perf_stat(p.cpu[:])
-    ga, gp, gm := perf_stat(p.gpu[:])
-    sa, sp, sm := perf_stat(p.swap[:])
-    ia, ip, im := perf_stat(p.input[:]) // keystroke->present; 0/0/0 in a window with no typing
+    ca, cp, cm := stat(p.cpu[:])
+    ga, gp, gm := stat(p.gpu[:])
+    sa, sp, sm := stat(p.swap[:])
+    ia, ip, im := stat(p.input[:]) // keystroke->present; 0/0/0 in a window with no typing
     line := fmt.tprintf(
         "t=%.1f dims=%dx%d frames=%d fps=%.1f cpu_ms=%.3f/%.3f/%.3f gpu_ms=%.3f/%.3f/%.3f swap_ms=%.2f/%.2f/%.2f input_ms=%.2f/%.2f/%.2f(n%d) verts=%d\n",
         now, p.w, p.h, n, fps, ca, cp, cm, ga, gp, gm, sa, sp, sm, ia, ip, im, len(p.input), p.verts,
@@ -165,7 +166,7 @@ perf_flush :: proc(p: ^Perf, now: f64) {
 // Average, 99th percentile, and max of a sample set (all ms). p99 over a sorted copy —
 // the windows are at most a few hundred samples, so the sort is trivial.
 @(private = "file")
-perf_stat :: proc(xs: []f32) -> (avg, p99, mx: f32) {
+stat :: proc(xs: []f32) -> (avg, p99, mx: f32) {
     if len(xs) == 0 {
         return 0, 0, 0
     }

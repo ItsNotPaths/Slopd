@@ -1,6 +1,5 @@
 package main
 
-import "base:intrinsics"
 import "vendor:glfw"
 
 // Scoped animation for the redraw scheduler. An Anim is a one-shot scalar tween in
@@ -112,35 +111,10 @@ sched_min :: proc(wake, cand: f64) -> f64 {
     return min(wake, cand)
 }
 
-// "Something actually happened." A wait returning is NOT that: the display server wakes
-// GLFW with traffic of its own — under Wayland a buffer release and a delete_id land for
-// every frame we present — and a frame drawn for those chains straight into the next one,
-// so the loop spins at the refresh rate with nothing on screen changing. The main loop's
-// wait is gated on this flag instead, and only the sources below set it: the input
-// callbacks (input.odin, mouse.odin), the window callbacks main.odin registers, and the
-// worker threads through wake_post. A deadline coming due is the other way through the
-// gate, and app_next_wake owns those.
-@(private = "file")
-wake_flag: bool
-
-// From the main thread — a GLFW callback that changed something worth drawing.
-wake_mark :: proc "contextless" () {
-    intrinsics.atomic_store(&wake_flag, true)
-}
-
-// From a worker thread (a PTY reader, the sysbus): the same mark, plus the PostEmptyEvent
-// that breaks the wait it is sleeping in. Ordered mark-then-post so the loop cannot wake
-// on the post and miss the mark.
-wake_post :: proc "contextless" () {
-    wake_mark()
-    glfw.PostEmptyEvent()
-}
-
-// Take the mark, if there is one. Cleared on the way out so the frame it earns is drawn
-// once; anything arriving during that frame re-marks and earns the next one.
-wake_take :: proc "contextless" () -> bool {
-    return intrinsics.atomic_exchange(&wake_flag, false)
-}
+// The redraw gate the loop's wait is really gated on lives in wake/. Its sources are the
+// input callbacks (input.odin, mouse.odin), the window callbacks main.odin registers, and
+// the worker threads (terminal.odin, system/sysbus.odin). A deadline coming due is the
+// other way through the gate, and app_next_wake owns those.
 
 // Caret blink: on for BLINK_HALF, off for BLINK_HALF, measured from the last input
 // (a.blink_base) so the caret is solid the instant you type or move, then blinks.

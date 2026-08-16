@@ -2,6 +2,7 @@ package main
 
 import "base:runtime"
 import "vendor:glfw"
+import "wake"
 
 // Input — GLFW events in, one Action out. No verbs here and no chord: this tracks what is held,
 // asks bind.odin which Action a keystroke names, and hands it to action.odin.
@@ -34,7 +35,7 @@ key_callback :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods
     if a == nil {
         return
     }
-    wake_mark() // a keystroke earns a frame, even one handle_key ignores (chord bars, modifiers)
+    wake.mark() // a keystroke earns a frame, even one handle_key ignores (chord bars, modifiers)
     handle_key(a, key, action, mods)
 }
 
@@ -46,7 +47,7 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     if a == nil || a.alt_held || codepoint < 32 {
         return
     }
-    wake_mark()
+    wake.mark()
     a.last_input_at = glfw.GetTime()
     a.blink_base = a.last_input_at // typing: caret solid, then resumes blinking
     a.move_all_armed = false // typing isn't a motion; cancel a pending move-all

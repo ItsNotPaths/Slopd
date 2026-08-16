@@ -3,6 +3,7 @@ package main
 import "base:runtime"
 import "vendor:glfw"
 import clay "../bindings/clay"
+import "wake"
 
 // Mouse: GLFW pointer events -> mutations on App. The sibling of input.odin, which owns
 // the keyboard; everything reachable here has a key binding too, so `mouse: off` costs
@@ -282,7 +283,7 @@ cursor_pos_callback :: proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
     x, y := mouse_to_fb(window, xpos, ypos)
     if !a.mouse.known || x != a.mouse.x || y != a.mouse.y {
         mouse_wake(a)
-        wake_mark() // the same test gates the redraw: a cursor that did not move draws nothing new
+        wake.mark() // the same test gates the redraw: a cursor that did not move draws nothing new
     }
     a.mouse.x, a.mouse.y = x, y
     a.mouse.known = true
@@ -297,7 +298,7 @@ mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mo
     if a == nil {
         return
     }
-    wake_mark()
+    wake.mark()
     // The right button is a press and nothing else: no held state (nothing drags with it), no
     // release verb, no run counting. It parks a position for a pane to open a menu at.
     if button == glfw.MOUSE_BUTTON_RIGHT {
@@ -385,7 +386,7 @@ scroll_callback :: proc "c" (window: glfw.WindowHandle, xoffset, yoffset: f64) {
     if a == nil || !a.mouse_on || (yoffset == 0 && xoffset == 0) {
         return
     }
-    wake_mark()
+    wake.mark()
     mouse_locate(a, window)
     mouse_wheel(a, yoffset, xoffset)
 }
