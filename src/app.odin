@@ -89,6 +89,14 @@ App :: struct {
     cl_chain:    CLChain,
     cl_wait_seq: u64,
 
+    // Live feedback for a builtin line as it is typed — `:j` moves the view to the target line,
+    // `:f` marks every hit — with Esc putting the view back untouched. See cl_preview.odin;
+    // cl_preview_on is the config toggle. `find` is the search itself, shared with the `:f`
+    // builtin so a submitted line and a previewed one search the same way (find.odin).
+    cl_preview:    CLPreview,
+    cl_preview_on: bool,
+    find:          Find,
+
     // The project root: the directory the `cd` builtin sets (captured by Slopd, NOT a shell
     // cd). New terminals spawn here, `tu` syncs every unlocked terminal to it, root-scoped
     // tools read it, and the idle status strip shows it. Owned; defaults to the launch cwd.
@@ -400,6 +408,8 @@ app_destroy :: proc(a: ^App) {
     media_destroy(&a.media) // free the viewed image's texture + path
     cl_chain_clear(a) // frees any pending chain (incl. its backing array)
     cl_destroy(a)
+    cl_preview_destroy(a) // the cursor set a live preview was holding for the restore
+    find_destroy(&a.find)
     ctxmenu_destroy(a) // the popup's item list + the path it was opened on
     grep_destroy(&a.grep) // frees any stashed jump-to-definition results
     delete(a.project_root)

@@ -19,6 +19,9 @@ Theme :: struct {
     // Editor whitespace + indent guides (the dim leading-space dots / tab marks,
     // the per-level indent guide rail, and the brighter rail of the cursor's scope).
     whitespace, indent_guide, indent_guide_active:                [3]f32,
+    // The live `:f` search marks: a bar behind every hit, and the brighter one behind the hit
+    // the caret is on. Both sit under the glyphs, so they have to stay dark enough to read on.
+    find_match, find_current:                                     [3]f32,
 }
 
 // Embedded so the baked-in fallback always matches the shipped default.theme.
@@ -84,6 +87,8 @@ parse_theme :: proc(content: string, t: ^Theme) {
         case "whitespace":           t.whitespace = col
         case "indent_guide":         t.indent_guide = col
         case "indent_guide_active":  t.indent_guide_active = col
+        case "find_match":           t.find_match = col
+        case "find_current":         t.find_current = col
         }
     }
 }

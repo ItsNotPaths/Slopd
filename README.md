@@ -4,12 +4,10 @@ A GPU text editor in [Odin](https://odin-lang.org): two panes, a command line, n
 iTree-sitter highlighting, real PTY terminals, an image viewer, one static ~2.4MB binary.
 Linux, OpenGL 3.3.
 
-![Slopd](imgs/hero.png)
-
 ```sh
 curl -fsSL https://github.com/ItsNotPaths/Slopd/releases/latest/download/install.sh | sh
 ```
-
+![Slopd](imgs/hero.png)
 ## Build
 
 ```sh
@@ -52,18 +50,11 @@ Non-modal / Alt-rooted: bare keys type, arrows navigate, chords live under Alt.
 Filetree file ops are `Ctrl` chords (`^y` mark, `^u` unmark all, `^c` copy, `^x` cut, `^v`
 paste, `^d` delete, `^w` path, `^h` set the workspace to the browsed folder — `:cd` plus `:tu` in
 one keystroke); hold `Ctrl` for the cheat-sheet bar, or **right-click** for the same list as
-buttons. Copy and cut act on the marked set, or on the row under the cursor when nothing is
-marked, and paste applies it to the folder you are browsing.
-
-The mouse is purely additive: everything it reaches has a key binding, so `mouse: off` costs no
-capability. Typing stands the pointer down.
+buttons.
 
 ## File browser
 
-`file_pane: browser` gives the filetree pane a second face — a top bar of square buttons
-`[◀] [▶] [⟳]`, a path bar whose segments are buttons, a places sidebar, and contents as a list
-or a grid of tiles. **The listing underneath is the same one**: the same entries, marks,
-clipboard and `Ctrl` chords, so this is a choice of presentation and never of capability.
+Browser and list modes, list is simply ls -la, browser is dolphin esque with grid+list modes.
 
 | | |
 |---|---|
@@ -89,6 +80,7 @@ gesture renders in the alert colour until you touch it.
 |---|---|
 | `:tN` | send this line's shell parts to session N (`:t2 make`) · alone, a goto |
 | `:j` / `:jump` | `:j 40`, `:j +5`, `:j file`, `:j file 40` |
+| `:f` / `:find` | literal search of the open buffer; smart case, `Up`/`Down` cycle the hits |
 | `:grep <re>` | project-wide search into the Grep pane |
 | `:cd [dir]` | set the project root · `:tu` syncs unlocked terminals |
 | `:ls` `:cf` `:gs` | filetree (also: refresh) · config pane · git tool |
@@ -107,7 +99,7 @@ carries it over is staged for you to read and run —
 sudo cp '/run/user/1000/slopd-4213-1-hosts' '/etc/hosts' && :saved
 ```
 
-The shell half runs in a real terminal, which is where `sudo` can ask for the password, and the
+The shell half runs in a real terminal (t1 by default, configurable), which is where `sudo` can ask for the password, and the
 `&&` gates the rest: a wrong password stops the chain, so the buffer stays dirty and nothing
 claims a save that did not happen. `:saved` then checks the file against the buffer before it
 marks it clean.
@@ -133,15 +125,9 @@ want them back in step (`^h` in the file panes is those two builtins in one keys
 
 ## Install
 
-```sh
-curl -fsSL https://github.com/ItsNotPaths/Slopd/releases/latest/download/install.sh | sh
-```
-
-The release is **one binary**, and everything it needs is inside it: the default config, the
-language registry, the default theme, the launcher entry and its icon, the README and the
-licence. The script downloads it to `~/.local/bin/slopd` and asks whether to add Slopd to your
-application list. On Omarchy it also offers a Hyprland window rule. It writes nothing else —
-pass `--yes` to take every default, or `--no-desktop` / `--no-omarchy` to skip a step.
+The release is **one binary**, and everything it needs is inside it. The script downloads it to `~/.local/bin/slopd` and asks whether to add Slopd to your
+application list. On Omarchy it also offers a Hyprland window rule. It writes nothing else.
+Pass `--yes` to take every default, or `--no-desktop` / `--no-omarchy` to skip a step.
 
 You can also just download the binary and run it. Either way Slopd starts **portable**: it
 runs on the defaults baked in, and **cannot save a setting, because it has no config file.**
@@ -161,7 +147,7 @@ slopd --desktop add  # the application list, on its own (`remove` takes it back 
 | `~/.local/share/slopd/` | `themes/`, `grammars/`, `perf.log` (`$XDG_DATA_HOME` if you set it) |
 | `~/.local/share/applications/slopd.desktop` | the launcher entry, with the icon beside it in `icons/hicolor/` |
 
-Slopd never creates `slopd.config` on its own — `--install` does, once. **A build folder is
+Slopd never creates `slopd.config` on its own — `--install` does. **A build folder is
 different:** a binary with a `slopd.config` beside it is portable and writes there, so
 `./release.sh --local` gives you a `build/` you can change settings in without touching
 `~/.config`. Put the binary somewhere you cannot write (`/usr/bin`) and it reads what is
@@ -191,6 +177,7 @@ file and this one applies again.
 | `git_tool` | e.g. `lazygit` | what `Alt+G` / `:gs` hands the project root to |
 | `git_term` | int \| empty | terminal session to run it in; empty = spawn detached (for a GUI tool) |
 | `grep_pane` | `on` \| `off` | `:grep`: always open the results pane vs jump straight on a lone hit |
+| `cl_preview` | `on` \| `off` | `:j` / `:f` show their target while you type; `Esc` puts the view back |
 | `disk_conflict` | `prompt` \| `keep` | file changed on disk under unsaved edits |
 | `conflict_stage` | `on` \| `off` | a conflict stages `:reload ` in the CL; the modeline marks it `!` either way |
 | `mouse`, `hover` | `on` \| `off` | pointer input; hover tints the row under it |

@@ -76,12 +76,14 @@ cl_dispatch :: proc(a: ^App, text: string, run: bool) {
 }
 
 cl_cancel :: proc(a: ^App) {
+    cl_preview_restore(a) // whatever the half-typed line was showing goes back where it was
     a.cl_active = false
     doc_clear(&a.cl.doc)
 }
 
 cl_submit :: proc(a: ^App) {
     input := strings.trim_space(doc_string(&a.cl.doc, context.temp_allocator))
+    cl_preview_commit(a) // keep what the preview landed on; the builtin below runs over it
     a.cl_active = false
     doc_clear(&a.cl.doc)
     if input == "" {
@@ -352,6 +354,8 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         cl_put(a, args)
     case "j", "jump":
         cl_jump(a, args)
+    case "f", "find":
+        cl_find(a, args)
     case "grep":
         cl_grep(a, args)
     case "cd":
@@ -648,18 +652,15 @@ cl_jump :: proc(a: ^App, args: string) {
         return
     }
     b := editor_current(&a.editor)
-    cur := b.cursors[b.primary].head
 
-    raw, first := first_arg(s) // a quoted first field is one path, spaces included
-    rest := strings.trim_space(s[len(raw):])
-
-    // `j <line>`: the first field is a line number, no file. Keep the column where it fits.
-    if line, ok := parse_line_spec(first, cur.line); ok && rest == "" {
-        line = clamp(line, 0, len(b.lines) - 1)
-        jump_to(a, "", line, min(cur.col, line_len(&b.lines[line])))
+    // `j <line>`: the first field is a line number, no file.
+    if pos, ok := cl_jump_line(b, s); ok {
+        jump_to(a, "", pos.line, pos.col)
         return
     }
     // Otherwise the first field is a file; an optional second field is its line.
+    raw, first := first_arg(s) // a quoted first field is one path, spaces included
+    rest := strings.trim_space(s[len(raw):])
     path, found := jump_resolve_path(a, first)
     if !found {
         return
@@ -669,6 +670,48 @@ cl_jump :: proc(a: ^App, args: string) {
         line, _ = parse_line_spec(rest, 0) // +/- here is relative to the file's top
     }
     jump_to(a, path, max(line, 0), 0)
+}
+
+// Where a BARE-LINE `:j` argument lands in `b` — clamped into the buffer, keeping the caret's
+// column as far as the target line is long. ok=false when the argument is not a lone line
+// number, which is to say when it names a FILE.
+//
+// Split out because the live preview needs the same answer (cl_preview.odin), and a preview
+// that computed its own would be free to disagree with the Enter that follows it.
+cl_jump_line :: proc(b: ^Buffer, args: string) -> (Pos, bool) {
+    s := strings.trim_space(args)
+    raw, first := first_arg(s)
+    if strings.trim_space(s[len(raw):]) != "" {
+        return {}, false // a second field means the first one was a file name
+    }
+    cur := b.cursors[b.primary].head
+    line, ok := parse_line_spec(first, cur.line)
+    if !ok {
+        return {}, false
+    }
+    line = clamp(line, 0, len(b.lines) - 1)
+    return Pos{line, min(cur.col, line_len(&b.lines[line]))}, true
+}
+
+// `:f <text>` / `:find <text>`: search the open buffer and put the caret on a match.
+//
+// **The landing needs no hand-off from the preview.** The preview leaves the caret exactly on
+// the match it cycled to, and "the first match at or after the caret" is then that same match —
+// so submitting the line you were previewing keeps your place, and one recalled from history
+// with no preview behind it searches forward from wherever you were. One rule, both ways in.
+//
+// The marks go down: Enter is an answer, and what is left is a caret on the word you asked for.
+cl_find :: proc(a: ^App, args: string) {
+    b := main_text_buffer(a)
+    if b == nil {
+        return
+    }
+    find_set(&a.find, b, strings.trim_space(args), b.cursors[b.primary].head)
+    a.find.show = false
+    if p, ok := find_pos(&a.find); ok {
+        doc_reset_cursor(&b.doc, p)
+        set_focus(a, .Editor)
+    }
 }
 
 // `:grep [flags] <pattern>`: a PROJECT-WIDE search landing in the Grep pane. Asked for by name —
@@ -892,29 +935,63 @@ is_term_token :: proc(s: string) -> bool {
     return len(s) >= 3 && s[0] == ':' && s[1] == 't' && all_digits(s[2:])
 }
 
-// The inline ghost hint: a faint argument example drawn past the typed text once a BUILTIN is
-// recognised, dropped once you start typing the argument so it never overlaps real input. Give a
-// builtin a hint by adding a case. "" = no hint — and an unsigilled line never has one, since a
-// shell command is the shell's to explain, not ours.
-//
-// It takes the App because `:reload` means two different things: a manual refresh, or the answer
-// to a pending disk conflict — and only the second one has a third option worth naming, `:w`.
-// The staged line IS the whole conflict prompt now (strip_ui.odin), so the hint is where the
-// three ways out get said.
-cl_ghost_hint :: proc(a: ^App, line: string) -> string {
-    if !strings.has_prefix(line, ":") {
-        return ""
+// The builtin a typed line is calling, split into its name and the rest. ok=false when the line
+// names none — it is unsigilled (a shell command) or the sigil stands alone. Shared by the ghost
+// hint and the live preview, the two readers of a line that has not been submitted yet.
+cl_builtin_call :: proc(line: string) -> (name, args: string, ok: bool) {
+    s := strings.trim_space(line)
+    if !strings.has_prefix(s, ":") {
+        return "", "", false
     }
-    body := strings.trim_left_space(line[1:])
-    name := first_field(body)
-    if name == "" || strings.trim_space(body[len(name):]) != "" {
-        return "" // no builtin yet, or an argument is already typed
+    body := strings.trim_left_space(s[1:])
+    name = first_field(body)
+    return name, strings.trim_space(body[len(name):]), name != ""
+}
+
+// The inline ghost hint: a faint note drawn past the typed text once a BUILTIN is recognised.
+// Give a builtin a hint by adding a case. "" = no hint — and an unsigilled line never has one,
+// since a shell command is the shell's to explain, not ours.
+//
+// Two kinds live here, and the difference is whether the argument has arrived. `:reload` PROMPTS
+// — it names the answers it takes, and drops the hint the moment one is typed. `:f` REPORTS —
+// it counts what the live preview found, so it has nothing to say until an argument exists. Each
+// case decides for itself, which is why the emptiness of `args` is not tested up here.
+//
+// It takes the App because a hint reads live state: `:reload` means two different things — a
+// manual refresh, or the answer to a pending disk conflict — and only the second has a third way
+// out worth naming, `:w`. The staged line IS the whole conflict prompt now (strip_ui.odin), so
+// the hint is where the three get said.
+cl_ghost_hint :: proc(a: ^App, line: string) -> string {
+    name, args, ok := cl_builtin_call(line)
+    if !ok {
+        return ""
     }
     switch name {
     case "reload":
+        if args != "" {
+            return "" // an answer is typed; the prompt has served its purpose
+        }
         return cl_conflict_pending(a) ? "(y = disk / n = mine / :w = overwrite)" : "(y/n)"
+    case "f", "find":
+        return cl_find_hint(a)
     }
     return ""
+}
+
+// What the live `:f` preview found — `(3/17)`, the position within the count, so the strip says
+// both how many there are and which one you are standing on as Up/Down cycle them.
+//
+// Read off the search state rather than the typed line, so it is silent exactly when there is no
+// preview to report: before an argument exists, and whenever `cl_preview` is off.
+@(private = "file")
+cl_find_hint :: proc(a: ^App) -> string {
+    if !a.find.show {
+        return ""
+    }
+    if n := len(a.find.matches); n > 0 {
+        return fmt.tprintf("(%d/%d)", a.find.cur + 1, n)
+    }
+    return "(no matches)"
 }
 
 // Whether the document pane's buffer is holding a disk-change conflict — the state the staged

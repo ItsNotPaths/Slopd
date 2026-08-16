@@ -38,3 +38,9 @@ code_punctuation: #928374
 whitespace:           #3a3735
 indent_guide:         #3a3735
 indent_guide_active:  #63407b
+
+# The `:f` search marks, drawn behind the text: find_match behind every hit, find_current behind
+# the one the caret is on. Both are the gruvbox yellow (code_string) taken right down, so a page
+# full of hits stays readable and the current one still stands out among them.
+find_match:           #4f452c
+find_current:         #7a6a33

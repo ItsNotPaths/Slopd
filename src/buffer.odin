@@ -57,6 +57,17 @@ editor_current :: proc(e: ^Editor) -> ^Buffer {
     return &e.buffers[e.active]
 }
 
+// The main pane's buffer WHEN there is one to act on — editor_current behind the two questions
+// every whole-buffer tool has to ask first. Nil on the image surface (no text there) and on the
+// bare App the tests build (no buffers at all). Shared by the search and the command line's
+// live preview, so neither has to remember the pair.
+main_text_buffer :: proc(a: ^App) -> ^Buffer {
+    if a.main != .Text || len(a.editor.buffers) == 0 {
+        return nil
+    }
+    return editor_current(&a.editor)
+}
+
 // Expand every fold in every buffer (folding turned off in config).
 editor_clear_folds :: proc(e: ^Editor) {
     for &b in e.buffers {

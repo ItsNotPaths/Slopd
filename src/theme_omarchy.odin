@@ -182,4 +182,10 @@ omarchy_apply :: proc(pal: map[string][3]f32, t: ^Theme) {
     t.whitespace = mix(bg, fg, 0.10)
     t.indent_guide = mix(bg, fg, 0.10)
     t.indent_guide_active = mix(bg, accent, 0.55)
+
+    // The search marks, on the same principle: yellow off bg, at two strengths. The pair has to
+    // stay apart on a page holding both, so the current hit takes three times the lift — and
+    // both stay near the background, since the text is drawn over them and not recoloured.
+    t.find_match = mix(bg, yellow, 0.20)
+    t.find_current = mix(bg, yellow, 0.60)
 }

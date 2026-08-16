@@ -481,6 +481,8 @@ editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
             }
         }
 
+        draw_find_marks(t, &a.find, line, text_x, y, row_h, cw, th)
+
         // Indent guides: a thin vertical rail at each indent level, the cursor's
         // scope drawn in the active colour. Then the ghosted whitespace markers.
         if a.show_guides {
@@ -611,6 +613,27 @@ draw_indent_guides :: proc(t: ^Text, b: ^Buffer, line: int, text_x: f32, y, row_
         } else {
             fill(t, Rect{gx, y, gw, row_h}, th.indent_guide)
         }
+    }
+}
+
+// The live `:f` search marks on one line: a bar behind every hit, the one the caret sits on in
+// its own brighter colour. An under-quad like the selection bar, so the glyphs stay on top.
+//
+// The list is in line order and a paint asks once per visible row, so the row's first hit is
+// found by binary search rather than by walking the lot — a common word in a large file is
+// thousands of matches, and only the handful on this line can be drawn.
+@(private = "file")
+draw_find_marks :: proc(t: ^Text, f: ^Find, line: int, text_x: f32, y, row_h: i32, cw: f32, th: ^Theme) {
+    if !f.show {
+        return
+    }
+    for i := find_first_on_line(f.matches[:], line); i < len(f.matches); i += 1 {
+        m := f.matches[i]
+        if m.line != line {
+            break
+        }
+        color := i == f.cur ? th.find_current : th.find_match
+        fill(t, Rect{i32(text_x + cw * f32(m.col)), y, i32(cw * f32(m.n)), row_h}, color)
     }
 }
 

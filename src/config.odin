@@ -83,6 +83,7 @@ Config :: struct {
     run_term:         int, // which terminal session an activated executable runs in
     term_ctrl_c:      Term_Ctrl_C, // focused terminal: does ^C interrupt or copy (^Shift+C takes the other)
     grep_pane_always: bool, // CL grep: always open the results pane vs jump straight on a lone hit
+    cl_preview:       bool, // show a builtin line's effect in the editor while it is typed
     conflict_prompt:  bool, // disk changed under unsaved edits: prompt (y/n in the CL) vs silently keep my edits
     conflict_stage:   bool, // a raised conflict stages `:reload ` in the CL vs only marking the modeline
     mouse:            bool, // pointer input (wheel, and the clicks that follow it) on/off
@@ -155,6 +156,7 @@ load_config :: proc() -> Config {
         run_term        = 1, // t1, the master CL terminal, unless you point it elsewhere
         term_ctrl_c     = .Stop, // ^C interrupts, as it does in every other terminal
         grep_pane_always = true, // always show the results pane (no auto-jump on a lone hit)
+        cl_preview      = true, // `:j` / `:f` show their target while you type; Esc puts it back
         conflict_prompt = true, // ask before a disk change is reconciled against unsaved edits
         conflict_stage  = true, // and stage the answer in the CL, rather than only marking it
         mouse           = true, // pointer input on; it is purely additive to the keyboard
@@ -243,6 +245,8 @@ config_parse :: proc(src: string, cfg: ^Config) {
             if v, ok := parse_term_ctrl_c(val); ok {cfg.term_ctrl_c = v}
         case "grep_pane":
             if v, ok := parse_on_off(val); ok {cfg.grep_pane_always = v}
+        case "cl_preview":
+            if v, ok := parse_on_off(val); ok {cfg.cl_preview = v}
         case "disk_conflict":
             if v, ok := parse_prompt_keep(val); ok {cfg.conflict_prompt = v}
         case "conflict_stage":
@@ -354,7 +358,7 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return term_options(a.git_term, true, term_count(a), context.temp_allocator)
     case .RunTerm:
         return term_options(a.run_term, false, term_count(a), context.temp_allocator)
-    case .Folding, .IndentGuides, .Whitespace, .GrepPane, .ConflictStage, .Mouse, .Hover, .FileIcons:
+    case .Folding, .IndentGuides, .Whitespace, .GrepPane, .ClPreview, .ConflictStage, .Mouse, .Hover, .FileIcons:
         return ON_OFF_OPTS[:]
     case .FilePane:
         return FILE_PANE_OPTS[:]
@@ -454,6 +458,7 @@ Setting :: enum {
     GitTool,
     GitTerm,
     GrepPane,
+    ClPreview,
     DiskConflict,
     ConflictStage,
     Mouse,
@@ -484,6 +489,7 @@ setting_key :: proc(s: Setting) -> string {
     case .GitTool:      return "git_tool"
     case .GitTerm:      return "git_term"
     case .GrepPane:     return "grep_pane"
+    case .ClPreview:    return "cl_preview"
     case .DiskConflict:  return "disk_conflict"
     case .ConflictStage: return "conflict_stage"
     case .Mouse:        return "mouse"
@@ -512,6 +518,7 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .GitTool:      return a.git_tool // free text; "" is unset (Alt+G opens a shell)
     case .GitTerm:      return a.git_term <= 0 ? GIT_TERM_DETACHED : fmt.tprintf("%d", a.git_term)
     case .GrepPane:     return on_off(a.grep_pane_always)
+    case .ClPreview:    return on_off(a.cl_preview_on)
     case .DiskConflict:  return a.conflict_prompt ? "prompt" : "keep"
     case .ConflictStage: return on_off(a.conflict_stage)
     case .Mouse:        return on_off(a.mouse_on)
@@ -581,6 +588,11 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         }
     case .GrepPane:
         a.grep_pane_always = parse_on_off(val) or_return
+    case .ClPreview:
+        a.cl_preview_on = parse_on_off(val) or_return
+        if !a.cl_preview_on {
+            cl_preview_restore(a) // turning it off mid-line puts back whatever is showing
+        }
     case .DiskConflict:
         a.conflict_prompt = parse_prompt_keep(val) or_return
     case .ConflictStage:

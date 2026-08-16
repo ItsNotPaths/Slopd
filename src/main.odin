@@ -102,6 +102,7 @@ main :: proc() {
     app.run_term = cfg.run_term
     app.term_ctrl_c = cfg.term_ctrl_c
     app.grep_pane_always = cfg.grep_pane_always
+    app.cl_preview_on = cfg.cl_preview
     app.conflict_prompt = cfg.conflict_prompt
     app.conflict_stage = cfg.conflict_stage
     app.mouse_on = cfg.mouse
@@ -207,6 +208,8 @@ main :: proc() {
 
         now := glfw.GetTime()
         view_poll_disk(&app, now) // re-read an externally-changed file into the focused view pane
+        cl_preview_sync(&app) // show what a half-typed builtin line would do (after the reload: a
+        // file that just changed underneath invalidates what the preview found in it)
         w, h := glfw.GetFramebufferSize(window)
         // Track DPI, then re-bake the atlas if the DPI scale (monitor move) or the
         // font zoom (Ctrl +/-) changed since last frame. text_apply no-ops otherwise.

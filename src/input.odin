@@ -558,6 +558,11 @@ edit_keys :: proc(a: ^App, d: ^Doc, key, mods: i32, all := false) -> (handled, c
 
 // Command-line key handling. The same one-line field keys as the config rows and the path bar —
 // it is the third instance of that box — differing only in Enter (submit) and Up/Down (history).
+//
+// A live `:f` preview BORROWS Up/Down to cycle its matches, which is the one place the line's
+// keys depend on what is typed into it. Cycling results is what those keys mean everywhere else
+// a result list is up, and a find query is one; history is still there the moment the preview
+// has nothing to cycle.
 cl_handle_key :: proc(a: ^App, key, mods: i32, all: bool) {
     d := &a.cl.doc
     if handled, _ := edit_keys(a, d, key, mods, all); handled {
@@ -568,9 +573,13 @@ cl_handle_key :: proc(a: ^App, key, mods: i32, all: bool) {
         cl_submit(a)
 
     case glfw.KEY_UP:
-        cl_history_prev(a)
+        if !cl_preview_step(a, -1) {
+            cl_history_prev(a)
+        }
     case glfw.KEY_DOWN:
-        cl_history_next(a)
+        if !cl_preview_step(a, 1) {
+            cl_history_next(a)
+        }
     }
 }
 

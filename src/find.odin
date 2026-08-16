@@ -1,0 +1,152 @@
+package main
+
+import "core:strings"
+import "core:unicode"
+import "core:unicode/utf8"
+
+// In-buffer search: the mechanism under the `:f`/`:find` builtin (cl_find, cmdline.odin) and the
+// live preview that runs it as you type (cl_preview.odin).
+//
+// **Literal, never a regex.** `:grep` is the pattern search and it already spans the project;
+// this one answers "where else is that word on THIS page", so a query is the characters you
+// typed and nothing else. Case follows the usual bargain: an all-lowercase query matches either
+// case, one with a capital in it matches exactly — which is also the only way to ask for a
+// case-sensitive search, since there is no flag to give.
+//
+// The state lives on App rather than inside the preview because three parts share it: the
+// preview writes it as you type, the builtin writes it when a line arrives from history with no
+// preview behind it, and the editor paints the marks from it (draw_find_marks).
+Find :: struct {
+    query:   string, // owned; "" = nothing searched
+    matches: [dynamic]Find_Match, // in line order, then column order
+    cur:     int, // index into matches — the one the caret is on
+    // Paint the marks. Set by whoever ran the search rather than by the search: the preview
+    // wants them up while you type, and Enter takes them down and keeps the caret.
+    show:    bool,
+}
+
+// One hit: a rune span on one line of the buffer the search ran over.
+Find_Match :: struct {
+    line: int,
+    col:  int, // 0-based rune column
+    n:    int, // length in runes
+}
+
+// Ceiling on the hits one scan reports. A query of "e" over a large file otherwise costs a
+// list nobody can use and a paint that walks it; stopping is the honest answer, and the count
+// in the strip says where it stopped.
+FIND_LIMIT :: 4096
+
+find_destroy :: proc(f: ^Find) {
+    delete(f.query)
+    delete(f.matches)
+}
+
+// Run `query` over `b` and land `cur` on the first hit at or after `from`, wrapping to the
+// first when every hit is behind it.
+//
+// **The anchor is a parameter, not the live caret.** The preview re-runs this on every
+// keystroke, and reading the caret would walk the landing further down the file with each
+// letter typed — passing the caret the line STARTED from keeps it still.
+find_set :: proc(f: ^Find, b: ^Buffer, query: string, from: Pos) {
+    q := strings.clone(query) // cloned before the old one goes: a caller may pass f.query back
+    delete(f.query)
+    f.query = q
+    clear(&f.matches)
+    f.cur = 0
+    if query == "" {
+        return
+    }
+    find_scan(f, b, query)
+    f.cur = find_index_from(f.matches[:], from)
+}
+
+// Every occurrence of `query` in `b`, in line order. Hits do not overlap: the scan resumes past
+// the one it just took, so `aa` in `aaa` is one match rather than two.
+@(private = "file")
+find_scan :: proc(f: ^Find, b: ^Buffer, query: string) {
+    pat := utf8.string_to_runes(query, context.temp_allocator)
+    fold := find_folds_case(query)
+    for &l, line in b.lines {
+        for col := 0; col + len(pat) <= len(l.text); {
+            if !runes_match_at(l.text[:], col, pat, fold) {
+                col += 1
+                continue
+            }
+            append(&f.matches, Find_Match{line = line, col = col, n = len(pat)})
+            if len(f.matches) >= FIND_LIMIT {
+                return
+            }
+            col += len(pat)
+        }
+    }
+}
+
+// Whether `pat` sits at `col` in `text`. `fold` lowers both sides — the smart-case rule.
+@(private = "file")
+runes_match_at :: proc(text: []rune, col: int, pat: []rune, fold: bool) -> bool {
+    for i in 0 ..< len(pat) {
+        x, y := text[col + i], pat[i]
+        if fold {
+            x, y = unicode.to_lower(x), unicode.to_lower(y)
+        }
+        if x != y {
+            return false
+        }
+    }
+    return true
+}
+
+// Smart case: a query with no upper-case rune in it matches either case.
+@(private = "file")
+find_folds_case :: proc(query: string) -> bool {
+    for r in query {
+        if unicode.is_upper(r) {
+            return false
+        }
+    }
+    return true
+}
+
+// The first match at or after `from`, wrapping to 0 when every one is behind it. An empty
+// list answers 0 too — there is nothing to land on either way, and find_pos says so.
+@(private = "file")
+find_index_from :: proc(ms: []Find_Match, from: Pos) -> int {
+    for m, i in ms {
+        if m.line > from.line || (m.line == from.line && m.col >= from.col) {
+            return i
+        }
+    }
+    return 0
+}
+
+// Step to the next/previous match, wrapping both ways. No matches is a no-op.
+find_step :: proc(f: ^Find, dir: int) {
+    if n := len(f.matches); n > 0 {
+        f.cur = (f.cur + dir + n) % n
+    }
+}
+
+// Where the caret belongs for the current match, or ok=false when there is no match to sit on.
+find_pos :: proc(f: ^Find) -> (Pos, bool) {
+    if f.cur < 0 || f.cur >= len(f.matches) {
+        return {}, false
+    }
+    m := f.matches[f.cur]
+    return Pos{m.line, m.col}, true
+}
+
+// Index of the first match ON `line`, or one past the end when there is none at or after it.
+// A binary search because the paint asks once per visible row and the list is in line order.
+find_first_on_line :: proc(ms: []Find_Match, line: int) -> int {
+    lo, hi := 0, len(ms)
+    for lo < hi {
+        mid := (lo + hi) / 2
+        if ms[mid].line < line {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    return lo
+}
