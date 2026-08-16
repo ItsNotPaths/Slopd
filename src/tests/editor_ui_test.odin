@@ -39,9 +39,11 @@ fake_editor :: proc(a: ^app.App, text: string) {
 }
 
 // A view built by hand, so the geometry tests do not need an anim, a font or a frame.
-// Mirrors what editor_view produces for the pane above at cw = 10 / lh = 16.
+// Mirrors what editor_view produces for the pane above at cw = 10 / lh = 16 — including its
+// one subtlety: `hoff` is already SUBTRACTED from text_x, which is what lets every column
+// conversion downstream stay ignorant of the horizontal scroll.
 @(private = "file")
-mkview :: proc(top: int, off: i32, gutter := 2) -> app.Editor_View {
+mkview :: proc(top: int, off: i32, gutter := 2, hoff: f32 = 0) -> app.Editor_View {
     return app.Editor_View {
         area   = AREA,
         row_h  = ROW_H,
@@ -49,7 +51,9 @@ mkview :: proc(top: int, off: i32, gutter := 2) -> app.Editor_View {
         top    = top,
         off    = off,
         gutter = gutter,
-        text_x = app.editor_text_x(AREA.x, gutter, 10),
+        text_x = app.editor_text_x(AREA.x, gutter, 10) - hoff,
+        cols   = app.editor_cols(AREA, gutter, 10),
+        hoff   = hoff,
         cw     = 10,
         lh     = 16,
     }
@@ -806,4 +810,79 @@ test_editor_drag_word_grade_uses_the_glyph :: proc(t: ^testing.T) {
     app.editor_drag(&a, b, v, 101)
     testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 0})
     testing.expect_value(t, b.cursors[0].head, app.Pos{0, 11})
+}
+
+// --- the horizontal scroll, through the same seam ---
+//
+// The claim this file exists for, on the other axis: a pixel read back as a Pos must land
+// on the glyph painted there, with the text column shifted sideways too. It holds for one
+// reason — `hoff` is baked into v.text_x, so editor_pos_at's arithmetic is untouched — and
+// that is exactly the kind of invariant that survives by being pinned rather than by being
+// true when it was written.
+@(test)
+test_editor_pos_at_through_hscroll :: proc(t: ^testing.T) {
+    a: app.App
+    fake_editor(&a, "0123456789abcdefghijklmnopqrstuvwxyz")
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+
+    // At home, x = TEXT_X is column 0 and each cell is 10px further right.
+    v := mkview(0, 0)
+    p, ok := app.editor_pos_at(b, v, TEXT_X + 35, 55)
+    testing.expect(t, ok)
+    testing.expect_value(t, p.col, 4) // rounds: the right half of cell 3 is boundary 4
+
+    // Scrolled 12 columns (120px) right, the SAME pixel now names a column 12 further on.
+    v = mkview(0, 0, 2, 120)
+    p, ok = app.editor_pos_at(b, v, TEXT_X + 35, 55)
+    testing.expect(t, ok)
+    testing.expect_value(t, p.col, 16)
+
+    // The left edge of the text region is the scrolled-to column itself.
+    p, _ = app.editor_pos_at(b, v, TEXT_X, 55)
+    testing.expect_value(t, p.col, 12)
+
+    // A part-scrolled view (mid-tween, 4px into a cell) is still exact rather than snapped.
+    v = mkview(0, 0, 2, 124)
+    p, _ = app.editor_pos_at(b, v, TEXT_X + 36, 55)
+    testing.expect_value(t, p.col, 16)
+
+    // The column is still clamped to the line, so scrolling past its end cannot invent one.
+    v = mkview(0, 0, 2, 300)
+    p, ok = app.editor_pos_at(b, v, TEXT_X + 200, 55)
+    testing.expect(t, ok)
+    testing.expect_value(t, p.col, 36) // the line's length: end-of-line, not column 55
+}
+
+// editor_cols counts the columns RIGHT OF THE GUTTER, so it shrinks as the line count grows
+// a digit. The policy frames the caret into this number and the painter culls to it, so a
+// disagreement here settles the view on a column the painter then declines to draw.
+@(test)
+test_editor_cols :: proc(t: ^testing.T) {
+    // AREA is 296 wide from x = 102; a 2-digit gutter puts column 0 at 142, leaving 256px.
+    testing.expect_value(t, app.editor_cols(AREA, 2, 10), 25)
+    testing.expect_value(t, app.editor_cols(AREA, 3, 10), 24) // a thousand-line file: one cell narrower
+    testing.expect_value(t, app.editor_cols(AREA, 6, 10), 21)
+
+    // Degenerate geometry pins to zero rather than going negative — buffer_hscroll_target
+    // then holds the view at home, which is what a pane with no text region should show.
+    testing.expect_value(t, app.editor_cols(AREA, 2, 0), 0)
+    testing.expect_value(t, app.editor_cols(app.Rect{102, 52, 10, 196}, 2, 10), 0)
+}
+
+// The bound the column axis is clamped against: the widest line the window is DRAWING, not
+// the widest in the file. Measured over the same walk the painter uses, so it skips folded
+// lines — a collapsed block's long line is not on screen and must not hold the view open.
+@(test)
+test_editor_longest_visible :: proc(t: ^testing.T) {
+    a: app.App
+    fake_editor(&a, "ab\n0123456789\nxyz\nlonger line here\n")
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+
+    testing.expect_value(t, app.editor_longest_visible(b, 0, 2), 10) // lines 0-1
+    testing.expect_value(t, app.editor_longest_visible(b, 0, 4), 16) // through line 3
+    testing.expect_value(t, app.editor_longest_visible(b, 2, 2), 16)
+    testing.expect_value(t, app.editor_longest_visible(b, 2, 1), 3) // just "xyz"
+    testing.expect_value(t, app.editor_longest_visible(b, 0, 0), 0)
 }

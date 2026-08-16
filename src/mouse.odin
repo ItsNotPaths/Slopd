@@ -11,7 +11,9 @@ import clay "../bindings/clay"
 // Mouse input is NOUN-FIRST: a key names its verb outright, while a wheel notch carries only
 // a position and must resolve to a pane before there is a verb at all. wheel_target is that
 // resolution and is PURE, so the routing table is a headless unit test (tests/mouse_test.odin);
-// wheel_apply is the only half that writes.
+// wheel_apply and wheel_apply_h are the only halves that write. The wheel has TWO axes and
+// they resolve against the one target — Shift, or a device with a second axis of its own,
+// picks which — because a gesture is over one pane whichever way it travels.
 //
 // Two coordinate traps, handled at the callback so nothing downstream repeats them:
 //   1. GLFW reports WINDOW (logical) coords; Layout, Rect and Clay use FRAMEBUFFER pixels.
@@ -20,8 +22,8 @@ import clay "../bindings/clay"
 //   2. Routing resolves against the layout the last frame PAINTED (App.lay); mid-animation a
 //      recomputed layout is elsewhere, so a notch would land in a pane not yet on screen.
 
-// Lines moved per wheel notch — the near-universal desktop default. Every routing target
-// consumes "lines" natively, so one constant rather than a per-pane table.
+// Lines moved per VERTICAL wheel notch — the near-universal desktop default. Every routing
+// target consumes "lines" natively, so one constant rather than a per-pane table.
 WHEEL_LINES :: 3
 
 // …with one exception, because a "line" is not the same distance everywhere. In the file panes
@@ -29,6 +31,11 @@ WHEEL_LINES :: 3
 // notch throws the listing past what you were looking at. One row per notch there: the same
 // gesture, a quieter step, and the tween (tree.scroll_anim) carries it.
 WHEEL_LINES_FILE :: 1
+
+// Columns per notch on the HORIZONTAL axis — Shift + the wheel, a tilt wheel, or a trackpad's
+// second direction. More than WHEEL_LINES because a column is about a third the width of a line
+// is tall: three of them is a twitch, where the gesture wants to cross a long line in a few.
+WHEEL_COLS :: 6
 
 // What makes two presses a double-click: near enough in time AND in space. The slop is in
 // framebuffer pixels and deliberately small — a press that travelled is a drag, not a second
@@ -45,8 +52,10 @@ Mouse :: struct {
     down:  bool, // left button held; fed to Clay and the drag machine
     // Undelivered wheel travel. A wheel reports whole notches, a trackpad fractions of one,
     // and rounding each event up to a notch would make a gentle two-finger drag tear through
-    // the buffer. Carrying the remainder gets both right without a device check.
-    accum: f64,
+    // the buffer. Carrying the remainder gets both right without a device check. One per AXIS,
+    // so a trackpad's diagonal drift cannot leak sideways travel into the page.
+    accum:   f64,
+    accum_x: f64,
 
     // A left press waiting for a noun. A wheel notch resolves to a PANE in the callback, but a
     // click resolves to a ROW or field, and only the pane's own declaration knows what is under
@@ -217,6 +226,17 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
     }
 }
 
+// Apply `notch` HORIZONTAL notches to `target`. Positive is RIGHT, toward later columns. Only
+// the text editor has a column axis to move: a list row, a terminal line and an image are each
+// no wider than the pane holding them, so a sideways notch over one of those is nothing — not a
+// fall back to scrolling the page, which is the surprise the user did not ask for.
+wheel_apply_h :: proc(a: ^App, target: Wheel_Target, notch: int) {
+    if notch == 0 || target != .Editor || len(a.editor.buffers) == 0 {
+        return
+    }
+    buffer_hscroll_by(editor_current(&a.editor), notch * WHEEL_COLS, glfw.GetTime())
+}
+
 // Fill in a position we never received. A press or a wheel can be the FIRST pointer event a
 // window ever sees — a cursor already sitting over a freshly opened window reports no motion —
 // so rather than route against (0, 0), which is a lie that lands in the editor pane, ask GLFW.
@@ -308,20 +328,44 @@ mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mo
     m.click = true
 }
 
-// Spend one wheel event: wake, accumulate the sub-notch travel, then route and apply whatever
-// whole notches that produced. GLFW's yoffset is positive for a scroll UP, so the sign flips
-// exactly once — here. The wake is UNCONDITIONAL: fractional events still mean a hand on it.
-mouse_wheel :: proc(a: ^App, yoffset: f64) {
-    if !a.mouse_on || yoffset == 0 {
+// Spend one wheel event: wake, accumulate the sub-notch travel per axis, then route and apply
+// whatever whole notches that produced. Both axes resolve against the SAME target — one
+// gesture is over one pane — and the wake is UNCONDITIONAL, since fractional events still
+// mean a hand on the device.
+mouse_wheel :: proc(a: ^App, yoffset: f64, xoffset: f64 = 0) {
+    if !a.mouse_on || (yoffset == 0 && xoffset == 0) {
         return
     }
     mouse_wake(a)
-    // Accumulate, then spend whole notches and keep the remainder (see Mouse.accum).
-    // int() truncates toward zero, so the leftover always carries the same sign.
-    a.mouse.accum += -yoffset
-    notch := int(a.mouse.accum)
-    a.mouse.accum -= f64(notch)
-    wheel_apply(a, wheel_target(a, a.lay, a.mouse.x, a.mouse.y), notch)
+    target := wheel_target(a, a.lay, a.mouse.x, a.mouse.y)
+
+    if yoffset != 0 {
+        // GLFW's yoffset is positive for a scroll UP, so the sign flips exactly once — here.
+        // int() truncates toward zero, so the leftover always carries the same sign.
+        a.mouse.accum += -yoffset
+        notch := int(a.mouse.accum)
+        a.mouse.accum -= f64(notch)
+        // Shift is the horizontal modifier — the near-universal desktop convention, and the
+        // only way to reach the column axis on a plain wheel. Applied ONLY over the editor:
+        // over a terminal the same chord already means "scroll my scrollback rather than
+        // forward it to the child" (terminal_wheel_forwards), and taking it here breaks that.
+        if a.shift_held && target == .Editor {
+            wheel_apply_h(a, target, notch)
+        } else {
+            wheel_apply(a, target, notch)
+        }
+    }
+
+    // The native axis: a tilt wheel, or a trackpad's second finger direction. Positive is
+    // already RIGHT, so unlike y it is not negated. A compositor that folds Shift+wheel into
+    // this axis itself arrives here with yoffset == 0, so the branch above cannot also fire
+    // and the two paths can never double-apply one gesture.
+    if xoffset != 0 {
+        a.mouse.accum_x += xoffset
+        notch := int(a.mouse.accum_x)
+        a.mouse.accum_x -= f64(notch)
+        wheel_apply_h(a, target, notch)
+    }
 }
 
 // The GLFW half: resolve the pointer's position if we have never had one, then spend the
@@ -329,12 +373,12 @@ mouse_wheel :: proc(a: ^App, yoffset: f64) {
 scroll_callback :: proc "c" (window: glfw.WindowHandle, xoffset, yoffset: f64) {
     context = runtime.default_context()
     a := (^App)(glfw.GetWindowUserPointer(window))
-    if a == nil || !a.mouse_on || yoffset == 0 {
+    if a == nil || !a.mouse_on || (yoffset == 0 && xoffset == 0) {
         return
     }
     wake_mark()
     mouse_locate(a, window)
-    mouse_wheel(a, yoffset)
+    mouse_wheel(a, yoffset, xoffset)
 }
 
 // Hand Clay this frame's pointer, so PointerOver / OnHover resolve during the declarations

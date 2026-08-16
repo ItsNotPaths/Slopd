@@ -89,3 +89,15 @@ smooth_scroll :: proc(anim: ^Anim, to: int, now: f64, row_h: i32) -> (top: int, 
     off = i32((disp - f32(top)) * f32(row_h))
     return
 }
+
+// The horizontal twin: re-aim `anim` at column `to`, then return how many PIXELS the text
+// column is currently shifted left by. No floor/remainder split — a row grid has to be walked
+// row by row, but a monospace column is pure arithmetic, so the whole answer is one offset
+// every x in the pane subtracts. The same re-aim rule applies: reach here every frame the
+// target moves, or the view freezes part-scrolled.
+smooth_hscroll :: proc(anim: ^Anim, to: int, now: f64, cw: f32) -> f32 {
+    if f32(to) != anim.to {
+        anim_start(anim, now, anim_value(anim, now), f32(to), SCROLL_DUR)
+    }
+    return anim_value(anim, now) * cw
+}

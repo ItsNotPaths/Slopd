@@ -54,7 +54,9 @@ anim_value :: proc(an: ^Anim, now: f64) -> f32 {
 // animated subsystem reports here; the soonest deadline wins.
 app_next_wake :: proc(a: ^App, now: f64) -> f64 {
     wake := f64(-1)
-    if anim_active(&editor_current(&a.editor).scroll_anim, now) { // smooth scroll
+    // Smooth scroll, both axes — one gate, because either tween moving is the same obligation
+    // to redraw and the loop has no use for knowing which way the view is travelling.
+    if eb := editor_current(&a.editor); anim_active(&eb.scroll_anim, now) || anim_active(&eb.hscroll_anim, now) {
         wake = sched_min(wake, frame_budget)
     }
     // The filetree pane's viewport tween, under EITHER presentation — the listing and the

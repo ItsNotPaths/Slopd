@@ -27,6 +27,8 @@ Line_Numbers :: enum {
 // How a viewport tracks what it follows: Follow moves the view only when the target would leave
 // it; Middle pins the target to the middle row so Up/Down move the content. One policy across
 // every line view — the editor its caret (buffer_scroll_target), the lists their selection.
+// ROWS only: the editor's column axis has a policy of its own and no Middle mode, for a
+// reason spelled out at buffer_hscroll_target.
 Scroll_Mode :: enum {
     Follow,
     Middle,
@@ -69,7 +71,7 @@ Config :: struct {
     theme_path:       string, // absolute (owned), or "" for the baked-in default
     indent:           Indent,
     line_numbers:     Line_Numbers,
-    scroll_mode:      Scroll_Mode, // every line view: follow the caret/selection, or keep it middled
+    scroll_mode:      Scroll_Mode, // every line view's ROWS: follow the caret/selection, or keep it middled
     font_px:          f32, // logical text size in points (font zoom), persisted across runs
     jump_lines:       int, // how many lines Ctrl+Up/Down jumps in the editor
     show_whitespace:  bool, // ghost the leading-space dots / tab marks

@@ -401,3 +401,112 @@ test_wheel_apply_terminal_scrolls_the_view :: proc(t: ^testing.T) {
     app.wheel_apply(&a, .Terminal, 1)
     testing.expect_value(t, app.terminal_view_top(term), term.sb_total) // back to the live bottom
 }
+
+// --- the horizontal axis ---
+//
+// Two ways in, one destination. Shift + the wheel is the near-universal convention and the
+// only way to reach the column axis on a plain mouse; a tilt wheel or a trackpad's second
+// finger direction arrives as GLFW's xoffset with no modifier. Both must land on the buffer's
+// column and nowhere else, and neither may take a chord another pane already means something
+// by — which is what these pin.
+
+@(private = "file")
+wheel_editor_app :: proc() -> app.App {
+    a := routing_app(.FileTree)
+    app.editor_init(&a.editor)
+    a.mouse_on = true
+    a.mouse.known = true
+    a.lay = LAY
+    a.mouse.x, a.mouse.y = 100, 100 // over the editor pane
+    // A file with room to scroll BOTH ways, so "the other axis did not move" is a claim the
+    // buffer could actually have failed: a one-line buffer clamps the page to 0 regardless.
+    buf: [dynamic]u8
+    defer delete(buf)
+    for _ in 0 ..< 100 {
+        append(&buf, 'x', '\n')
+    }
+    app.buffer_set_text(app.editor_current(&a.editor), string(buf[:]))
+    return a
+}
+
+// Shift picks the axis, and picks ONLY the axis: neither gesture may move the other one.
+@(test)
+test_wheel_shift_scrolls_columns :: proc(t: ^testing.T) {
+    a := wheel_editor_app()
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+
+    app.mouse_wheel(&a, -1) // plain: the page moves...
+    testing.expect_value(t, b.scroll, app.WHEEL_LINES)
+    testing.expect_value(t, b.hscroll, 0) // ...and the column does not
+
+    a.shift_held = true
+    app.mouse_wheel(&a, -1) // Shift: the column moves...
+    testing.expect_value(t, b.hscroll, app.WHEEL_COLS)
+    testing.expect_value(t, b.scroll, app.WHEEL_LINES) // ...and the page is left alone
+    // (The detach STAMP is buffer_test's to assert: it comes from glfw.GetTime(), which is
+    // zero with no window open, so it cannot be told apart from "never detached" here.)
+
+    // Back the other way, and bounded at home rather than running negative. The callback
+    // cannot clamp the far end (no font, no pane rect), but it can clamp this one.
+    app.mouse_wheel(&a, 1)
+    testing.expect_value(t, b.hscroll, 0)
+    app.mouse_wheel(&a, 1)
+    testing.expect_value(t, b.hscroll, 0)
+}
+
+// The native axis needs no modifier, and is NOT negated: GLFW's xoffset is already positive
+// for a scroll to the right, where its yoffset is positive for a scroll up.
+@(test)
+test_wheel_native_horizontal_axis :: proc(t: ^testing.T) {
+    a := wheel_editor_app()
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+
+    app.mouse_wheel(&a, 0, 1) // positive x = right = later columns
+    testing.expect_value(t, b.hscroll, app.WHEEL_COLS)
+    testing.expect_value(t, b.scroll, 0) // the page never moved
+
+    app.mouse_wheel(&a, 0, -1)
+    testing.expect_value(t, b.hscroll, 0)
+
+    // Its own sub-notch accumulator, separate from the vertical one. A trackpad reports both
+    // axes on a diagonal drift, and a shared remainder would leak sideways travel into the
+    // page — four quarter-notches sideways must spend exactly one sideways notch and no
+    // vertical one, even with vertical fractions interleaved.
+    for _ in 0 ..< 3 {
+        app.mouse_wheel(&a, -0.25, 0.25)
+        testing.expect_value(t, b.hscroll, 0)
+        testing.expect_value(t, b.scroll, 0)
+    }
+    app.mouse_wheel(&a, -0.25, 0.25)
+    testing.expect_value(t, b.hscroll, app.WHEEL_COLS)
+    testing.expect_value(t, b.scroll, app.WHEEL_LINES)
+}
+
+// A pane with no column axis keeps its own meaning for the chord. Only the editor scrolls
+// sideways — a list row and a terminal line are each no wider than the pane holding them —
+// so Shift+wheel over one of those must still be the plain vertical gesture it always was.
+// Over a terminal that chord is already spoken for (terminal_wheel_forwards reads it as
+// "scroll my scrollback rather than forward it to the child"), and taking it would break it.
+@(test)
+test_wheel_shift_left_alone_off_the_editor :: proc(t: ^testing.T) {
+    a := routing_app(.Grep)
+    for i in 0 ..< 40 {
+        append(&a.grep.hits, app.GrepHit{line = i + 1})
+    }
+    defer delete(a.grep.hits)
+    a.mouse_on = true
+    a.mouse.known = true
+    a.lay = LAY
+    a.mouse.x, a.mouse.y = 700, 300 // over the aux pane
+    a.shift_held = true
+
+    app.mouse_wheel(&a, -1)
+    testing.expect_value(t, a.grep.scroll, app.WHEEL_LINES)
+
+    // And a sideways notch over it moves nothing at all, rather than falling back to the page.
+    before := a.grep.scroll
+    app.mouse_wheel(&a, 0, 1)
+    testing.expect_value(t, a.grep.scroll, before)
+}

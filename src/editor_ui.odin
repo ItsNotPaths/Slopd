@@ -43,11 +43,36 @@ editor_gutter_w :: proc(b: ^Buffer) -> int {
     return max(EDITOR_GUTTER_MIN, num_digits(len(b.lines)))
 }
 
-// Where column 0 starts: a one-cell left margin, the gutter, then a one-cell gap. One proc
-// because its two callers are the paint and the hit test, and a text column that means
-// something different to each is a whole class of bug.
+// Where column 0 starts with the view at home: a one-cell left margin, the gutter, then a
+// one-cell gap. One proc because its two callers are the paint and the hit test, and a text
+// column that means something different to each is a whole class of bug. This is also the
+// GUTTER/TEXT BOUNDARY the painter's two clips meet at — the gutter never scrolls sideways,
+// so the horizontal offset is subtracted from the result, never folded in here.
 editor_text_x :: proc(area_x: i32, gutter: int, cw: f32) -> f32 {
     return f32(area_x) + f32(gutter + 2) * cw
+}
+
+// How many whole COLUMNS of text the window shows — the region right of the gutter, in cells.
+// The horizontal policy's `cols` and the painter's cull window come from this one call, for
+// the reason editor_text_x is one call: a policy framing a caret into a width the painter
+// does not draw would settle on a column and then hide it.
+editor_cols :: proc(area: Rect, gutter: int, cw: f32) -> int {
+    if cw <= 0 {
+        return 0
+    }
+    return max(0, int((f32(area.x + area.w) - editor_text_x(area.x, gutter, cw)) / cw))
+}
+
+// The widest line the window is about to draw, in columns — what bounds the column axis.
+// Measured over the DRAWN lines rather than the whole file: it is O(rows) instead of O(lines)
+// every frame, and scrolling down into short lines should bring the view back toward home
+// rather than leave it parked over the blank space right of them.
+editor_longest_visible :: proc(b: ^Buffer, top, count: int) -> int {
+    n := 0
+    for line in editor_visible_lines(b, top, count) {
+        n = max(n, line_len(&b.lines[line]))
+    }
+    return n
 }
 
 // The box, the row grid, the text column, and where the view IS this instant. `top` is the
@@ -60,17 +85,26 @@ Editor_View :: struct {
     top:    int, // first line of the window (may be hidden; the walk skips forward)
     off:    i32, // sub-row pixel offset, subtracted from every row's y
     gutter: int, // line-number digits
-    text_x: f32, // x of column 0
+    text_x: f32, // x of column 0, WITH the horizontal scroll already taken off it
+    cols:   int, // whole columns of text that fit right of the gutter
+    hoff:   f32, // pixels the text column is shifted left; the animated twin of b.hscroll
     cw:     f32,
     lh:     f32,
 }
 
-// Build the view — and RE-AIM the scroll animation, which is why it is not a pure query.
+// Build the view — and RE-AIM both scroll animations, which is why it is not a pure query.
 // smooth_scroll is what makes anim_active true and app_next_wake schedules off that, so a
-// frame moving b.scroll without reaching here again leaves the view frozen part-scrolled.
+// frame moving b.scroll or b.hscroll without reaching here again leaves the view frozen
+// part-scrolled.
+//
+// `text_x` carries the horizontal offset ALREADY SUBTRACTED. That is the whole trick: every
+// column-to-pixel conversion downstream — the caret, the selection bars, both hit tests, the
+// fold marker's reach — is `text_x + cw * col` and keeps working untouched, so there is no
+// second place where a scrolled column could be turned back into the wrong one.
 editor_view :: proc(b: ^Buffer, f: ^Font, area: Rect, row_h: i32, rows: int, now: f64) -> Editor_View {
     top, off := smooth_scroll(&b.scroll_anim, b.scroll, now, row_h)
     gutter := editor_gutter_w(b)
+    hoff := smooth_hscroll(&b.hscroll_anim, b.hscroll, now, f.cell_w)
     return Editor_View {
         area   = area,
         row_h  = row_h,
@@ -78,7 +112,9 @@ editor_view :: proc(b: ^Buffer, f: ^Font, area: Rect, row_h: i32, rows: int, now
         top    = top,
         off    = off,
         gutter = gutter,
-        text_x = editor_text_x(area.x, gutter, f.cell_w),
+        text_x = editor_text_x(area.x, gutter, f.cell_w) - hoff,
+        cols   = editor_cols(area, gutter, f.cell_w),
+        hoff   = hoff,
         cw     = f.cell_w,
         lh     = f.line_height,
     }
@@ -221,7 +257,12 @@ editor_click :: proc(a: ^App, hit: Editor_Hit, now: f64) {
         return
     }
     b := editor_current(&a.editor)
+    // Both axes: a press is an aim, and a view that kept a sideways offset the pointer did not
+    // ask for would put the caret somewhere other than where it was clicked. Re-attaching here
+    // also gives the drag its horizontal autoscroll for free — editor_drag walks the caret to
+    // the end of a line dragged past the right edge, and the column policy follows it.
     b.scroll_detached = 0
+    b.hscroll_detached = 0
     a.blink_base = now
 
     if hit.kind == .Fold {
@@ -363,7 +404,8 @@ editor_declare :: proc(a: ^App, f: ^Font, pane: Rect, v: Editor_View, now: f64) 
 
 // The text surface: gutter, lines with syntax colour, current-line bar, selections, indent
 // guides, whitespace and fold markers, a caret per cursor. Positions come from `r`, the box the
-// solver resolved, NOT v.area — tests/editor_ui_test.odin pins the equality.
+// solver resolved, NOT v.area — tests/editor_ui_test.odin pins the equality. Drawn in two
+// scissored passes, the scrolling text and the fixed gutter; see the split below.
 editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
     e := (^Editor_Body)(user)
     if e == nil || e.b == nil {
@@ -375,7 +417,25 @@ editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
     cw := t.font.cell_w
     lh := t.font.line_height
     row_h := v.row_h
-    text_x := editor_text_x(r.x, v.gutter, cw)
+    edge := editor_text_x(r.x, v.gutter, cw) // the gutter/text boundary, where the two clips meet
+    text_x := edge - v.hoff // …and where column 0 actually lands
+
+    // The body paints in TWO passes, split at that boundary. The gutter does not scroll
+    // sideways — a line number that slid off with its line would leave you reading a long line
+    // with no way to tell which one — so the text is drawn shifted and scissored to its own
+    // half, then the numbers are drawn over their own. Two passes because a scissor belongs to
+    // a flush (see flush_pane), and culling alone cannot do the job: the column at the cull
+    // edge is only PART way past the boundary, and would hang half-drawn in the gap.
+    gx := i32(edge)
+    text_clip := clay_isect(clip, Rect{gx, r.y, r.x + r.w - gx, r.h})
+    gutter_clip := clay_isect(clip, Rect{r.x, r.y, gx - r.x, r.h})
+
+    // The columns the text region can reach, one either side so a part-scrolled cell is drawn
+    // rather than popping in at the edge. Everything outside is off the clip and not queued: a
+    // four-thousand-character line is otherwise four thousand glyph quads for the hundred you
+    // can see, and a horizontal scroll makes that the ordinary case rather than the odd one.
+    first_col := max(0, int(v.hoff / max(cw, 1)) - 1)
+    last_col := first_col + v.cols + 2
 
     cur_line := b.cursors[b.primary].head.line // primary cursor drives the gutter + the bar
 
@@ -430,16 +490,18 @@ editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
             draw_whitespace(t, l, text_x, f32(y), row_h, cw, a.scale, th.whitespace)
         }
 
-        buf: [12]u8
-        s := strconv.write_int(buf[:], i64(line_number(a.line_numbers, line, cur_line)), 10)
-        nx := f32(r.x) + cw + f32(v.gutter - len(s)) * cw // right-align in gutter
-        text_draw(t, s, nx, ty, on_cur_line ? th.fg : th.muted)
-
+        // The line's runes, culled to the visible columns. The colour row is sliced with them
+        // — one array per rune, so the same window indexes both — and only once its length is
+        // known to match, since a mismatched row cannot be sliced by a column at all.
         k := line - v.top // index into the highlight rows (absolute-line based)
-        if hl != nil && k < len(hl) && hl[k] != nil {
-            draw_runes_colored(t, l.text[:], hl[k], text_x, ty, th.fg)
+        row := hl != nil && k < len(hl) ? hl[k] : nil
+        lo := min(first_col, len(l.text))
+        hi := min(last_col, len(l.text))
+        rx := text_x + cw * f32(lo)
+        if len(row) == len(l.text) {
+            draw_runes_colored(t, l.text[lo:hi], row[lo:hi], rx, ty, th.fg)
         } else {
-            text_draw_runes(t, l.text[:], text_x, ty, th.fg)
+            text_draw_runes(t, l.text[lo:hi], rx, ty, th.fg)
         }
 
         // A folded header carries a marker after its text so the collapse is visible.
@@ -459,14 +521,36 @@ editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
         }
     }
 
+    // Pass one done: everything that moves sideways, clipped to the text half.
+    flush_pane(t, text_clip, win_w, win_h)
+
+    // Pass two: the fixed gutter. The current-line bar is queued again at full row width and
+    // the scissor keeps this half of it, which is why the bar reads as one unbroken band across
+    // a boundary neither pass draws over.
+    for line, vrow in draw_lines {
+        y := r.y + i32(vrow) * row_h - v.off
+        ty := f32(y) + (f32(row_h) - lh) / 2
+        on_cur_line := line == cur_line
+        if on_cur_line {
+            fill(t, Rect{r.x, y, r.w, row_h}, th.line_highlight)
+        }
+        buf: [12]u8
+        s := strconv.write_int(buf[:], i64(line_number(a.line_numbers, line, cur_line)), 10)
+        nx := f32(r.x) + cw + f32(v.gutter - len(s)) * cw // right-align in gutter
+        text_draw(t, s, nx, ty, on_cur_line ? th.fg : th.muted)
+    }
+
     // The painter owns its region and ends with its own flush (the ClayCustom contract).
-    // `clip` arrives already intersected with the box, so this is the whole obligation.
-    flush_pane(t, clip, win_w, win_h)
+    // `clip` arrives already intersected with the box, and the two halves cover it between
+    // them, so this is the whole obligation.
+    flush_pane(t, gutter_clip, win_w, win_h)
 }
 
-// The editor pane. Scrolls to keep the cursor visible, the view sliding smoothly toward the
-// target top line. (Tabs currently advance one cell — fine for the space-indent default;
-// proper tab width is a TODO.) See editor_view for why it is built twice.
+// The editor pane. Scrolls to keep the cursor visible on BOTH axes — there is no soft wrap,
+// so a long line is reached by moving the window sideways — the view easing toward the target
+// top line and left column together. (Tabs currently advance one cell — fine for the
+// space-indent default; proper tab width is a TODO, and it is the one thing that would make a
+// column stop being a rune index.) See editor_view for why the view is built twice.
 editor_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     b := editor_current(&a.editor)
     area, row_h, rows := editor_geom(pane, a.scale, t.font.line_height)
@@ -482,8 +566,11 @@ editor_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     editor_drag(a, b, v, now) // and extend a capture the press already made
 
     // Then move the viewport, so a click that put the caret off-screen scrolls in the same
-    // frame it was made, and rebuild the view over the result.
+    // frame it was made, and rebuild the view over the result. Rows first: the column policy
+    // reads whether the page is still following the caret, and measures its bound over the
+    // lines the page settled on (see buffer_hscroll_apply).
     buffer_scroll_apply(b, rows, a.scroll_mode == .Middle, a.last_input_at)
+    buffer_hscroll_apply(b, v.cols, editor_longest_visible(b, b.scroll, rows + 2), a.last_input_at)
     v = editor_view(b, &t.font, area, row_h, rows, now)
 
     editor_declare(a, &t.font, pane, v, now)

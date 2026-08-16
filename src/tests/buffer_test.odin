@@ -394,3 +394,170 @@ test_buffer_matches_disk :: proc(t: ^testing.T) {
     app.buffer_set_text(&u, "x")
     testing.expect(t, !app.buffer_matches_disk(&u))
 }
+
+// --- horizontal scroll (the column axis; buffer_hscroll_target / _apply) ---
+//
+// There is no soft wrap, so a long line runs off the right edge and this is how it is
+// reached. The policy is deliberately NOT the vertical one: no MIDDLE mode, and a margin
+// the caret is never allowed inside, so typing at the right edge shows the columns you are
+// about to fill rather than the caret butting against the clip.
+
+HCOLS :: 20 // a 20-column text region; HSCROLL_PAD (8) fits twice inside it
+
+// The margin policy: home, hold, and the minimum move at either edge. The caret must never
+// be nearer an edge than HSCROLL_PAD once there is room for the margin.
+@(test)
+test_hscroll_margin :: proc(t: ^testing.T) {
+    P :: app.HSCROLL_PAD
+
+    // Near home the left clamp wins, so the view stays at column 0 rather than scrolling
+    // the start of the line off to buy a margin that is not needed.
+    testing.expect_value(t, app.buffer_hscroll_target(0, 0, HCOLS), 0)
+    testing.expect_value(t, app.buffer_hscroll_target(0, 5, HCOLS), 0)
+
+    // The last column that still leaves the margin intact (19 - 8 = 11) holds the view...
+    testing.expect_value(t, app.buffer_hscroll_target(0, HCOLS - 1 - P, HCOLS), 0)
+    // ...and one past it moves by exactly one column, not by a jump.
+    testing.expect_value(t, app.buffer_hscroll_target(0, HCOLS - P, HCOLS), 1)
+    testing.expect_value(t, app.buffer_hscroll_target(0, 100, HCOLS), 100 + P - HCOLS + 1)
+
+    // Inside the padded window the view HOLDS — the property that stops it sliding under
+    // every keystroke, and the whole reason there is no MIDDLE mode on this axis.
+    testing.expect_value(t, app.buffer_hscroll_target(89, 100, HCOLS), 89)
+    testing.expect_value(t, app.buffer_hscroll_target(89, 97, HCOLS), 89)
+
+    // Walking back left moves the minimum too, and keeps the same margin on that side.
+    testing.expect_value(t, app.buffer_hscroll_target(89, 96, HCOLS), 88)
+    testing.expect_value(t, app.buffer_hscroll_target(89, 20, HCOLS), 12)
+    // …all the way home: Home on a long line puts column 0 back on screen by itself.
+    testing.expect_value(t, app.buffer_hscroll_target(89, 0, HCOLS), 0)
+}
+
+// A pane too narrow to hold two margins halves them out. Without this the two would each
+// pull the opposite way and the view would never settle on either — it would oscillate by a
+// column every frame, which is the one failure that reads as a rendering bug.
+@(test)
+test_hscroll_narrow_pane :: proc(t: ^testing.T) {
+    // 5 columns: pad falls to (5 - 1) / 2 = 2.
+    testing.expect_value(t, app.buffer_hscroll_target(0, 10, 5), 10 + 2 - 5 + 1)
+    testing.expect_value(t, app.buffer_hscroll_target(8, 10, 5), 8) // and then holds
+    testing.expect_value(t, app.buffer_hscroll_target(8, 9, 5), 7)
+
+    // One column wide: no margin at all is possible, so the caret sits in the only cell.
+    testing.expect_value(t, app.buffer_hscroll_target(0, 5, 1), 5)
+    // A pane with no text region yet (before the first layout) pins home instead of going
+    // negative — every frame calls this, including the ones before there is a font.
+    testing.expect_value(t, app.buffer_hscroll_target(30, 40, 0), 0)
+}
+
+@(private = "file")
+wide :: proc(cols: int) -> app.Buffer {
+    b := strings.builder_make(context.temp_allocator)
+    strings.write_string(&b, "short\n")
+    for _ in 0 ..< cols {
+        strings.write_byte(&b, 'x')
+    }
+    strings.write_string(&b, "\nshort\n")
+    return mkbuf(strings.to_string(b))
+}
+
+// Attached, buffer_hscroll_apply is the policy bounded by the widest line ON SCREEN — and
+// the bound is generous by exactly the margin, so a caret parked at end-of-line keeps its
+// context rather than being pinned to the last column of the pane.
+@(test)
+test_hscroll_apply_bounds :: proc(t: ^testing.T) {
+    b := wide(300)
+    defer app.buffer_destroy(&b)
+    COLS :: 80
+    app.doc_reset_cursor(&b.doc, app.Pos{1, 300}) // end of the long line
+
+    app.buffer_hscroll_apply(&b, COLS, 300, 0)
+    testing.expect_value(t, b.hscroll, 300 + app.HSCROLL_PAD - COLS + 1)
+    // The caret lands inside the window with the full margin to its right.
+    testing.expect_value(t, 300 - b.hscroll, COLS - 1 - app.HSCROLL_PAD)
+
+    // A window showing only short lines has nothing to scroll to, so the view is pinned
+    // home no matter where the caret's own line reaches.
+    app.buffer_hscroll_apply(&b, COLS, 5, 0)
+    testing.expect_value(t, b.hscroll, 0)
+}
+
+// Shift+wheel cuts the column loose, the policy stops running, and a keystroke re-attaches
+// it — the vertical state machine, on the other axis. Pinned separately because the two
+// stamps are independent: scrolling sideways must not re-frame the page.
+@(test)
+test_hscroll_detach_and_reattach :: proc(t: ^testing.T) {
+    b := wide(300)
+    defer app.buffer_destroy(&b)
+    COLS :: 80
+    app.doc_reset_cursor(&b.doc, app.Pos{1, 0}) // caret at home, view following it
+
+    app.buffer_hscroll_by(&b, 120, 100) // Shift+wheel right, detached at t = 100
+    testing.expect_value(t, b.hscroll, 120)
+    testing.expect_value(t, b.scroll_detached, f64(0)) // the PAGE was not touched
+
+    // Frames pass with no keystroke: the column holds, far from a caret the policy would
+    // otherwise have dragged it back to.
+    app.buffer_hscroll_apply(&b, COLS, 300, 50)
+    testing.expect_value(t, b.hscroll, 120)
+
+    // A keystroke after the stamp re-attaches, and the policy pulls back to the caret.
+    app.buffer_hscroll_apply(&b, COLS, 300, 101)
+    testing.expect_value(t, b.hscroll_detached, f64(0))
+    testing.expect_value(t, b.hscroll, 0)
+}
+
+// The detached column is bounded like the detached page: the callback cannot clamp (it has
+// no font and no pane rect), so the frame does, one notch of overshoot at most.
+@(test)
+test_hscroll_detached_bounds :: proc(t: ^testing.T) {
+    b := wide(300)
+    defer app.buffer_destroy(&b)
+    COLS :: 80
+
+    app.buffer_hscroll_by(&b, -50, 100) // left from home
+    testing.expect_value(t, b.hscroll, 0)
+
+    app.buffer_hscroll_by(&b, 5000, 100) // far past the end of the longest line
+    app.buffer_hscroll_apply(&b, COLS, 300, 50)
+    testing.expect_value(t, b.hscroll, 300 + app.HSCROLL_PAD - COLS + 1)
+}
+
+// A WHEEL-detached page holds its column too. The caret is only guaranteed on screen while
+// the vertical view follows it, and a column policy aimed at a line nobody can see would
+// slide the visible ones sideways for nothing — so the axes hold together, and the keystroke
+// that re-attaches one re-attaches both.
+@(test)
+test_hscroll_holds_while_page_detached :: proc(t: ^testing.T) {
+    b := wide(300)
+    defer app.buffer_destroy(&b)
+    COLS :: 80
+    app.doc_reset_cursor(&b.doc, app.Pos{1, 250}) // deep into the long line
+
+    app.buffer_hscroll_apply(&b, COLS, 300, 0)
+    at := b.hscroll
+    testing.expect(t, at > 0, "the policy followed the caret out along the line")
+
+    // The wheel scrolls the PAGE away. The column must not now chase a caret off screen.
+    app.buffer_scroll_by(&b, 60, 100)
+    app.buffer_hscroll_apply(&b, COLS, 5, 50) // only short lines drawn now
+    testing.expect_value(t, b.hscroll, 0) // bounded to what is there, not aimed at the caret
+
+    // …and the keystroke that re-attaches the page re-attaches the column with it.
+    app.buffer_scroll_apply(&b, 10, false, 101)
+    app.buffer_hscroll_apply(&b, COLS, 300, 101)
+    testing.expect_value(t, b.hscroll, at)
+}
+
+// A wholesale text swap settles BOTH axes at home: a reused scratch buffer must not smear
+// sideways from whatever the last file was scrolled to.
+@(test)
+test_hscroll_reset_on_set_text :: proc(t: ^testing.T) {
+    b := wide(300)
+    defer app.buffer_destroy(&b)
+    app.buffer_hscroll_by(&b, 120, 100)
+    app.buffer_set_text(&b, "fresh")
+    testing.expect_value(t, b.hscroll, 0)
+    testing.expect_value(t, b.hscroll_detached, f64(0))
+    testing.expect_value(t, b.hscroll_anim.to, f32(0))
+}

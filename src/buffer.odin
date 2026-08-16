@@ -14,6 +14,12 @@ Buffer :: struct {
     scroll:          int, // first visible line, the scroll TARGET (clamped at render)
     scroll_anim:     Anim, // visual top line tweening toward `scroll` (smooth scroll)
     scroll_detached: f64, // glfw time the wheel cut the view loose from the caret; 0 = following it
+    // The same three fields for the COLUMN axis (no soft wrap, so a long line runs off the
+    // right edge and this is how you reach it). Separate from the vertical set because the
+    // gestures are separate: Shift+wheel detaches sideways without touching the page.
+    hscroll:          int, // first visible column, the horizontal TARGET (clamped at render)
+    hscroll_anim:     Anim, // visual left column tweening toward `hscroll`
+    hscroll_detached: f64, // glfw time Shift+wheel cut the column loose from the caret
     dirty:           bool,
     final_newline:   bool, // did the file end in '\n'? preserved on save (POSIX round-trip)
     folds:           [dynamic]Fold, // collapsed blocks (Ctrl+Enter); see fold.odin
@@ -136,6 +142,9 @@ buffer_set_text :: proc(b: ^Buffer, text: string) {
     b.scroll = 0
     b.scroll_anim = {} // settled at the top; a reused scratch buffer won't smear from its old scroll
     b.scroll_detached = 0 // a wholesale text swap re-attaches the view to the caret
+    b.hscroll = 0
+    b.hscroll_anim = {} // …and settled at column 0, for the same reason
+    b.hscroll_detached = 0
     clear(&b.folds) // a wholesale text swap invalidates every fold range
     b.fold_nlines = len(b.lines)
 }
@@ -279,6 +288,7 @@ buffer_reload_keep_view :: proc(b: ^Buffer) -> bool {
     }
     head := b.cursors[b.primary].head
     scroll := b.scroll
+    hscroll := b.hscroll
     if !buffer_load(b, b.path) {
         return false
     }
@@ -286,6 +296,7 @@ buffer_reload_keep_view :: proc(b: ^Buffer) -> bool {
     col := clamp(head.col, 0, len(b.lines[line].text))
     doc_reset_cursor(&b.doc, {line = line, col = col})
     b.scroll = clamp(scroll, 0, max(0, len(b.lines) - 1))
+    b.hscroll = hscroll // bounded next frame, where the pane width is known
     return true
 }
 
@@ -503,6 +514,73 @@ buffer_scroll_apply :: proc(b: ^Buffer, rows: int, center: bool, last_input_at: 
 buffer_scroll_by :: proc(b: ^Buffer, delta: int, now: f64) {
     b.scroll = clamp(b.scroll + delta, 0, max(0, len(b.lines) - 1))
     b.scroll_detached = now
+}
+
+// --- the column axis ---
+//
+// There is no soft wrap: a long line runs off the right edge and is reached by moving the
+// window sideways instead. The three procs below mirror the vertical set exactly — target,
+// apply, and the wheel's by — so both axes detach, re-attach and animate under one set of
+// rules, and only the policy in the middle differs.
+
+// Columns of context the caret keeps between itself and either edge — "don't leave it on the
+// edge". At the right margin you can then see the few characters you are about to type over,
+// and at the left the start of the token you are walking back into, rather than the caret
+// butting against the clip with the text appearing one column at a time.
+HSCROLL_PAD :: 8
+
+// The target first COLUMN for a `cols`-wide text region. The vertical policy's twin, with one
+// deliberate difference: there is no MIDDLE mode. `scroll_mode: middle` pins what you follow to
+// the centre, which reads fine down a page — the rows either side stay put — but sideways it
+// slides the WHOLE file under every keystroke past the halfway column, and nothing on screen
+// holds still to read against. So the column axis is always the margin policy: hold while the
+// caret is inside the padded window, then move the minimum to put it back.
+//
+// The margin is halved out on a narrow pane. Two margins wider than the region between them
+// would each pull the opposite way, and the view would never settle on either.
+buffer_hscroll_target :: proc(left, col, cols: int) -> int {
+    if cols <= 0 {
+        return 0
+    }
+    pad := min(HSCROLL_PAD, (cols - 1) / 2)
+    l := max(0, left)
+    if col - pad < l {
+        return max(0, col - pad) // the clamp is also what snaps a near-home caret back to column 0
+    }
+    if col + pad > l + cols - 1 {
+        return col + pad - cols + 1
+    }
+    return l
+}
+
+// Settle this frame's column target — the one place b.hscroll is written per frame. `longest`
+// is the widest line the window is DRAWING, which is what bounds the view: past its end plus
+// the margin there is nothing to look at, and blank space is not a place to be scrolled to.
+//
+// **Call this after buffer_scroll_apply**, whose result it reads: the caret is only guaranteed
+// on screen while the VERTICAL view is following it, and a column policy aimed at a line nobody
+// can see would slide the visible ones sideways for nothing. So a wheel-detached page holds its
+// column too, and the keystroke that re-attaches one axis re-attaches both.
+buffer_hscroll_apply :: proc(b: ^Buffer, cols, longest: int, last_input_at: f64) {
+    if b.hscroll_detached > 0 && last_input_at > b.hscroll_detached {
+        b.hscroll_detached = 0
+    }
+    limit := max(0, longest + HSCROLL_PAD - cols + 1)
+    if b.hscroll_detached > 0 || b.scroll_detached > 0 {
+        b.hscroll = clamp(b.hscroll, 0, limit)
+        return
+    }
+    col := b.cursors[b.primary].head.col
+    b.hscroll = clamp(buffer_hscroll_target(b.hscroll, col, cols), 0, limit)
+}
+
+// Move the detached column by `delta` and stamp it — Shift+wheel's entry point. Only the
+// lower bound is applied: the callback has no font and no pane rect, so it cannot know how
+// wide a column is or how many fit, and buffer_hscroll_apply bounds the top next frame with
+// one notch of overshoot at most (as the vertical wheel does).
+buffer_hscroll_by :: proc(b: ^Buffer, delta: int, now: f64) {
+    b.hscroll = max(0, b.hscroll + delta)
+    b.hscroll_detached = now
 }
 
 // --- movement (no edits; the Doc ops wrap across line boundaries). select=true
