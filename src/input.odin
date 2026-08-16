@@ -1102,6 +1102,10 @@ config_run_install :: proc(a: ^App, opt: Install_Option) {
         cmd = fmt.tprintf("'%s' --install", self)
     case .Uninstall:
         cmd = fmt.tprintf("'%s' --uninstall", self)
+    case .DesktopAdd:
+        cmd = fmt.tprintf("'%s' --desktop add", self)
+    case .DesktopRemove:
+        cmd = fmt.tprintf("'%s' --desktop remove", self)
     }
     run_in_t1(a, cmd)
 }

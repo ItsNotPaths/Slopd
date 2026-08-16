@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Slopd. The icon IS the layout: two panes over a command line, with the block caret
+       in the left one. Colours are the shipped default theme (themes/default.theme):
+       bg #292828, fg #d4be98, accent #9253be, muted #928374. -->
+  <rect width="64" height="64" rx="13" fill="#292828"/>
+  <rect x="1.25" y="1.25" width="61.5" height="61.5" rx="11.75" fill="none" stroke="#504945" stroke-width="2.5"/>
+
+  <!-- left pane: text, with the block caret on the second line -->
+  <g fill="#d4be98">
+    <rect x="12" y="16" width="15" height="3" rx="1.5"/>
+    <rect x="12" y="30" width="11" height="3" rx="1.5"/>
+    <rect x="12" y="37" width="15" height="3" rx="1.5"/>
+  </g>
+  <rect x="12" y="22" width="6" height="4.5" rx="1" fill="#9253be"/>
+
+  <!-- the split -->
+  <rect x="31.25" y="14" width="1.5" height="28" fill="#504945"/>
+
+  <!-- right pane: the aux side, dimmer -->
+  <g fill="#928374">
+    <rect x="37" y="16" width="15" height="3" rx="1.5"/>
+    <rect x="37" y="23" width="11" height="3" rx="1.5"/>
+    <rect x="37" y="30" width="15" height="3" rx="1.5"/>
+    <rect x="37" y="37" width="9" height="3" rx="1.5"/>
+  </g>
+
+  <!-- the command line, with its prompt -->
+  <rect x="12" y="47" width="40" height="7" rx="2.5" fill="#32302f"/>
+  <rect x="15.5" y="49.5" width="3" height="2" rx="1" fill="#9253be"/>
+  <rect x="21" y="49.5" width="14" height="2" rx="1" fill="#d4be98"/>
+</svg>

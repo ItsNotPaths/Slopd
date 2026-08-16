@@ -1,0 +1,31 @@
+[Desktop Entry]
+Type=Application
+Name=Slopd
+GenericName=Text Editor
+Comment=A GPU text editor: two panes, a command line, no modes
+Exec=slopd
+TryExec=slopd
+Icon=slopd
+Terminal=false
+# Utility is the one main category; TextEditor is its subcategory. Adding Development
+# (also a main category) would list the app twice in a menu that groups by main category.
+Categories=Utility;TextEditor;
+Keywords=editor;text;code;odin;
+StartupNotify=true
+
+# The window's app-id, and the one string that ties a running window back to this entry.
+# Slopd sets it (APP_ID in src/main.odin: glfw.WAYLAND_APP_ID and glfw.X11_INSTANCE_NAME),
+# so the launcher shows the icon above on the running window instead of a fallback, and a
+# Hyprland windowrule can name us. It is the binary's name, deliberately: one spelling for
+# what you type, what `--install` writes, and what `hyprctl clients` reports.
+StartupWMClass=slopd
+
+# Still no MimeType. File associations are possible now that the window is matchable, but
+# they are a separate decision: an entry that claims text/* takes over the Open With list
+# for every editor on the machine, so it stays off until it is asked for.
+
+# THIS FILE IS A TEMPLATE. It is #load-ed into the binary (src/desktop.odin) and written to
+# ~/.local/share/applications by `slopd --desktop add`. That write replaces the two lines
+# above that say `slopd` with the ABSOLUTE path of the installed binary, because a desktop
+# entry is launched with the session's PATH, and ~/.local/bin is not always on it. The bare
+# name is what stands here so the file in the repo is a working entry on its own.

@@ -286,10 +286,15 @@ test_config_file_pane :: proc(t: ^testing.T) {
     _, ok := app.parse_file_pane("dolphin")
     testing.expect(t, !ok, "an unknown presentation must not parse")
 
+    // The default that stands is the SHIPPED one — load_config parses the baked-in
+    // slopd.config before it parses yours, so an unreadable value falls back to the line this
+    // repo ships (`file_pane: browser`), not to the struct floor underneath it. That is the
+    // point of the layering: what a binary with no config file does and what the shipped file
+    // says cannot drift apart.
     testing.expect(t, os.write_entire_file(path, transmute([]byte)string("file_pane: nonsense\n")) == nil)
     bad := app.load_config()
     defer app.config_destroy(&bad)
-    testing.expect_value(t, bad.file_pane, app.File_Pane.Ls) // the default stands
+    testing.expect_value(t, bad.file_pane, app.File_Pane.Browser)
 }
 
 // The terminal's Ctrl+C mapping: a file value, a junk value, and the Config pane row. The pane

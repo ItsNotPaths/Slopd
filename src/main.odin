@@ -16,13 +16,15 @@ GL_MINOR :: 3
 
 main :: proc() {
     // Headless CLI (`slopd --version`, `--health [lang]`, `--grammar <action> <lang>`,
-    // `--install` / `--uninstall` / `--where`, `--sysbus`) — handled before opening a window,
-    // then exit. These run FIRST, before the `--<path>` launch argument below is read, so a
-    // flag is never mistaken for a folder to open. `--sysbus` is the parked D-Bus stack's
-    // only entry point; the editor itself never touches a bus.
+    // `--install` / `--uninstall` / `--where`, `--desktop [add|remove]`, `--sysbus`) —
+    // handled before opening a window, then exit. These run FIRST, before the `--<path>`
+    // launch argument below is read, so a flag is never mistaken for a folder to open.
+    // `--sysbus` is the parked D-Bus stack's only entry point; the editor itself never
+    // touches a bus.
     if about_cli(os.args[1:]) ||
        grammar_cli(os.args[1:]) ||
        install_cli(os.args[1:]) ||
+       desktop_cli(os.args[1:]) ||
        sysbus_cli(os.args[1:]) {
         return
     }

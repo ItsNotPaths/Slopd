@@ -1,10 +1,14 @@
 # Slopd
 
 A GPU text editor in [Odin](https://odin-lang.org): two panes, a command line, no modes.
-iTree-sitter highlighting, real PTY terminals, an image viewer, one static ~1.9MB binary.
+iTree-sitter highlighting, real PTY terminals, an image viewer, one static ~2.4MB binary.
 Linux, OpenGL 3.3.
 
 ![Slopd](imgs/hero.png)
+
+```sh
+curl -fsSL https://github.com/ItsNotPaths/Slopd/releases/latest/download/install.sh | sh
+```
 
 ## Build
 
@@ -129,14 +133,25 @@ want them back in step (`^h` in the file panes is those two builtins in one keys
 
 ## Install
 
-Slopd runs two ways, and where the binary sits decides which. **Unzip it anywhere** and it is
-portable: `slopd.config`, `themes/`, `grammars/` and `perf.log` all sit beside the binary, and
-moving the folder moves its whole world. **Install it** and the files take their native places.
+```sh
+curl -fsSL https://github.com/ItsNotPaths/Slopd/releases/latest/download/install.sh | sh
+```
+
+The release is **one binary**, and everything it needs is inside it: the default config, the
+language registry, the default theme, the launcher entry and its icon, the README and the
+licence. The script downloads it to `~/.local/bin/slopd` and asks whether to add Slopd to your
+application list. On Omarchy it also offers a Hyprland window rule. It writes nothing else —
+pass `--yes` to take every default, or `--no-desktop` / `--no-omarchy` to skip a step.
+
+You can also just download the binary and run it. Either way Slopd starts **portable**: it
+runs on the defaults baked in, and **cannot save a setting, because it has no config file.**
+The Config pane's first row says so, and the fix is on it:
 
 ```sh
-slopd --install      # copy this binary to ~/.local/bin/slopd, and move its files in
-slopd --uninstall    # remove that copy; settings, themes and grammars are kept
+slopd --install      # write slopd.config out, create themes/ and grammars/
+slopd --uninstall    # remove the ~/.local/bin copy; settings and grammars are kept
 slopd --where        # which mode, and every path in use
+slopd --desktop add  # the application list, on its own (`remove` takes it back off)
 ```
 
 | | |
@@ -144,12 +159,24 @@ slopd --where        # which mode, and every path in use
 | `~/.local/bin/slopd` | the binary |
 | `~/.config/slopd/slopd.config` | settings (`$XDG_CONFIG_HOME` if you set it) |
 | `~/.local/share/slopd/` | `themes/`, `grammars/`, `perf.log` (`$XDG_DATA_HOME` if you set it) |
+| `~/.local/share/applications/slopd.desktop` | the launcher entry, with the icon beside it in `icons/hicolor/` |
+
+Slopd never creates `slopd.config` on its own — `--install` does, once. **A build folder is
+different:** a binary with a `slopd.config` beside it is portable and writes there, so
+`./release.sh --local` gives you a `build/` you can change settings in without touching
+`~/.config`. Put the binary somewhere you cannot write (`/usr/bin`) and it reads what is
+there and writes nothing at all.
 
 ## Config
 
 `slopd.config`, simple `key: value` with `#` comments. Editing a setting in the Config pane
 rewrites its line in place and leaves the comment alone. No setting can point outside Slopd's
 own directories.
+
+The file below is baked into the binary, and it is what `--install` writes out. It is also
+**the defaults themselves** — Slopd reads its own copy before it reads yours — so a value here
+and the behaviour of a binary with no config file cannot drift apart. Delete a line from your
+file and this one applies again.
 
 | key | values | |
 |---|---|---|
@@ -205,7 +232,8 @@ slopd --health [lang]        # ✓/✗ table
 |---|---|
 | `--version` / `-v` | build version |
 | `--<path>` | launch there: a directory becomes the workspace (`slopd --~/code/thing`), a file opens with its folder as the workspace (`slopd --/etc/fstab`) |
-| `--install` / `--uninstall` | copy this binary to `~/.local/bin/slopd` and move its files to the XDG folders / remove that copy, keeping the files |
+| `--install` / `--uninstall` | copy this binary to `~/.local/bin/slopd` and write its config and folders / remove that copy, keeping the files |
+| `--desktop [add\|remove]` | file `slopd.desktop` and its icon under `~/.local/share`, or take them back off |
 | `--where` | the mode in force, and every path in use |
 | `--util` | launch into Full on the aux pane (filetree fills the window) |
 | `--perflog` | append per-second frame timings to `perf.log` (in the data folder) |

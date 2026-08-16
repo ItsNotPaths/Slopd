@@ -17,11 +17,18 @@ LangStatus :: struct {
 // What Slopd's own install row offers. The same shape as a language's options, and for the
 // same reason: a program you can install is a thing with an install state, and the pane
 // should not have two ways of saying so. `Where` is the harmless one, so it comes first.
+//
+// The launcher entry is its own pair, because it is its own question. Installing puts a
+// binary where a SHELL finds it; the entry puts Slopd where a LAUNCHER finds it, and neither
+// implies the other — so the row offers whichever of the two the machine does not have,
+// exactly as it offers install or uninstall.
 Install_Option :: enum {
     Where,
     Install,
     Reinstall,
     Uninstall,
+    DesktopAdd,
+    DesktopRemove,
 }
 
 // The dropdown options for a language. Health is always offered; the install state decides
@@ -295,7 +302,8 @@ lang_option_label :: proc(o: LangOption) -> string {
 
 // The options on Slopd's own row, written into buf in display order — the same contract as
 // lang_options. An installed copy can be replaced or removed; anything else can be installed.
-install_options :: proc(m: Install_Mode, buf: []Install_Option) -> []Install_Option {
+// `desktop` is desktop_present(), which decides the launcher pair the same way.
+install_options :: proc(m: Install_Mode, desktop: bool, buf: []Install_Option) -> []Install_Option {
     n := 0
     buf[n] = .Where;n += 1
     if m == .Installed {
@@ -304,15 +312,18 @@ install_options :: proc(m: Install_Mode, buf: []Install_Option) -> []Install_Opt
     } else {
         buf[n] = .Install;n += 1
     }
+    buf[n] = desktop ? .DesktopRemove : .DesktopAdd;n += 1
     return buf[:n]
 }
 
 install_option_label :: proc(o: Install_Option) -> string {
     switch o {
-    case .Where:     return "where are my files"
-    case .Install:   return "install to ~/.local/bin"
-    case .Reinstall: return "reinstall (copy this build over it)"
-    case .Uninstall: return "uninstall (settings are kept)"
+    case .Where:         return "where are my files"
+    case .Install:       return "install to ~/.local/bin"
+    case .Reinstall:     return "reinstall (writes any missing config or folder)"
+    case .Uninstall:     return "uninstall (settings are kept)"
+    case .DesktopAdd:    return "add to the application list"
+    case .DesktopRemove: return "remove from the application list"
     }
     return ""
 }
@@ -370,7 +381,7 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
     )
     if cp.open == .Install {
         buf: [len(Install_Option)]Install_Option
-        for o, oi in install_options(install_mode(), buf[:]) {
+        for o, oi in install_options(install_mode(), desktop_present(), buf[:]) {
             append(&rows, config_option_row(ROW_INSTALL, oi, install_option_label(o)))
         }
     }
@@ -506,7 +517,7 @@ config_choose :: proc(a: ^App) {
     case .None:
     case .Install:
         buf: [len(Install_Option)]Install_Option
-        opts := install_options(install_mode(), buf[:])
+        opts := install_options(install_mode(), desktop_present(), buf[:])
         if cp.opt_sel >= 0 && cp.opt_sel < len(opts) {
             config_run_install(a, opts[cp.opt_sel])
         }
@@ -542,7 +553,7 @@ config_dropdown_move :: proc(a: ^App, delta: int) {
             config_pane_move(cp, step)
         case .Install:
             buf: [len(Install_Option)]Install_Option
-            opts := install_options(install_mode(), buf[:])
+            opts := install_options(install_mode(), desktop_present(), buf[:])
             cp.opt_sel = clamp(cp.opt_sel + step, 0, max(0, len(opts) - 1))
         case .Setting:
             opts := setting_options(a, Setting(cp.open_idx))

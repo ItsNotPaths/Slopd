@@ -61,13 +61,17 @@ if [ $DO_LOCAL -eq 1 ]; then
     # sections to begin with, so --strip-all costs no debuggability that this build had.
     # release.yml already strips; do it here too so a local build matches the download.
     strip --strip-all "$RELEASE_DIR/$BIN_NAME"
-    # The release is the BINARY plus its config, and nothing else. The language registry,
-    # the default theme, the README and the LICENSE are all #load-ed into the executable
-    # (`readme` / `license` in the command line open the last two). themes/ and grammars/
-    # are user-added, created on first use — a language is installed from the Config pane
-    # (cf) or `slopd --grammar install`, which keeps the dist tiny. This folder is a
-    # PORTABLE install: it runs from here, files beside the binary, until `slopd --install`
-    # copies it to ~/.local/bin and moves those files to the XDG folders (see install.odin).
+    # THE PUBLISHED RELEASE IS THE BINARY ALONE — the language registry, the default theme,
+    # the default slopd.config, the launcher entry and its icon, the README and the LICENSE
+    # are all #load-ed into the executable (`readme` / `license` in the command line open the
+    # last two). themes/ and grammars/ are created by `slopd --install`; a language is built
+    # from the Config pane (cf) or `slopd --grammar install`.
+    #
+    # A LOCAL build folder gets one extra file the download does not: slopd.config. That is
+    # what makes build/ a working PORTABLE install — settings you change while testing land
+    # in this folder and stay out of ~/.config, and deleting the folder takes them with it.
+    # A downloaded binary has no such file and cannot save a setting until it is installed;
+    # to reproduce THAT here, delete this copy.
     [ -f "$PROJECT_DIR/slopd.config" ]  && cp "$PROJECT_DIR/slopd.config"  "$RELEASE_DIR/" || true
     echo "==> Local done: $RELEASE_DIR"
 fi

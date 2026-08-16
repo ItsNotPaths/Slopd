@@ -145,17 +145,28 @@ test_install_options :: proc(t: ^testing.T) {
     buf: [len(app.Install_Option)]app.Install_Option
 
     for m in ([]app.Install_Mode{.Portable, .ReadOnly}) {
-        opts := app.install_options(m, buf[:])
-        testing.expect_value(t, len(opts), 2)
+        opts := app.install_options(m, false, buf[:])
+        testing.expect_value(t, len(opts), 3)
         testing.expect_value(t, opts[0], app.Install_Option.Where)
         testing.expect_value(t, opts[1], app.Install_Option.Install)
     }
 
-    installed := app.install_options(.Installed, buf[:])
-    testing.expect_value(t, len(installed), 3)
+    installed := app.install_options(.Installed, false, buf[:])
+    testing.expect_value(t, len(installed), 4)
     testing.expect_value(t, installed[0], app.Install_Option.Where)
     testing.expect_value(t, installed[1], app.Install_Option.Reinstall)
     testing.expect_value(t, installed[2], app.Install_Option.Uninstall)
+
+    // The launcher pair is LAST and is exactly one option: whichever of add / remove the
+    // machine does not already have. It does not vary with the install mode — a portable
+    // build can be in the application list, and an installed copy can be absent from it.
+    for m in app.Install_Mode {
+        without := app.install_options(m, false, buf[:])
+        testing.expect_value(t, without[len(without) - 1], app.Install_Option.DesktopAdd)
+        with := app.install_options(m, true, buf[:])
+        testing.expect_value(t, len(with), len(without))
+        testing.expect_value(t, with[len(with) - 1], app.Install_Option.DesktopRemove)
+    }
 
     for o in app.Install_Option {
         testing.expect(t, app.install_option_label(o) != "")

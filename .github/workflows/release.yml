@@ -81,16 +81,19 @@ jobs:
       - name: Stage artifacts
         run: |
           mkdir -p dist
-          # The binary plus its config, and nothing else — the language registry, the
-          # default theme, the README and the LICENSE are all baked into the executable
-          # (`readme` / `license` open the last two in the editor). themes/ and grammars/
-          # are user-added and created next to the binary on first use.
+          # THE RELEASE IS ONE BINARY. The language registry, the default theme, the default
+          # slopd.config, the launcher entry and its icon, the README and the LICENSE are all
+          # #load-ed into the executable, so there is nothing to ship beside it and nothing a
+          # user can lose by moving it. `slopd --install` writes the config out; `--desktop
+          # add` writes the launcher entry out. themes/ and grammars/ the install creates.
           cp "$BIN_NAME" dist/
-          cp slopd.config dist/
+          # install.sh rides along so the one-liner in the README can point at a RELEASE
+          # rather than at whatever is on main.
+          cp install.sh dist/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-zip
+          name: linux-assets
           path: dist
 
   release:
@@ -101,13 +104,16 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: linux-zip
-          path: linux-zip
+          name: linux-assets
+          path: dist
 
-      - name: Package
-        run: |
-          (cd linux-zip && zip -r "../${BIN_NAME}-linux.zip" .)
-
+      # No archive step. Both assets are uploaded RAW, because both are downloaded one at a
+      # time by a script that has nothing but curl:
+      #   .../releases/latest/download/slopd       the binary, chmod +x and run
+      #   .../releases/latest/download/install.sh  the one-liner in the README
+      # A zip would add an `unzip` dependency to an installer whose whole point is not
+      # needing one.
+      #
       # This job never checks out, so gh has no git remote to infer the repo from:
       # GH_REPO supplies it, and --target pins the new tag to the dispatched commit
       # rather than whatever the default branch happens to point at.
@@ -116,12 +122,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          chmod +x dist/install.sh
           PRERELEASE_FLAG=""
           if [ "${{ inputs.prerelease }}" = "true" ]; then
             PRERELEASE_FLAG="--prerelease"
           fi
           gh release create "${{ inputs.version }}" \
-              "${BIN_NAME}-linux.zip" \
+              "dist/${BIN_NAME}" \
+              "dist/install.sh" \
               --target "${{ github.sha }}" \
               --title "${{ inputs.version }}" \
               --notes "${{ inputs.notes }}" \

@@ -124,6 +124,20 @@ config_strip_comment :: proc(line: string) -> string {
     return strings.trim_space(body)
 }
 
+// The shipped slopd.config, #load-ed into the binary the way the README, the licence and the
+// default theme are. It is THE defaults — not a copy of them — because load_config parses it
+// before it parses yours, so a value can never drift between the file this repo ships and the
+// behaviour a binary with no config file has. It is also what `--install` writes out, and the
+// only place a slopd.config ever comes from.
+DEFAULT_CONFIG_SRC := string(#load("../slopd.config"))
+
+// The settings, in three layers, each overriding the last:
+//
+//   1. the struct below   a floor, for anything the shipped file does not name (and for the
+//                         day a key is deleted from it). Never user-visible on its own.
+//   2. DEFAULT_CONFIG_SRC the shipped defaults, baked into this binary. A downloaded binary
+//                         with no config file gets exactly these.
+//   3. your slopd.config  whichever one the mode chose, if it exists.
 load_config :: proc() -> Config {
     cfg := Config {
         indent          = {.Spaces, 4}, // matches the project's 4-space convention
@@ -143,15 +157,23 @@ load_config :: proc() -> Config {
         conflict_stage  = true, // and stage the answer in the CL, rather than only marking it
         mouse           = true, // pointer input on; it is purely additive to the keyboard
         hover           = true, // the tint is deliberately faint — see HOVER_MIX (render.odin)
-        file_pane       = .Ls, // the browser is opt-in: the dired listing is what Slopd has always been
+        file_pane       = .Ls,
         file_view       = .List,
         file_icons      = true, // free where the icon face was vendored, and inert where it wasn't
     }
-    src, _ := os.read_entire_file_from_path(config_file(), context.temp_allocator)
-    if src == nil {
-        return cfg
+    config_parse(DEFAULT_CONFIG_SRC, &cfg)
+    if src, _ := os.read_entire_file_from_path(config_file(), context.temp_allocator); src != nil {
+        config_parse(string(src), &cfg)
     }
-    rest := string(src)
+    return cfg
+}
+
+// Read `src` over `cfg`: every key it names is applied, every key it does not is left as it
+// was. Run twice per launch (the baked-in defaults, then your file), which is why the two
+// OWNED strings free what they replace — a second pass would otherwise leak the first's.
+@(private = "file")
+config_parse :: proc(src: string, cfg: ^Config) {
+    rest := src
     for line in strings.split_lines_iterator(&rest) {
         s := config_strip_comment(line)
         if len(s) == 0 {
@@ -170,6 +192,7 @@ load_config :: proc() -> Config {
         case "theme":
             // Stored as a raw token (a themes/ name, or "default"); it's resolved
             // to a file path at load time by theme_resolve.
+            delete(cfg.theme_path)
             cfg.theme_path = strings.clone(val)
         case "indent":
             if ind, ok := parse_indent(val); ok {
@@ -234,7 +257,6 @@ load_config :: proc() -> Config {
             if v, ok := parse_on_off(val); ok {cfg.file_icons = v}
         }
     }
-    return cfg
 }
 
 // "tab" | "spaces2" | "spaces4" | "spaces8" ...
@@ -721,40 +743,78 @@ on_off :: proc(b: bool) -> string {
 // the same line, would never read it back.
 config_set :: proc(key, val: string) -> bool {
     if !config_writable() {
-        return false // read-only: the binary sits somewhere we may not write (install.odin)
+        // Either the binary sits somewhere we may not write, or there is no config file to
+        // write to and Slopd does not make one — `--install` does. See install.odin.
+        return false
     }
     path := config_file()
+    src := os.read_entire_file_from_path(path, context.temp_allocator) or_else nil
+    out := config_rewrite(string(src), key, val, context.temp_allocator)
+    ensure_parent(path)
+    return os.write_entire_file(path, transmute([]byte)out) == nil
+}
 
-    b := strings.builder_make(context.temp_allocator)
+// The rewrite itself, over TEXT rather than a file: `src` with `key` set to `val`. Pure, so
+// the suite can check the comment column and the section rule without a file, and so the
+// baked-in default can be adjusted on its way out (config_default_text) by the same rule the
+// Config pane edits by. An empty `src` yields the one line.
+config_rewrite :: proc(src, key, val: string, allocator := context.allocator) -> string {
+    b := strings.builder_make(0, len(src) + len(key) + len(val) + 8, allocator)
     replaced := false
-    if src := os.read_entire_file_from_path(path, context.temp_allocator) or_else nil; src != nil {
-        rest := string(src)
-        for raw in strings.split_lines_iterator(&rest) {
-            // A comment-only line leaves body blank, so it can never match a key.
-            body, comment := config_split_comment(raw)
-            s := strings.trim_space(body)
-            if !replaced && config_is_section(s) {
-                config_write_line(&b, key, val, "", 0)
-                strings.write_byte(&b, '\n') // keep the blank line that sets the block apart
-                replaced = true
-            }
-            if !replaced {
-                if colon := strings.index_byte(s, ':'); colon > 0 && strings.trim_space(s[:colon]) == key {
-                    config_write_line(&b, key, val, comment, len(body))
-                    replaced = true
-                    continue
-                }
-            }
-            strings.write_string(&b, raw)
-            strings.write_byte(&b, '\n')
+    rest := src
+    for raw in strings.split_lines_iterator(&rest) {
+        // A comment-only line leaves body blank, so it can never match a key.
+        body, comment := config_split_comment(raw)
+        s := strings.trim_space(body)
+        if !replaced && config_is_section(s) {
+            config_write_line(&b, key, val, "", 0)
+            strings.write_byte(&b, '\n') // keep the blank line that sets the block apart
+            replaced = true
         }
+        if !replaced {
+            if colon := strings.index_byte(s, ':'); colon > 0 && strings.trim_space(s[:colon]) == key {
+                config_write_line(&b, key, val, comment, len(body))
+                replaced = true
+                continue
+            }
+        }
+        strings.write_string(&b, raw)
+        strings.write_byte(&b, '\n')
     }
     if !replaced {
         config_write_line(&b, key, val, "", 0)
     }
+    return strings.to_string(b)
+}
+
+// --- the config file `--install` writes ---
+
+// Write the baked-in default config to `path`. **This is the only place a slopd.config is
+// created.** Nothing else does: a settings change writes to a file that already exists, or
+// reports that it cannot (config_writable). Refuses to overwrite, because the one thing an
+// install must never do is roll back settings you have been editing.
+config_default_write :: proc(path: string) -> bool {
+    if path == "" || os.exists(path) {
+        return false
+    }
+    text := config_default_text(os_id(context.temp_allocator), context.temp_allocator)
     ensure_parent(path)
-    err := os.write_entire_file(path, transmute([]byte)strings.to_string(b))
-    return err == nil
+    return os.write_entire_file(path, transmute([]byte)text) == nil
+}
+
+// The default config's text for a given OS, kept pure so the suite can ask for Omarchy's
+// while running anywhere. Every distro gets the same file with one exception:
+//
+//   omarchy   term_ctrl_c: copy. Omarchy binds a desktop-wide SUPER+C, and the compositor
+//             tags whole WINDOWS — it cannot see that one pane of ours is a terminal, so the
+//             chord arrives as a plain ^C. In `copy` that chord copies here as it does
+//             everywhere else on the desktop; the interrupt moves to ^Shift+C. The shipped
+//             file documents both halves of the swap at the line this replaces.
+config_default_text :: proc(id: string, allocator := context.allocator) -> string {
+    if id != OS_ID_OMARCHY {
+        return strings.clone(DEFAULT_CONFIG_SRC, allocator)
+    }
+    return config_rewrite(DEFAULT_CONFIG_SRC, "term_ctrl_c", "copy", allocator)
 }
 
 // Writes one `key: value` line, then `comment` (with its '#') padded out to `col` — where it sat

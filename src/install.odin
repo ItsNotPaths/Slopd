@@ -8,12 +8,14 @@ import "core:sys/linux"
 
 // Where Slopd's files live, and the install / uninstall the Config pane's first row drives.
 //
-// Slopd is ONE binary that carries its own README, licence, language registry and default
-// theme. What it cannot carry is what you change: slopd.config, the themes/ you add, the
-// grammars/ you install. Those sit in ONE of two places, and the running binary's own
-// location decides which — never a search path, an environment variable, or a setting:
+// Slopd is ONE binary that carries its own README, licence, language registry, default theme,
+// default config and launcher entry. THE RELEASE IS THAT BINARY AND NOTHING ELSE: download it,
+// run it, and every default is already inside. What the binary cannot carry is what you
+// CHANGE: slopd.config, the themes/ you add, the grammars/ you install. Those sit in ONE of
+// two places, and the running binary's own location decides which — never a search path, an
+// environment variable, or a setting:
 //
-//   Portable   the folder beside the binary is writable — an unzipped release, or a build
+//   Portable   the folder beside the binary is writable — a downloaded binary, or a build
 //              folder. Everything lives there; move the folder and its world moves with it.
 //   Installed  the binary IS the copy `--install` made, at ~/.local/bin/slopd. The files
 //              move to the XDG folders, because a bin folder holds programs, not their data.
@@ -23,6 +25,12 @@ import "core:sys/linux"
 //
 // **There is still no search path.** A mode picks one directory per kind of file and reads
 // and writes only there, so what the pane shows and what the disk holds cannot disagree.
+//
+// **Slopd never CREATES slopd.config on its own — only `--install` writes it.** A lone binary
+// with no config file behaves exactly as the baked-in default says (load_config parses it),
+// but a settings change cannot be saved, and the Config pane's first row says so in as many
+// words. One rule covers the download you have not installed yet, the config you deleted, and
+// the copy someone put in /usr/bin: a setting is saved to a file that EXISTS, or not at all.
 
 Install_Mode :: enum {
     Portable,
@@ -118,7 +126,14 @@ install_config_dir :: proc(allocator := context.allocator) -> string {
 // installed. Config and data are split because that is the split the folders themselves make:
 // one is yours to edit, the other is Slopd's to fill.
 install_data_dir :: proc(allocator := context.allocator) -> string {
-    return install_subdir(xdg_dir("XDG_DATA_HOME", ".local/share", context.temp_allocator), allocator)
+    return install_subdir(xdg_data_home(context.temp_allocator), allocator)
+}
+
+// $XDG_DATA_HOME, else ~/.local/share — the ROOT of it, not Slopd's folder inside it. The
+// launcher entry and its icon go in the SHARED applications/ and icons/ trees there rather
+// than under slopd/, because that is where a launcher looks (see desktop.odin).
+xdg_data_home :: proc(allocator := context.allocator) -> string {
+    return xdg_dir("XDG_DATA_HOME", ".local/share", allocator)
 }
 
 @(private = "file")
@@ -127,6 +142,31 @@ install_subdir :: proc(base: string, allocator := context.allocator) -> string {
         return strings.clone("", allocator)
     }
     return filepath.join({base, INSTALL_BIN}, allocator) or_else strings.clone("", allocator)
+}
+
+// --- which distribution this is ---
+
+// The one distribution Slopd changes a default for, and the reason is a KEY BINDING, not a
+// package manager: Omarchy binds SUPER+C desktop-wide (see config_default_text).
+OS_ID_OMARCHY :: "omarchy"
+
+// /etc/os-release's `ID=`, lower case, or "" where the file is missing or has no ID. The
+// field os-release calls "a lower-case string identifying the operating system" — the one
+// name a machine answers to. `ID_LIKE` is deliberately not read: a family tells you which
+// package manager to name, and Slopd installs no packages.
+os_id :: proc(allocator := context.allocator) -> string {
+    src := os.read_entire_file_from_path("/etc/os-release", context.temp_allocator) or_else nil
+    rest := string(src)
+    for line in strings.split_lines_iterator(&rest) {
+        if !strings.has_prefix(line, "ID=") {
+            continue
+        }
+        // The value may be quoted ("omarchy") or bare (omarchy); os-release allows both.
+        v := strings.trim_space(line[len("ID="):])
+        v = strings.trim(v, `"'`)
+        return strings.to_lower(v, allocator)
+    }
+    return strings.clone("", allocator)
 }
 
 // --- resolving one file ---
@@ -221,12 +261,26 @@ dir_writable :: proc(dir: string) -> bool {
     return linux.access(c, linux.W_OK) == .NONE
 }
 
-// Whether Slopd may write its own files at all. False only in ReadOnly, where every write
-// would fail with EACCES anyway: refusing early keeps a half-written config off the disk and
-// gives the Config pane one thing to say. The test seam counts as writable — the suite's
-// override is a path the test owns (see config_path_override).
+// Whether a settings change can be SAVED. Two ways it cannot be:
+//
+//   ReadOnly       every write would fail with EACCES anyway. Refusing early keeps a
+//                  half-written config off the disk.
+//   no config file Slopd does not create one — `--install` does, once, in the place the mode
+//                  chose. A lone downloaded binary is the ordinary case here: it runs on the
+//                  baked-in defaults, and installing is what gives you a file to change them
+//                  in. Deleting your config puts you back in the same state, which is the
+//                  point of having one rule rather than a special case per mode.
+//
+// The test seam counts as writable — the suite's override is a path the test owns and is
+// free to create (see config_path_override).
 config_writable :: proc() -> bool {
-    return config_path_override != "" || install_mode() != .ReadOnly
+    if config_path_override != "" {
+        return true
+    }
+    if install_mode() == .ReadOnly {
+        return false
+    }
+    return os.exists(config_asset("slopd.config", context.temp_allocator))
 }
 
 // Create the directory a file is about to be written into. A no-op in Portable mode (the
@@ -240,9 +294,14 @@ ensure_parent :: proc(path: string) {
 
 // --- install / uninstall ---
 
-// Copy the running binary to ~/.local/bin/slopd, create the XDG folders, and move a portable
-// folder's files in beside them. Idempotent: run it again after a rebuild and it replaces the
-// installed copy, leaving every file it already migrated alone.
+// Copy the running binary to ~/.local/bin/slopd, create the XDG folders, and lay the config
+// down in the one place it is ever created. Idempotent: run it again after a rebuild and it
+// replaces the installed copy, leaving every file it already wrote alone.
+//
+// **This is also what a downloaded binary still needs.** install.sh puts the binary on your
+// PATH and stops there, so the copy step below finds itself already in place and says so —
+// the work that remains is the config and the folders, which is why the Config pane's Install
+// row is not a no-op on a machine where slopd already runs.
 //
 // The copy is staged and renamed rather than written in place, because writing over a binary
 // that is RUNNING fails with ETXTBSY — a rename does not, since the running process keeps the
@@ -254,11 +313,18 @@ install_run :: proc() -> (ok: bool, msg: string) {
         return false, "install: no $HOME — nowhere to install to"
     }
 
-    for dir in ([?]string {
+    data := install_data_dir(context.temp_allocator)
+    dirs := [?]string {
         install_bin_dir(context.temp_allocator),
         install_config_dir(context.temp_allocator),
-        install_data_dir(context.temp_allocator),
-    }) {
+        data,
+        // themes/ and grammars/ are created EMPTY rather than on first use, so the folders
+        // an install talks about are folders you can open. Both are yours to fill: a theme
+        // is a file you drop in, a grammar is what `--grammar install` builds.
+        filepath.join({data, "themes"}, context.temp_allocator) or_else "",
+        filepath.join({data, "grammars"}, context.temp_allocator) or_else "",
+    }
+    for dir in dirs {
         if err := os.make_directory_all(dir); err != nil && !os.exists(dir) {
             return false, fmt.tprintf("install: cannot create %s (%v)", dir, err)
         }
@@ -280,16 +346,26 @@ install_run :: proc() -> (ok: bool, msg: string) {
         fmt.sbprintfln(&b, "  %s -> %s", src, dst)
     }
 
-    // Move the portable folder's files in. Only what is MISSING is copied, so a reinstall
-    // from a build folder never overwrites the settings you have been editing.
+    // The config, in the one place it is ever created. Two sources, in this order, and only
+    // where the target has none — a reinstall after a rebuild must not roll your settings
+    // back, so an existing file is left exactly as it is:
+    //
+    //   1. the portable folder's own slopd.config, if you are installing FROM one. That is
+    //      the file you have been editing, and it moves in with you.
+    //   2. the copy baked into this binary. This is the ordinary path: the release is one
+    //      binary with no file beside it.
     from := exe_dir(context.temp_allocator)
-    if cfg := filepath.join({from, "slopd.config"}, context.temp_allocator) or_else ""; copy_missing(
-        install_config_dir(context.temp_allocator),
-        cfg,
-    ) {
-        fmt.sbprintfln(&b, "  slopd.config -> %s", install_config_dir(context.temp_allocator))
+    cfgdir := install_config_dir(context.temp_allocator)
+    cfgdst := filepath.join({cfgdir, "slopd.config"}, context.temp_allocator) or_else ""
+    beside := filepath.join({from, "slopd.config"}, context.temp_allocator) or_else ""
+    if copy_missing(cfgdir, beside) {
+        fmt.sbprintfln(&b, "  slopd.config -> %s (moved in from %s)", cfgdst, from)
+    } else if config_default_write(cfgdst) {
+        fmt.sbprintfln(&b, "  slopd.config -> %s (defaults, from the binary)", cfgdst)
+        if os_id(context.temp_allocator) == OS_ID_OMARCHY {
+            fmt.sbprintfln(&b, "    omarchy: term_ctrl_c: copy — its SUPER+C reaches a terminal pane as a plain ^C")
+        }
     }
-    data := install_data_dir(context.temp_allocator)
     for name in ([?]string{"themes", "grammars"}) {
         srcdir := filepath.join({from, name}, context.temp_allocator) or_else ""
         dstdir := filepath.join({data, name}, context.temp_allocator) or_else ""
@@ -298,8 +374,8 @@ install_run :: proc() -> (ok: bool, msg: string) {
         }
     }
 
-    fmt.sbprintfln(&b, "  config:   %s", install_config_dir(context.temp_allocator))
-    fmt.sbprintfln(&b, "  data:     %s", install_data_dir(context.temp_allocator))
+    fmt.sbprintfln(&b, "  config:   %s", cfgdir)
+    fmt.sbprintfln(&b, "  data:     %s", data)
     if !on_path(install_bin_dir(context.temp_allocator)) {
         fmt.sbprintfln(
             &b,
@@ -338,16 +414,27 @@ install_remove :: proc() -> (ok: bool, msg: string) {
 // I actually editing?". Temp-allocated.
 install_where :: proc() -> string {
     b := strings.builder_make(context.temp_allocator)
+    cfg := config_asset("slopd.config", context.temp_allocator)
+    entry := desktop_entry_path(context.temp_allocator)
     fmt.sbprintfln(&b, "mode:      %s", install_mode_label(install_mode()))
     fmt.sbprintfln(&b, "binary:    %s", exe_path(context.temp_allocator))
-    fmt.sbprintfln(&b, "config:    %s", config_asset("slopd.config", context.temp_allocator))
+    fmt.sbprintfln(&b, "config:    %s%s", cfg, os.exists(cfg) ? "" : "   (not there yet)")
     fmt.sbprintfln(&b, "themes:    %s", data_asset("themes", context.temp_allocator))
     fmt.sbprintfln(&b, "grammars:  %s", data_asset("grammars", context.temp_allocator))
+    fmt.sbprintfln(&b, "launcher:  %s", desktop_present() ? entry : "not in the application list")
     if install_mode() == .ReadOnly {
         fmt.sbprintfln(
             &b,
             "\n%s cannot be written, so no setting can be saved.\nInstall a copy that can: %s --install",
             exe_dir(context.temp_allocator),
+            exe_path(context.temp_allocator),
+        )
+    } else if !os.exists(cfg) {
+        // The state a downloaded binary starts in. It RUNS on the defaults baked into it —
+        // nothing is missing — but a settings change has no file to land in until you install.
+        fmt.sbprintfln(
+            &b,
+            "\nThere is no config file, so no setting can be saved. Slopd is running on the\ndefaults baked into the binary. Write them out: %s --install",
             exe_path(context.temp_allocator),
         )
     }
@@ -363,8 +450,10 @@ install_mode_label :: proc(m: Install_Mode) -> string {
     return ""
 }
 
-// What the Config pane's install row shows in its value column: the mode, and the place it
-// chose — enough to tell a build folder from an installed copy without opening a terminal.
+// What the Config pane's install row shows in its value column: the mode, the place it chose,
+// and — when there is one — the reason nothing below this row can be saved. It is the first
+// row of the pane so that this reason sits ABOVE the settings it applies to, rather than
+// being discovered one silently-unsaved setting at a time.
 // Always a fresh string in `allocator`, since the row it feeds outlives every temp path here.
 install_state_text :: proc(allocator := context.allocator) -> string {
     where_: string
@@ -377,6 +466,11 @@ install_state_text :: proc(allocator := context.allocator) -> string {
     short := home_abbrev(where_, context.temp_allocator)
     if install_mode() == .ReadOnly {
         return fmt.aprintf("read-only · %s · nothing can be saved", short, allocator = allocator)
+    }
+    if !config_writable() {
+        // Running on the baked-in defaults, with no file to write a change to. `install`
+        // below is what makes one, so the row names the fix as well as the state.
+        return fmt.aprintf("%s · %s · no config file — install to save settings", install_mode_label(install_mode()), short, allocator = allocator)
     }
     return fmt.aprintf("%s · %s", install_mode_label(install_mode()), short, allocator = allocator)
 }
