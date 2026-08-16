@@ -190,8 +190,8 @@ config_parse :: proc(src: string, cfg: ^Config) {
         val := strings.trim_space(s[colon + 1:])
         switch key {
         case "theme":
-            // Stored as a raw token (a themes/ name, or "default"); it's resolved
-            // to a file path at load time by theme_resolve.
+            // Stored as a raw token (a themes/ name, "default", or "omarchy");
+            // theme_load turns it into a palette at load time.
             delete(cfg.theme_path)
             cfg.theme_path = strings.clone(val)
         case "indent":
@@ -300,6 +300,21 @@ config_file :: proc() -> string {
     return config_asset("slopd.config", context.temp_allocator)
 }
 
+// The one way from a theme config token to a live Theme:
+//   "omarchy"  -> the desktop palette Omarchy keeps (see theme_omarchy.odin)
+//   anything   -> a themes/ file, resolved by theme_resolve
+// Both fall back to the baked-in default when the source is not there, so a token that
+// stops resolving (an uninstalled Omarchy, a deleted file) shows a palette, never black.
+theme_load :: proc(token: string) -> Theme {
+    if token == OMARCHY_THEME {
+        if t, ok := omarchy_theme(omarchy_colors_file(context.temp_allocator)); ok {
+            return t
+        }
+        return default_theme()
+    }
+    return load_theme(theme_resolve(token))
+}
+
 // Resolves a theme config token (from the Config pane's dropdown) to a file path for load_theme:
 //   "" / "default"  -> themes/default.theme in the themes folder (else baked-in)
 //   "<name>"        -> themes/<name>.theme there
@@ -308,6 +323,9 @@ config_file :: proc() -> string {
 theme_resolve :: proc(token: string) -> string {
     if strings.contains(token, "/") {
         return "" // not a name — no theme lives outside themes/
+    }
+    if token == OMARCHY_THEME {
+        return "" // reserved: the desktop palette is not a file. theme_load takes it first
     }
     name := token == "" ? "default" : token
     file := fmt.tprintf("%s.theme", name)
@@ -357,12 +375,19 @@ PROMPT_KEEP_OPTS := [?]string{"prompt", "keep"}
 FILE_PANE_OPTS := [?]string{"ls", "browser"}
 TERM_CTRL_C_OPTS := [?]string{"stop", "copy"}
 
-// "default" first, then every themes/<name>.theme in the themes folder, sorted.
+// "default" first, then "omarchy" on a desktop that has a theme applied, then every
+// themes/<name>.theme in the themes folder, sorted. The two pinned entries are not files,
+// so they lead the list rather than sorting into it.
 // Names are cloned into `allocator`; the returned slice is too.
 @(private = "file")
 theme_options :: proc(allocator := context.allocator) -> []string {
     out := make([dynamic]string, 0, 16, allocator)
     append(&out, "default") // the baked-in palette
+    pinned := 1
+    if omarchy_available() {
+        append(&out, OMARCHY_THEME) // offered only when there is a desktop palette to follow
+        pinned = 2
+    }
     dir := data_asset("themes", context.temp_allocator)
     if f, oerr := os.open(dir); oerr == nil {
         defer os.close(f)
@@ -373,13 +398,13 @@ theme_options :: proc(allocator := context.allocator) -> []string {
                 continue
             }
             base := strings.trim_suffix(fi.name, ".theme")
-            if base == "default" {
-                continue // already offered as the first option
+            if base == "default" || base == OMARCHY_THEME {
+                continue // already offered above, or a reserved token no file can claim
             }
             append(&out, strings.clone(base, allocator))
         }
     }
-    slice.sort(out[1:]) // keep default pinned first; sort the discovered themes
+    slice.sort(out[pinned:]) // keep the pinned tokens first; sort the discovered themes
     return out[:]
 }
 
@@ -502,8 +527,8 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
     switch s {
     case .Theme:
         delete(a.theme_path)
-        a.theme_path = strings.clone(val) // store the raw token (a themes/ name, or "default")
-        a.theme = load_theme(theme_resolve(val)) // resolve to a path; "" -> baked-in default
+        a.theme_path = strings.clone(val) // the raw token: a themes/ name, "default", or "omarchy"
+        a.theme = theme_load(val) // a file, or the desktop palette; either can fall back
     case .LineNumbers:
         switch val {
         case "global":   a.line_numbers = .Global

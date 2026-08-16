@@ -87,7 +87,7 @@ main :: proc() {
 
     cfg := load_config()
     defer config_destroy(&cfg)
-    app.theme = load_theme(theme_resolve(cfg.theme_path))
+    app.theme = theme_load(cfg.theme_path)
     app.theme_path = strings.clone(cfg.theme_path) // the raw config value, for the settings pane
     app.indent = cfg.indent
     app.line_numbers = cfg.line_numbers

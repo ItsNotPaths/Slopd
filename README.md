@@ -180,7 +180,7 @@ file and this one applies again.
 
 | key | values | |
 |---|---|---|
-| `theme` | `default` \| `<name>` | a name, never a path: `themes/<name>.theme`. A value with a `/` is refused |
+| `theme` | `default` \| `omarchy` \| `<name>` | a name, never a path: `themes/<name>.theme`. A value with a `/` is refused |
 | `indent` | `tab` \| `spaces2` \| `spaces4` … | what Tab inserts |
 | `line_numbers` | `global` \| `relative` | gutter |
 | `scroll_mode` | `follow` \| `middle` | every line view: move only when the target would leave, or pin it to the middle row |
