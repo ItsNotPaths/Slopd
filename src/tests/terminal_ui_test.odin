@@ -351,7 +351,7 @@ test_terminal_click_selects_by_character :: proc(t: ^testing.T) {
     testing.expect_value(t, text, "l2\nl3\n")
 
     // A DOUBLE click selects the word under the pointer — the run of one character class,
-    // through line.odin's word_span, which is the editor's double click over a grid.
+    // through word.odin's word_span, which is the editor's double click over a grid.
     point_at(&a, 0, 8) // inside "bravo", columns 6..11
     press(&a, count = 2)
     app.terminal_click(&a, term, app.terminal_hit(&a, term, v))

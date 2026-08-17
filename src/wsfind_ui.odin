@@ -174,9 +174,9 @@ wsfind_frame :: proc(a: ^App, field, body: Rect, row_h: i32, cw: f32, now: f64) 
     // The line's drag and its window, as the path bar runs them: the gesture that walks the
     // caret off the end must move the window in the frame that moved it.
     field_drag(a, wsfind_field_box(a, field, cw), now)
-    if len(ws.query.lines) > 0 {
-        n := line_len(&ws.query.lines[0])
-        cur := ws.query.cursors[ws.query.primary].head.col
-        ws.off = field_scroll(ws.off, n, cur, field_cells(field, cw))
+    if doc_line_count(&ws.query) > 0 {
+        cells := doc_cells(&ws.query, 0)
+        cur := cells_col(cells, ws.query.cursors[ws.query.primary].head.col)
+        ws.off = field_scroll(ws.off, cells_count(cells), cur, field_cells(field, cw))
     }
 }

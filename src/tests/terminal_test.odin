@@ -436,7 +436,7 @@ test_terminal_range_text_clips_and_trims :: proc(t: ^testing.T) {
     testing.expect_value(t, c, "alpha bravo")
 }
 
-// The word span over a grid is line.odin's word_span, which is what makes a terminal double
+// The word span over a grid is word.odin's word_span, which is what makes a terminal double
 // click and an editor double click agree about what a word is.
 @(test)
 test_terminal_word_span :: proc(t: ^testing.T) {

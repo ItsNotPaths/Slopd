@@ -12,7 +12,7 @@ mkdoc :: proc(s: string) -> app.Doc {
 
 @(private = "file")
 ln :: proc(d: ^app.Doc, i: int) -> string {
-    return app.line_string(&d.lines[i], context.temp_allocator)
+    return string(app.doc_line(d, i, context.temp_allocator))
 }
 
 @(private = "file")
@@ -98,12 +98,12 @@ test_undo_newline :: proc(t: ^testing.T) {
     defer app.doc_destroy(&d)
     app.doc_move(&d, .Right) // {0,1}
     app.doc_newline(&d)
-    testing.expect_value(t, len(d.lines), 2)
+    testing.expect_value(t, app.doc_line_count(&d), 2)
     testing.expect(t, app.doc_undo(&d))
-    testing.expect_value(t, len(d.lines), 1)
+    testing.expect_value(t, app.doc_line_count(&d), 1)
     testing.expect_value(t, ln(&d, 0), "ab")
     testing.expect(t, app.doc_redo(&d))
-    testing.expect_value(t, len(d.lines), 2)
+    testing.expect_value(t, app.doc_line_count(&d), 2)
     testing.expect_value(t, ln(&d, 1), "b")
 }
 

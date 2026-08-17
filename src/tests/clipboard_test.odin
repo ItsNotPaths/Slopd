@@ -13,7 +13,7 @@ mkdoc :: proc(s: string) -> app.Doc {
 
 @(private = "file")
 ln :: proc(d: ^app.Doc, i: int) -> string {
-    return app.line_string(&d.lines[i], context.temp_allocator)
+    return string(app.doc_line(d, i, context.temp_allocator))
 }
 
 @(test)
@@ -90,6 +90,6 @@ test_cut_line :: proc(t: ^testing.T) {
     d := mkdoc("ab\ncd")
     defer app.doc_destroy(&d)
     app.doc_cut(&d)
-    testing.expect_value(t, len(d.lines), 1)
+    testing.expect_value(t, app.doc_line_count(&d), 1)
     testing.expect_value(t, ln(&d, 0), "cd")
 }

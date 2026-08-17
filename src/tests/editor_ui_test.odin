@@ -175,7 +175,6 @@ test_editor_pos_at_folded :: proc(t: ^testing.T) {
     defer app.editor_destroy(&a.editor)
     b := app.editor_current(&a.editor)
     append(&b.folds, app.Fold{line = 0, end = 2})
-    b.fold_nlines = len(b.lines)
     v := mkview(0, 0)
 
     p, ok := app.editor_pos_at(b, v, TEXT_X, AREA.y + 2)
@@ -359,7 +358,6 @@ test_editor_hit_fold_marker :: proc(t: ^testing.T) {
     defer app.editor_destroy(&a.editor)
     b := app.editor_current(&a.editor)
     append(&b.folds, app.Fold{line = 0, end = 1})
-    b.fold_nlines = len(b.lines)
     v := mkview(0, 0)
 
     // Just past "header" (6 cells) on the header's row: the marker.
@@ -491,7 +489,6 @@ test_editor_click_fold_expands :: proc(t: ^testing.T) {
     defer app.editor_destroy(&a.editor)
     b := app.editor_current(&a.editor)
     append(&b.folds, app.Fold{line = 0, end = 1})
-    b.fold_nlines = len(b.lines)
 
     app.doc_reset_cursor(&b.doc, app.Pos{2, 1})
     a.mouse.click = true
@@ -528,7 +525,6 @@ test_editor_click_begins_a_drag :: proc(t: ^testing.T) {
     // A fold marker is a BUTTON, and a button is not something you drag out of.
     a.drag = {}
     append(&b.folds, app.Fold{line = 0, end = 0})
-    b.fold_nlines = len(b.lines)
     a.mouse.click, a.mouse.click_count = true, 1
     app.editor_click(&a, app.Editor_Hit{kind = .Fold, pos = app.Pos{0, 11}}, 101)
     testing.expect_value(t, a.drag.kind, app.Drag_Kind.None)
@@ -885,4 +881,126 @@ test_editor_longest_visible :: proc(t: ^testing.T) {
     testing.expect_value(t, app.editor_longest_visible(b, 2, 2), 16)
     testing.expect_value(t, app.editor_longest_visible(b, 2, 1), 3) // just "xyz"
     testing.expect_value(t, app.editor_longest_visible(b, 0, 0), 0)
+}
+
+// --- the byte/cell seam ---
+//
+// A Pos counts BYTES and the pane draws a grid of CELLS, so on a row holding multi-byte runes
+// the two are different numbers for every glyph past the first of them. Everything above tests
+// the seam where they happen to agree; these test it where they cannot.
+//
+//   h é(2) l l o ␣ →(3) ␣ w ö(2) r l d     13 cells over 17 bytes
+//   cell 0 1   2 3 4 5 6   7 8 9  10 11 12
+//   byte 0 1   3 4 5 6 7  10 11 12 14 15 16
+
+@(private = "file")
+MB :: "héllo → wörld"
+
+// The pane's whole claim, on the row that can break it: a pixel read back as a Pos, painted
+// back at the cell the painter would put it in, lands on the pixel it came from. Checked at
+// every cell of the row rather than at a chosen one — an off-by-one that only bites past the
+// second multi-byte rune is exactly what a hand-picked column misses.
+@(test)
+test_editor_pos_at_multibyte :: proc(t: ^testing.T) {
+    a: app.App
+    fake_editor(&a, MB)
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+    v := mkview(0, 0)
+
+    cells := app.doc_cells(&b.doc, 0, context.temp_allocator)
+    n := app.cells_count(cells)
+    testing.expect_value(t, n, 13) // cells
+    testing.expect_value(t, app.doc_line_len(&b.doc, 0), 17) // bytes
+
+    for k in 0 ..= n {
+        // The pixel at cell k's left edge — where the painter starts glyph k.
+        p, ok := app.editor_pos_at(b, v, TEXT_X + i32(10 * k), AREA.y + 2)
+        testing.expectf(t, ok, "cell %d did not resolve", k)
+        testing.expect_value(t, p.line, 0)
+        testing.expect_value(t, p.col, app.cells_off(cells, k)) // reads back as that glyph's byte
+        testing.expect_value(t, app.cells_col(cells, p.col), k) // and paints back at that cell
+    }
+
+    // The rounding boundary sits mid-CELL, not mid-rune: the arrow is three bytes in one cell,
+    // and it is the cell's right half that puts the caret past it — all three bytes at once.
+    p, _ := app.editor_pos_at(b, v, TEXT_X + 64, AREA.y + 2) // 6.4 cells
+    testing.expect_value(t, p.col, 7) // the arrow's first byte
+    p, _ = app.editor_pos_at(b, v, TEXT_X + 66, AREA.y + 2) // 6.6 cells
+    testing.expect_value(t, p.col, 10) // past all three of them
+
+    // Past the end clamps to the line's BYTE length, which is not its cell count.
+    p, _ = app.editor_pos_at(b, v, TEXT_X + 900, AREA.y + 2)
+    testing.expect_value(t, p, app.Pos{0, 17})
+}
+
+// The double click's column is the GLYPH the pointer is over, floored — and over multi-byte
+// runes that has to name a whole rune, or the word it selects starts mid-character.
+@(test)
+test_editor_hit_glyph_multibyte :: proc(t: ^testing.T) {
+    a: app.App
+    fake_editor(&a, MB)
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+    v := mkview(0, 0)
+
+    // Cell 8 is the 'w' of "wörld"; its right half diverges the two columns, as it does in
+    // test_editor_hit — but here the boundary and the glyph are 12 bytes apart, not 1.
+    a.mouse.x, a.mouse.y = TEXT_X + 86, AREA.y + 2
+    hit := app.editor_hit(&a, b, v)
+    testing.expect_value(t, hit.kind, app.Editor_Hit_Kind.Text)
+    testing.expect_value(t, hit.pos.col, 12) // the caret boundary: cell 9, the 'ö'
+    testing.expect_value(t, hit.glyph, 11) // the glyph pointed at: cell 8, the 'w'
+
+    // And the word that comes out of it is a whole word, umlaut included.
+    app.doc_select_word(&b.doc, app.Pos{0, hit.glyph})
+    lo, hi := app.cursor_range(b.cursors[0])
+    testing.expect_value(t, app.doc_text(&b.doc, lo, hi, context.temp_allocator), "wörld")
+}
+
+// A drag resolves through its own path (editor_drag_pos, which clamps by ROW rather than
+// refusing), so it converts cell to byte separately from editor_hit and is pinned separately.
+@(test)
+test_editor_drag_pos_multibyte :: proc(t: ^testing.T) {
+    a: app.App
+    fake_editor(&a, MB)
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+    v := mkview(0, 0)
+
+    p, glyph := app.editor_drag_pos(b, v, TEXT_X + 86, AREA.y + 2)
+    testing.expect_value(t, p, app.Pos{0, 12})
+    testing.expect_value(t, glyph, 11)
+
+    // Past the right edge: the boundary clamps to the byte length, the glyph to the last rune.
+    p, glyph = app.editor_drag_pos(b, v, TEXT_X + 900, AREA.y + 2)
+    testing.expect_value(t, p.col, 17)
+    testing.expect_value(t, glyph, 17)
+}
+
+// A `:f` hit is a BYTE span and draw_find_marks paints it on the cell grid, so the bar sits
+// over the match rather than short of it by one cell per multi-byte rune before it.
+@(test)
+test_find_marks_multibyte :: proc(t: ^testing.T) {
+    a: app.App
+    fake_editor(&a, MB)
+    defer app.editor_destroy(&a.editor)
+    defer app.find_destroy(&a.find)
+    b := app.editor_current(&a.editor)
+
+    app.find_set(&a.find, b, "wörld", app.Pos{0, 0})
+    testing.expect_value(t, len(a.find.matches), 1)
+    m := a.find.matches[0]
+    testing.expect_value(t, m.col, 11) // bytes in
+    testing.expect_value(t, m.n, 6) // w ö(2) r l d
+
+    cells := app.doc_cells(&b.doc, 0, context.temp_allocator)
+    testing.expect_value(t, app.cells_col(cells, m.col), 8) // …cells out
+    testing.expect_value(t, app.cells_col(cells, m.col + m.n), 13) // a 5-cell bar
+
+    // Smart case still folds across the multi-byte rune rather than falling off it.
+    app.find_set(&a.find, b, "WÖRLD", app.Pos{0, 0})
+    testing.expect_value(t, len(a.find.matches), 0) // a capital asks for an exact match
+    app.find_set(&a.find, b, "wörld", app.Pos{0, 0})
+    testing.expect_value(t, len(a.find.matches), 1)
 }

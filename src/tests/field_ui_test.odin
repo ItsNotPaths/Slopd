@@ -150,3 +150,45 @@ test_field_clipboard_span :: proc(t: ^testing.T) {
     app.doc_cut(&d)
     testing.expect_value(t, app.doc_string(&d, context.temp_allocator), "")
 }
+
+// A field's columns are CELLS — `off`, the box width, a press's column — while its Doc counts
+// bytes, so doc_cells bridges the two at each entry point. On an ASCII value the two are the
+// same number and nothing above would notice a missing conversion; here they are not.
+//
+//   / h ô(2) m e / s r c    9 cells over 10 bytes
+@(test)
+test_field_press_multibyte :: proc(t: ^testing.T) {
+    a: app.App
+    a.mouse_on = true
+    a.mouse.known = true
+    a.mouse.down = true
+    d: app.Doc
+    defer app.doc_destroy(&d)
+    f := fake_field(&d, "/hôme/src")
+
+    testing.expect_value(t, app.doc_line_len(&d, 0), 10) // bytes
+    testing.expect_value(t, app.cells_count(app.doc_cells(&d, 0, context.temp_allocator)), 9)
+
+    // Every cell boundary reads back as that glyph's byte column — the field's round trip.
+    cells := app.doc_cells(&d, 0, context.temp_allocator)
+    for k in 0 ..= 9 {
+        a.mouse.click_x = 100 + i32(10 * k)
+        app.field_press(&a, f, 1)
+        testing.expect_value(t, d.cursors[0].head.col, app.cells_off(cells, k))
+    }
+
+    // A word grade over the accented run selects it whole.
+    a.mouse.click_x = 100 + 35 // floored: cell 3, the 'm'
+    app.field_press(&a, f, 2)
+    testing.expect_value(t, d.cursors[0].anchor.col, 1) // 'h'
+    testing.expect_value(t, d.cursors[0].head.col, 6) // past the 'e'
+    lo, hi := app.cursor_range(d.cursors[0])
+    testing.expect_value(t, app.doc_text(&d, lo, hi, context.temp_allocator), "hôme")
+
+    // Dragging past the right edge selects to the end of the VALUE, in bytes.
+    a.mouse.click_x = 100
+    app.field_press(&a, f, 1)
+    a.mouse.x = 100 + 900
+    app.field_drag(&a, f, 0)
+    testing.expect_value(t, d.cursors[0].head.col, 10)
+}

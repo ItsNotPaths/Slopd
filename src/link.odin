@@ -21,11 +21,14 @@ import "core:unicode/utf8"
 link_follow :: proc(a: ^App) {
     b := editor_current(&a.editor)
     cur := b.cursors[b.primary].head
-    if cur.line < 0 || cur.line >= len(b.lines) {
+    if cur.line < 0 || cur.line >= doc_line_count(&b.doc) {
         return
     }
-    line := b.lines[cur.line].text[:]
-    col := clamp(cur.col, 0, len(line))
+    // The classifiers below all scan one line as runes, so the byte column crosses to a rune
+    // index once, here, and nothing under this proc knows the document stores bytes.
+    cells := doc_cells(&b.doc, cur.line)
+    line := cells.runes
+    col := cells_col(cells, cur.col)
 
     if name, ok := link_wikilink_at(line, col); ok {
         link_open_wiki(a, name)
@@ -43,16 +46,16 @@ link_follow :: proc(a: ^App) {
 // --- the shared jump primitive ---
 
 // The ONE "reveal a location" entry point, behind the `j`/`jump` builtin, the grep pane and every
-// Alt+Enter follow. `line`/`col` are 0-based and clamped. **Callers compute the absolute target** —
-// jump_to does no relative arithmetic of its own.
+// Alt+Enter follow. `line`/`col` are 0-based and clamped, and `col` counts CHARACTERS — it comes
+// from a grep hit or a typed line:col, neither of which knows about byte offsets.
+// **Callers compute the absolute target** — jump_to does no relative arithmetic of its own.
 jump_to :: proc(a: ^App, path: string, line: int, col: int) {
     if path != "" {
         open_file(a, path)
     }
     b := editor_current(&a.editor)
-    target := clamp(line, 0, len(b.lines) - 1)
-    c := clamp(col, 0, line_len(&b.lines[target]))
-    doc_reset_cursor(&b.doc, Pos{target, c})
+    target := clamp(line, 0, doc_line_count(&b.doc) - 1)
+    doc_reset_cursor(&b.doc, Pos{target, doc_byte_col(&b.doc, target, max(col, 0))})
     set_focus(a, .Editor)
 }
 

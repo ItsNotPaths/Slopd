@@ -2,37 +2,11 @@ package tests
 
 import app ".."
 import "core:fmt"
-import "core:os"
-import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-// Syntax-highlighting tests. These need the compiled odin grammar (odin.so + odin.scm)
-// on disk; they resolve it from a few candidate dirs and SKIP (not fail) when it's
-// absent, so a checkout without grammars still passes the rest of the suite. Install
-// it with `slopd --grammar install odin` (grammars/ is made next to the binary, so
-// <repo>/build/grammars for a --local build) or point SLOPD_TEST_GRAMMARS at a dir
-// holding odin.so/odin.scm.
-
-@(private = "file")
-grammars_dir :: proc() -> (string, bool) {
-    candidates := [?]string {
-        os.get_env("SLOPD_TEST_GRAMMARS", context.temp_allocator),
-        "build/grammars",
-        "../build/grammars",
-        "grammars",
-    }
-    for c in candidates {
-        if c == "" {
-            continue
-        }
-        so := filepath.join({c, "odin.so"}, context.temp_allocator) or_else ""
-        if so != "" && os.exists(so) {
-            return c, true
-        }
-    }
-    return "", false
-}
+// Syntax-highlighting tests, over the odin grammar. The suite builds its own grammars and
+// caches them; tests/grammars.odin owns that, and the skip-vs-fail policy with it.
 
 // A representative odin snippet, long enough to scroll: procs, keywords, types,
 // strings, comments, numbers, operators — so highlighting should produce many colours.
@@ -65,27 +39,6 @@ main :: proc() {
 }
 `
 
-// Builds a minimal App carrying just what highlight_visible touches: a populated
-// theme, an initialised highlighter with the odin grammar preloaded, and a registry
-// mapping the .odin extension to it. ok=false when the grammar isn't installed.
-@(private = "file")
-setup :: proc(a: ^app.App) -> bool {
-    dir, found := grammars_dir()
-    if !found {
-        return false
-    }
-    a.theme = app.default_theme()
-    app.highlighter_init(&a.hl)
-    // Heap/temp-allocated so the registry outlives this proc — a `[]T{...}` literal is
-    // backed by this frame's stack and would dangle once setup returns.
-    exts := make([]string, 1, context.temp_allocator)
-    exts[0] = "odin"
-    grams := make([]app.Grammar, 1, context.temp_allocator)
-    grams[0] = app.Grammar{name = "odin", exts = exts}
-    a.grammars = grams
-    return app.highlighter_preload(&a.hl, dir, "odin")
-}
-
 @(private = "file")
 mkbuf :: proc() -> app.Buffer {
     b: app.Buffer
@@ -103,14 +56,13 @@ mkbuf :: proc() -> app.Buffer {
 @(test)
 test_highlight_semantic :: proc(t: ^testing.T) {
     a: app.App
-    if !setup(&a) {
-        fmt.println("[skip] odin grammar not installed; see highlight_test.odin header")
+    if !hl_app(t, &a, "odin", "odin") {
         return
     }
-    defer app.highlighter_destroy(&a.hl)
+    defer hl_app_destroy(&a)
     b := mkbuf()
     defer app.buffer_destroy(&b)
-    rows := app.highlight_visible(&a, &b, 0, len(b.lines))
+    rows := hl_rows(&a, &b)
     th := &a.theme
 
     Case :: struct {
@@ -146,17 +98,16 @@ test_highlight_semantic :: proc(t: ^testing.T) {
 @(test)
 test_highlight_scroll_stable :: proc(t: ^testing.T) {
     a: app.App
-    if !setup(&a) {
-        fmt.println("[skip] odin grammar not installed; see highlight_test.odin header")
+    if !hl_app(t, &a, "odin", "odin") {
         return
     }
-    defer app.highlighter_destroy(&a.hl)
+    defer hl_app_destroy(&a)
     b := mkbuf()
     defer app.buffer_destroy(&b)
 
-    n := len(b.lines)
+    n := app.doc_line_count(&b.doc)
     // Snapshot the full-buffer paint (deep copy — the next highlight_visible frees it).
-    full := app.highlight_visible(&a, &b, 0, n)
+    full := hl_rows(&a, &b)
     baseline := make([dynamic][3]f32, 0, 256, context.temp_allocator)
     line_off := make([]int, n, context.temp_allocator) // start of each line in `baseline`
     for li in 0 ..< n {
@@ -215,11 +166,206 @@ test_highlight_dump :: proc(t: ^testing.T) {
         return
     }
     a: app.App
-    if !setup(&a) {
+    if !hl_app(t, &a, "odin", "odin") {
         return
     }
-    defer app.highlighter_destroy(&a.hl)
+    defer hl_app_destroy(&a)
     b := mkbuf()
     defer app.buffer_destroy(&b)
-    app.highlight_dump_captures(&a, &b, 0, len(b.lines))
+    app.highlight_dump_captures(&a, &b, 0, app.doc_line_count(&b.doc))
+}
+
+// --- incremental reparse ---
+//
+// A content change is folded into the cached tree as a ts.Input_Edit (doc.odin records them,
+// highlighter_tree replays them) and the parser reuses every subtree the edit did not touch.
+// Tree-sitter requires those edits to match the document changes EXACTLY; when they do not it
+// does not crash, it quietly produces a wrong tree — so the only honest test is to compare the
+// incremental result against a full parse of the same final text.
+
+// Settle the worker, then paint the whole buffer. The painter never waits, so a test that
+// asserts on one paint must wait for the tree first. Shared with highlight_stress_test.
+hl_rows :: proc(a: ^app.App, b: ^app.Buffer) -> []app.Row_Colors {
+    app.hl_settle(a, b)
+    return app.highlight_visible(a, b, 0, app.doc_line_count(&b.doc))
+}
+
+clone_rows :: proc(rows: []app.Row_Colors) -> []app.Row_Colors {
+    out := make([]app.Row_Colors, len(rows), context.temp_allocator)
+    for r, i in rows {
+        out[i] = make(app.Row_Colors, len(r), context.temp_allocator)
+        copy(out[i], r)
+    }
+    return out
+}
+
+expect_rows_equal :: proc(t: ^testing.T, got, want: []app.Row_Colors, what: string) {
+    testing.expectf(t, len(got) == len(want), "%s: %d rows, want %d", what, len(got), len(want))
+    for i in 0 ..< min(len(got), len(want)) {
+        if !testing.expectf(
+            t,
+            len(got[i]) == len(want[i]),
+            "%s: line %d is %d cells, want %d",
+            what,
+            i,
+            len(got[i]),
+            len(want[i]),
+        ) {
+            continue
+        }
+        for c in 0 ..< len(got[i]) {
+            if got[i][c] != want[i][c] {
+                testing.expectf(t, false, "%s: (%d,%d) got %v want %v", what, i, c, got[i][c], want[i][c])
+                break // one report per line is enough to find it
+            }
+        }
+    }
+}
+
+// How far behind the highlighter's reader slot is. The log is shared (Doc_Reader), so "is it
+// empty" is not the question — "has THIS reader seen everything" is.
+@(private = "file")
+hl_pending :: proc(d: ^app.Doc) -> (n: int, lost: bool) {
+    c, l := app.doc_changes_since(d, app.Doc_Reader.Highlight)
+    return len(c), l
+}
+
+// The headline: edit a parsed buffer every way the funnel can, reparse incrementally, and
+// compare against a buffer holding the same final text that has only ever been parsed whole.
+@(test)
+test_highlight_incremental_matches_full :: proc(t: ^testing.T) {
+    a: app.App
+    if !hl_app(t, &a, "odin", "odin") {
+        return
+    }
+    defer hl_app_destroy(&a)
+
+    live := mkbuf()
+    defer app.buffer_destroy(&live)
+
+    // Parse it whole once. The changes list is drained by that parse, which is the protocol:
+    // the tree and the document are now in step.
+    _ = hl_rows(&a, &live)
+    n0, lost0 := hl_pending(&live.doc)
+    testing.expect_value(t, n0, 0)
+    testing.expect(t, !lost0)
+
+    // Rename `add` -> `addend` (a token grows), split a line, and delete a whole line — an
+    // insert, a line-count change up and a line-count change down.
+    app.doc_reset_cursor(&live.doc, app.Pos{10, 3})
+    app.doc_insert_text(&live.doc, "end")
+    app.doc_reset_cursor(&live.doc, app.Pos{2, 0})
+    app.doc_insert_text(&live.doc, "\n// inserted\n")
+    app.doc_reset_cursor(&live.doc, app.Pos{0, 0})
+    app.doc_move(&live.doc, .Down, true)
+    app.doc_delete(&live.doc) // takes the first line and its break
+    n1, lost1 := hl_pending(&live.doc)
+    testing.expect(t, n1 > 0, "no changes recorded")
+    testing.expect(t, !lost1)
+
+    // The same text, loaded fresh: nothing to be incremental about, so it parses whole.
+    ref: app.Buffer
+    defer app.buffer_destroy(&ref)
+    app.buffer_set_text(&ref, app.doc_string(&live.doc, context.temp_allocator))
+    ref.path = strings.clone("demo.odin")
+
+    n := app.doc_line_count(&live.doc)
+    testing.expect_value(t, n, app.doc_line_count(&ref.doc))
+
+    // live goes through tree_edit + an incremental parse; the row cache is replaced by the
+    // second call, so the first result is cloned before it is freed under us.
+    got := clone_rows(hl_rows(&a, &live))
+    n2, _ := hl_pending(&live.doc)
+    testing.expect_value(t, n2, 0) // the reparse acked them
+    want := hl_rows(&a, &ref)
+    expect_rows_equal(t, got, want, "after three edits")
+}
+
+// Typing, one character at a time, is the case the whole thing exists for — and the case where
+// a small error in the recorded offsets accumulates instead of showing up at once.
+@(test)
+test_highlight_incremental_through_typing :: proc(t: ^testing.T) {
+    a: app.App
+    if !hl_app(t, &a, "odin", "odin") {
+        return
+    }
+    defer hl_app_destroy(&a)
+
+    live := mkbuf()
+    defer app.buffer_destroy(&live)
+    app.doc_reset_cursor(&live.doc, app.Pos{11, 4}) // inside the `return a + b` body
+
+    // Reparse after EVERY keystroke, as the painter does — so each one is an incremental step
+    // off the tree the previous one left.
+    for r in "count := 0; " {
+        app.doc_insert_rune(&live.doc, r)
+        _ = hl_rows(&a, &live)
+    }
+    got := clone_rows(hl_rows(&a, &live))
+
+    ref: app.Buffer
+    defer app.buffer_destroy(&ref)
+    app.buffer_set_text(&ref, app.doc_string(&live.doc, context.temp_allocator))
+    ref.path = strings.clone("demo.odin")
+    want := hl_rows(&a, &ref)
+    expect_rows_equal(t, got, want, "after a typed run")
+}
+
+// Undo and redo replay patches through the same funnel, so they record changes like any other
+// edit — and land back on colours identical to a full parse of what they restored.
+@(test)
+test_highlight_incremental_through_undo :: proc(t: ^testing.T) {
+    a: app.App
+    if !hl_app(t, &a, "odin", "odin") {
+        return
+    }
+    defer hl_app_destroy(&a)
+
+    live := mkbuf()
+    defer app.buffer_destroy(&live)
+    n0 := app.doc_line_count(&live.doc)
+    base := clone_rows(hl_rows(&a, &live))
+
+    app.doc_reset_cursor(&live.doc, app.Pos{5, 0})
+    app.doc_insert_text(&live.doc, "// gone\nBox :: struct {}\n")
+    _ = hl_rows(&a, &live)
+    app.doc_undo(&live.doc)
+
+    got := clone_rows(hl_rows(&a, &live))
+    expect_rows_equal(t, got, base, "after undo")
+}
+
+// When the change list overflows, `lost` says the tree cannot be brought forward from it — and
+// the reparse has to start over rather than apply a partial edit run to a stale tree.
+@(test)
+test_highlight_full_parse_when_changes_lost :: proc(t: ^testing.T) {
+    a: app.App
+    if !hl_app(t, &a, "odin", "odin") {
+        return
+    }
+    defer hl_app_destroy(&a)
+
+    live := mkbuf()
+    defer app.buffer_destroy(&live)
+    _ = hl_rows(&a, &live)
+
+    // Edit past the cap with no reader keeping up — exactly what a buffer edited off-screen
+    // does, since nothing is painting or syncing its folds.
+    app.doc_reset_cursor(&live.doc, app.Pos{11, 4})
+    for _ in 0 ..< app.DOC_CHANGE_MAX + 10 {
+        app.doc_insert_rune(&live.doc, 'z')
+    }
+    _, lost := hl_pending(&live.doc)
+    testing.expect(t, lost, "the cap did not drop the log")
+
+    got := clone_rows(hl_rows(&a, &live))
+    _, still_lost := hl_pending(&live.doc)
+    testing.expect(t, !still_lost, "the reparse did not clear the loss")
+
+    ref: app.Buffer
+    defer app.buffer_destroy(&ref)
+    app.buffer_set_text(&ref, app.doc_string(&live.doc, context.temp_allocator))
+    ref.path = strings.clone("demo.odin")
+    want := hl_rows(&a, &ref)
+    expect_rows_equal(t, got, want, "after a lost change list")
 }

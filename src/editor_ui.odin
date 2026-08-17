@@ -40,7 +40,7 @@ editor_geom :: proc(pane: Rect, scale: f32, line_h: f32) -> (area: Rect, row_h: 
 // under EDITOR_GUTTER_MIN. The painter and editor_pos_at both size the text column from this
 // one call, which is what stops a click landing one cell out in a thousand-line file.
 editor_gutter_w :: proc(b: ^Buffer) -> int {
-    return max(EDITOR_GUTTER_MIN, num_digits(len(b.lines)))
+    return max(EDITOR_GUTTER_MIN, num_digits(doc_line_count(&b.doc)))
 }
 
 // Where column 0 starts with the view at home: a one-cell left margin, the gutter, then a
@@ -66,11 +66,12 @@ editor_cols :: proc(area: Rect, gutter: int, cw: f32) -> int {
 // The widest line the window is about to draw, in columns — what bounds the column axis.
 // Measured over the DRAWN lines rather than the whole file: it is O(rows) instead of O(lines)
 // every frame, and scrolling down into short lines should bring the view back toward home
-// rather than leave it parked over the blank space right of them.
+// rather than leave it parked over the blank space right of them. CELLS, not bytes: the axis
+// it bounds is the glyph grid.
 editor_longest_visible :: proc(b: ^Buffer, top, count: int) -> int {
     n := 0
     for line in editor_visible_lines(b, top, count) {
-        n = max(n, line_len(&b.lines[line]))
+        n = max(n, doc_cell_count(&b.doc, line))
     }
     return n
 }
@@ -125,7 +126,7 @@ editor_view :: proc(b: ^Buffer, f: ^Font, area: Rect, row_h: i32, rows: int, now
 // is why a screen row cannot be turned back into a line by arithmetic. Temp-allocated.
 editor_visible_lines :: proc(b: ^Buffer, top, count: int) -> []int {
     out := make([dynamic]int, 0, max(0, count), context.temp_allocator)
-    for i := max(0, top); i < len(b.lines) && len(out) < count; i += 1 {
+    for i := max(0, top); i < doc_line_count(&b.doc) && len(out) < count; i += 1 {
         if !buffer_line_hidden(b, i) {
             append(&out, i)
         }
@@ -149,15 +150,18 @@ editor_line_at_row :: proc(b: ^Buffer, top, vrow: int) -> (line: int, ok: bool) 
 // A framebuffer point as a document position — the inverse of the painter's arithmetic. The
 // column ROUNDS, so a character's right half puts the caret after it; the gutter clamps to 0.
 // ok=false below the last drawn row, or a click in empty space would jump to end-of-file.
+//
+// The pixel names a CELL and a Pos counts BYTES, so this is one of the two places (with
+// editor_drag_pos) that crosses between them — doc_byte_col lands the answer on a rune.
 editor_pos_at :: proc(b: ^Buffer, v: Editor_View, x, y: i32) -> (p: Pos, ok: bool) {
-    if v.row_h <= 0 || len(b.lines) == 0 {
+    if v.row_h <= 0 || doc_line_count(&b.doc) == 0 {
         return {}, false
     }
     line, got := editor_line_at_row(b, v.top, editor_row_at(v, y))
     if !got {
         return {}, false
     }
-    return Pos{line, clamp(editor_caret_col(v, x), 0, line_len(&b.lines[line]))}, true
+    return Pos{line, doc_byte_col(&b.doc, line, max(0, editor_caret_col(v, x)))}, true
 }
 
 // The visible ROW a framebuffer y falls on, or -1 above the window — the one place the row
@@ -183,7 +187,7 @@ editor_caret_col :: proc(v: Editor_View, x: i32) -> int {
     return int(math.round((f32(x) - v.text_x) / v.cw))
 }
 
-// The column of the GLYPH under the pointer — floored, where editor_pos_at rounds. One pixel,
+// The CELL of the glyph under the pointer — floored, where editor_pos_at rounds. One pixel,
 // two questions: a caret column is a BOUNDARY, a word selection names a CHARACTER. Pointing at
 // the last `o` of "foo.bar" must select "foo", where the rounded boundary is 3 — the '.'.
 editor_glyph_col :: proc(v: Editor_View, x: i32) -> int {
@@ -205,7 +209,7 @@ Editor_Hit_Kind :: enum {
 Editor_Hit :: struct {
     kind:  Editor_Hit_Kind,
     pos:   Pos, // the caret boundary: where a single click puts the insertion point
-    glyph: int, // the character actually pointed at; what a double click selects
+    glyph: int, // BYTE column of the character actually pointed at; what a double click selects
 }
 
 // Resolve the pointer against the editor body. A single Custom with no per-row boxes, so
@@ -226,13 +230,14 @@ editor_hit :: proc(a: ^App, b: ^Buffer, v: Editor_View) -> Editor_Hit {
         return {}
     }
     if buffer_fold_index(b, p.line) >= 0 {
-        end := f32(line_len(&b.lines[p.line]))
+        end := f32(doc_cell_count(&b.doc, p.line))
         mx := f32(a.mouse.x)
         if mx >= v.text_x + v.cw * end && mx < v.text_x + v.cw * (end + EDITOR_FOLD_HIT_CELLS) {
             return Editor_Hit{kind = .Fold, pos = p}
         }
     }
-    return Editor_Hit{kind = .Text, pos = p, glyph = editor_glyph_col(v, a.mouse.x)}
+    glyph := doc_byte_col(&b.doc, p.line, editor_glyph_col(v, a.mouse.x))
+    return Editor_Hit{kind = .Text, pos = p, glyph = glyph}
 }
 
 // Apply a pending click. The verbs, and each one's keyboard twin:
@@ -298,15 +303,15 @@ editor_click :: proc(a: ^App, hit: Editor_Hit, now: f64) {
 // means "to the end". The clamp is on the ROW, not the pixel: the pane's bottom edge sits
 // mid-row, and a drag must not aim at a line never put on screen.
 editor_drag_pos :: proc(b: ^Buffer, v: Editor_View, x, y: i32) -> (p: Pos, glyph: int) {
-    if v.row_h <= 0 || v.rows <= 0 || len(b.lines) == 0 {
+    if v.row_h <= 0 || v.rows <= 0 || doc_line_count(&b.doc) == 0 {
         return {}, 0
     }
-    glyph = editor_glyph_col(v, x)
     line, ok := editor_line_at_row(b, v.top, clamp(editor_row_at(v, y), 0, v.rows - 1))
     if !ok {
-        line = buffer_prev_visible(b, len(b.lines) - 1)
+        line = buffer_prev_visible(b, doc_line_count(&b.doc) - 1)
     }
-    return Pos{line, clamp(editor_caret_col(v, x), 0, line_len(&b.lines[line]))}, glyph
+    glyph = doc_byte_col(&b.doc, line, editor_glyph_col(v, x))
+    return Pos{line, doc_byte_col(&b.doc, line, max(0, editor_caret_col(v, x)))}, glyph
 }
 
 // The line a drag extends to: the pointer's own inside the pane, the autoscroll's walk past an
@@ -345,7 +350,7 @@ editor_drag_line :: proc(a: ^App, b: ^Buffer, v: Editor_View, line: int, now: f6
 // off-screen must scroll in the frame that moved it. **Nothing here writes b.scroll**:
 // autoscroll walks the SELECTION and the policy follows, in whichever scroll_mode is set.
 editor_drag :: proc(a: ^App, b: ^Buffer, v: Editor_View, now: f64) {
-    if !a.mouse_on || !a.mouse.known || a.main != .Text || len(b.lines) == 0 {
+    if !a.mouse_on || !a.mouse.known || a.main != .Text || doc_line_count(&b.doc) == 0 {
         return
     }
     // The target comparison is the capture invariant: a buffer switched with the button
@@ -356,7 +361,7 @@ editor_drag :: proc(a: ^App, b: ^Buffer, v: Editor_View, now: f64) {
     }
     p, glyph := editor_drag_pos(b, v, a.mouse.x, a.mouse.y)
     if line := editor_drag_line(a, b, v, p.line, now); line != p.line {
-        p = Pos{line, clamp(p.col, 0, line_len(&b.lines[line]))}
+        p = doc_clamp_pos(&b.doc, Pos{line, p.col})
     }
     a.blink_base = now // the caret stays solid through the gesture, as it does through typing
 
@@ -439,14 +444,17 @@ editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
 
     cur_line := b.cursors[b.primary].head.line // primary cursor drives the gutter + the bar
 
-    unit := indent_unit(a.indent)
-    scope: Scope
-    if a.show_guides {
-        scope = buffer_active_scope(b, cur_line, unit)
-    }
-
     // The visible lines, plus the partial rows a mid-scroll offset exposes top and bottom.
     draw_lines := editor_visible_lines(b, v.top, v.rows + 2)
+
+    // The active scope's walk is bounded to the DRAWN lines (see buffer_active_scope), so it is
+    // computed after them — a fold means the last drawn line is not v.top + rows and only the
+    // walk itself knows the difference.
+    unit := indent_unit(a.indent)
+    scope: Scope
+    if a.show_guides && len(draw_lines) > 0 {
+        scope = buffer_active_scope(b, cur_line, unit, draw_lines[0], draw_lines[len(draw_lines) - 1])
+    }
 
     // Highlight over the absolute span the drawn lines occupy (hl is indexed by line-top, so
     // folded gaps inside the span are simply never read).
@@ -454,7 +462,12 @@ editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
     hl := highlight_visible(a, b, v.top, span)
 
     for line, vrow in draw_lines {
-        l := &b.lines[line]
+        // The row's cell table: its runes, and the byte offset each one starts at. Built ONCE
+        // and shared by everything below that positions on the grid — the selection bars, the
+        // find marks, the glyphs, the carets, the fold marker. A Pos counts bytes and the grid
+        // counts cells, and this is the only thing that knows both.
+        cells := doc_cells(&b.doc, line)
+        ncells := cells_count(cells)
         y := r.y + i32(vrow) * row_h - v.off
         ty := f32(y) + (f32(row_h) - lh) / 2
         on_cur_line := line == cur_line
@@ -473,15 +486,15 @@ editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
             if line < lo.line || line > hi.line {
                 continue
             }
-            start := line == lo.line ? lo.col : 0
-            end := line == hi.line ? hi.col : len(l.text)
+            start := line == lo.line ? cells_col(cells, lo.col) : 0
+            end := line == hi.line ? cells_col(cells, hi.col) : ncells
             if end > start {
                 sx := i32(text_x + cw * f32(start))
                 fill(t, Rect{sx, y, i32(cw * f32(end - start)), row_h}, th.selection)
             }
         }
 
-        draw_find_marks(t, &a.find, line, text_x, y, row_h, cw, th)
+        draw_find_marks(t, &a.find, line, cells, text_x, y, row_h, cw, th)
 
         // Indent guides: a thin vertical rail at each indent level, the cursor's
         // scope drawn in the active colour. Then the ghosted whitespace markers.
@@ -489,7 +502,7 @@ editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
             draw_indent_guides(t, b, line, text_x, y, row_h, cw, unit, th, scope)
         }
         if a.show_whitespace {
-            draw_whitespace(t, l, text_x, f32(y), row_h, cw, a.scale, th.whitespace)
+            draw_whitespace(t, cells.runes, text_x, f32(y), row_h, cw, a.scale, th.whitespace)
         }
 
         // The line's runes, culled to the visible columns. The colour row is sliced with them
@@ -497,18 +510,18 @@ editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
         // known to match, since a mismatched row cannot be sliced by a column at all.
         k := line - v.top // index into the highlight rows (absolute-line based)
         row := hl != nil && k < len(hl) ? hl[k] : nil
-        lo := min(first_col, len(l.text))
-        hi := min(last_col, len(l.text))
+        lo := min(first_col, ncells)
+        hi := min(last_col, ncells)
         rx := text_x + cw * f32(lo)
-        if len(row) == len(l.text) {
-            draw_runes_colored(t, l.text[lo:hi], row[lo:hi], rx, ty, th.fg)
+        if len(row) == ncells {
+            draw_runes_colored(t, cells.runes[lo:hi], row[lo:hi], rx, ty, th.fg)
         } else {
-            text_draw_runes(t, l.text[lo:hi], rx, ty, th.fg)
+            text_draw_runes(t, cells.runes[lo:hi], rx, ty, th.fg)
         }
 
         // A folded header carries a marker after its text so the collapse is visible.
         if buffer_fold_index(b, line) >= 0 {
-            draw_fold_marker(t, text_x + cw * (f32(len(l.text)) + 0.5), f32(y), lh, a.scale, th.accent)
+            draw_fold_marker(t, text_x + cw * (f32(ncells) + 0.5), f32(y), lh, a.scale, th.accent)
         }
 
         // A caret for every cursor sitting on this line (single-cursor = one), shown
@@ -517,7 +530,8 @@ editor_paint_body :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, u
             for c in b.cursors {
                 if c.head.line == line {
                     // Align the caret with the glyph cell (at ty), not the padded row top.
-                    caret(t, Rect{i32(text_x + cw * f32(c.head.col)), i32(ty), i32(2 * a.scale), i32(lh)}, th.fg)
+                    cx := text_x + cw * f32(cells_col(cells, c.head.col))
+                    caret(t, Rect{i32(cx), i32(ty), i32(2 * a.scale), i32(lh)}, th.fg)
                 }
             }
         }
@@ -623,7 +637,7 @@ draw_indent_guides :: proc(t: ^Text, b: ^Buffer, line: int, text_x: f32, y, row_
 // found by binary search rather than by walking the lot — a common word in a large file is
 // thousands of matches, and only the handful on this line can be drawn.
 @(private = "file")
-draw_find_marks :: proc(t: ^Text, f: ^Find, line: int, text_x: f32, y, row_h: i32, cw: f32, th: ^Theme) {
+draw_find_marks :: proc(t: ^Text, f: ^Find, line: int, cells: Cells, text_x: f32, y, row_h: i32, cw: f32, th: ^Theme) {
     if !f.show {
         return
     }
@@ -632,8 +646,11 @@ draw_find_marks :: proc(t: ^Text, f: ^Find, line: int, text_x: f32, y, row_h: i3
         if m.line != line {
             break
         }
+        // A match is a BYTE span; the bar is drawn on the cell grid.
+        lo := cells_col(cells, m.col)
+        hi := cells_col(cells, m.col + m.n)
         color := i == f.cur ? th.find_current : th.find_match
-        fill(t, Rect{i32(text_x + cw * f32(m.col)), y, i32(cw * f32(m.n)), row_h}, color)
+        fill(t, Rect{i32(text_x + cw * f32(lo)), y, i32(cw * f32(hi - lo)), row_h}, color)
     }
 }
 
@@ -641,8 +658,8 @@ draw_find_marks :: proc(t: ^Text, f: ^Find, line: int, text_x: f32, y, row_h: i3
 // per space, a short horizontal stroke per tab. Only the indent run is marked — inner
 // spacing between words stays clean. y is the row top; row_h the padded row height.
 @(private = "file")
-draw_whitespace :: proc(t: ^Text, l: ^Line, text_x, y: f32, row_h: i32, cw, scale: f32, color: [3]f32) {
-    for r, col in l.text {
+draw_whitespace :: proc(t: ^Text, runes: []rune, text_x, y: f32, row_h: i32, cw, scale: f32, color: [3]f32) {
+    for r, col in runes {
         if r != ' ' && r != '\t' {
             break
         }

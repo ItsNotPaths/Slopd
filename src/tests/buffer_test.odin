@@ -15,7 +15,7 @@ mkbuf :: proc(text: string) -> app.Buffer {
 
 @(private = "file")
 lstr :: proc(b: ^app.Buffer, i: int) -> string {
-    return app.line_string(&b.lines[i], context.temp_allocator)
+    return string(app.doc_line(&b.doc, i, context.temp_allocator))
 }
 
 @(test)
@@ -25,7 +25,7 @@ test_buffer_newline :: proc(t: ^testing.T) {
     app.buffer_motion(&b, .Right)
     app.buffer_motion(&b, .Right) // column 2
     app.buffer_newline(&b)
-    testing.expect_value(t, len(b.lines), 2)
+    testing.expect_value(t, app.doc_line_count(&b.doc), 2)
     testing.expect_value(t, lstr(&b, 0), "he")
     testing.expect_value(t, lstr(&b, 1), "llo")
     testing.expect_value(t, b.cursors[0].head.line, 1)
@@ -38,7 +38,7 @@ test_buffer_join :: proc(t: ^testing.T) {
     defer app.buffer_destroy(&b)
     app.buffer_motion(&b, .Down) // line 1, column 0
     app.buffer_backspace(&b) // joins into the previous line
-    testing.expect_value(t, len(b.lines), 1)
+    testing.expect_value(t, app.doc_line_count(&b.doc), 1)
     testing.expect_value(t, lstr(&b, 0), "abcd")
     testing.expect_value(t, b.cursors[0].head.line, 0)
     testing.expect_value(t, b.cursors[0].head.col, 2)
@@ -98,7 +98,7 @@ test_buffer_reload_if_changed :: proc(t: ^testing.T) {
     testing.expect(t, os.write_entire_file(path, transmute([]u8)string("ALPHA\n")) == nil)
     b.disk_mtime = {} // guarantee a change is seen regardless of mtime resolution
     testing.expect(t, app.buffer_reload_if_changed(&b, true))
-    testing.expect_value(t, len(b.lines), 1)
+    testing.expect_value(t, app.doc_line_count(&b.doc), 1)
     testing.expect_value(t, lstr(&b, 0), "ALPHA")
     testing.expect_value(t, b.cursors[0].head.line, 0) // clamped from line 1
 

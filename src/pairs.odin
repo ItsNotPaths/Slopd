@@ -1,6 +1,8 @@
 package main
 
+import "core:strings"
 import "core:unicode"
+import "core:unicode/utf8"
 
 // Auto-pairs — heuristic bracket/quote pairing (no tree-sitter; per Direction).
 // Everything fans out to ALL cursors: each caret decides its own action from its
@@ -57,30 +59,32 @@ buffer_autopair :: proc(b: ^Buffer, r: rune) -> bool {
     }
     d := &b.doc
     close, _ := pair_close(r)
+    self := text(r)
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
     for c in d.cursors {
         if cursor_has_selection(c) {
             lo, hi := cursor_range(c)
+            at, to := doc_off(d, lo), doc_off(d, hi)
             if is_open(r) || is_quote(r) {
-                append(&edits, Edit{lo, hi, surround_runes(d, r, close, lo, hi), 0}) // surround
+                append(&edits, Edit{at, to, surround(d, r, close, lo, hi), 0}) // surround
             } else {
-                append(&edits, Edit{lo, hi, runes(r), 0}) // closer replaces the selection
+                append(&edits, Edit{at, to, self, 0}) // closer replaces the selection
             }
             continue
         }
-        line := &d.lines[c.head.line]
-        next := char_at(line, c.head.col)
-        prev := c.head.col > 0 ? line.text[c.head.col - 1] : 0
+        at := doc_off(d, c.head)
+        next := doc_rune_at(d, c.head)
+        prev, _ := doc_rune_before(d, c.head)
         // A quote right after a word char is an apostrophe/closing quote, not a new
         // pair (foo' / don'); only auto-pair a quote away from word text.
         quote_apostrophe := is_quote(r) && is_word(prev)
         switch {
         case (is_close(r) || is_quote(r)) && next == r:
-            append(&edits, Edit{c.head, c.head, nil, -1}) // step over the existing close
+            append(&edits, Edit{at, at, "", -1}) // step over the existing close
         case (is_open(r) || is_quote(r)) && !is_word(next) && !quote_apostrophe:
-            append(&edits, Edit{c.head, c.head, runes(r, close), 1}) // insert pair, caret inside
+            append(&edits, Edit{at, at, text(r, close), 1}) // insert pair, caret inside
         case:
-            append(&edits, Edit{c.head, c.head, runes(r), 0}) // plain
+            append(&edits, Edit{at, at, self, 0}) // plain
         }
     }
     b.dirty |= doc_commit(d, edits[:])
@@ -94,12 +98,12 @@ buffer_tab :: proc(b: ^Buffer, indent: Indent) {
     d := &b.doc
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
     for c in d.cursors {
-        line := &d.lines[c.head.line]
-        if j, ok := skip_target(line, c.head.col); ok {
+        at := doc_off(d, c.head)
+        if j, ok := skip_target(doc_line(d, c.head.line), c.head.col); ok {
             // Empty edit; caret_delta jumps the caret to just past the close.
-            append(&edits, Edit{c.head, c.head, nil, c.head.col - (j + 1)})
+            append(&edits, Edit{at, at, "", c.head.col - (j + 1)})
         } else {
-            append(&edits, Edit{c.head, c.head, indent_runes(indent), 0})
+            append(&edits, Edit{at, at, indent_text(indent), 0})
         }
     }
     b.dirty |= doc_commit(d, edits[:])
@@ -107,29 +111,28 @@ buffer_tab :: proc(b: ^Buffer, indent: Indent) {
 
 // --- internals ---
 
-// A temp-allocated rune slice, for the edits built one per cursor above. NOT `[]rune{...}` at
-// the call site: a compound literal's storage is hoisted to the enclosing frame, so slices
-// built in the per-cursor loop would all alias one buffer.
+// A temp-allocated string, for the edits built one per cursor above. Built per call rather than
+// shared: a compound literal's storage is hoisted to the enclosing frame, so a value built in the
+// per-cursor loop would alias one buffer across every cursor.
 @(private = "file")
-runes :: proc(rs: ..rune) -> []rune {
-    out := make([]rune, len(rs), context.temp_allocator)
-    copy(out, rs)
-    return out
+text :: proc(rs: ..rune) -> string {
+    return utf8.runes_to_string(rs, context.temp_allocator)
 }
 
-// Column just past the next close/quote on the line at/after col, when the caret
-// is past the leading whitespace (so Tab still indents at the line start).
+// Byte column just past the next close/quote on the line at/after col, when the caret is past
+// the leading whitespace (so Tab still indents at the line start). Every pair character is
+// ASCII, so the scan is over bytes and the answer is a byte column.
 @(private = "file")
-skip_target :: proc(line: ^Line, col: int) -> (j: int, ok: bool) {
+skip_target :: proc(src: []u8, col: int) -> (j: int, ok: bool) {
     first := 0
-    for first < line_len(line) && (line.text[first] == ' ' || line.text[first] == '\t') {
+    for first < len(src) && (src[first] == ' ' || src[first] == '\t') {
         first += 1
     }
     if col <= first {
         return 0, false
     }
-    for k in col ..< line_len(line) {
-        if is_close(line.text[k]) || is_quote(line.text[k]) {
+    for k in min(col, len(src)) ..< len(src) {
+        if is_close(rune(src[k])) || is_quote(rune(src[k])) {
             return k, true
         }
     }
@@ -137,24 +140,14 @@ skip_target :: proc(line: ^Line, col: int) -> (j: int, ok: bool) {
 }
 
 @(private = "file")
-surround_runes :: proc(d: ^Doc, open, close: rune, lo, hi: Pos) -> []rune {
+surround :: proc(d: ^Doc, open, close: rune, lo, hi: Pos) -> string {
     sel := doc_text(d, lo, hi, context.temp_allocator)
-    out := make([dynamic]rune, 0, len(sel) + 2, context.temp_allocator)
-    append(&out, open)
-    for r in sel {
-        append(&out, r)
-    }
-    append(&out, close)
-    return out[:]
+    return strings.concatenate({text(open), sel, text(close)}, context.temp_allocator)
 }
 
-// One indentation unit as runes (a tab, or N spaces) — used by Tab and by Enter's
-// auto-indent. Temp-allocated.
-indent_runes :: proc(indent: Indent) -> []rune {
+// One indentation unit (a tab, or N spaces) — used by Tab and by Enter's auto-indent.
+// Temp-allocated.
+indent_text :: proc(indent: Indent) -> string {
     n := indent.kind == .Tab ? 1 : indent.width
-    rs := make([]rune, n, context.temp_allocator)
-    for &r in rs {
-        r = indent.kind == .Tab ? '\t' : ' '
-    }
-    return rs
+    return strings.repeat(indent.kind == .Tab ? "\t" : " ", n, context.temp_allocator)
 }

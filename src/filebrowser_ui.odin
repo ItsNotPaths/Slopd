@@ -933,10 +933,10 @@ filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     }
     // The window follows the caret the way the listing's follows the selection, and for the same
     // reason: an edit that put the caret off the end must not leave you typing blind.
-    if br.path_edit && len(br.path.lines) > 0 {
-        n := line_len(&br.path.lines[0])
-        cur := br.path.cursors[br.path.primary].head.col
-        br.path_off = field_scroll(br.path_off, n, cur, field_cells(path, cw))
+    if br.path_edit && doc_line_count(&br.path) > 0 {
+        cells := doc_cells(&br.path, 0)
+        cur := cells_col(cells, br.path.cursors[br.path.primary].head.col)
+        br.path_off = field_scroll(br.path_off, cells_count(cells), cur, field_cells(path, cw))
     }
 
     top, off = smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)

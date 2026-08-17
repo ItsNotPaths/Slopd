@@ -658,7 +658,7 @@ cl_jump :: proc(a: ^App, args: string) {
 
     // `j <line>`: the first field is a line number, no file.
     if pos, ok := cl_jump_line(b, s); ok {
-        jump_to(a, "", pos.line, pos.col)
+        jump_to(a, "", pos.line, doc_cell_col(&b.doc, pos)) // jump_to counts characters
         return
     }
     // Otherwise the first field is a file; an optional second field is its line.
@@ -692,8 +692,10 @@ cl_jump_line :: proc(b: ^Buffer, args: string) -> (Pos, bool) {
     if !ok {
         return {}, false
     }
-    line = clamp(line, 0, len(b.lines) - 1)
-    return Pos{line, min(cur.col, line_len(&b.lines[line]))}, true
+    line = clamp(line, 0, doc_line_count(&b.doc) - 1)
+    // Keep the column the way a vertical motion does — the CELL it is under, not its byte
+    // offset, which on another line would land somewhere else on the grid.
+    return Pos{line, doc_byte_col(&b.doc, line, doc_cell_col(&b.doc, cur))}, true
 }
 
 // `:f <text>` / `:find <text>`: search the open buffer and put the caret on a match.

@@ -5,11 +5,11 @@ package main
 // The same indentation helpers feed the whitespace markers and indent guides the
 // renderer draws (see draw_editor), so "how deep is this line" is defined once here.
 //
-// Folds are a VIEW aid, deliberately simple in v1: their line numbers are absolute,
-// so any edit that changes the line count drops them (buffer_sync_folds). Editing
-// within a line keeps them. This sidesteps having to shuffle fold ranges through the
-// edit funnel, at the cost of folds not surviving a newline elsewhere — fine for the
-// read-a-big-file use folding is for. Fold ranges shift/stale-proof is future work.
+// A fold's line numbers are absolute, so an edit ABOVE one moves it. They are shifted through
+// the document's change log rather than dropped (buffer_sync_folds): folding is for reading a
+// big file, and a fold that vanished every time you typed a newline three hundred lines up was
+// the thing that made it not worth using. A fold whose own lines are edited IS dropped — its
+// block structure just changed, and a stale range is worse than no range.
 
 // One collapsed block: the header line stays visible; lines (line, end] are hidden.
 // end >= line+1 always (a zero-height fold is never stored).
@@ -20,12 +20,12 @@ Fold :: struct {
 
 // --- indentation geometry (shared by folds, whitespace markers, indent guides) ---
 
-// Leading-whitespace width in cells. Tabs advance one cell today (see Rendering),
-// so each leading space or tab counts as one column.
-line_indent_cols :: proc(l: ^Line) -> int {
+// Leading-whitespace width in cells. Space and tab are one byte each and tabs advance one cell
+// today (see Rendering), so over the indent run bytes and cells are the same count.
+line_indent_cols :: proc(src: []u8) -> int {
     n := 0
-    for r in l.text {
-        if r != ' ' && r != '\t' {
+    for c in src {
+        if c != ' ' && c != '\t' {
             break
         }
         n += 1
@@ -35,8 +35,8 @@ line_indent_cols :: proc(l: ^Line) -> int {
 
 // A line is blank when it holds nothing but whitespace — those lines carry no indent
 // of their own, so guides flow through them from the surrounding code.
-line_is_blank :: proc(l: ^Line) -> bool {
-    return line_indent_cols(l) == len(l.text)
+line_is_blank :: proc(src: []u8) -> bool {
+    return line_indent_cols(src) == len(src)
 }
 
 // The indent unit in cells: one tab cell for tab indentation, else the space count.
@@ -48,24 +48,24 @@ indent_unit :: proc(ind: Indent) -> int {
 // its own, so it borrows the deeper of its nearest non-blank neighbours, letting a
 // guide run unbroken through blank lines inside a block.
 buffer_indent_levels :: proc(b: ^Buffer, line, unit: int) -> int {
-    if line < 0 || line >= len(b.lines) {
+    if line < 0 || line >= doc_line_count(&b.doc) {
         return 0
     }
     unit := max(1, unit) // never divide by zero, whatever a caller passes
-    if !line_is_blank(&b.lines[line]) {
-        return line_indent_cols(&b.lines[line]) / unit
+    if !line_is_blank(doc_line(&b.doc, line)) {
+        return line_indent_cols(doc_line(&b.doc, line)) / unit
     }
     up := 0
     for i := line - 1; i >= 0; i -= 1 {
-        if !line_is_blank(&b.lines[i]) {
-            up = line_indent_cols(&b.lines[i])
+        if !line_is_blank(doc_line(&b.doc, i)) {
+            up = line_indent_cols(doc_line(&b.doc, i))
             break
         }
     }
     dn := 0
-    for i := line + 1; i < len(b.lines); i += 1 {
-        if !line_is_blank(&b.lines[i]) {
-            dn = line_indent_cols(&b.lines[i])
+    for i := line + 1; i < doc_line_count(&b.doc); i += 1 {
+        if !line_is_blank(doc_line(&b.doc, i)) {
+            dn = line_indent_cols(doc_line(&b.doc, i))
             break
         }
     }
@@ -80,19 +80,27 @@ Scope :: struct {
     ok:    bool, // false when the cursor is at top level (nothing to highlight)
 }
 
-// The scope the cursor sits in, for the active indent-guide highlight. The span is the
-// run of lines around the cursor at least as deeply indented as the cursor's line; its
-// rail is the cursor depth's outer edge (level = depth-1).
-buffer_active_scope :: proc(b: ^Buffer, cursor_line, unit: int) -> Scope {
+// The scope the cursor sits in, for the active indent-guide highlight. The span is the run of
+// lines around the cursor at least as deeply indented as the cursor's line; its rail is the
+// cursor depth's outer edge (level = depth-1).
+//
+// **Bounded to [first, last], the lines the caller will DRAW.** The rail is only ever painted
+// inside the viewport, so a walk past it buys nothing — and unbounded it is O(file) per frame,
+// idle, forever: a caret one level deep in a 90k-line Python class spans the whole class body
+// and cost 1.55ms of every frame. Inside the bound the span is still exact, because the walk
+// stops on the run ending, not on the bound, whenever the run ends first.
+buffer_active_scope :: proc(b: ^Buffer, cursor_line, unit, first, last: int) -> Scope {
     depth := buffer_indent_levels(b, cursor_line, unit)
     if depth <= 0 {
         return {}
     }
+    lo_bound := max(0, first)
+    hi_bound := min(last, doc_line_count(&b.doc) - 1)
     s := Scope{lo = cursor_line, hi = cursor_line, level = depth - 1, ok = true}
-    for s.lo > 0 && buffer_indent_levels(b, s.lo - 1, unit) >= depth {
+    for s.lo > lo_bound && buffer_indent_levels(b, s.lo - 1, unit) >= depth {
         s.lo -= 1
     }
-    for s.hi < len(b.lines) - 1 && buffer_indent_levels(b, s.hi + 1, unit) >= depth {
+    for s.hi < hi_bound && buffer_indent_levels(b, s.hi + 1, unit) >= depth {
         s.hi += 1
     }
     return s
@@ -128,8 +136,8 @@ buffer_fold_index :: proc(b: ^Buffer, line: int) -> int {
 // The first visible line at or after `line` (clamped to the last line). Used to keep
 // the scroll top and a landing cursor on a real, on-screen line.
 buffer_next_visible :: proc(b: ^Buffer, line: int) -> int {
-    i := clamp(line, 0, len(b.lines) - 1)
-    for i < len(b.lines) - 1 && buffer_line_hidden(b, i) {
+    i := clamp(line, 0, doc_line_count(&b.doc) - 1)
+    for i < doc_line_count(&b.doc) - 1 && buffer_line_hidden(b, i) {
         i += 1
     }
     return i
@@ -137,7 +145,7 @@ buffer_next_visible :: proc(b: ^Buffer, line: int) -> int {
 
 // The first visible line at or before `line` (clamped to 0).
 buffer_prev_visible :: proc(b: ^Buffer, line: int) -> int {
-    i := clamp(line, 0, len(b.lines) - 1)
+    i := clamp(line, 0, doc_line_count(&b.doc) - 1)
     for i > 0 && buffer_line_hidden(b, i) {
         i -= 1
     }
@@ -173,9 +181,9 @@ buffer_back_visible :: proc(b: ^Buffer, line, n: int) -> int {
 // buffer_back_visible, used by the drag autoscroll. It ends on buffer_prev_visible because
 // the LAST line CAN be hidden (line 0 cannot), so a walk that runs out must back out.
 buffer_fwd_visible :: proc(b: ^Buffer, line, n: int) -> int {
-    i := clamp(line, 0, len(b.lines) - 1)
+    i := clamp(line, 0, doc_line_count(&b.doc) - 1)
     left := n
-    for left > 0 && i < len(b.lines) - 1 {
+    for left > 0 && i < doc_line_count(&b.doc) - 1 {
         i += 1
         if !buffer_line_hidden(b, i) {
             left -= 1
@@ -186,22 +194,60 @@ buffer_fwd_visible :: proc(b: ^Buffer, line, n: int) -> int {
 
 // --- lifecycle / invalidation ---
 
-// Drops folds when the line count changed (an insert/delete moved every index below
-// it — see the file header) and clamps any fold that now runs past the end. Cheap;
-// called each frame before the folds are read.
+// Bring the fold set up to date with the edits since it was last synced, then clamp. Called
+// each frame before the folds are read, and again by anything that edits mid-frame.
+//
+// It reads the change log through its own reader slot, so it does NOT matter whether the
+// highlighter has already looked at the same changes — the two are independent, and neither
+// call order nor how often this runs can change the answer.
 buffer_sync_folds :: proc(b: ^Buffer) {
+    changes, lost := doc_changes_since(&b.doc, .Folds)
+    doc_changes_ack(&b.doc, .Folds) // acked even with no folds, so the log can trim
     if len(b.folds) == 0 {
-        b.fold_nlines = len(b.lines)
         return
     }
-    if len(b.lines) != b.fold_nlines {
-        clear(&b.folds)
-        b.fold_nlines = len(b.lines)
+    if lost {
+        clear(&b.folds) // the log does not reach back far enough to shift them honestly
         return
     }
-    // Same line count: ranges are still valid, but defensively clamp ends.
+    for c in changes {
+        fold_shift(b, c)
+    }
+    last := doc_line_count(&b.doc) - 1
     for &f in b.folds {
-        f.end = min(f.end, len(b.lines) - 1)
+        f.end = min(f.end, last)
+    }
+    // A fold clamped down to its own header is no longer hiding anything.
+    for i := len(b.folds) - 1; i >= 0; i -= 1 {
+        if b.folds[i].end <= b.folds[i].line {
+            unordered_remove(&b.folds, i)
+        }
+    }
+}
+
+// Move (or drop) every fold across one change. A change spans the lines [start, old_end] and
+// leaves the line count `delta` different; anything wholly below it is untouched, anything
+// wholly above it slides, and anything it reaches into is dropped.
+@(private = "file")
+fold_shift :: proc(b: ^Buffer, c: Doc_Change) {
+    lo := c.start_pt.line
+    hi := c.old_end_pt.line
+    delta := c.new_end_pt.line - c.old_end_pt.line
+    if delta == 0 {
+        return // an edit within its lines moves nothing, whatever else it did
+    }
+    for i := len(b.folds) - 1; i >= 0; i -= 1 {
+        f := &b.folds[i]
+        switch {
+        case hi < f.line: // entirely above: the whole fold slides
+            f.line += delta
+            f.end += delta
+        case lo > f.end: // entirely below: nothing to do
+        case:
+            // It reaches the header or the hidden body. The block's shape has changed and a
+            // range guessed from here would hide the wrong lines, so let it go.
+            unordered_remove(&b.folds, i)
+        }
     }
 }
 
@@ -222,7 +268,6 @@ buffer_fold_toggle :: proc(a: ^App, b: ^Buffer) {
         return
     }
     append(&b.folds, Fold{line = start, end = end})
-    b.fold_nlines = len(b.lines)
     // Keep every cursor on a visible line (the header), now that the body is hidden.
     buffer_collapse_hidden_cursors(b)
 }
@@ -233,8 +278,8 @@ buffer_collapse_hidden_cursors :: proc(b: ^Buffer) {
     for &c in b.cursors {
         if buffer_line_hidden(b, c.head.line) {
             h := buffer_prev_visible(b, c.head.line)
-            p := Pos{h, min(c.head.col, line_len(&b.lines[h]))}
-            c.head, c.anchor, c.goal = p, p, p.col
+            p := doc_clamp_pos(&b.doc, Pos{h, c.head.col})
+            c.head, c.anchor, c.goal = p, p, doc_cell_col(&b.doc, p)
         }
     }
     doc_merge_cursors(&b.doc)
@@ -254,24 +299,24 @@ fold_range :: proc(a: ^App, b: ^Buffer, line: int) -> (start, end: int, ok: bool
 // deeper. The block runs through every following line that is blank or more indented
 // than the header; trailing blank lines are not pulled in.
 fold_range_indent :: proc(b: ^Buffer, line: int) -> (start, end: int, ok: bool) {
-    if line < 0 || line >= len(b.lines) {
+    if line < 0 || line >= doc_line_count(&b.doc) {
         return 0, 0, false
     }
-    base := line_indent_cols(&b.lines[line])
+    base := line_indent_cols(doc_line(&b.doc, line))
     // The first line below must be deeper for there to be a block to fold.
     nxt := line + 1
-    for nxt < len(b.lines) && line_is_blank(&b.lines[nxt]) {
+    for nxt < doc_line_count(&b.doc) && line_is_blank(doc_line(&b.doc, nxt)) {
         nxt += 1
     }
-    if nxt >= len(b.lines) || line_indent_cols(&b.lines[nxt]) <= base {
+    if nxt >= doc_line_count(&b.doc) || line_indent_cols(doc_line(&b.doc, nxt)) <= base {
         return 0, 0, false
     }
     last := line
-    for i := line + 1; i < len(b.lines); i += 1 {
-        if line_is_blank(&b.lines[i]) {
+    for i := line + 1; i < doc_line_count(&b.doc); i += 1 {
+        if line_is_blank(doc_line(&b.doc, i)) {
             continue // a blank line never ends a block
         }
-        if line_indent_cols(&b.lines[i]) <= base {
+        if line_indent_cols(doc_line(&b.doc, i)) <= base {
             break
         }
         last = i

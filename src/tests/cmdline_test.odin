@@ -231,20 +231,20 @@ test_cl_reload_conflict :: proc(t: ^testing.T) {
     // `:reload n` keeps my edits and clears the conflict.
     app.cl_exec(&a, ":reload n")
     testing.expect(t, !b.conflict)
-    testing.expect_value(t, app.line_string(&b.lines[0], context.temp_allocator), "mine")
+    testing.expect_value(t, string(app.doc_line(&b.doc, 0, context.temp_allocator)), "mine")
 
     // Re-raise, then `:reload y` takes the disk version (edits discarded, buffer clean).
     b.conflict = true
     app.cl_exec(&a, ":reload y")
     testing.expect(t, !b.conflict)
     testing.expect(t, !b.dirty)
-    testing.expect_value(t, app.line_string(&b.lines[0], context.temp_allocator), "disk")
+    testing.expect_value(t, string(app.doc_line(&b.doc, 0, context.temp_allocator)), "disk")
 
     // With no conflict, a bare `:reload` is a manual re-read from disk (discards edits).
     app.buffer_set_text(b, "scratch")
     b.dirty = true
     app.cl_exec(&a, ":reload")
-    testing.expect_value(t, app.line_string(&b.lines[0], context.temp_allocator), "disk")
+    testing.expect_value(t, string(app.doc_line(&b.doc, 0, context.temp_allocator)), "disk")
 }
 
 // An open command line owns keys even when a live terminal is focused (it overlays

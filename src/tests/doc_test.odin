@@ -12,7 +12,7 @@ mkdoc :: proc(s: string) -> app.Doc {
 
 @(private = "file")
 dline :: proc(d: ^app.Doc, i: int) -> string {
-    return app.line_string(&d.lines[i], context.temp_allocator)
+    return string(app.doc_line(d, i, context.temp_allocator))
 }
 
 // head position of cursor i, as a convenient pair to compare.
@@ -80,13 +80,13 @@ test_doc_newline_and_join :: proc(t: ^testing.T) {
     app.doc_move(&d, .Right)
     app.doc_move(&d, .Right) // col 2
     app.doc_newline(&d) // split into "he" / "llo"
-    testing.expect_value(t, len(d.lines), 2)
+    testing.expect_value(t, app.doc_line_count(&d), 2)
     testing.expect_value(t, dline(&d, 0), "he")
     testing.expect_value(t, dline(&d, 1), "llo")
     l, c := head(&d);testing.expect_value(t, l, 1);testing.expect_value(t, c, 0)
 
     app.doc_backspace(&d) // at col 0 -> join back
-    testing.expect_value(t, len(d.lines), 1)
+    testing.expect_value(t, app.doc_line_count(&d), 1)
     testing.expect_value(t, dline(&d, 0), "hello")
     l, c = head(&d);testing.expect_value(t, l, 0);testing.expect_value(t, c, 2)
 }
@@ -118,7 +118,7 @@ test_doc_multi_cursor_newline :: proc(t: ^testing.T) {
     append(&d.cursors, app.Cursor{head = {1, 1}, anchor = {1, 1}})
 
     app.doc_newline(&d) // -> "a" / "b" / "c" / "d"
-    testing.expect_value(t, len(d.lines), 4)
+    testing.expect_value(t, app.doc_line_count(&d), 4)
     testing.expect_value(t, dline(&d, 0), "a")
     testing.expect_value(t, dline(&d, 1), "b")
     testing.expect_value(t, dline(&d, 2), "c")
@@ -171,7 +171,7 @@ test_doc_select_multiline_delete :: proc(t: ^testing.T) {
     app.doc_move(&d, .Right, true) // select "b" -> head {0,2}
     app.doc_move(&d, .Down, true) // extend down to {1,2}: selection "bc\nde"
     app.doc_delete(&d)
-    testing.expect_value(t, len(d.lines), 1)
+    testing.expect_value(t, app.doc_line_count(&d), 1)
     testing.expect_value(t, dline(&d, 0), "af")
 }
 
@@ -316,22 +316,37 @@ test_doc_drag_span :: proc(t: ^testing.T) {
     testing.expect_value(t, hi, app.Pos{1, 5})
 }
 
-// Multi-byte runes. Columns are RUNE indices while the capture that backs copy/undo/reparse
-// sizes itself in BYTES, so a confusion between the two shows up here as a truncated or
-// mis-joined string. Exercises the single-line splice and the cross-line capture together.
+// Multi-byte runes. A Pos column counts BYTES while the painter counts CELLS, so a confusion
+// between the two shows up here as a truncated or mis-joined string. Exercises the splice, the
+// cross-line read, and the byte/cell bridge together.
+//
+//   h é(2) l l o ␣ →(3) ␣ w ö(2) r l d      bytes: 0 1 3 4 5 6 7 10 11 12 14 15 16, len 17
 @(test)
 test_doc_multibyte_roundtrip :: proc(t: ^testing.T) {
     d := mkdoc("héllo → wörld\nsecond ✓ line")
     defer app.doc_destroy(&d)
 
-    // The whole document joined with '\n' — the capture the highlighter reparses from.
+    // The whole document, newlines and all — what the highlighter parses.
     testing.expect_value(t, app.doc_string(&d, context.temp_allocator), "héllo → wörld\nsecond ✓ line")
+    testing.expect_value(t, app.doc_line_len(&d, 0), 17) // BYTES
 
     // A one-line span landing on a 3-byte rune.
-    testing.expect_value(t, app.doc_text(&d, app.Pos{0, 6}, app.Pos{0, 7}, context.temp_allocator), "→")
+    testing.expect_value(t, app.doc_text(&d, app.Pos{0, 7}, app.Pos{0, 10}, context.temp_allocator), "→")
 
     // A span crossing the break: tail of line 0, the newline, head of line 1.
-    testing.expect_value(t, app.doc_text(&d, app.Pos{0, 8}, app.Pos{1, 6}, context.temp_allocator), "wörld\nsecond")
+    testing.expect_value(t, app.doc_text(&d, app.Pos{0, 11}, app.Pos{1, 6}, context.temp_allocator), "wörld\nsecond")
+
+    // The bridge: 13 cells over 17 bytes, and the two conversions are inverses on a boundary.
+    cells := app.doc_cells(&d, 0, context.temp_allocator)
+    testing.expect_value(t, app.cells_count(cells), 13)
+    testing.expect_value(t, app.doc_cell_col(&d, app.Pos{0, 11}), 8) // the 'w'
+    testing.expect_value(t, app.doc_byte_col(&d, 0, 8), 11)
+    testing.expect_value(t, app.cells_off(cells, 6), 7) // the arrow
+    testing.expect_value(t, app.cells_col(cells, 7), 6)
+
+    // A column landing INSIDE a rune snaps back onto its start — the one gate, doc_clamp_pos.
+    testing.expect_value(t, app.doc_clamp_pos(&d, app.Pos{0, 8}), app.Pos{0, 7})
+    testing.expect_value(t, app.doc_clamp_pos(&d, app.Pos{0, 9}), app.Pos{0, 7})
 
     // Typing and deleting within the line, where the splice replaces the rebuild.
     app.doc_reset_cursor(&d, app.Pos{0, 1})
@@ -339,5 +354,62 @@ test_doc_multibyte_roundtrip :: proc(t: ^testing.T) {
     testing.expect_value(t, dline(&d, 0), "hüéllo → wörld")
     app.doc_backspace(&d)
     testing.expect_value(t, dline(&d, 0), "héllo → wörld")
-    testing.expect_value(t, len(d.lines), 2) // a same-line edit never touches the line array
+    testing.expect_value(t, app.doc_line_count(&d), 2) // a same-line edit never touches the line array
+}
+
+// What doc_set_text stores: CRLF collapsed to LF, and ONE trailing newline dropped (Buffer
+// remembers it as final_newline and puts it back on save). The order matters — trimming the
+// '\n' of a final "\r\n" first would leave the '\r' on the last line.
+@(test)
+test_doc_normalizes_on_load :: proc(t: ^testing.T) {
+    lf := mkdoc("a\nb\n")
+    defer app.doc_destroy(&lf)
+    testing.expect_value(t, app.doc_line_count(&lf), 2)
+    testing.expect_value(t, app.doc_string(&lf, context.temp_allocator), "a\nb")
+
+    crlf := mkdoc("a\r\nb\r\n")
+    defer app.doc_destroy(&crlf)
+    testing.expect_value(t, app.doc_line_count(&crlf), 2)
+    testing.expect_value(t, app.doc_string(&crlf, context.temp_allocator), "a\nb")
+    testing.expect_value(t, dline(&crlf, 1), "b") // and not "b\r"
+
+    // No trailing newline: nothing is dropped, and a lone CR is content, not a break.
+    bare := mkdoc("a\rb")
+    defer app.doc_destroy(&bare)
+    testing.expect_value(t, app.doc_line_count(&bare), 1)
+    testing.expect_value(t, app.doc_string(&bare, context.temp_allocator), "a\rb")
+}
+
+// The sticky column carried through vertical motion is a CELL, not a byte. Stepping down from
+// past a multi-byte rune must land under the same GLYPH — a byte goal drifts sideways by one
+// column per extra byte above it, and drifts back on the way up.
+//
+//   line 0:  é(2) é(2) é(2) ␣ a b c    7 cells over 10 bytes
+//   line 1:  x x x x x x x             7 cells over 7 bytes
+@(test)
+test_doc_vertical_goal_is_a_cell :: proc(t: ^testing.T) {
+    d := mkdoc("ééé abc\nxxxxxxx")
+    defer app.doc_destroy(&d)
+    testing.expect_value(t, app.doc_line_len(&d, 0), 10)
+    testing.expect_value(t, app.doc_cell_count(&d, 0), 7)
+
+    app.doc_reset_cursor(&d, app.Pos{0, 8}) // the 'b': byte 8, cell 5
+    testing.expect_value(t, d.cursors[0].goal, 5)
+
+    app.doc_move(&d, .Down)
+    l, c := head(&d)
+    testing.expect_value(t, l, 1)
+    testing.expect_value(t, c, 5) // cell 5 of an ASCII line is byte 5, NOT byte 8
+
+    app.doc_move(&d, .Up) // and back under the same glyph it left
+    l, c = head(&d)
+    testing.expect_value(t, l, 0)
+    testing.expect_value(t, c, 8)
+
+    // Past the end of a shorter line the goal is kept for the next step, as it always was.
+    app.doc_reset_cursor(&d, app.Pos{1, 7}) // cell 7, past the end of line 0's 7 cells
+    app.doc_move(&d, .Up)
+    l, c = head(&d)
+    testing.expect_value(t, l, 0)
+    testing.expect_value(t, c, 10) // clamped to the line's byte length
 }

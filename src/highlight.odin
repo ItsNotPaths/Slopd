@@ -6,17 +6,23 @@ import "core:os"
 import "core:path/filepath"
 import "core:slice"
 import "core:strings"
+import "base:runtime"
 import "core:text/regex"
 import "core:unicode/utf8"
 import ts "../vendor/odin-tree-sitter"
 
-// Syntax highlighting via tree-sitter. A buffer's language is resolved from its file
-// extension against the registry; the grammar's compiled parser (grammars/<lang>.so) is
-// dlopen'd once and its highlights query (grammars/<lang>.scm) compiled once, both cached
-// by language. On draw we colour the visible rows from the query's captures. Each content
-// change reparses the WHOLE buffer (the tree is cached between changes) — simple and fast
-// for normal files; incremental reparse is a later optimisation. The engine is the vendored
-// `ts` bindings (libtree-sitter, statically linked); the .so is the only dynamic piece.
+// Syntax highlighting via tree-sitter. A buffer's language is resolved from its file extension
+// against the registry; the grammar's compiled parser (grammars/<lang>.so) is dlopen'd once and
+// its highlights query (grammars/<lang>.scm) compiled once, both cached by language. On draw we
+// colour the visible rows from the query's captures. The engine is the vendored `ts` bindings
+// (libtree-sitter, statically linked); the .so is the only dynamic piece.
+//
+// **Nothing is serialised and nothing is reparsed whole.** The parser reads the document through
+// a callback (hl_read) that hands it a pointer straight into the piece table, so a keystroke
+// costs no copy; and each content change is folded into the cached tree as a ts.Input_Edit
+// (doc.odin records them) before an incremental reparse, so tree-sitter reuses every subtree the
+// edit did not touch. A full parse happens on a load, on a buffer switch, and when the change
+// list overflowed — the three cases where there is nothing to be incremental about.
 
 // A colour per rune for one line (length == the line's rune count). An unhighlighted
 // rune keeps the default foreground.
@@ -60,12 +66,20 @@ Highlighter :: struct {
     parser: ts.Parser,
     cursor: ts.Query_Cursor,
     loaded: map[string]Loaded_Grammar, // by language name; load/compile once
-    // The last buffer's parse tree, reused across frames until its content changes.
-    // A caret blink or smooth scroll redraws without reparsing the whole file.
+    // The parse tree we HOLD, which is not always the one the document deserves: parsing is the
+    // worker's, and between an edit and the tree that answers it the painter goes on using this
+    // one. A caret blink or smooth scroll redraws without touching it at all.
     tree:     ts.Tree,
     tree_buf: rawptr, // the Buffer it was parsed from (identity)
     tree_ver: u64, // doc.version at parse time
-    tree_src: string, // exact text the tree was parsed from (node offsets index it); heap
+    worker:   Hl_Worker,
+    // The request in flight, so a frame does not ask twice for the same version. `no_reuse`
+    // says the held tree cannot be a base for the next one — the changes that would bring it
+    // forward were handed to a job that came back empty.
+    in_flight: bool,
+    want_buf:  rawptr,
+    want_ver:  u64,
+    no_reuse:  bool,
     // Painted-row cache: highlight_visible repaints the same window every frame (idle caret
     // blink, a non-editor animation), so memoize the last paint keyed by everything it
     // depends on — buffer, version, window, theme. Heap-owned; survives the temp free_all.
@@ -78,12 +92,25 @@ Highlighter :: struct {
 }
 
 highlighter_init :: proc(h: ^Highlighter) {
-    h.parser = ts.parser_new()
+    h.parser = ts.parser_new() // for ts_filter_definitions, which parses files off disk
     h.cursor = ts.query_cursor_new()
     h.loaded = make(map[string]Loaded_Grammar)
+    hl_worker_start(&h.worker)
 }
 
 highlighter_destroy :: proc(h: ^Highlighter) {
+    // The worker first: a parse in flight reads the grammar's tables inside its .so, so the
+    // thread must be joined before anything below — unloading a library out from under it is
+    // a fault at a wild offset into those tables (the E5 crash).
+    hl_worker_stop(&h.worker)
+    hl_cache_free(h)
+    if h.tree != nil {
+        ts.tree_delete(h.tree)
+    }
+    ts.query_cursor_delete(h.cursor)
+    // Before the unloads too: deleting a parser calls the external scanner's destroy, which is
+    // code in the grammar's .so.
+    ts.parser_delete(h.parser)
     for _, g in h.loaded {
         for preds in g.preds {
             for p in preds {
@@ -106,13 +133,6 @@ highlighter_destroy :: proc(h: ^Highlighter) {
         }
     }
     delete(h.loaded)
-    hl_cache_free(h)
-    if h.tree != nil {
-        ts.tree_delete(h.tree)
-        delete(h.tree_src)
-    }
-    ts.query_cursor_delete(h.cursor)
-    ts.parser_delete(h.parser)
 }
 
 // Loads grammar `name` from an explicit `dir` into the highlighter's cache under `name` —
@@ -124,31 +144,126 @@ highlighter_preload :: proc(h: ^Highlighter, dir, name: string) -> bool {
     return g.ok
 }
 
-// Parses b once and caches the tree, returning it unchanged on later frames until
-// the buffer's content version moves. nil if the parse fails. The cached tree is
-// owned by the highlighter (freed on reparse / destroy) — callers must not delete it.
+// The parse tree the highlighter currently HOLDS, and whether it is for b at its present
+// version. It never parses: parsing is the worker's (hlworker.odin), and a caller that cannot
+// use a stale tree either waits (hl_settle) or does without.
 @(private = "file")
-highlighter_tree :: proc(h: ^Highlighter, b: ^Buffer, lang: ts.Language) -> ts.Tree {
-    if h.tree != nil && h.tree_buf == rawptr(b) && h.tree_ver == b.version {
-        return h.tree
+highlighter_tree :: proc(h: ^Highlighter, b: ^Buffer, lang: ts.Language) -> (tree: ts.Tree, current: bool) {
+    hl_publish(h)
+    hl_request(h, b, lang)
+    hl_publish(h) // a fast job may already be done; take it now
+    if h.tree != nil && h.tree_buf == rawptr(b) {
+        return h.tree, h.tree_ver == b.version
     }
-    if !ts.parser_set_language(h.parser, lang) {
-        return nil
+    return nil, false
+}
+
+// Adopt whatever the worker has finished. A tree for a buffer we are no longer showing is
+// dropped rather than kept — switching buffers already means a full parse.
+@(private = "file")
+hl_publish :: proc(h: ^Highlighter) {
+    done, got := hl_worker_take(&h.worker)
+    if !got {
+        return
     }
-    // Heap-owned (not temp): kept past this frame so predicate evaluation can read node
-    // text without rebuilding the whole-buffer string each cache-miss frame (a scroll).
-    text := doc_string(&b.doc, context.allocator)
-    tree := ts.parser_parse_string(h.parser, text)
-    if tree == nil {
-        delete(text)
-        return nil
+    h.in_flight = false
+    if h.want_buf != done.buf {
+        ts.tree_delete(done.tree)
+        return
     }
     if h.tree != nil {
         ts.tree_delete(h.tree)
-        delete(h.tree_src)
     }
-    h.tree, h.tree_buf, h.tree_ver, h.tree_src = tree, rawptr(b), b.version, text
-    return tree
+    h.tree, h.tree_buf, h.tree_ver = done.tree, done.buf, done.version
+}
+
+// Ask the worker for b's tree at its present version, unless that is already what we hold or
+// what is being parsed. The changes are ACKED here, at hand-over: they belong to the job now,
+// and if it comes back empty the cached tree can no longer be brought forward, so the next
+// request starts from nothing.
+@(private = "file")
+hl_request :: proc(h: ^Highlighter, b: ^Buffer, lang: ts.Language) {
+    if h.tree != nil && h.tree_buf == rawptr(b) && h.tree_ver == b.version {
+        return // in step
+    }
+    if h.in_flight && h.want_buf == rawptr(b) && h.want_ver == b.version {
+        return // already asked for exactly this
+    }
+
+    // The base tree is COPIED, not handed over: the painter goes on using ours while the worker
+    // edits and reparses its own. ts_tree_copy is a shallow share of refcounted subtrees.
+    base: ts.Tree
+    changes: []Doc_Change
+    if !h.no_reuse && h.tree != nil && h.tree_buf == rawptr(b) {
+        pending, lost := doc_changes_since(&b.doc, .Highlight)
+        if !lost {
+            base = ts.tree_copy(h.tree)
+            changes = slice.clone(pending, hl_job_allocator())
+        }
+    }
+    doc_changes_ack(&b.doc, .Highlight) // handed over (or deliberately skipped past)
+    h.no_reuse = false
+
+    hl_worker_submit(
+        &h.worker,
+        Hl_Job {
+            text = pt_read(&b.doc.pt, 0, b.doc.pt.size, hl_job_allocator()),
+            changes = changes,
+            base = base,
+            lang = lang,
+            buf = rawptr(b),
+            version = b.version,
+        },
+    )
+    h.in_flight, h.want_buf, h.want_ver = true, rawptr(b), b.version
+}
+
+// Wait until the held tree is b's, at b's version. For the two callers that cannot use a stale
+// answer and are not on the paint path — auto-indent's "is this bracket inside a string" and the
+// fold toggle — both of which are single user actions where a few ms is invisible, and both of
+// whose non-tree fallbacks are worse than waiting.
+hl_settle :: proc(a: ^App, b: ^Buffer) {
+    g, ok := highlighter_grammar(a, b.path)
+    if !ok {
+        return
+    }
+    h := &a.hl
+    // Bounded: a job can be superseded by another buffer's, and waiting is a courtesy, not a
+    // contract. Two rounds covers "publish what is done, then wait for what we just asked for".
+    for _ in 0 ..< 3 {
+        hl_publish(h)
+        if h.tree != nil && h.tree_buf == rawptr(b) && h.tree_ver == b.version {
+            return
+        }
+        hl_request(h, b, g.lang)
+        if !h.in_flight {
+            return // no worker running: nothing to wait for
+        }
+        hl_worker_idle(&h.worker)
+    }
+    hl_publish(h)
+}
+
+// Package-visible: the worker (hlworker.odin) replays the same changes onto the same tree.
+hl_input_edit :: proc(c: Doc_Change) -> ts.Input_Edit {
+    return ts.Input_Edit {
+        start_byte = u32(c.start),
+        old_end_byte = u32(c.old_end),
+        new_end_byte = u32(c.new_end),
+        start_point = ts.Point{u32(c.start_pt.line), u32(c.start_pt.col)},
+        old_end_point = ts.Point{u32(c.old_end_pt.line), u32(c.old_end_pt.col)},
+        new_end_point = ts.Point{u32(c.new_end_pt.line), u32(c.new_end_pt.col)},
+    }
+}
+
+// A captured node's text, read out of the document for predicate evaluation. A node is small —
+// an identifier, a keyword — so the copy costs nothing beside the whole-buffer string it
+// replaces, which used to be held on the heap purely so this could index into it.
+@(private = "file")
+hl_node_text :: proc(d: ^Doc, node: ts.Node) -> string {
+    lo := int(ts.node_start_byte(node))
+    hi := int(ts.node_end_byte(node))
+    return string(pt_read(&d.pt, lo, hi, context.temp_allocator))
 }
 
 // A captured node's span + the colour it paints. Hoisted to file scope so the sort
@@ -184,19 +299,18 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
         return h.cache_rows
     }
 
-    // The whole-buffer parse is cached (tree-sitter needs the full text); we only
-    // query the visible rows, so the per-frame work is bounded by the viewport and a
-    // settled view (blinking caret, smooth scroll) reuses the tree without reparsing.
-    tree := highlighter_tree(h, b, g.lang)
-    if tree == nil {
-        return nil
+    // The painter NEVER waits for a parse. If the held tree is not for this version, the last
+    // rows are what goes on screen: querying an old tree against the new text would put every
+    // colour after the edit in the wrong place, where keeping the old rows merely leaves a
+    // just-typed line uncoloured (the `len(row) == ncells` guard below drops a row whose line
+    // has changed length back to plain foreground). The worker posts a wake when it lands, and
+    // that frame paints it right.
+    tree, current := highlighter_tree(h, b, g.lang)
+    if tree == nil || !current {
+        return h.cache_rows // nil when there has never been a paint, which draws plain fg
     }
 
-    // The exact text the tree was parsed from (cached alongside it) — node byte offsets
-    // index into it, so predicate evaluation (capture text, #lua-match?, …) reads it.
-    source := h.tree_src
-
-    last := min(first_line + count, len(b.lines))
+    last := min(first_line + count, doc_line_count(&b.doc))
     ts.query_cursor_set_point_range(h.cursor, {u32(first_line), 0}, {u32(last), 0})
     ts.query_cursor_exec(h.cursor, g.query, ts.tree_root_node(tree))
 
@@ -214,7 +328,7 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
         if !mapped {
             continue
         }
-        if !predicates_ok(g, u32(match.pattern_index), match, source) {
+        if !predicates_ok(g, u32(match.pattern_index), match, &b.doc) {
             continue
         }
         append(
@@ -249,10 +363,10 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
     rows := make([]Row_Colors, count)
     for k in 0 ..< count {
         line := first_line + k
-        if line >= len(b.lines) {
+        if line >= doc_line_count(&b.doc) {
             continue
         }
-        rc := make(Row_Colors, len(b.lines[line].text))
+        rc := make(Row_Colors, doc_cell_count(&b.doc, line))
         slice.fill(rc, th.fg)
         rows[k] = rc
     }
@@ -268,10 +382,10 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
             if rows[k] == nil {
                 continue // line past end-of-buffer (defensive; count keeps k in range)
             }
-            runes := b.lines[row].text[:]
+            cells := doc_cells(&b.doc, row)
             lo_byte := row == int(s.start.row) ? int(s.start.col) : 0
             hi_byte := row == int(s.end.row) ? int(s.end.col) : max(int)
-            for c in byte_to_rune_col(runes, lo_byte) ..< byte_to_rune_col(runes, hi_byte) {
+            for c in cells_col(cells, lo_byte) ..< cells_col(cells, hi_byte) {
                 rows[k][c] = s.color
             }
         }
@@ -298,13 +412,13 @@ highlight_dump_captures :: proc(a: ^App, b: ^Buffer, first_line, count: int) {
         return
     }
     h := &a.hl
-    tree := highlighter_tree(h, b, g.lang)
+    hl_settle(a, b) // a debug dump wants the real tree, not whatever is to hand
+    tree, _ := highlighter_tree(h, b, g.lang)
     if tree == nil {
         fmt.println("no tree")
         return
     }
-    source := h.tree_src
-    last := min(first_line + count, len(b.lines))
+    last := min(first_line + count, doc_line_count(&b.doc))
     ts.query_cursor_set_point_range(h.cursor, {u32(first_line), 0}, {u32(last), 0})
     ts.query_cursor_exec(h.cursor, g.query, ts.tree_root_node(tree))
     for {
@@ -326,7 +440,7 @@ highlight_dump_captures :: proc(a: ^App, b: ^Buffer, first_line, count: int) {
             ep.row,
             ep.col,
             mapped ? "MAPPED  " : "unmapped",
-            predicates_ok(g, u32(match.pattern_index), match, source),
+            predicates_ok(g, u32(match.pattern_index), match, &b.doc),
         )
     }
 }
@@ -345,21 +459,24 @@ hl_cache_free :: proc(h: ^Highlighter) {
 // to hide. Finds the innermost multi-line node that BEGINS on `line` (a brace block, a proc
 // body, …). ok=false with no grammar or no such node — the caller falls back to an indent scan.
 highlight_fold_range :: proc(a: ^App, b: ^Buffer, line: int) -> (start, end: int, ok: bool) {
-    if line < 0 || line >= len(b.lines) {
+    if line < 0 || line >= doc_line_count(&b.doc) {
         return 0, 0, false
     }
     g, found := highlighter_grammar(a, b.path)
     if !found {
         return 0, 0, false
     }
-    tree := highlighter_tree(&a.hl, b, g.lang)
-    if tree == nil {
+    // Ctrl+Enter is one keypress, not a frame: waiting for the real tree costs a few ms nobody
+    // can feel, and the alternative — the indentation fallback — folds a worse range.
+    hl_settle(a, b)
+    tree, current := highlighter_tree(&a.hl, b, g.lang)
+    if tree == nil || !current {
         return 0, 0, false
     }
 
     // Descend at the line's first real token (past the indentation), then climb to
     // the nearest ancestor that opens here and spans more than one line.
-    col := u32(line_indent_cols(&b.lines[line]))
+    col := u32(line_indent_cols(doc_line(&b.doc, line)))
     node := ts.node_descendant_for_range(ts.tree_root_node(tree), ts.Point{u32(line), col}, ts.Point{u32(line), col})
     for !ts.node_is_null(node) {
         sp := ts.node_start_point(node)
@@ -368,14 +485,14 @@ highlight_fold_range :: proc(a: ^App, b: ^Buffer, line: int) -> (start, end: int
             break // ancestors from here up begin above this line — none opens it
         }
         if int(sp.row) == line && int(ep.row) > line {
-            last := min(int(ep.row), len(b.lines) - 1)
+            last := min(int(ep.row), doc_line_count(&b.doc) - 1)
             if ep.col == 0 && last > line {
                 last -= 1 // half-open end at column 0 sits on the next line; trim it
             }
             // Keep a lone dedented closer (a brace block's `}`) on its own line: a node's
             // end point lands on the `}` line or just past it depending on the grammar, so
             // trimming a trailing line no deeper than the header keeps folds consistent.
-            if last > line && line_indent_cols(&b.lines[last]) <= line_indent_cols(&b.lines[line]) {
+            if last > line && line_indent_cols(doc_line(&b.doc, last)) <= line_indent_cols(doc_line(&b.doc, line)) {
                 last -= 1
             }
             return line, last, last > line
@@ -393,12 +510,14 @@ ts_in_string_or_comment :: proc(a: ^App, b: ^Buffer, line, col: int) -> bool {
     if !found {
         return false
     }
-    tree := highlighter_tree(&a.hl, b, g.lang)
-    if tree == nil {
+    // Enter is one keypress too, and a stale answer here silently changes what gets indented —
+    // so this waits rather than fall back to the bracket heuristic.
+    hl_settle(a, b)
+    tree, current := highlighter_tree(&a.hl, b, g.lang)
+    if tree == nil || !current {
         return false
     }
-    bcol := rune_col_to_byte(b.lines[line].text[:], col)
-    pt := ts.Point{u32(line), u32(bcol)}
+    pt := ts.Point{u32(line), u32(col)} // Pos already counts bytes — nothing to convert
     node := ts.node_descendant_for_range(ts.tree_root_node(tree), pt, pt)
     for !ts.node_is_null(node) {
         t := string(ts.node_type(node))
@@ -408,16 +527,6 @@ ts_in_string_or_comment :: proc(a: ^App, b: ^Buffer, line, col: int) -> bool {
         node = ts.node_parent(node)
     }
     return false
-}
-
-// Byte offset of rune column `col` within a line's runes (the inverse of byte_to_rune_col).
-@(private = "file")
-rune_col_to_byte :: proc(runes: []rune, col: int) -> int {
-    b := 0
-    for i in 0 ..< min(col, len(runes)) {
-        b += utf8.rune_size(runes[i])
-    }
-    return b
 }
 
 // The loaded grammar for a buffer path's extension, loading on first use and caching.
@@ -571,7 +680,7 @@ parse_predicate :: proc(query: ts.Query, steps: []ts.Query_Predicate_Step) -> (P
 // Unmodelled ops and uncompilable regexes count as passing — we never hide a token on
 // a predicate we can't evaluate.
 @(private = "file")
-predicates_ok :: proc(g: Loaded_Grammar, pi: u32, match: ts.Query_Match, source: string) -> bool {
+predicates_ok :: proc(g: Loaded_Grammar, pi: u32, match: ts.Query_Match, d: ^Doc) -> bool {
     if int(pi) >= len(g.preds) {
         return true
     }
@@ -580,7 +689,7 @@ predicates_ok :: proc(g: Loaded_Grammar, pi: u32, match: ts.Query_Match, source:
         if !found {
             continue
         }
-        txt := ts.node_text(node, source)
+        txt := hl_node_text(d, node)
         res: bool
         switch p.op {
         case .Unknown:
@@ -588,7 +697,7 @@ predicates_ok :: proc(g: Loaded_Grammar, pi: u32, match: ts.Query_Match, source:
         case .Eq:
             if p.cap2 >= 0 {
                 other := capture_node(match, u32(p.cap2)) or_continue
-                res = txt == ts.node_text(other, source)
+                res = txt == hl_node_text(d, other)
             } else if len(p.strs) > 0 {
                 res = txt == p.strs[0]
             }
@@ -598,8 +707,12 @@ predicates_ok :: proc(g: Loaded_Grammar, pi: u32, match: ts.Query_Match, source:
             if !p.has_re {
                 continue // couldn't compile -> don't filter
             }
-            _, matched := regex.match(p.re, txt)
-            res = matched
+            {
+                // match allocates its capture; only the bool leaves, so take it from temp
+                context.allocator = context.temp_allocator
+                _, matched := regex.match(p.re, txt)
+                res = matched
+            }
         case .HasParent:
             res = node_has_parent_type(node, p.strs)
         }
@@ -669,20 +782,6 @@ capture_color :: proc(th: ^Theme, name: string) -> (color: [3]f32, ok: bool) {
         return th.code_punctuation, true
     }
     return {}, false // unmapped (label, tag, attribute, namespace, …) -> foreground
-}
-
-// The rune column at or after the given byte offset within a line (tree-sitter points
-// are byte offsets; the editor positions glyphs by rune). Clamps past the line end.
-@(private = "file")
-byte_to_rune_col :: proc(runes: []rune, byte_col: int) -> int {
-    b := 0
-    for r, i in runes {
-        if b >= byte_col {
-            return i
-        }
-        b += utf8.rune_size(r)
-    }
-    return len(runes)
 }
 
 // --- definition filtering (link jumping) ---

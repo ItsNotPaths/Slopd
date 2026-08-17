@@ -12,7 +12,7 @@ mkbuf :: proc(s: string) -> app.Buffer {
 
 @(private = "file")
 bln :: proc(b: ^app.Buffer, i: int) -> string {
-    return app.line_string(&b.lines[i], context.temp_allocator)
+    return string(app.doc_line(&b.doc, i, context.temp_allocator))
 }
 
 @(private = "file")

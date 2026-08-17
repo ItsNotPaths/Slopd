@@ -11,6 +11,10 @@ import clay "../bindings/clay"
 // an over-quad and a selection is an under-quad — neither is a thing Clay lays out, and a
 // Rectangle would paint beneath the glyphs it is meant to sit on.
 //
+// **Columns here are CELLS.** A field is a strip of the glyph grid — `off`, the box width, every
+// press column — while a Doc counts bytes, so `doc_cells` bridges the two at each entry point and
+// nothing in between has to think about it.
+//
 // The WINDOW is the field's other half: `off` is the first rune drawn, so a value longer than
 // the box shows its tail with a '…' in the first cell. The path bar drives one (a path is read
 // from its end); the config rows leave it at 0 and show the head, which is where a setting's
@@ -115,17 +119,19 @@ field_glyph_at :: proc(f: Field_Box, x: i32, n: int) -> int {
 // whether a press is a drag is not something the press can know.
 field_press :: proc(a: ^App, f: Field_Box, count: int) {
     d := f.doc
-    if d == nil || len(d.lines) == 0 {
+    if d == nil || doc_line_count(d) == 0 {
         return
     }
-    n := line_len(&d.lines[0])
-    at := field_boundary_at(f, a.mouse.click_x, n)
-    drag_begin(a, .Field_Text, f.target, count, Pos{0, at}, field_glyph_at(f, a.mouse.click_x, n))
+    cells := doc_cells(d, 0)
+    n := cells_count(cells)
+    at := cells_off(cells, field_boundary_at(f, a.mouse.click_x, n))
+    glyph := cells_off(cells, field_glyph_at(f, a.mouse.click_x, n))
+    drag_begin(a, .Field_Text, f.target, count, Pos{0, at}, glyph)
     switch {
     case count >= 3:
         doc_select_line(d, 0)
     case count == 2:
-        doc_select_word(d, Pos{0, field_glyph_at(f, a.mouse.click_x, n)})
+        doc_select_word(d, Pos{0, glyph})
     case a.mouse.click_shift:
         doc_set_head(d, Pos{0, at}, true)
     case:
@@ -138,25 +144,26 @@ field_press :: proc(a: ^App, f: Field_Box, count: int) {
 // by how far past the pointer is and field_scroll brings the window after it.
 field_drag :: proc(a: ^App, f: Field_Box, now: f64) {
     d := f.doc
-    if !a.mouse_on || !a.mouse.known || d == nil || len(d.lines) == 0 {
+    if !a.mouse_on || !a.mouse.known || d == nil || doc_line_count(d) == 0 {
         return
     }
     if !drag_live(a, .Field_Text, f.target) {
         return
     }
-    n := line_len(&d.lines[0])
+    cells := doc_cells(d, 0)
+    n := cells_count(cells)
     a.blink_base = now // the caret stays solid through the gesture, as it does through typing
     if a.drag.grade >= 2 {
         anchor, head := doc_drag_span(
             d,
             a.drag.grade,
             Pos{0, a.drag.anchor_glyph},
-            Pos{0, field_glyph_at(f, a.mouse.x, n)},
+            Pos{0, cells_off(cells, field_glyph_at(f, a.mouse.x, n))},
         )
         doc_select_span(d, anchor, head)
         return
     }
-    doc_set_head(d, Pos{0, field_boundary_at(f, a.mouse.x, n)}, true)
+    doc_set_head(d, Pos{0, cells_off(cells, field_boundary_at(f, a.mouse.x, n))}, true)
 }
 
 // --- the clipboard ---
@@ -165,20 +172,20 @@ field_drag :: proc(a: ^App, f: Field_Box, now: f64) {
 // That default is the field's own: the editor's "copy this line" would put a stray newline on
 // the clipboard, and a field is a value rather than a line of a document.
 field_span :: proc(d: ^Doc) -> (lo, hi: Pos) {
-    if len(d.lines) == 0 {
+    if doc_line_count(d) == 0 {
         return {}, {}
     }
     c := d.cursors[d.primary]
     if cursor_has_selection(c) {
         return cursor_range(c)
     }
-    return Pos{0, 0}, Pos{0, line_len(&d.lines[0])}
+    return Pos{0, 0}, Pos{0, doc_line_len(d, 0)}
 }
 
 // Copy the span out, and for a cut delete it too. doc_cut's own no-selection case is already
 // "the line", which in a one-line field is the same whole value.
 field_copy :: proc(a: ^App, d: ^Doc, cut: bool) -> (changed: bool) {
-    if len(d.lines) == 0 {
+    if doc_line_count(d) == 0 {
         return false
     }
     lo, hi := field_span(d)
@@ -202,7 +209,7 @@ field_paste :: proc(a: ^App, d: ^Doc) -> bool {
 // carets over them. Only the window is drawn: a rune off either edge is not queued at all.
 field_paint :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
     e := (^Field)(user)
-    if e == nil || e.doc == nil || len(e.doc.lines) == 0 {
+    if e == nil || e.doc == nil || doc_line_count(e.doc) == 0 {
         return
     }
     th := &a.theme
@@ -212,8 +219,8 @@ field_paint :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: r
     ty := f32(r.y) + (f32(r.h) - lh) / 2
     y := i32(ty) // selection / caret share the glyph cell's top
 
-    line := &e.doc.lines[0]
-    n := line_len(line)
+    cells := doc_cells(e.doc, 0)
+    n := cells_count(cells)
     off := clamp(e.off, 0, n)
     lead := off > 0 ? 1 : 0 // the cell the ellipsis takes
     hi := clamp(off + max(0, field_cells(r, cw) - lead), off, n)
@@ -223,8 +230,8 @@ field_paint :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: r
             continue
         }
         lo, up := cursor_range(c)
-        s0 := clamp(lo.col, off, hi)
-        s1 := clamp(up.col, off, hi)
+        s0 := clamp(cells_col(cells, lo.col), off, hi)
+        s1 := clamp(cells_col(cells, up.col), off, hi)
         if s1 > s0 {
             x := ex + cw * f32(field_col(off, s0))
             fill(t, Rect{i32(x), y, i32(cw * f32(s1 - s0)), i32(lh)}, th.selection)
@@ -233,12 +240,12 @@ field_paint :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: r
     if lead == 1 {
         text_draw(t, "…", ex, ty, th.muted)
     }
-    text_draw_runes(t, line.text[off:hi], ex + cw * f32(lead), ty, th.fg)
+    text_draw_runes(t, cells.runes[off:hi], ex + cw * f32(lead), ty, th.fg)
     // `caret` is the gate the blink phase alone cannot be: a pane not being typed into stops
     // redrawing, so a caret drawn there would freeze mid-blink rather than go out.
     if e.caret && caret_blink_on(a, e.now) {
         for c in e.doc.cursors {
-            cx := ex + cw * f32(field_col(off, clamp(c.head.col, off, hi)))
+            cx := ex + cw * f32(field_col(off, clamp(cells_col(cells, c.head.col), off, hi)))
             caret(t, Rect{i32(cx), y, i32(2 * a.scale), i32(lh)}, th.fg)
         }
     }

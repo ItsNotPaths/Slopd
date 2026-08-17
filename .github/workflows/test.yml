@@ -1,0 +1,63 @@
+name: Tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The suite is the only gate on main, so it runs everything the developer machine runs and
+# one thing it does not: SLOPD_REQUIRE_GRAMMARS. A tree-sitter test with no grammar to load
+# SKIPS locally, which keeps an offline checkout usable — here that skip is a FAILURE, so the
+# coverage cannot quietly disappear the way it did once already (see src/tests/grammars.odin).
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache vendor/
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: vendor-linux-${{ hashFiles('download-deps.sh') }}
+
+      # Cached apart from vendor/ and keyed on the grammar LIST, so adding one to
+      # TEST_GRAMMARS rebuilds the set rather than silently reusing a stale cache. Each is a
+      # git fetch at a pinned rev plus a `cc`, which is a minute or two on a cold cache.
+      - name: Cache test grammars
+        uses: actions/cache@v4
+        with:
+          path: vendor/grammars-test
+          key: grammars-test-${{ hashFiles('src/tests/grammars.odin', 'languages') }}
+
+      - name: Install glfw build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev xorg-dev
+
+      - name: Install fontTools
+        run: python3 -m pip install --user fonttools
+
+      - name: Install toolchain
+        uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download deps
+        run: |
+          chmod +x ./download-deps.sh
+          ./download-deps.sh
+
+      # The suite builds any missing grammar itself (an @(init) in the tests package), so
+      # there is no install step here — only the flag that makes a missing one fatal.
+      - name: Test
+        env:
+          SLOPD_REQUIRE_GRAMMARS: "1"
+        run: odin test src/tests -define:GLFW_SHARED=false
+
+      # A test build is not a release build: -o:speed changes what the optimiser folds, and
+      # a warning-free debug compile has let a release-only break through before.
+      - name: Build (release settings)
+        run: odin build src -out:slopd -o:speed -define:GLFW_SHARED=false

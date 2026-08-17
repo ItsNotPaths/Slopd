@@ -23,7 +23,6 @@ Buffer :: struct {
     dirty:           bool,
     final_newline:   bool, // did the file end in '\n'? preserved on save (POSIX round-trip)
     folds:           [dynamic]Fold, // collapsed blocks (Ctrl+Enter); see fold.odin
-    fold_nlines:     int, // line count the folds were valid at (drop them when it changes)
     disk_mtime:      time.Time, // file mtime at our last load/save; detects external rewrites (see buffer_reload_if_changed)
     conflict:        bool, // the file changed on disk under unsaved edits: a decision is pending (the prompt; see buffer_conflict_resolve)
     // The private copy a staged `sudo cp` line reads (owned; "" = none staged). Held so the
@@ -72,7 +71,6 @@ main_text_buffer :: proc(a: ^App) -> ^Buffer {
 editor_clear_folds :: proc(e: ^Editor) {
     for &b in e.buffers {
         clear(&b.folds)
-        b.fold_nlines = len(b.lines)
     }
 }
 
@@ -104,7 +102,7 @@ open_file :: proc(a: ^App, path: string) {
         }
     }
     cur := editor_current(e)
-    if cur.path == "" && !cur.dirty && len(cur.lines) == 1 && len(cur.lines[0].text) == 0 {
+    if cur.path == "" && !cur.dirty && doc_line_count(&cur.doc) == 1 && doc_line_len(&cur.doc, 0) == 0 {
         buffer_load(cur, path)
         return
     }
@@ -157,7 +155,6 @@ buffer_set_text :: proc(b: ^Buffer, text: string) {
     b.hscroll_anim = {} // …and settled at column 0, for the same reason
     b.hscroll_detached = 0
     clear(&b.folds) // a wholesale text swap invalidates every fold range
-    b.fold_nlines = len(b.lines)
 }
 
 buffer_load :: proc(b: ^Buffer, path: string) -> bool {
@@ -303,10 +300,8 @@ buffer_reload_keep_view :: proc(b: ^Buffer) -> bool {
     if !buffer_load(b, b.path) {
         return false
     }
-    line := clamp(head.line, 0, len(b.lines) - 1)
-    col := clamp(head.col, 0, len(b.lines[line].text))
-    doc_reset_cursor(&b.doc, {line = line, col = col})
-    b.scroll = clamp(scroll, 0, max(0, len(b.lines) - 1))
+    doc_reset_cursor(&b.doc, head) // clamped onto the reloaded content, rune boundary included
+    b.scroll = clamp(scroll, 0, max(0, doc_line_count(&b.doc) - 1))
     b.hscroll = hscroll // bounded next frame, where the pane width is known
     return true
 }
@@ -345,13 +340,13 @@ buffer_enter :: proc(a: ^App, b: ^Buffer) {
     // Brace-pair expansion: a lone caret between an opener and its matching closer.
     if len(d.cursors) == 1 && !cursor_has_selection(d.cursors[0]) {
         c := d.cursors[0]
-        line := &d.lines[c.head.line]
-        prev := c.head.col > 0 ? line.text[c.head.col - 1] : 0
-        if enter_expands_pair(prev, char_at(line, c.head.col)) &&
-           !ts_in_string_or_comment(a, b, c.head.line, c.head.col - 1) {
-            base := line_lead(line)
+        prev, size := doc_rune_before(d, c.head)
+        if enter_expands_pair(prev, doc_rune_at(d, c.head)) &&
+           !ts_in_string_or_comment(a, b, c.head.line, c.head.col - size) {
+            base := line_lead(d, c.head.line)
             inner := grow_indent(base, a.indent)
-            if doc_insert_runes(d, expand_runes(inner, base)) {
+            body := strings.concatenate({"\n", inner, "\n", base}, context.temp_allocator)
+            if doc_insert_text(d, body) {
                 b.dirty = true
             }
             doc_reset_cursor(d, Pos{c.head.line + 1, len(inner)}) // onto the indented middle line
@@ -363,7 +358,8 @@ buffer_enter :: proc(a: ^App, b: ^Buffer) {
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
     for c in d.cursors {
         lo, hi := cursor_range(c)
-        append(&edits, Edit{lo, hi, newline_indent(enter_indent(a, b, lo)), 0})
+        text := strings.concatenate({"\n", enter_indent(a, b, lo)}, context.temp_allocator)
+        append(&edits, Edit{doc_off(d, lo), doc_off(d, hi), text, 0})
     }
     if doc_commit(d, edits[:]) {
         b.dirty = true
@@ -373,8 +369,8 @@ buffer_enter :: proc(a: ^App, b: ^Buffer) {
 // The indentation the line after Enter should start with: the current line's leading
 // whitespace, plus one unit when the line opens a block at the caret.
 @(private = "file")
-enter_indent :: proc(a: ^App, b: ^Buffer, pos: Pos) -> []rune {
-    lead := line_lead(&b.lines[pos.line])
+enter_indent :: proc(a: ^App, b: ^Buffer, pos: Pos) -> string {
+    lead := line_lead(&b.doc, pos.line)
     if enter_opens_block(a, b, pos) {
         return grow_indent(lead, a.indent)
     }
@@ -385,10 +381,10 @@ enter_indent :: proc(a: ^App, b: ^Buffer, pos: Pos) -> []rune {
 // that's real code (tree-sitter rules out one inside a string/comment when a grammar exists).
 @(private = "file")
 enter_opens_block :: proc(a: ^App, b: ^Buffer, pos: Pos) -> bool {
-    line := &b.lines[pos.line]
+    line := doc_line(&b.doc, pos.line)
     at := -1
-    for i := pos.col - 1; i >= 0; i -= 1 {
-        if line.text[i] != ' ' && line.text[i] != '\t' {
+    for i := min(pos.col, len(line)) - 1; i >= 0; i -= 1 {
+        if line[i] != ' ' && line[i] != '\t' {
             at = i
             break
         }
@@ -396,7 +392,7 @@ enter_opens_block :: proc(a: ^App, b: ^Buffer, pos: Pos) -> bool {
     if at < 0 {
         return false
     }
-    switch line.text[at] {
+    switch line[at] {
     case '(', '[', '{':
         return !ts_in_string_or_comment(a, b, pos.line, at)
     }
@@ -418,41 +414,17 @@ enter_expands_pair :: proc(prev, next: rune) -> bool {
     return false
 }
 
-// A line's leading whitespace, as a sub-slice of its runes (read before any edit mutates it).
+// A line's leading whitespace, as a sub-slice of its bytes (read before any edit mutates it).
 @(private = "file")
-line_lead :: proc(l: ^Line) -> []rune {
-    return l.text[:line_indent_cols(l)]
+line_lead :: proc(d: ^Doc, line: int) -> string {
+    src := doc_line(d, line)
+    return string(src[:line_indent_cols(src)])
 }
 
 // `lead` plus one indentation unit.
 @(private = "file")
-grow_indent :: proc(lead: []rune, ind: Indent) -> []rune {
-    unit := indent_runes(ind)
-    out := make([]rune, len(lead) + len(unit), context.temp_allocator)
-    copy(out, lead)
-    copy(out[len(lead):], unit)
-    return out
-}
-
-// "\n" followed by the given indentation.
-@(private = "file")
-newline_indent :: proc(indent: []rune) -> []rune {
-    out := make([]rune, 1 + len(indent), context.temp_allocator)
-    out[0] = '\n'
-    copy(out[1:], indent)
-    return out
-}
-
-// "\n" + inner + "\n" + base — the three-line body for brace-pair expansion (the caret lands
-// at the end of the `inner` line).
-@(private = "file")
-expand_runes :: proc(inner, base: []rune) -> []rune {
-    out := make([]rune, 2 + len(inner) + len(base), context.temp_allocator)
-    out[0] = '\n'
-    copy(out[1:], inner)
-    out[1 + len(inner)] = '\n'
-    copy(out[2 + len(inner):], base)
-    return out
+grow_indent :: proc(lead: string, ind: Indent) -> string {
+    return strings.concatenate({lead, indent_text(ind)}, context.temp_allocator)
 }
 
 buffer_backspace :: proc(b: ^Buffer) {
@@ -493,7 +465,7 @@ buffer_scroll_target :: proc(b: ^Buffer, rows: int, center: bool) -> int {
         line := buffer_prev_visible(b, doc_top_cursor_line(&b.doc))
         return buffer_back_visible(b, line, rows / 2)
     }
-    top := buffer_prev_visible(b, clamp(b.scroll, 0, len(b.lines) - 1))
+    top := buffer_prev_visible(b, clamp(b.scroll, 0, doc_line_count(&b.doc) - 1))
     cur := b.cursors[b.primary].head.line
     if cur < top {
         return cur
@@ -513,7 +485,7 @@ buffer_scroll_apply :: proc(b: ^Buffer, rows: int, center: bool, last_input_at: 
     }
     if b.scroll_detached > 0 {
         // No policy, only bounds: any visible line may be the top, first to last.
-        b.scroll = buffer_prev_visible(b, clamp(b.scroll, 0, max(0, len(b.lines) - 1)))
+        b.scroll = buffer_prev_visible(b, clamp(b.scroll, 0, max(0, doc_line_count(&b.doc) - 1)))
         return
     }
     b.scroll = buffer_scroll_target(b, rows, center)
@@ -523,7 +495,7 @@ buffer_scroll_apply :: proc(b: ^Buffer, rows: int, center: bool, last_input_at: 
 // (the wheel's entry point — see mouse.odin). Clamped to the buffer; buffer_scroll_apply
 // snaps the result onto a visible line, so folds need no handling here.
 buffer_scroll_by :: proc(b: ^Buffer, delta: int, now: f64) {
-    b.scroll = clamp(b.scroll + delta, 0, max(0, len(b.lines) - 1))
+    b.scroll = clamp(b.scroll + delta, 0, max(0, doc_line_count(&b.doc) - 1))
     b.scroll_detached = now
 }
 
@@ -581,7 +553,7 @@ buffer_hscroll_apply :: proc(b: ^Buffer, cols, longest: int, last_input_at: f64)
         b.hscroll = clamp(b.hscroll, 0, limit)
         return
     }
-    col := b.cursors[b.primary].head.col
+    col := doc_cell_col(&b.doc, b.cursors[b.primary].head) // the axis is CELLS, not bytes
     b.hscroll = clamp(buffer_hscroll_target(b.hscroll, col, cols), 0, limit)
 }
 
@@ -625,14 +597,17 @@ buffer_skip_hidden :: proc(b: ^Buffer, motion: Motion) {
         target := forward ? buffer_next_visible(b, c.head.line) : buffer_prev_visible(b, c.head.line)
         // Vertical motion keeps the goal column; a horizontal wrap lands at the line
         // edge it would have reached (end of the header / start of the line past it).
-        col := vertical ? min(c.goal, line_len(&b.lines[target])) : (forward ? 0 : line_len(&b.lines[target]))
+        col :=
+            vertical \
+            ? doc_byte_col(&b.doc, target, c.goal) \
+            : (forward ? 0 : doc_line_len(&b.doc, target))
         p := Pos{target, col}
         if !cursor_has_selection(c) {
             c.anchor = p
         }
         c.head = p
         if !vertical {
-            c.goal = col
+            c.goal = doc_cell_col(&b.doc, p)
         }
     }
     doc_merge_cursors(&b.doc)

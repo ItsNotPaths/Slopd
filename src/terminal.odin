@@ -425,20 +425,29 @@ terminal_msel_has_span :: proc(t: ^Terminal) -> bool {
     return t.msel_on && cursor_has_selection(t.msel)
 }
 
-// The run of one character class around `col` on absolute line `n`, over the grid. word_span
-// is line.odin's — the editor's double click uses the same one. The row is materialised as
-// runes, with blanks normalised to spaces so an unwritten cell is whitespace, not a NUL.
+// The run of one character class around `col` on absolute line `n`, over the grid. word_span is
+// word.odin's — the editor's double click uses the same one — and it answers in BYTES, so the row
+// is materialised as a Cells: its runes, and the byte offset of each, which converts the column
+// in and the span back out. Blanks normalise to spaces, so an unwritten cell is whitespace and
+// not a NUL.
 terminal_word_span :: proc(t: ^Terminal, n, col: int) -> (lo, hi: int) {
     w := terminal_line_width(t, n)
     if w <= 0 {
         return 0, 0
     }
-    runes := make([]rune, w, context.temp_allocator)
+    rs := make([]rune, w, context.temp_allocator)
+    offs := make([]int, w + 1, context.temp_allocator)
+    b := strings.builder_make(context.temp_allocator)
     for i in 0 ..< w {
         r := terminal_view_rune(t, n, i)
-        runes[i] = r >= 0x20 ? r : ' '
+        rs[i] = r >= 0x20 ? r : ' '
+        offs[i] = strings.builder_len(b)
+        strings.write_rune(&b, rs[i])
     }
-    return word_span(runes, col)
+    offs[w] = strings.builder_len(b)
+    cells := Cells{rs, offs}
+    blo, bhi := word_span(transmute([]u8)strings.to_string(b), cells_off(cells, col))
+    return cells_col(cells, blo), cells_col(cells, bhi)
 }
 
 // The span a drag covers at its fixed GRADE — word (2) or line (3+), doc_drag_span's twin.

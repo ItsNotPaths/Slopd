@@ -25,11 +25,12 @@ Find :: struct {
     show:    bool,
 }
 
-// One hit: a rune span on one line of the buffer the search ran over.
+// One hit: a byte span on one line of the buffer the search ran over. Bytes, like Pos — the
+// painter converts to cells against the row it is drawing (draw_find_marks).
 Find_Match :: struct {
     line: int,
-    col:  int, // 0-based rune column
-    n:    int, // length in runes
+    col:  int, // 0-based BYTE column
+    n:    int, // length in BYTES
 }
 
 // Ceiling on the hits one scan reports. A query of "e" over a large file otherwise costs a
@@ -66,35 +67,48 @@ find_set :: proc(f: ^Find, b: ^Buffer, query: string, from: Pos) {
 @(private = "file")
 find_scan :: proc(f: ^Find, b: ^Buffer, query: string) {
     pat := utf8.string_to_runes(query, context.temp_allocator)
+    if len(pat) == 0 {
+        return
+    }
     fold := find_folds_case(query)
-    for &l, line in b.lines {
-        for col := 0; col + len(pat) <= len(l.text); {
-            if !runes_match_at(l.text[:], col, pat, fold) {
-                col += 1
+    for line in 0 ..< doc_line_count(&b.doc) {
+        src := doc_line(&b.doc, line)
+        for col := 0; col < len(src); {
+            n, hit := match_at(src, col, pat, fold)
+            if !hit {
+                _, sz := utf8.decode_rune(src[col:])
+                col += max(sz, 1) // a candidate starts at a rune, never inside one
                 continue
             }
-            append(&f.matches, Find_Match{line = line, col = col, n = len(pat)})
+            append(&f.matches, Find_Match{line = line, col = col, n = n})
             if len(f.matches) >= FIND_LIMIT {
                 return
             }
-            col += len(pat)
+            col += n
         }
     }
 }
 
-// Whether `pat` sits at `col` in `text`. `fold` lowers both sides — the smart-case rule.
+// Whether `pat` sits at byte `col` in `src`, and how many BYTES it took — a folded match can
+// differ in length from the query. `fold` lowers both sides: the smart-case rule.
 @(private = "file")
-runes_match_at :: proc(text: []rune, col: int, pat: []rune, fold: bool) -> bool {
-    for i in 0 ..< len(pat) {
-        x, y := text[col + i], pat[i]
+match_at :: proc(src: []u8, col: int, pat: []rune, fold: bool) -> (n: int, ok: bool) {
+    i := col
+    for p in pat {
+        if i >= len(src) {
+            return 0, false
+        }
+        r, sz := utf8.decode_rune(src[i:])
+        x, y := r, p
         if fold {
             x, y = unicode.to_lower(x), unicode.to_lower(y)
         }
         if x != y {
-            return false
+            return 0, false
         }
+        i += max(sz, 1)
     }
-    return true
+    return i - col, true
 }
 
 // Smart case: a query with no upper-case rune in it matches either case.

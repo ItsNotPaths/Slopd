@@ -76,7 +76,7 @@ Strip_Edit :: struct {
 // Clay Rectangle cannot do — the bridge maps those to `fill`, which paints under the text.
 strip_paint_cl :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
     e := (^Strip_Edit)(user)
-    if e == nil || e.doc == nil || len(e.doc.lines) == 0 {
+    if e == nil || e.doc == nil || doc_line_count(e.doc) == 0 {
         return
     }
     th := &a.theme
@@ -86,17 +86,20 @@ strip_paint_cl :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user
     ty := f32(r.y) + (f32(r.h) - lh) / 2
     y := i32(ty) // selection and caret share the glyph cell's top
 
-    line := &e.doc.lines[0] // the command line is one line
+    cells := doc_cells(e.doc, 0) // the command line is one line; bytes -> the cell grid
     for c in e.doc.cursors {
         if cursor_has_selection(c) {
             lo, hi := cursor_range(c)
-            fill(t, Rect{i32(ox + cw * f32(lo.col)), y, i32(cw * f32(hi.col - lo.col)), i32(lh)}, th.selection)
+            x0 := cells_col(cells, lo.col)
+            x1 := cells_col(cells, hi.col)
+            fill(t, Rect{i32(ox + cw * f32(x0)), y, i32(cw * f32(x1 - x0)), i32(lh)}, th.selection)
         }
     }
-    text_draw_runes(t, line.text[:], ox, ty, th.fg)
+    text_draw_runes(t, cells.runes, ox, ty, th.fg)
     if caret_blink_on(a, e.now) {
         for c in e.doc.cursors {
-            caret(t, Rect{i32(ox + cw * f32(c.head.col)), y, i32(2 * a.scale), i32(lh)}, th.fg)
+            cx := ox + cw * f32(cells_col(cells, c.head.col))
+            caret(t, Rect{i32(cx), y, i32(2 * a.scale), i32(lh)}, th.fg)
         }
     }
     // The painter owns its region and ends with its own flush (the ClayCustom contract);
@@ -158,10 +161,11 @@ strip_declare :: proc(a: ^App, f: ^Font, strip: Rect, now: f64 = 0) {
 strip_declare_command :: proc(a: ^App, cw: f32, lh: i32, now: f64) {
     PROMPT :: "> "
     th := &a.theme
-    if len(a.cl.lines) == 0 {
+    if doc_line_count(&a.cl.doc) == 0 {
         return // a command line that was never cl_init'd has no line to show
     }
-    l := &a.cl.lines[0]
+    text := string(doc_line(&a.cl.doc, 0))
+    ncells := cells_count(doc_cells(&a.cl.doc, 0))
 
     if clay.UI(clay.ID("st_prompt"))({layout = {sizing = {width = clay.SizingFixed(cw * f32(len(PROMPT)))}}}) {
         clay.Text(PROMPT, clay_text_config(th.muted, lh))
@@ -173,14 +177,14 @@ strip_declare_command :: proc(a: ^App, cw: f32, lh: i32, now: f64) {
     cu^ = ClayCustom{paint = strip_paint_cl, user = ed}
     if clay.UI(clay.ID("st_edit"))(
         {
-            layout = {sizing = {clay.SizingFixed(cw * f32(len(l.text) + 1)), clay.SizingGrow()}},
+            layout = {sizing = {clay.SizingFixed(cw * f32(ncells + 1)), clay.SizingGrow()}},
             custom = {customData = cu},
         },
     ) {}
 
     // Ghosted per-builtin argument hint (e.g. `:reload` -> "(y/n)"), until an argument is
     // entered. cl_ghost_hint is the extensible registry and stays where it is.
-    if hint := cl_ghost_hint(a, line_string(l, context.temp_allocator)); hint != "" {
+    if hint := cl_ghost_hint(a, text); hint != "" {
         if clay.UI(clay.ID("st_hint"))({layout = {childAlignment = {y = .Center}}}) {
             clay.Text(hint, clay_text_config(th.muted, lh))
         }
@@ -224,11 +228,11 @@ strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
         left = fmt.tprintf("%s %s", mark, name) // a dirty buffer reads brighter
         left_col = b.conflict ? th.urgent : b.dirty ? th.fg : th.muted
         head := b.cursors[b.primary].head
-        nlines := len(b.lines)
+        nlines := doc_line_count(&b.doc)
         cursors := len(b.cursors) > 1 ? fmt.tprintf("   %d cursors", len(b.cursors)) : ""
         right = fmt.tprintf(
             "%s   L%d:%d   %d lines%s   %s",
-            status_lang(a, b.path), head.line + 1, head.col + 1, nlines, cursors,
+            status_lang(a, b.path), head.line + 1, doc_cell_col(&b.doc, head) + 1, nlines, cursors,
             scroll_label(head.line, nlines),
         )
     }

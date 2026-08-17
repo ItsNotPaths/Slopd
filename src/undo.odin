@@ -2,18 +2,18 @@ package main
 
 import "core:unicode/utf8"
 
-// Undo — a linear diff/op journal sitting on the Doc edit funnel (doc_apply). Each
-// edit records a reversible Op; consecutive single-character word inserts coalesce
-// into one step, broken by a whitespace key, a caret move, or any other edit. The
-// op-level granularity is deliberately graph-ready: swapping the linear stacks for
-// a tree later doesn't touch how edits are recorded.
+// Undo — a linear patch journal sitting on the Doc edit funnel (doc_apply). Each edit records a
+// reversible Op; consecutive single-character word inserts coalesce into one step, broken by a
+// whitespace key, a caret move, or any other edit. The op-level granularity is deliberately
+// graph-ready: swapping the linear stacks for a tree later doesn't touch how edits are recorded.
 
-// One reversible replacement. The forward range [fwd_lo, fwd_hi) (original coords
-// at apply time) became `inserted`; in the resulting document that text occupies
-// [inv_lo, inv_hi), which undo replaces with `removed`. Both strings are owned.
+// One reversible replacement, as two byte offsets — one per direction, because a batch's edits
+// shift each other. Forward (and redo), [at, at+len(removed)) in the PRE-batch document became
+// `inserted`; undo replaces [inv_at, inv_at+len(inserted)) in the POST-batch one with `removed`.
+// Both strings are owned.
 Op :: struct {
-    fwd_lo, fwd_hi:    Pos,
-    inv_lo, inv_hi:    Pos,
+    at:                int,
+    inv_at:            int,
     removed, inserted: string,
 }
 
@@ -99,7 +99,7 @@ doc_undo :: proc(d: ^Doc) -> bool {
     for i := len(step.batches) - 1; i >= 0; i -= 1 {
         edits := make([dynamic]Edit, 0, len(step.batches[i].ops), context.temp_allocator)
         for op in step.batches[i].ops {
-            append(&edits, Edit{op.inv_lo, op.inv_hi, utf8.string_to_runes(op.removed, context.temp_allocator), 0})
+            append(&edits, Edit{op.inv_at, op.inv_at + len(op.inserted), op.removed, 0})
         }
         doc_apply(d, edits[:])
     }
@@ -119,7 +119,7 @@ doc_redo :: proc(d: ^Doc) -> bool {
     for batch in step.batches {
         edits := make([dynamic]Edit, 0, len(batch.ops), context.temp_allocator)
         for op in batch.ops {
-            append(&edits, Edit{op.fwd_lo, op.fwd_hi, utf8.string_to_runes(op.inserted, context.temp_allocator), 0})
+            append(&edits, Edit{op.at, op.at + len(op.removed), op.inserted, 0})
         }
         doc_apply(d, edits[:])
     }

@@ -3,36 +3,18 @@ package tests
 import app ".."
 import "core:testing"
 
-@(private = "file")
-mk :: proc(s: string) -> app.Line {
-    l: app.Line
-    for r in s {
-        append(&l.text, r)
-    }
-    return l
-}
+// Word boundaries over a line's bytes (src/word.odin). Positions in and out are BYTE columns,
+// so the ASCII cases below read exactly as they did when they were rune indices — and the
+// multi-byte case at the bottom is the one that would not.
 
 @(private = "file")
-str :: proc(l: ^app.Line) -> string {
-    return app.line_string(l, context.temp_allocator)
-}
-
-@(test)
-test_line_edit :: proc(t: ^testing.T) {
-    l := mk("helo")
-    defer app.line_destroy(&l)
-    app.line_insert_at(&l, 3, 'l') // "hello"
-    testing.expect_value(t, str(&l), "hello")
-    testing.expect_value(t, app.line_len(&l), 5)
-    app.line_remove_range(&l, 1, 3) // drop "el" -> "hlo"
-    testing.expect_value(t, str(&l), "hlo")
+bs :: proc(s: string) -> []u8 {
+    return transmute([]u8)s
 }
 
 @(test)
 test_word_index :: proc(t: ^testing.T) {
-    l := mk("foo.bar baz") // f o o . b a r _ b a z  (len 11)
-    defer app.line_destroy(&l)
-    text := l.text[:]
+    text := bs("foo.bar baz") // f o o . b a r _ b a z  (len 11)
 
     testing.expect_value(t, app.word_right_index(text, 0), 3) // after foo
     testing.expect_value(t, app.word_right_index(text, 3), 4) // after .
@@ -50,9 +32,7 @@ test_word_index :: proc(t: ^testing.T) {
 // because those two skip whitespace on the way and so never name the run you stand in.
 @(test)
 test_word_span :: proc(t: ^testing.T) {
-    l := mk("foo.bar baz") // f o o . b a r _ b a z  (len 11)
-    defer app.line_destroy(&l)
-    text := l.text[:]
+    text := bs("foo.bar baz") // f o o . b a r _ b a z  (len 11)
 
     // Every column INSIDE a run yields the same span — including its first, which is where a
     // directional motion would step out into the previous run.
@@ -62,7 +42,7 @@ test_word_span :: proc(t: ^testing.T) {
         testing.expect_value(t, hi, 3)
     }
 
-    // The argument is a CHARACTER index, not a caret boundary: column 3 IS the '.', which is
+    // The argument is a CHARACTER position, not a caret boundary: column 3 IS the '.', which is
     // its own class and so its own run. (That distinction is why the pane hands this the
     // floored glyph column rather than the rounded caret column — editor_glyph_col.)
     lo, hi := app.word_span(text, 3)
@@ -91,9 +71,31 @@ test_word_span :: proc(t: ^testing.T) {
     testing.expect_value(t, hi, 11)
 
     // An empty line has no run at all, and must report an empty span rather than index it.
-    e := mk("")
-    defer app.line_destroy(&e)
-    lo, hi = app.word_span(e.text[:], 0)
+    lo, hi = app.word_span(bs(""), 0)
     testing.expect_value(t, lo, 0)
     testing.expect_value(t, hi, 0)
+}
+
+// Every step is a whole rune, so a boundary can never land inside one — the property that lets
+// Doc hand these byte columns straight back to a cursor.
+//
+//   f ö(2) ö(2) . b a r   ->  bytes 0 1 3 5 6 7 8, len 9
+@(test)
+test_word_multibyte :: proc(t: ^testing.T) {
+    text := bs("föö.bar")
+
+    testing.expect_value(t, app.word_right_index(text, 0), 5) // past both umlauts
+    testing.expect_value(t, app.word_right_index(text, 5), 6) // past the '.'
+    testing.expect_value(t, app.word_left_index(text, 9), 6) // start of bar
+    testing.expect_value(t, app.word_left_index(text, 5), 0) // back over the umlauts
+
+    // A span asked from INSIDE the word still reports whole-rune ends.
+    lo, hi := app.word_span(text, 3) // the second ö
+    testing.expect_value(t, lo, 0)
+    testing.expect_value(t, hi, 5)
+
+    // And from past the end, looking left over a word that ends in ASCII.
+    lo, hi = app.word_span(text, 9)
+    testing.expect_value(t, lo, 6)
+    testing.expect_value(t, hi, 9)
 }
