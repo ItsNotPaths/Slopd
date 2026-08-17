@@ -30,6 +30,7 @@ Drag_Kind :: enum {
     Terminal_Sel, // per-character grid selection
     Split, // the editor/aux divider — the one client with a motion threshold
     Media_Pan, // panning the image surface — the only 2D drag
+    Color_Slider, // one channel rail of the colour picker; `target` is which
 }
 
 Drag :: struct {
@@ -140,11 +141,12 @@ drag_sweep :: proc(a: ^App) {
 drag_autoscrolling :: proc(a: ^App) -> bool {
     r: Rect
     switch a.drag.kind {
-    case .None, .Split, .Media_Pan, .Field_Text:
+    case .None, .Split, .Media_Pan, .Field_Text, .Color_Slider:
         // The divider has no view to run off the end of, and for the media pan the answer
         // is NEITHER axis: a pan already moves the surface a pixel per pixel of pointer
         // travel, so walking it would be a second thing moving the same view. A field walks
-        // its own window from how far past the edge the pointer is, with no tick to spend.
+        // its own window from how far past the edge the pointer is, with no tick to spend. A
+        // colour rail is bounded on both ends, so past one there is nothing further to reach.
         return false
     case .Editor_Text:
         r = a.lay.editor

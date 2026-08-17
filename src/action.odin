@@ -539,6 +539,21 @@ nav_run :: proc(a: ^App, n: Nav, extend, all: bool) -> bool {
         config_nav(a, cp, n)
         return true
     }
+    if co := color_target(a); co != nil {
+        #partial switch n {
+        case .Up:
+            co.sel = (co.sel - 1 + color_slider_count(a)) % color_slider_count(a)
+        case .Down:
+            co.sel = (co.sel + 1) % color_slider_count(a)
+        case .Left:
+            v := color_slider_value(a, co.sel) - 0.02
+            color_set_slider(a, co.sel, v)
+        case .Right:
+            v := color_slider_value(a, co.sel) + 0.02
+            color_set_slider(a, co.sel, v)
+        }
+        return true
+    }
     if ft := tree_target(a); ft != nil {
         filetree_nav(a, ft, n, extend)
         return true
@@ -581,6 +596,11 @@ activate_run :: proc(a: ^App, extend: bool) -> bool {
         } else {
             config_open_selected(a, cp)
         }
+        return true
+    }
+    if co := color_target(a); co != nil {
+        color_close(a, true)
+        set_aux(a, .FileTree)
         return true
     }
     if ft := tree_target(a); ft != nil {
@@ -701,6 +721,10 @@ escape_run :: proc(a: ^App, move_all_pending: bool) {
     switch {
     case a.cl_chain.waiting:
         cl_chain_clear(a) // abandon a stuck/pending && chain (the shell command runs on)
+    case a.color.active:
+        color_close(a, false)
+        set_aux(a, .FileTree)
+        return
     case ts != nil && (ts.sel_active || ts.msel_on):
         // First Esc leaves the selection, back to the input line — whichever way it was made.
         terminal_sel_reset(ts)

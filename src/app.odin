@@ -36,6 +36,7 @@ AuxMode :: enum {
     Config,
     Grep,
     Binds,
+    Color,
 }
 
 Focus :: enum {
@@ -139,7 +140,7 @@ App :: struct {
 
     // Alt+Enter link jumping (link.odin). grep holds a multi-result jump-to-definition,
     // rendered by the Grep aux mode (grep_ui.odin); a single result jumps straight in the
-    // editor. color holds the colour the caret was on — a state-only seam, not drawn yet.
+    // editor. color is the picker (color.odin), which edits the literal it opened on in place.
     grep:  GrepPane,
     color: ColorPane,
 
@@ -391,6 +392,7 @@ app_init :: proc(a: ^App) {
     a.split_anim = Anim{to = a.split} // settled at the base ratio; Alt+[ / Alt+] ease it
     a.mouse_on = true // config may turn it off (main); on by default
     a.hover_on = true // likewise
+    a.color.buf_idx = -1
     a.scale = 1
     a.font_px = FONT_BASE_PX
     cwd, err := os.get_working_directory(context.allocator) // owned; the launch cwd
@@ -457,4 +459,7 @@ app_destroy :: proc(a: ^App) {
     delete(a.binds)
     bind_errors_destroy(a.bind_errors)
     binds_pane_destroy(&a.binds_pane)
+    if a.color.orig_text != "" {
+        delete(a.color.orig_text)
+    }
 }

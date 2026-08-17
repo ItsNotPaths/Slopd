@@ -175,6 +175,8 @@ wheel_target :: proc(a: ^App, lay: Layout, mx, my: i32) -> Wheel_Target {
         return .Terminal
     case .FileTree, .Grep, .Config, .Binds:
         return .List
+    case .Color:
+        return .None
     }
     return .None
 }
@@ -236,7 +238,7 @@ wheel_apply :: proc(a: ^App, target: Wheel_Target, notch: int) {
             list_scroll_by(&a.config_pane.scroll, &a.config_pane.scroll_detached, d, now)
         case .Binds:
             list_scroll_by(&a.binds_pane.scroll, &a.binds_pane.scroll_detached, d, now)
-        case .Terminal:
+        case .Color, .Terminal:
         // Not a list pane; wheel_target never routes it here.
         }
     }

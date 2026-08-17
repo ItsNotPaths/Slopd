@@ -1,6 +1,7 @@
 package main
 
 import "core:math"
+import "core:unicode/utf8"
 import gl "vendor:OpenGL"
 import stbtt "vendor:stb/truetype"
 
@@ -241,6 +242,12 @@ text_draw :: proc(t: ^Text, s: string, x, y: f32, color: [3]f32) {
     for r in s {
         glyph_push(t, r, &xpos, &ypos, color)
     }
+}
+
+// How wide `s` draws. Monospace, so it is the RUNE count — `len` counts BYTES, which right-
+// aligns a label carrying anything non-ASCII (a degree sign, a box rule) one cell short per byte.
+text_w :: proc(s: string, cell_w: f32) -> f32 {
+    return f32(utf8.rune_count_in_string(s)) * cell_w
 }
 
 // Same as text_draw but for an already-decoded rune slice (editable lines).

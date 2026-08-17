@@ -370,6 +370,8 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         cl_saved(a)
     case "tu":
         cl_tu(a)
+    case "color", "colour", "colors", "colours":
+        cl_color(a)
     case "w", "wa", "q", "q!", "wq", "wqa", "waq":
         cl_quit(a, name)
     case:
@@ -1022,6 +1024,19 @@ cl_grep_hint :: proc(a: ^App) -> string {
         return fmt.tprintf("(%d match%s)", n, n == 1 ? "" : "es")
     }
     return "(no matches)"
+}
+
+// Opens the colour picker on the colour under the caret, which it then edits in place. With no
+// colour there it opens on the last one — or red, the first time — and writes into no buffer.
+cl_color :: proc(a: ^App) {
+    if color_open_at_caret(a) {
+        return
+    }
+    rgba := a.color.rgba
+    if rgba == {} {
+        rgba = {1, 0, 0, 1}
+    }
+    color_open(a, rgba)
 }
 
 // Whether the document pane's buffer is holding a disk-change conflict — the state the staged

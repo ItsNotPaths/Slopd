@@ -28,6 +28,8 @@ aux_mode_name :: proc(m: AuxMode) -> string {
         return "grep"
     case .Binds:
         return "binds"
+    case .Color:
+        return "color"
     }
     return ""
 }
