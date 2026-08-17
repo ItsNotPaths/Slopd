@@ -3,30 +3,18 @@ package main
 import "core:fmt"
 import clay "../bindings/clay"
 
-// The grep results pane's UI half — the first pane whose rows are not one-per-item.
-// filetree_ui.odin is the template this follows: a geometry proc every phase sizes itself
-// from, a scroll apply that runs before anything is declared, a hit test against the tree
-// Clay is still holding, a click verb, a declaration. The frame order in grep_frame is the
-// same and load-bearing for the same reason.
-//
-// What is NEW here is the indirection a real list needs: one hit is a BLOCK of several
-// display rows (a "path:line" title, its context lines, a spacer), so
-//
-//   - the viewport counts DISPLAY ROWS, and the scroll policy frames the selected block's
-//     title row (grep_anchor) the way the editor frames its caret line;
-//   - a click resolves row -> `GrepRow.hit` -> block, so clicking any line of a block
-//     selects that block, which is what the keyboard's Up/Down already mean;
-//   - the flattening happens ONCE per frame and stays valid across the click, because
-//     GrepRow carries no selection state (see grep.odin).
+// The grep results pane's UI half — the first pane whose rows are not one-per-item. It follows
+// filetree_ui.odin's template, with one hit being a BLOCK of several display rows (a
+// "path:line" title, its context lines, a spacer), so:
+//   - the viewport counts DISPLAY ROWS, and the policy frames the selected block's title row;
+//   - a click resolves row -> `GrepRow.hit` -> block, so clicking any line selects the block;
+//   - the flattening happens once per frame and survives the click, since GrepRow carries no
+//     selection state.
 
-// Extra vertical padding per row, in logical pixels — a touch airier than the editor and
-// the filetree (FT_ROW_PAD) so the stacked context blocks don't read as one packed wall of
-// text.
+// Logical pixels, airier than FT_ROW_PAD so the stacked context blocks do not read as a wall.
 GREP_ROW_PAD :: 5
 
-// The pane's fixed geometry: content area inside the focus ring, row height, and how many
-// display rows fit under the header. The twin of filetree_geom, and shared by every phase
-// of the frame for the same reason — one call, so they cannot disagree.
+// filetree_geom's twin: content area, row height, and display rows under the header.
 grep_geom :: proc(pane: Rect, scale: f32, line_h: f32) -> (area: Rect, row_h: i32, rows: int) {
     area = inset(pane, i32(2 * scale))
     row_h = i32(line_h) + i32(GREP_ROW_PAD * scale)
@@ -37,16 +25,14 @@ grep_geom :: proc(pane: Rect, scale: f32, line_h: f32) -> (area: Rect, row_h: i3
     return
 }
 
-// Move the viewport to follow the selected BLOCK, under the shared `scroll_mode` policy.
-// `anchor` and `total` are both in display rows (grep_anchor, len(rows)) — a block spans
-// several, so tracking hits would leave a block's title scrolled off above its own context.
+// `anchor` and `total` are in display rows: a block spans several, so tracking hits would leave
+// a title scrolled off above its own context.
 grep_scroll_apply :: proc(g: ^GrepPane, anchor, rows, total: int, center: bool, last_input_at: f64 = 0) {
     list_scroll_apply(&g.scroll, &g.scroll_detached, anchor, rows, total, center, last_input_at)
 }
 
-// Which HIT the pointer is over, or -1. Walks display rows (what Clay was handed) and returns
-// the block each belongs to; spacer rows carry hit == -1 and are skipped, so the gap between
-// blocks is dead space. Resolves against the LAST frame's tree, hence `first` = g.scroll then.
+// Walks display rows and returns the block each belongs to; a spacer carries hit == -1, so the
+// gap between blocks is dead space. Resolves against the LAST frame's tree.
 grep_hit :: proc(rows: []GrepRow, first, max_rows: int) -> int {
     lo := clamp(first, 0, max(0, len(rows)))
     n := max(0, min(len(rows) - lo, max_rows))
@@ -59,9 +45,8 @@ grep_hit :: proc(rows: []GrepRow, first, max_rows: int) -> int {
     return -1
 }
 
-// Apply a pending click on block `hit` (-1 = the pointer hit no block). Single click selects,
-// double click jumps to the match — the mouse twin of Up/Down and Enter, both ending in the
-// same `grep_open_selected`. Claimed only on a real hit; see mouse_take_click.
+// -1 means the pointer hit no block. Single selects, double jumps — Up/Down and Enter's twin,
+// both ending in grep_open_selected. Claimed only on a real hit.
 grep_click :: proc(a: ^App, hit: int) {
     if hit < 0 {
         return
@@ -76,20 +61,17 @@ grep_click :: proc(a: ^App, hit: int) {
     }
     g.selected = hit
     if count >= 2 {
-        grep_open_selected(a) // jump_to: opens the file and places the caret on the match
+        grep_open_selected(a) // opens the file and puts the caret on the match
     }
 }
 
-// Declare the pane into the window's tree. Reads App and the flattened rows, writes
-// only Clay — no mutation, no GL. `rows` is passed in rather than rebuilt so the frame
-// flattens exactly once (see the header).
+// Reads App and the flattened rows, writes only Clay. `rows` is passed in rather than rebuilt,
+// so the frame flattens exactly once.
 //
-// The tree is:
-//   gp_pane   the content area inside the focus ring, floating at the pane's own rect and
-//             clipping its own content
-//     gp_head   the query + hit count
+//   gp_pane   the content area inside the focus ring, floating and clipping its own content
+//     gp_head   the query and hit count
 //     gp_body   the clip group
-//       gp_empty            the "(no matches)" placeholder, when there are no hits
+//       gp_empty            the "(no matches)" placeholder
 //       gp_row/i            one per visible DISPLAY row, keyed by row index
 //         gp_gut/i            the right-aligned line-number gutter (context rows only)
 grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
@@ -104,7 +86,7 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
     first := clamp(g.scroll, 0, max(0, len(rows)))
     visible := max(0, min(len(rows) - first, max_rows))
 
-    // No backgroundColor: panel() already filled the pane, so every fill below means something.
+    // No backgroundColor: panel() filled the pane, so every fill below means something.
     if clay.UI(clay.ID("gp_pane"))(clay_pane_box(area)) {
         if clay.UI(clay.ID("gp_head"))(
             {
@@ -147,15 +129,14 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
                 r := rows[i]
                 sel := r.hit >= 0 && r.hit == g.selected
 
-                // The selected block gets a faint band, its match line an accent rail at
-                // the very left edge. The rail is a left BORDER because Clay draws borders
-                // inside the element box but OUTSIDE its padding, the only way in there.
+                // A faint band on the selected block, an accent rail on its match line. The
+                // rail is a left BORDER because Clay draws those inside the box but outside
+                // its padding.
                 bg: clay.Color
                 if sel {
                     bg = clay_rgb(th.line_highlight)
                 } else if hover_shown(a) && r.hit >= 0 && r.hit == g.hover {
-                    // The whole block lights, not the row: that is what a click here
-                    // selects, so it is what the pointer should promise.
+                    // The whole block lights, not the row: that is what a click selects.
                     bg = clay_rgb(hover_bg(th))
                 }
                 border: clay.BorderElementConfig
@@ -175,20 +156,20 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
                         border          = border,
                     },
                 ) {
-                    // A spacer declares no children at all: it exists to take up a row of
-                    // height, and grep_hit already refuses to resolve a click to it. Nesting
-                    // rather than `continue` — clay.UI closes its element with a defer.
+                    // A spacer declares no children: it exists to take a row of height, and
+                    // grep_hit refuses to resolve a click to it. Nested rather than
+                    // `continue`, since clay.UI closes its element with a defer.
                     if r.hit >= 0 {
-                        // Colour is derived, not stored: a block title is lit when its
-                        // block is selected, a context line when it is the match.
+                        // Derived, not stored: a title is lit when its block is selected, a
+                        // context line when it is the match.
                         lit := r.header ? sel : r.match
                         col := lit ? th.fg : th.muted
                         if r.header {
                             clay.Text(r.text, clay_text_config(col, lh)) // flush-left
                         } else {
                             if r.gutter != "" {
-                                // A fixed gutw-cell column with its text pushed right,
-                                // rather than an x-offset computed per row.
+                                // A fixed column with its text pushed right, rather than an
+                                // x-offset computed per row.
                                 if clay.UI(clay.ID("gp_gut", u32(i)))(
                                     {
                                         layout = {
@@ -209,22 +190,21 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
     }
 }
 
-// The grep results pane (the FIND aux mode): a header naming the query + hit count, then each
-// hit as a `grep -rn`-style CONTEXT BLOCK — a project-relative "path:line" title over the lines
-// around the match, blocks parted by a blank row. Up/Down select, Enter jumps (Nav_* / Activate).
+// A header naming the query and hit count, then each hit as a context block: a
+// project-relative "path:line" title over the lines around the match, blocks parted by a
+// blank row.
 grep_frame :: proc(t: ^Text, a: ^App, pane: Rect) {
     area, _, max_rows := grep_geom(pane, a.scale, t.font.line_height)
     if area.w <= 0 || area.h <= 0 {
         return
     }
     g := &a.grep
-    // Flattened once, for the whole frame: the hit test, the scroll policy and the
-    // declaration all read these same rows, and none of them depends on the selection,
-    // which the click below may change out from under them.
+    // Once for the whole frame: the hit test, the scroll policy and the declaration read these
+    // same rows, and none depends on the selection the click below may change.
     rows := grep_rows(g, a.project_root, context.temp_allocator)
 
     hit := grep_hit(rows, g.scroll, max_rows)
-    g.hover = hit // resolved against the same (last) frame the click is
+    g.hover = hit // against the same (last) frame the click is
     grep_click(a, hit)
     grep_scroll_apply(g, grep_anchor(rows, g.selected), max_rows, len(rows), a.scroll_mode == .Middle, pane_input_at(a))
 

@@ -4,25 +4,21 @@ import "base:runtime"
 import "core:fmt"
 import clay "../bindings/clay"
 
-// Clay bring-up: allocate the arena and initialise. Clay is the layout + hit-test engine
-// behind Slopd's chrome — panes, list rows, fields, dropdowns, overlays, the status strip
-// and the command line are DECLARED as a tree, and Clay hands back a flat command list
-// with resolved bounding boxes. Paint reads that list and hit-testing reads the same tree,
-// so the two cannot disagree. The measure-text hook and the command-list bridge are
-// clay_render.odin.
+// Clay bring-up. Clay is the layout and hit-test engine behind the chrome: panes, rows,
+// fields, dropdowns, overlays and the strip are declared as a tree, and Clay hands back a flat
+// command list with resolved boxes. Paint and hit-testing read the same tree, so the two cannot
+// disagree. The measure-text hook and the command-list bridge are clay_render.odin.
 //
-// Clay never owns the editor text body, the terminal cell grid, or the media surface:
-// those are per-glyph 2D surfaces (folds, per-glyph syntax colour, multi-cursor,
-// selection spans) and stay with their own painters behind a single Custom command.
+// Clay never owns the editor text body, the terminal grid or the media surface: those are
+// per-glyph 2D surfaces and stay with their own painters behind a single Custom.
 
-// Clay allocates nothing at run time — one arena up front, so this is its whole memory
-// footprint, sized from upstream's max element count (8192 by default, ~5.5 MiB). BSS, so it
-// costs address space and zero pages. clay_arena_fits below fails in `odin test`, not at startup.
+// Clay allocates nothing at run time, so this is its whole footprint — sized from upstream's
+// max element count (8192, ~5.5 MiB). BSS. clay_arena_fits fails in `odin test`, not at startup.
 CLAY_ARENA_BYTES :: 6 * 1024 * 1024
 
-// The arena's BASE must be 64-byte aligned: Clay puts its Clay_Context at `arena->memory`
-// verbatim and bump-allocates every internal array at 64-byte OFFSETS from it. A plain `[N]u8`
-// global has align_of 1, so the alignment comes through the element TYPE (asserted in tests).
+// Clay puts its Clay_Context at `arena->memory` verbatim and bump-allocates at 64-byte offsets
+// from it. A plain `[N]u8` global has align_of 1, so the alignment comes through the element
+// type.
 CLAY_ARENA_ALIGN :: 64
 
 @(private = "file")
@@ -33,22 +29,19 @@ Clay_Arena_Chunk :: struct #align (CLAY_ARENA_ALIGN) {
 @(private = "file")
 clay_arena_mem: [CLAY_ARENA_BYTES / CLAY_ARENA_ALIGN]Clay_Arena_Chunk
 
-// The arena as raw bytes: one contiguous run, since the chunking above is purely how the
-// alignment is expressed. Package-level so tests can check the base address.
+// One contiguous run; the chunking above is only how the alignment is expressed.
 clay_arena_bytes :: proc() -> []u8 {
     return (cast([^]u8)&clay_arena_mem)[:CLAY_ARENA_BYTES]
 }
 
-// Whether the static arena still satisfies what this build of Clay asks for. GL-free, so a
-// headless test can pin it. Legal before Initialize because MinMemorySize falls back to Clay's
-// compiled-in limits when no context exists — and dereferences one when it does (clay.h).
+// GL-free, so a headless test can pin it. Legal before Initialize: MinMemorySize falls back to
+// Clay's compiled-in limits when no context exists.
 clay_arena_fits :: proc() -> bool {
     return int(clay.MinMemorySize()) <= CLAY_ARENA_BYTES
 }
 
-// Clay reports problems (element count exceeded, a missing measure-text function, an arena too
-// small) through this callback rather than from the declaration calls, which run deep inside a
-// layout tree. Stderr: they mean a layout bug or a budget we have outgrown, both want to be loud.
+// Clay reports problems here rather than from the declaration calls, which run deep inside the
+// tree. Stderr, because they mean a layout bug or a budget we have outgrown.
 @(private = "file")
 clay_error :: proc "c" (e: clay.ErrorData) {
     context = runtime.default_context()
@@ -56,9 +49,8 @@ clay_error :: proc "c" (e: clay.ErrorData) {
     fmt.eprintfln("clay error [%v]: %s", e.errorType, text)
 }
 
-// Initialise Clay over the static arena at the current framebuffer size. Called once from main
-// after the window exists; Clay keeps the context globally, so nothing is stored on App. Returns
-// false if the arena is too small, which clay_arena_fits makes a test failure long before a run.
+// Once from main, after the window exists. Clay keeps the context globally, so nothing is
+// stored on App.
 clay_init :: proc(w, h: i32) -> bool {
     if !clay_arena_fits() {
         fmt.eprintfln(

@@ -3,23 +3,16 @@ package main
 import "core:path/filepath"
 import "core:strings"
 
-// Exclude — the ONE list of directories the project-wide tools skip, from the config's
-// `exclude:` line. "vendor is not my code" is one fact about a project, not a setting per tool,
-// so every reader of it asks this file:
+// The one list of directories the project-wide tools skip, from the config's `exclude:` line:
+//   the workspace prompt (Alt+P)   does not walk into them        — wsfind_scan
+//   `:grep`, Alt+Enter's lookup    passed as --exclude-dir        — grep_argv
+//   `:j <name>` and `[[wiki]]`     does not walk into them        — find_nearest_file
 //
-//   the workspace prompt (Alt+P)   does not walk into them   — wsfind_scan
-//   `:grep`, Alt+Enter's lookup    passes them as --exclude-dir — grep_argv
-//   `:j <name>` and `[[wiki]]`     does not walk into them   — find_nearest_file
-//
-// **Entries are directory NAME PATTERNS**, in grep's own `--exclude-dir` syntax (a shell glob
-// over the name, never a path), which is what lets one line drive all three: whatever a pattern
-// means here is exactly what grep is handed for it, so a search and a jump list cannot disagree
-// about what is in the project. A trailing '/' is trimmed, so `vendor/` works as typed.
-//
-// Not the file LISTING: browsing into a folder is a thing you asked for, one folder at a time.
+// Entries are directory NAME PATTERNS in grep's own --exclude-dir syntax (a glob over the name,
+// never a path), so what a pattern means here is exactly what grep is handed. A trailing '/' is
+// trimmed. Not the file listing: browsing into a folder is a thing you asked for.
 
-// The patterns, split from the one config line on commas. Temp-allocated slices of `list`, so
-// they live as long as the string does — every caller reads them inside its own frame.
+// Temp-allocated slices of `list`, so they live as long as the string does.
 exclude_split :: proc(list: string, alloc := context.temp_allocator) -> []string {
     out := make([dynamic]string, 0, 8, alloc)
     rest := list
@@ -31,13 +24,13 @@ exclude_split :: proc(list: string, alloc := context.temp_allocator) -> []string
     return out[:]
 }
 
-// The App's list, split. The seam every caller uses, so nobody re-splits it their own way.
+// The seam every caller uses, so nobody re-splits it their own way.
 exclude_dirs :: proc(a: ^App, alloc := context.temp_allocator) -> []string {
     return exclude_split(a.exclude, alloc)
 }
 
-// Whether a directory called `name` is excluded. A pattern that will not compile matches
-// nothing rather than everything: a typo must not empty the jump list.
+// A pattern that will not compile matches nothing rather than everything: a typo must not
+// empty the jump list.
 exclude_hit :: proc(pats: []string, name: string) -> bool {
     for p in pats {
         if ok, err := filepath.match(p, name); ok && err == nil {

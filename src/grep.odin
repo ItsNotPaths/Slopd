@@ -6,61 +6,53 @@ import "core:strconv"
 import "core:strings"
 import "core:unicode/utf8"
 
-// Project search + its results model. grep_run is the ONE canonical entry point: run grep
-// with a forced, info-rich flag set and parse the output into structured GrepHits — and
-// grep_project is how the app reaches it, since a search also carries the project root and the
-// excluded directories (exclude.odin). Both consumers go through it, so the parse + shape is
-// defined once:
-//   - Alt+Enter "jump to definition" (link.odin): grep_run narrows to every line mentioning
-//     the symbol, then tree-sitter (ts_filter_definitions) keeps only the lines that DEFINE
-//     it, not the invocations.
-//   - the CL `grep` interception (cl_grep, cmdline.odin): the user's flags are discarded,
-//     ours forced, and the hits dropped straight into the GrepPane.
-// Forcing the flags is deliberate: a single parse path, always with filename + line, is what
-// makes the output reusable downstream.
+// Project search and its results model. grep_run is the one entry point: grep with a forced,
+// info-rich flag set, parsed into GrepHits. grep_project is how the app reaches it, since a
+// search also carries the project root and the excluded directories. Both consumers go through
+// it, so the parse and shape are defined once:
+//   - Alt+Enter jump-to-definition: grep narrows to every line mentioning the symbol, then
+//     tree-sitter keeps only the lines that DEFINE it.
+//   - `:grep`: the user's flags are discarded, ours forced, the hits dropped into the pane.
+// Forcing the flags gives a single parse path, always with filename and line.
 
 GrepHit :: struct {
-    path:      string,   // absolute file path (owned)
-    line:      int,      // 1-based line, matching the editor gutter / the `j` builtin
-    col:       int,      // 0-based rune column of the match on that line (caret lands here)
-    text:      string,   // the matched line, trimmed (owned) — the single-line fallback preview
-    ctx:       []string, // raw (untrimmed) lines around the match, the pane's context block (owned)
-    ctx_first: int,      // 1-based line number of ctx[0], so the match line is ctx[line - ctx_first]
+    path:      string,   // absolute (owned)
+    line:      int,      // 1-based, matching the editor gutter and `:j`
+    col:       int,      // 0-based rune column of the match; the caret lands here
+    text:      string,   // the matched line, trimmed (owned): the single-line fallback
+    ctx:       []string, // untrimmed lines around the match, the pane's block (owned)
+    ctx_first: int,      // 1-based line of ctx[0], so the match is ctx[line - ctx_first]
 }
 
-// Lines of context shown above AND below each match in the results pane (a `grep -C`
-// window). The match line itself sits in the middle of the block.
+// Above and below each match, `grep -C`-style, with the match line in the middle.
 GREP_CONTEXT :: 2
 
-// The results model the Grep aux mode renders + navigates. Two producers stash into it:
-// Alt+Enter's multi-result definition lookup (link.odin) and the CL `grep` interception
-// (cl_grep). Up/Down move `selected`; Enter opens that hit (grep_open_hit).
+// What the Grep aux mode renders and navigates. Two producers stash into it: Alt+Enter's
+// multi-result definition lookup, and `:grep`.
 GrepPane :: struct {
-    query:    string,           // the symbol / pattern searched (owned)
-    hits:     [dynamic]GrepHit, // results, in scan order
-    selected: int,              // the highlighted row (Up/Down move it; Enter jumps)
-    scroll:   int,              // first visible DISPLAY row — the viewport top (list_scroll_target)
-    hover:    int,              // the block under the pointer, or -1 — transient (config_ui)
+    query:    string,           // the symbol or pattern searched (owned)
+    hits:     [dynamic]GrepHit, // in scan order
+    selected: int,
+    scroll:   int,              // first visible DISPLAY row: the viewport top
+    hover:    int,              // the block under the pointer, or -1; transient
 
     // Wheel-detached at this glfw time; 0 = following the selection. See list_scroll_apply.
     scroll_detached: f64,
 }
 
-// Up/Down: move the highlighted row, clamped (no wrap). The editor only follows on Enter,
-// so this is pure selection movement.
+// Clamped, no wrap. The editor only follows on Enter, so this is pure selection movement.
 grep_move :: proc(g: ^GrepPane, dir: int) {
     if n := len(g.hits); n > 0 {
         g.selected = clamp(g.selected + dir, 0, n - 1)
     }
 }
 
-// Open a hit's file and place the caret on the match, via the shared jump_to primitive.
-// The single canonical jump, shared by the pane's Enter and link.odin's single-definition goto.
+// The one jump, shared by the pane's Enter and link.odin's single-definition goto.
 grep_open_hit :: proc(a: ^App, h: GrepHit) {
-    jump_to(a, h.path, h.line - 1, h.col) // GrepHit.line is 1-based; jump_to wants 0-based
+    jump_to(a, h.path, h.line - 1, h.col) // GrepHit.line is 1-based, jump_to 0-based
 }
 
-// Enter in the pane: jump to the selected hit (no-op on an empty / out-of-range list).
+// A no-op on an empty or out-of-range list.
 grep_open_selected :: proc(a: ^App) {
     g := &a.grep
     if g.selected >= 0 && g.selected < len(g.hits) {
@@ -68,15 +60,15 @@ grep_open_selected :: proc(a: ^App) {
     }
 }
 
-// A project search, with the App's root and its excluded directories filled in — the entry
-// point the three callers use, so none of them has to remember that a search skips `vendor`.
+// The root and the excluded directories filled in, so no caller has to remember that a search
+// skips `vendor`.
 grep_project :: proc(a: ^App, query: string, word := false, fixed := false) -> []GrepHit {
     return grep_run(a.project_root, query, exclude_dirs(a), word, fixed)
 }
 
-// Run grep with FORCED flags and parse stdout into hits. `-H` matters: a single-file result then
-// parses the same as a tree. `word` adds -w (symbol lookup), `fixed` adds -F (literal). Execs grep
-// directly, not via a shell, so pattern + paths need no quoting and `--` guards a leading '-'.
+// `-H` matters: a single-file result then parses the same as a tree. `word` adds -w, `fixed`
+// adds -F. Execs grep directly, so pattern and paths need no quoting and `--` guards a
+// leading '-'.
 grep_run :: proc(root, query: string, exclude: []string = nil, word := false, fixed := false) -> []GrepHit {
     if root == "" || query == "" {
         return nil
@@ -96,9 +88,8 @@ grep_run :: proc(root, query: string, exclude: []string = nil, word := false, fi
     return hits[:]
 }
 
-// The command line a search runs, built rather than inlined so the flags can be ASSERTED without
-// a grep on the machine. One `--exclude-dir` per configured pattern, which is the whole of the
-// unification: grep's own syntax is the syntax the config line is written in (exclude.odin).
+// Built rather than inlined, so the flags can be asserted without a grep on the machine. One
+// `--exclude-dir` per configured pattern: grep's own syntax is the config line's syntax.
 grep_argv :: proc(root, query: string, exclude: []string, word, fixed: bool, alloc := context.temp_allocator) -> []string {
     argv := make([dynamic]string, 0, 8 + len(exclude), alloc)
     append(&argv, "grep", "-rnIH")
@@ -115,9 +106,8 @@ grep_argv :: proc(root, query: string, exclude: []string, word, fixed: bool, all
     return argv[:]
 }
 
-// Parse one `path:line:content` grep line, splitting on the first two colons only (a POSIX
-// path has none; the content may have many). Column is the query's first occurrence as a rune
-// offset — best effort, 0 when it can't be located (e.g. a regex query). Temp-allocated.
+// Splitting on the first two colons only: a POSIX path has none, the content may have many. The
+// column is the query's first occurrence as a rune offset, best effort. Temp-allocated.
 @(private = "file")
 grep_parse :: proc(raw, query: string) -> (GrepHit, bool) {
     c1 := strings.index_byte(raw, ':')
@@ -146,14 +136,14 @@ grep_parse :: proc(raw, query: string) -> (GrepHit, bool) {
     }, true
 }
 
-// Replace the pane's contents, deep-cloning `hits` (callers pass temp-allocated scans) and
-// freeing the previous set. Context blocks are read from disk here so the pane owns them; a
-// file is re-read at most once per run of same-file hits (grep groups its output by file).
+// Deep-clones `hits`, since callers pass temp-allocated scans, and frees the previous set.
+// Context blocks are read from disk here so the pane owns them, at most once per run of
+// same-file hits.
 grep_set :: proc(g: ^GrepPane, query: string, hits: []GrepHit) {
     grep_clear(g)
     g.query = strings.clone(query)
     cur_path := ""
-    cur_lines: []string // the current file split into lines (temp); reused across its hits
+    cur_lines: []string // the current file split into lines, reused across its hits
     for h in hits {
         if h.path != cur_path {
             cur_path = h.path
@@ -173,7 +163,7 @@ grep_set :: proc(g: ^GrepPane, query: string, hits: []GrepHit) {
         )
     }
     g.selected = 0
-    g.scroll = 0 // a fresh result set opens at the top
+    g.scroll = 0
     g.hover = -1
 }
 
@@ -194,8 +184,8 @@ grep_clear :: proc(g: ^GrepPane) {
     g.hover = -1
 }
 
-// Read a file and split it into lines (temp-allocated; the slices alias the file buffer).
-// "" / unreadable yields nil, so a hit on a vanished file just shows its trimmed text.
+// Temp-allocated; the slices alias the file buffer. Unreadable yields nil, so a hit on a
+// vanished file shows its trimmed text.
 @(private = "file")
 grep_file_lines :: proc(path: string) -> []string {
     data, err := os.read_entire_file_from_path(path, context.temp_allocator)
@@ -205,9 +195,8 @@ grep_file_lines :: proc(path: string) -> []string {
     return strings.split(string(data), "\n", context.temp_allocator)
 }
 
-// The owned context block around 1-based `line`: GREP_CONTEXT lines either side, clamped to
-// the file. Returns the block and the 1-based number of its first line; empty (ctx_first 0)
-// when the file couldn't be read, and the pane then falls back to the match text.
+// GREP_CONTEXT lines either side of 1-based `line`, clamped to the file, with the 1-based
+// number of the first. Empty when the file could not be read, and the pane falls back.
 @(private = "file")
 grep_read_context :: proc(lines: []string, line: int) -> (ctx: []string, first: int) {
     if len(lines) == 0 {
@@ -230,21 +219,21 @@ grep_destroy :: proc(g: ^GrepPane) {
     delete(g.hits)
 }
 
-// --- display rows --- Each hit renders as a CONTEXT BLOCK, so one hit is SEVERAL display
-// rows and the viewport, scroll policy and hit test all count rows. **No colour or selected
-// flag here**: colour is derived, and selectedness CHANGES MID-FRAME on a click.
+// --- display rows --- Each hit renders as a context block, so one hit is several display rows
+// and the viewport, policy and hit test all count rows. No colour or selected flag: colour is
+// derived, and selectedness changes mid-frame on a click.
 
 GrepRow :: struct {
-    hit:    int, // index into g.hits; -1 for the blank spacer between blocks
-    gutter: string, // the context line's number; "" for a header / spacer
+    hit:    int, // index into g.hits; -1 for the blank spacer
+    gutter: string, // the context line's number; "" for a header or spacer
     text:   string,
-    match:  bool, // the matched line (accent rail when its block is selected)
-    header: bool, // the block's "path:line" title row (drawn flush-left)
+    match:  bool, // the matched line; an accent rail when its block is selected
+    header: bool, // the block's "path:line" title, drawn flush-left
 }
 
-// Flatten the hits into display rows: title, context block (or the trimmed match text when the
-// file could not be re-read), blank spacer. Strings borrow the pane's own storage bar the
-// titles and line numbers, which are formatted into `alloc` (usually the frame's temp).
+// Title, context block (or the trimmed match text when the file could not be re-read), blank
+// spacer. Strings borrow the pane's storage, bar the titles and line numbers, formatted into
+// `alloc`.
 grep_rows :: proc(g: ^GrepPane, root: string, alloc := context.allocator) -> []GrepRow {
     rows := make([dynamic]GrepRow, 0, len(g.hits) * (2 * GREP_CONTEXT + 3), alloc)
     for h, hi in g.hits {
@@ -266,14 +255,13 @@ grep_rows :: proc(g: ^GrepPane, root: string, alloc := context.allocator) -> []G
                 )
             }
         }
-        append(&rows, GrepRow{hit = -1}) // blank spacer between blocks
+        append(&rows, GrepRow{hit = -1}) // blank spacer
     }
     return rows[:]
 }
 
-// The display row the selected block OPENS at — its title. The scroll policy frames this the
-// way the editor frames its caret line, so a block scrolls in by its top rather than by
-// whichever of its rows happens to be nearest.
+// Its title. The policy frames this as the editor frames its caret line, so a block scrolls in
+// by its top rather than by whichever row is nearest.
 grep_anchor :: proc(rows: []GrepRow, sel: int) -> int {
     for r, i in rows {
         if r.header && r.hit == sel {
@@ -283,9 +271,8 @@ grep_anchor :: proc(rows: []GrepRow, sel: int) -> int {
     return 0
 }
 
-// How many cells wide the line-number gutter must be, measured from the rows that will
-// actually be drawn — exact, where estimating from `max(h.line) + GREP_CONTEXT` over-reserves
-// for a match within GREP_CONTEXT lines of end-of-file (its block is clamped there).
+// Measured from the rows that will actually be drawn, where estimating from
+// `max(h.line) + GREP_CONTEXT` over-reserves for a match near end-of-file.
 grep_gutter_w :: proc(rows: []GrepRow) -> int {
     w := 1
     for r in rows {
@@ -294,8 +281,8 @@ grep_gutter_w :: proc(rows: []GrepRow) -> int {
     return w
 }
 
-// A hit's path made project-relative for display ("/root/proj/src/x.odin" -> "src/x.odin"),
-// falling back to the full path when it isn't under the root. Borrows `path`'s storage.
+// "/root/proj/src/x.odin" -> "src/x.odin", falling back to the full path when it is not under
+// the root. Borrows `path`'s storage.
 grep_relpath :: proc(path, root: string) -> string {
     if root != "" && strings.has_prefix(path, root) {
         rel := path[len(root):]

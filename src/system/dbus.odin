@@ -8,30 +8,26 @@ import "core:strconv"
 import "core:strings"
 import "core:sys/posix"
 
-// PARKED — WIP. Nothing in the running editor uses this; see the banner in src/sysbus.odin.
+// PARKED — WIP. Nothing in the running editor uses this; see the banner in sysbus.odin.
 //
-// D-Bus — a from-scratch wire client (see "System panes" in plan.txt). Speaking the
-// protocol directly rather than binding libdbus-1 keeps marshalling a pure function over
-// bytes, so all of it unit-tests headless with no bus (src/tests/dbus_test.odin).
+// A from-scratch wire client. Speaking the protocol directly rather than binding libdbus-1
+// keeps marshalling a pure function over bytes, so all of it unit-tests headless with no bus.
 //
 // The protocol, in full:
-//   - A connection is a unix socket. The address comes from the environment
-//     (DBUS_SESSION_BUS_ADDRESS) or the well-known system path.
-//   - Auth is a line protocol: a leading NUL byte, then `AUTH EXTERNAL <uid-in-hex>`,
-//     then BEGIN. After BEGIN the stream is binary and never goes back.
-//   - A message is a 12-byte fixed header, an `a(yv)` array of header fields, padding to
-//     the next 8-byte boundary, then the body marshalled per its signature.
-//   - Every type has a fixed alignment and is written at an offset that is a multiple of
-//     it, counting from the START OF THE MESSAGE. That single rule is the whole format.
+//   - A connection is a unix socket, addressed from the environment or the well-known path.
+//   - Auth is a line protocol: a leading NUL byte, `AUTH EXTERNAL <uid-in-hex>`, then BEGIN.
+//     After BEGIN the stream is binary and never goes back.
+//   - A message is a 12-byte fixed header, an `a(yv)` array of header fields, padding to the
+//     next 8-byte boundary, then the body marshalled per its signature.
+//   - Every type has a fixed alignment and sits at an offset that is a multiple of it,
+//     counting from the START OF THE MESSAGE. That one rule is the whole format.
 //
-// Ownership: decoded messages BORROW. `dbus_msg_decode` returns strings that alias the
-// buffer you handed it, and `dbus_msg_args` parses the body into an allocator you choose
-// (temp, per frame). Nothing here clones — clone what you keep.
+// Decoded messages BORROW: strings alias the buffer you handed in, and dbus_msg_args parses
+// the body into an allocator you choose. Nothing here clones.
 //
-// Not implemented (deliberately, until something needs it): unix-fd passing ('h' is
-// carried as the u32 index it is on the wire, but no fds ride the control message), and
-// the serve-side vtable dispatcher. The reply CONSTRUCTORS that dispatcher needs are
-// here (`dbus_msg_return` / `dbus_msg_error`), so exporting an object is additive.
+// Not implemented until something needs it: unix-fd passing ('h' is carried as the u32 index
+// it is on the wire, but no fds ride the control message), and the serve-side vtable
+// dispatcher — its reply constructors are here, so exporting an object is additive.
 
 DBUS_SYSTEM_PATH :: "/run/dbus/system_bus_socket" // the well-known system bus socket
 DBUS_PROTOCOL_VERSION :: 1
@@ -68,9 +64,8 @@ Dbus_Field :: enum u8 {
 DBUS_NO_REPLY_EXPECTED :: 0x1
 DBUS_NO_AUTO_START :: 0x2
 
-// The three string-ish types are distinct so a union can tell them apart: they marshal
-// differently ('s'/'o' take a u32 length, 'g' a single byte) and mixing them up is a
-// wire error the daemon rejects, not something to discover at runtime.
+// Distinct so a union can tell them apart: they marshal differently ('s'/'o' take a u32
+// length, 'g' a single byte), and mixing them up is a wire error the daemon rejects.
 Dbus_String :: distinct string
 Dbus_Path :: distinct string
 Dbus_Signature :: distinct string
@@ -93,8 +88,8 @@ Dbus_Variant :: struct {
     val: ^Dbus_Value,
 }
 
-// One marshalled value. Containers nest through slices/pointers, so the union stays a
-// fixed size. `bool` is stored as Odin's bool (the wire form is a u32 0/1).
+// Containers nest through slices and pointers, so the union stays a fixed size. `bool` is
+// Odin's bool; the wire form is a u32 0/1.
 Dbus_Value :: union {
     u8,
     bool,
@@ -114,8 +109,7 @@ Dbus_Value :: union {
     Dbus_Variant,
 }
 
-// A decoded message. Every string BORROWS from `raw` (see the ownership note above);
-// the body is left unparsed until dbus_msg_args is called with an allocator.
+// Every string borrows from `raw`; the body stays unparsed until dbus_msg_args.
 Dbus_Message :: struct {
     type:         Dbus_Msg_Type,
     flags:        u8,
@@ -135,8 +129,7 @@ Dbus_Message :: struct {
 
 // --- signatures ---
 
-// Byte alignment of the type `c` introduces. Every marshalled value sits at an offset
-// that is a multiple of this, measured from the start of the message.
+// Every marshalled value sits at a multiple of this, measured from the start of the message.
 dbus_align_of :: proc(ch: u8) -> int {
     switch ch {
     case 'y', 'g', 'v':
@@ -156,9 +149,8 @@ dbus_sig_align :: proc(sig: string) -> int {
     return len(sig) > 0 ? dbus_align_of(sig[0]) : 0
 }
 
-// Length in bytes of the FIRST complete type in `sig`, or 0 if it is malformed. A basic
-// type is one byte; `a` prefixes another complete type; `(`/`{` run to their match. This
-// is the one primitive every container walk is built from.
+// 0 if malformed. A basic type is one byte, `a` prefixes another complete type, `(`/`{` run to
+// their match. The primitive every container walk is built from.
 dbus_sig_next :: proc(sig: string) -> int {
     if len(sig) == 0 {
         return 0
@@ -188,8 +180,8 @@ dbus_sig_next :: proc(sig: string) -> int {
     return 0
 }
 
-// Splits a signature into its complete types ("sa{sv}u" -> ["s", "a{sv}", "u"]). Returns
-// ok=false on a malformed signature so a bad reply can't be walked as if it parsed.
+// "sa{sv}u" -> ["s", "a{sv}", "u"]. ok=false on a malformed signature, so a bad reply cannot be
+// walked as if it parsed.
 dbus_sig_split :: proc(sig: string, alloc := context.temp_allocator) -> (out: []string, ok: bool) {
     parts := make([dynamic]string, 0, 4, alloc)
     rest := sig
@@ -206,16 +198,14 @@ dbus_sig_split :: proc(sig: string, alloc := context.temp_allocator) -> (out: []
 
 // --- writer ---
 
-// Marshals into a growing buffer. Alignment is computed from len(buf), so a writer must
-// start at an offset congruent to the message start mod 8 — which every caller here does
-// (the message builder writes in place; a standalone body is appended at an 8-boundary).
+// Alignment is computed from len(buf), so a writer must start at an offset congruent to the
+// message start mod 8 — which every caller here does.
 Dbus_Writer :: struct {
     buf: [dynamic]u8,
 }
 
-// There is deliberately no `dbus_writer_destroy`: a writer HANDS ITS BUFFER OUT
-// (`dbus_marshal_bytes` and `dbus_msg_build` both end in `return w.buf[:]`), so the bytes
-// belong to the caller's allocator from that moment on.
+// No `dbus_writer_destroy`: a writer hands its buffer out, so the bytes belong to the caller's
+// allocator from that moment.
 
 // Pads to the next multiple of `align` with NULs. The spec requires the padding be zero.
 dbus_pad :: proc(w: ^Dbus_Writer, align: int) {
@@ -227,8 +217,7 @@ dbus_pad :: proc(w: ^Dbus_Writer, align: int) {
     }
 }
 
-// Appends `n` little-endian bytes of `v`. We always write little-endian and advertise it
-// in the header, so no caller ever chooses a byte order.
+// We always write little-endian and advertise it in the header, so no caller chooses.
 @(private = "file")
 put_le :: proc(w: ^Dbus_Writer, v: u64, n: int) {
     for i in 0 ..< n {
@@ -253,8 +242,7 @@ put_string :: proc(w: ^Dbus_Writer, s: string) {
     append(&w.buf, 0)
 }
 
-// g: single-byte length + bytes + NUL, no alignment. Signatures are capped at 255 bytes
-// by the format itself.
+// g: single-byte length + bytes + NUL, no alignment. The format caps signatures at 255.
 @(private = "file")
 put_sig :: proc(w: ^Dbus_Writer, s: string) -> bool {
     if len(s) > 255 {
@@ -266,9 +254,8 @@ put_sig :: proc(w: ^Dbus_Writer, s: string) -> bool {
     return true
 }
 
-// Marshals one value as `sig`. Returns false if the value's type doesn't match the
-// signature — strict on purpose: a mismatch is a bug on our side, and the daemon would
-// only reject it later with a far less useful message.
+// false if the value's type does not match the signature. Strict on purpose: a mismatch is a
+// bug on our side, and the daemon would reject it later with a far less useful message.
 dbus_marshal_one :: proc(w: ^Dbus_Writer, sig: string, v: Dbus_Value) -> bool {
     if len(sig) == 0 {
         return false
@@ -329,11 +316,11 @@ dbus_marshal_one :: proc(w: ^Dbus_Writer, sig: string, v: Dbus_Value) -> bool {
         x := v.(Dbus_Array) or_return
         elem := sig[1:]
         if dbus_sig_next(elem) != len(elem) || len(elem) == 0 {
-            return false // an array's element must be exactly one complete type
+            return false // an array's element is exactly one complete type
         }
-        // The length is the byte count of the ELEMENTS ONLY: the padding between the
-        // length word and the first element is not counted. Getting this wrong is the
-        // classic D-Bus bug, and it only shows up on 8-aligned element types.
+        // The byte count of the ELEMENTS ONLY: the padding between the length word and the
+        // first element is not counted. The classic D-Bus bug, and it only shows up on
+        // 8-aligned element types.
         dbus_pad(w, 4)
         len_at := len(w.buf)
         put_le(w, 0, 4)
@@ -388,8 +375,7 @@ dbus_marshal :: proc(w: ^Dbus_Writer, sig: string, args: []Dbus_Value) -> bool {
     return true
 }
 
-// Convenience: marshal a standalone body into fresh bytes. Safe to append at any
-// 8-aligned offset, since every alignment divides 8.
+// Safe to append at any 8-aligned offset, since every alignment divides 8.
 dbus_marshal_bytes :: proc(
     sig: string,
     args: []Dbus_Value,
@@ -405,9 +391,8 @@ dbus_marshal_bytes :: proc(
 
 // --- reader ---
 
-// Reads from a message buffer. `pos` is an offset INTO THE WHOLE MESSAGE, because that
-// is what alignment is measured from — so the header array (which starts at offset 12,
-// not an 8-boundary) and the body both decode correctly with one reader.
+// `pos` is an offset INTO THE WHOLE MESSAGE, because that is what alignment is measured from —
+// so the header array, starting at offset 12, and the body both decode with one reader.
 Dbus_Reader :: struct {
     data: []u8,
     pos:  int,
@@ -424,8 +409,7 @@ take :: proc(r: ^Dbus_Reader, n: int) -> (out: []u8, ok: bool) {
     return out, true
 }
 
-// Skips to the next multiple of `align`. Padding bytes are not validated to be zero —
-// lenient on read, strict on write, per the usual robustness split.
+// Padding bytes are not checked for zero: lenient on read, strict on write.
 @(private = "file")
 skip_pad :: proc(r: ^Dbus_Reader, align: int) -> bool {
     if align <= 1 {
@@ -477,9 +461,8 @@ get_sig :: proc(r: ^Dbus_Reader) -> (s: string, ok: bool) {
     return string(body), true
 }
 
-// Reads one value of type `sig`. Container slices come from `alloc`; strings alias the
-// buffer. Returns false on any truncation, bad length, or malformed signature — this is
-// untrusted input from the bus, so every read is bounds-checked.
+// Container slices come from `alloc`, strings alias the buffer. false on any truncation, bad
+// length or malformed signature: this is untrusted input, so every read is bounds-checked.
 dbus_unmarshal_one :: proc(
     r: ^Dbus_Reader,
     sig: string,
@@ -606,13 +589,11 @@ dbus_unmarshal :: proc(
 
 // --- messages ---
 
-// Builds a complete message. `body_sig`/`args` may be empty for a no-argument call. The
-// header fields are written in place (they start at offset 12, which is why marshalling
-// is offset-aware), then padded to 8 before the body is appended.
+// `body_sig`/`args` may be empty for a no-argument call. The header fields are written in place
+// at offset 12, which is why marshalling is offset-aware, then padded to 8 before the body.
 //
-// `sender` is left empty for anything we actually send — the daemon stamps that field
-// itself. It exists so a test can synthesize a message exactly as it would arrive off the
-// bus, sender and all.
+// `sender` is empty for anything we send — the daemon stamps it. It exists so a test can
+// synthesize a message exactly as it would arrive off the bus.
 dbus_msg_build :: proc(
     type: Dbus_Msg_Type,
     serial: u32,
@@ -634,15 +615,14 @@ dbus_msg_build :: proc(
     body := dbus_marshal_bytes(body_sig, args, context.temp_allocator) or_return
 
     w := Dbus_Writer{buf = make([dynamic]u8, 0, 128 + len(body), alloc)}
-    append(&w.buf, 'l') // we always emit little-endian
+    append(&w.buf, 'l') // always little-endian
     append(&w.buf, u8(type))
     append(&w.buf, flags)
     append(&w.buf, DBUS_PROTOCOL_VERSION)
     put_le(&w, u64(len(body)), 4)
     put_le(&w, u64(serial), 4)
 
-    // The header field array, a(yv). Written by hand rather than through a Dbus_Array so
-    // the variants don't each need a heap cell for one string.
+    // a(yv), by hand rather than through a Dbus_Array, so the variants need no heap cell each.
     len_at := len(w.buf)
     put_le(&w, 0, 4)
     dbus_pad(&w, 8) // (yv) is a struct: 8-aligned
@@ -672,7 +652,7 @@ dbus_msg_build :: proc(
         put_le(&w, u64(reply_serial), 4)
     }
     put_field_str(&w, .Destination, "s", destination)
-    put_field_str(&w, .Sender, "s", sender) // normally the daemon's to stamp; see the note above
+    put_field_str(&w, .Sender, "s", sender) // normally the daemon's to stamp
     put_field_str(&w, .Signature, "g", body_sig)
     patch_u32(&w, len_at, u32(len(w.buf) - start))
 
@@ -681,7 +661,7 @@ dbus_msg_build :: proc(
     return w.buf[:], true
 }
 
-// A method call. Serial must be nonzero and unique on the connection (dbus_next_serial).
+// Serial must be nonzero and unique on the connection (dbus_next_serial).
 dbus_msg_call :: proc(
     serial: u32,
     destination, path, iface, member: string,
@@ -705,8 +685,7 @@ dbus_msg_call :: proc(
     )
 }
 
-// A successful reply to `to`. The serve-side primitive: an exported object answers a
-// call with this (see the agent work in the plan's Phase 3).
+// The serve-side primitive: an exported object answers a call with this.
 dbus_msg_return :: proc(
     serial: u32,
     to: ^Dbus_Message,
@@ -729,7 +708,7 @@ dbus_msg_return :: proc(
     )
 }
 
-// An error reply to `to`. `name` is a dotted D-Bus error name; `msg` its human text.
+// `name` is a dotted D-Bus error name, `msg` its human text.
 dbus_msg_error :: proc(
     serial: u32,
     to: ^Dbus_Message,
@@ -753,8 +732,8 @@ dbus_msg_error :: proc(
     )
 }
 
-// Total wire length of the message starting at `data`, or 0 if the 16-byte prefix isn't
-// there yet / the header is nonsense. Lets a reader size one message before taking it.
+// 0 if the 16-byte prefix is not there yet, or the header is nonsense. Lets a reader size one
+// message before taking it.
 dbus_msg_size :: proc(data: []u8) -> int {
     if len(data) < 16 {
         return 0
@@ -782,9 +761,8 @@ func_u32 :: proc(b: []u8, big: bool) -> u32 {
     return u32(b[3]) << 24 | u32(b[2]) << 16 | u32(b[1]) << 8 | u32(b[0])
 }
 
-// Decodes a whole message. Strings in the result ALIAS `data`; the body is left raw
-// (parse it with dbus_msg_args). Header fields are walked with the temp allocator and
-// only their string slices are kept, so decoding allocates nothing lasting.
+// Strings in the result alias `data`, and the body is left raw. Header fields are walked with
+// the temp allocator and only their string slices kept, so decoding allocates nothing lasting.
 dbus_msg_decode :: proc(data: []u8) -> (msg: Dbus_Message, ok: bool) {
     total := dbus_msg_size(data)
     if total == 0 || total > len(data) {
@@ -802,8 +780,8 @@ dbus_msg_decode :: proc(data: []u8) -> (msg: Dbus_Message, ok: bool) {
     body_len := int(func_u32(data[4:8], m.big))
     m.serial = func_u32(data[8:12], m.big)
 
-    // The header fields are a(yv) beginning at offset 12 — decoded through the normal
-    // reader so the offset-relative alignment is the same code path as everything else.
+    // a(yv) at offset 12, through the normal reader, so the offset-relative alignment is the
+    // same code path as everything else.
     r := Dbus_Reader {
         data = data[:total],
         pos  = 12,
@@ -821,8 +799,7 @@ dbus_msg_decode :: proc(data: []u8) -> (msg: Dbus_Message, ok: bool) {
         if va.val == nil {
             return {}, false
         }
-        // Every string-ish field reads the same way, so pull it once; the numeric ones
-        // assert their own type. A field carrying the wrong type is a malformed message.
+        // Every string-ish field reads the same way; the numeric ones assert their own type.
         text, is_text := dbus_as_string(va.val^)
         switch Dbus_Field(code) {
         case .Path:
@@ -842,7 +819,7 @@ dbus_msg_decode :: proc(data: []u8) -> (msg: Dbus_Message, ok: bool) {
         case .Reply_Serial:
             m.reply_serial = va.val.(u32) or_return
             is_text = true
-        case .Unix_Fds: // carried, but we pass no fds — see the file header
+        case .Unix_Fds: // carried, but we pass no fds
             is_text = true
         case .Invalid:
             return {}, false
@@ -860,8 +837,8 @@ dbus_msg_decode :: proc(data: []u8) -> (msg: Dbus_Message, ok: bool) {
     return m, true
 }
 
-// Parses the body into its arguments, allocating container slices from `alloc` (temp,
-// per frame, is the intended use). Strings alias the message.
+// Container slices from `alloc`, temp per frame being the intended use. Strings alias the
+// message.
 dbus_msg_args :: proc(
     msg: ^Dbus_Message,
     alloc := context.temp_allocator,
@@ -872,8 +849,7 @@ dbus_msg_args :: proc(
     if msg.signature == "" {
         return nil, true
     }
-    // The reader spans the WHOLE message so body offsets keep their alignment; body is a
-    // slice of raw, so its start is the offset to seek to.
+    // The reader spans the WHOLE message, so body offsets keep their alignment.
     r := Dbus_Reader {
         data = msg.raw,
         pos  = len(msg.raw) - len(msg.body),
@@ -884,8 +860,7 @@ dbus_msg_args :: proc(
 
 // --- address + auth (pure; the socket work is below) ---
 
-// Picks the bus address from the environment, falling back to the well-known system
-// path. Returns the RAW address string (still to be parsed by dbus_parse_address).
+// Falls back to the well-known system path. Returns the RAW address string.
 dbus_bus_address :: proc(bus: Dbus_Bus, alloc := context.temp_allocator) -> string {
     switch bus {
     case .Session:
@@ -903,9 +878,9 @@ dbus_bus_address :: proc(bus: Dbus_Bus, alloc := context.temp_allocator) -> stri
     return ""
 }
 
-// Parses a D-Bus address into a unix socket path. An address is a `;`-separated list of
-// `transport:key=value,key=value` entries; we take the first unix entry we understand.
-// Values are %XX-escaped; `abstract` selects Linux's abstract namespace (leading NUL).
+// An address is a `;`-separated list of `transport:key=value,…` entries; we take the first unix
+// entry we understand. Values are %XX-escaped, and `abstract` selects Linux's abstract
+// namespace.
 dbus_parse_address :: proc(
     addr: string,
     alloc := context.temp_allocator,
@@ -949,7 +924,7 @@ dbus_parse_address :: proc(
     return "", false, false
 }
 
-// Decodes the %XX escapes an address value may carry.
+// The %XX escapes an address value may carry.
 dbus_unescape :: proc(s: string, alloc := context.temp_allocator) -> string {
     if !strings.contains(s, "%") {
         return s
@@ -968,9 +943,8 @@ dbus_unescape :: proc(s: string, alloc := context.temp_allocator) -> string {
     return strings.to_string(b)
 }
 
-// The AUTH line for EXTERNAL: the credential is our uid, written in decimal and then
-// hex-encoded as ASCII (uid 1000 -> "31303030"). The kernel supplies the real identity
-// over the socket; this string only has to agree with it.
+// The credential is our uid in decimal, hex-encoded as ASCII (1000 -> "31303030"). The kernel
+// supplies the real identity over the socket; this only has to agree with it.
 dbus_auth_line :: proc(uid: int, alloc := context.temp_allocator) -> string {
     HEX := "0123456789abcdef"
     b := strings.builder_make(alloc)
@@ -989,18 +963,18 @@ dbus_auth_line :: proc(uid: int, alloc := context.temp_allocator) -> string {
 
 Dbus_Conn :: struct {
     fd:     posix.FD,
-    serial: u32, // last serial handed out; serials start at 1
-    unique: string, // our unique name from Hello (":1.42"), owned
-    inbox:  [dynamic]Dbus_Message, // messages read while awaiting a reply (signals, calls to us)
+    serial: u32, // last serial handed out; they start at 1
+    unique: string, // our unique name from Hello, owned
+    inbox:  [dynamic]Dbus_Message, // read while awaiting a reply: signals, calls to us
 
-    // Scripted transport, live only when fd < 0 (see dbus_conn_fake).
+    // Scripted transport, live only when fd < 0 (dbus_conn_fake).
     sent:     [dynamic][]u8, // what we would have written, in order; owned
     script:   [dynamic][]u8, // what the fake bus hands back, oldest first; owned
-    awaiting: u32, // serial dbus_call is blocked on right now, 0 when none
+    awaiting: u32, // the serial dbus_call is blocked on, 0 when none
 }
 
-// Opens, authenticates, and says Hello. Returns nil when the bus isn't reachable — every
-// caller treats that as "this stack is unavailable" and degrades, never as fatal.
+// nil when the bus is not reachable, which every caller degrades on rather than treats as
+// fatal.
 dbus_open :: proc(bus: Dbus_Bus) -> (conn: ^Dbus_Conn, ok: bool) {
     addr := dbus_bus_address(bus)
     path, abstract := dbus_parse_address(addr) or_return
@@ -1012,7 +986,7 @@ dbus_open :: proc(bus: Dbus_Bus) -> (conn: ^Dbus_Conn, ok: bool) {
         dbus_close(c)
         return nil, false
     }
-    // Hello is mandatory and must be the first message: the reply is our unique name.
+    // Mandatory, and must be the first message: the reply is our unique name.
     reply, rok := dbus_call(
         c,
         "org.freedesktop.DBus",
@@ -1056,15 +1030,12 @@ dbus_close :: proc(c: ^Dbus_Conn) {
     free(c)
 }
 
-// --- scripted transport ---
+// --- scripted transport --- A connection with a negative fd speaks to nobody: writes are
+// recorded in `sent`, and reads come out of `script`, so the worker and a whole pane drive end
+// to end with no daemon.
 //
-// A connection with a negative fd speaks to nobody: writes are recorded in `sent` instead
-// of sent, and reads come out of `script` instead of the socket — the sysbus worker and a
-// whole pane drive end to end with no daemon (layer 2 of the three-layer model in plan.txt).
-//
-// Serials are deterministic on a fresh fake connection: it never says Hello, so the first
-// call out is serial 1, the second 2, and so on. That is how a script knows which
-// reply_serial to stamp on the reply it hands back.
+// Serials are deterministic on a fresh fake connection: it never says Hello, so the first call
+// out is serial 1. That is how a script knows which reply_serial to stamp.
 dbus_conn_fake :: proc() -> ^Dbus_Conn {
     c := new(Dbus_Conn)
     c.fd = -1
@@ -1072,15 +1043,13 @@ dbus_conn_fake :: proc() -> ^Dbus_Conn {
     return c
 }
 
-// Queues a message for the fake bus to hand back, TAKING OWNERSHIP of `raw` (build it
-// with dbus_msg_build and the default allocator, not temp).
+// Takes ownership of `raw`, so build it with the default allocator, not temp.
 dbus_script_push :: proc(c: ^Dbus_Conn, raw: []u8) {
     append(&c.script, raw)
 }
 
-// The n-th message a fake connection was asked to write, decoded — how a test asserts
-// that a queued action produced the right call with the right signature. The result
-// BORROWS the recorded buffer, so don't free it.
+// How a test asserts that a queued action produced the right call. The result BORROWS the
+// recorded buffer.
 dbus_sent_msg :: proc(c: ^Dbus_Conn, n: int) -> (msg: Dbus_Message, ok: bool) {
     if n < 0 || n >= len(c.sent) {
         return {}, false
@@ -1088,9 +1057,8 @@ dbus_sent_msg :: proc(c: ^Dbus_Conn, n: int) -> (msg: Dbus_Message, ok: bool) {
     return dbus_msg_decode(c.sent[n])
 }
 
-// Would the scripted bus hand something over right now? A REPLY exists only because a call
-// asked for it, so one sitting at the head of the script stays there until `dbus_call` is
-// actually waiting on it — otherwise the first drain swallows the whole conversation.
+// A reply exists only because a call asked for it, so one at the head of the script stays there
+// until dbus_call is waiting on it — otherwise the first drain swallows the conversation.
 @(private = "file")
 dbus_script_ready :: proc(c: ^Dbus_Conn) -> bool {
     if len(c.script) == 0 {
@@ -1098,7 +1066,7 @@ dbus_script_ready :: proc(c: ^Dbus_Conn) -> bool {
     }
     raw := c.script[0]
     if len(raw) < 2 {
-        return true // malformed: hand it over and let the decoder reject it
+        return true // malformed: let the decoder reject it
     }
     switch Dbus_Msg_Type(raw[1]) { // byte 1 is the type in either byte order
     case .Method_Return, .Error:
@@ -1109,8 +1077,7 @@ dbus_script_ready :: proc(c: ^Dbus_Conn) -> bool {
     return true
 }
 
-// Is a message waiting? Lets a caller drain a connection without ever blocking on one
-// that has nothing to say — the sysbus worker's read loop is built on it.
+// Lets a caller drain a connection without blocking on one that has nothing to say.
 dbus_readable :: proc(conn: ^Dbus_Conn) -> bool {
     if conn.fd < 0 {
         return dbus_script_ready(conn)
@@ -1122,7 +1089,7 @@ dbus_readable :: proc(conn: ^Dbus_Conn) -> bool {
     return posix.poll(&pfd, 1, 0) > 0
 }
 
-// Writes a message, or records it when the connection is scripted.
+// Or records it, when the connection is scripted.
 @(private = "file")
 dbus_send :: proc(c: ^Dbus_Conn, data: []u8) -> bool {
     if c.fd < 0 {
@@ -1132,14 +1099,13 @@ dbus_send :: proc(c: ^Dbus_Conn, data: []u8) -> bool {
     return write_all(c.fd, data)
 }
 
-// Frees a message's backing buffer. Only messages produced by dbus_read_msg own theirs;
-// decoding a borrowed slice does not, so don't free those.
+// Only messages produced by dbus_read_msg own theirs; a decoded borrowed slice does not.
 dbus_msg_free :: proc(m: ^Dbus_Message) {
     delete(m.raw)
     m^ = {}
 }
 
-// Next serial. Serial 0 is reserved, so the counter skips it on wrap.
+// Serial 0 is reserved, so the counter skips it on wrap.
 dbus_next_serial :: proc(c: ^Dbus_Conn) -> u32 {
     c.serial += 1
     if c.serial == 0 {
@@ -1159,8 +1125,8 @@ dbus_socket_connect :: proc(path: string, abstract: bool) -> (fd: posix.FD, ok: 
     }
     sa: posix.sockaddr_un
     sa.sun_family = .UNIX
-    // Abstract sockets live in a namespace keyed by a leading NUL, so the name starts at
-    // sun_path[1] and the length must be given exactly (no terminator).
+    // An abstract socket's namespace is keyed by a leading NUL, so the name starts at
+    // sun_path[1] and the length must be exact, with no terminator.
     off := abstract ? 1 : 0
     for i in 0 ..< len(path) {
         sa.sun_path[off + i] = c.char(path[i])
@@ -1187,7 +1153,7 @@ write_all :: proc(fd: posix.FD, data: []u8) -> bool {
     return true
 }
 
-// Reads exactly len(buf) bytes, or fails. `timeout_ms` < 0 blocks indefinitely.
+// Or fails. `timeout_ms` < 0 blocks indefinitely.
 @(private = "file")
 read_all :: proc(fd: posix.FD, buf: []u8, timeout_ms: int) -> bool {
     got := 0
@@ -1209,8 +1175,8 @@ read_all :: proc(fd: posix.FD, buf: []u8, timeout_ms: int) -> bool {
     return true
 }
 
-// Reads one CRLF-terminated auth line. Byte-at-a-time on purpose: the auth phase shares
-// the stream with the binary protocol that follows, so we must not read past the CRLF.
+// Byte at a time on purpose: the auth phase shares the stream with the binary protocol that
+// follows, so we must not read past the CRLF.
 @(private = "file")
 read_line :: proc(fd: posix.FD, alloc := context.temp_allocator) -> (line: string, ok: bool) {
     b := strings.builder_make(alloc)
@@ -1229,9 +1195,8 @@ read_line :: proc(fd: posix.FD, alloc := context.temp_allocator) -> (line: strin
 DBUS_AUTH_TIMEOUT :: 5000 // ms; the handshake is local and instant when it works at all
 DBUS_CALL_TIMEOUT :: 25000 // ms; matches libdbus's default reply timeout
 
-// The SASL handshake: a leading NUL byte (required on all transports; it carries the
-// credentials on some), AUTH EXTERNAL, then BEGIN. We also send NEGOTIATE_UNIX_FD and
-// discard the answer — we pass no fds, and a daemon that refuses is not an error for us.
+// A leading NUL byte (required on all transports, and carrying the credentials on some), AUTH
+// EXTERNAL, then BEGIN. NEGOTIATE_UNIX_FD is sent and its answer discarded: we pass no fds.
 @(private = "file")
 dbus_auth :: proc(c: ^Dbus_Conn) -> bool {
     nul := [1]u8{0}
@@ -1249,9 +1214,8 @@ dbus_auth :: proc(c: ^Dbus_Conn) -> bool {
     return true
 }
 
-// Reads one whole message off the wire. The 16-byte prefix tells us the total size, so
-// there is never a partial message left in a buffer between calls. The returned message
-// OWNS its bytes (dbus_msg_free).
+// The 16-byte prefix gives the total size, so no partial message is ever left in a buffer
+// between calls. The result OWNS its bytes.
 dbus_read_msg :: proc(c: ^Dbus_Conn, timeout_ms := DBUS_CALL_TIMEOUT) -> (msg: Dbus_Message, ok: bool) {
     if c.fd < 0 {
         if !dbus_script_ready(c) {
@@ -1264,7 +1228,7 @@ dbus_read_msg :: proc(c: ^Dbus_Conn, timeout_ms := DBUS_CALL_TIMEOUT) -> (msg: D
             delete(raw)
             return {}, false
         }
-        return m, true // the message owns `raw` now, exactly as it would off the socket
+        return m, true // the message owns `raw`, exactly as it would off the socket
     }
     head: [16]u8
     read_all(c.fd, head[:], timeout_ms) or_return
@@ -1286,12 +1250,10 @@ dbus_read_msg :: proc(c: ^Dbus_Conn, timeout_ms := DBUS_CALL_TIMEOUT) -> (msg: D
     return m, true
 }
 
-// Sends a method call and waits for its reply, queueing anything else that arrives first
-// (signals, calls addressed to us) in `c.inbox` for the caller to drain.
+// Anything else arriving first is queued in `c.inbox` for the caller to drain.
 //
-// ok=false means "no method return": either the call failed on the wire, or the daemon
-// answered with an error — in which case the ERROR message is still returned, so
-// `reply.error_name` is the thing to read. `dbus_msg_free` any result that came back typed.
+// ok=false means no method return: the call failed on the wire, or the daemon answered with an
+// error — which is still returned, so `reply.error_name` is the thing to read.
 dbus_call :: proc(
     c: ^Dbus_Conn,
     destination, path, iface, member: string,
@@ -1315,10 +1277,10 @@ dbus_call :: proc(
     ) or_return
     dbus_send(c, out) or_return
 
-    c.awaiting = serial // only the scripted transport reads this; see dbus_script_ready
+    c.awaiting = serial // only the scripted transport reads this
     defer c.awaiting = 0
 
-    // Bounded so a chatty bus can't spin here forever while our reply never comes.
+    // Bounded, so a chatty bus cannot spin here while our reply never comes.
     for _ in 0 ..< 1024 {
         m := dbus_read_msg(c, timeout_ms) or_return
         if m.reply_serial == serial && (m.type == .Method_Return || m.type == .Error) {
@@ -1329,9 +1291,8 @@ dbus_call :: proc(
     return {}, false
 }
 
-// Registers a signal match rule with the daemon (the "tell me about these" call every
-// pane makes before it starts listening). `rule` is the usual comma-separated form:
-// "type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'".
+// The "tell me about these" call every pane makes before listening. `rule` is the usual
+// comma-separated form: "type='signal',interface='…',member='PropertiesChanged'".
 dbus_add_match :: proc(c: ^Dbus_Conn, rule: string) -> bool {
     arg := Dbus_Value(Dbus_String(rule))
     reply, ok := dbus_call(
@@ -1351,8 +1312,7 @@ dbus_add_match :: proc(c: ^Dbus_Conn, rule: string) -> bool {
 
 // --- value accessors (the shapes the panes actually read) ---
 
-// The string inside a value, whether it was marshalled as s, o, or g. ok=false for
-// anything else — including a variant, which must be unwrapped first.
+// s, o or g. ok=false for anything else, a variant included: unwrap that first.
 dbus_as_string :: proc(v: Dbus_Value) -> (s: string, ok: bool) {
     #partial switch t in v {
     case Dbus_String:
@@ -1365,9 +1325,8 @@ dbus_as_string :: proc(v: Dbus_Value) -> (s: string, ok: bool) {
     return "", false
 }
 
-// Any integer-ish value widened to i64, whichever of the seven integer type codes it was
-// marshalled as. A property's exact width is the daemon's business, not something a pane
-// should have to hard-code per field.
+// Whichever of the seven integer type codes it was marshalled as. A property's exact width is
+// the daemon's business, not something a pane should hard-code per field.
 dbus_as_int :: proc(v: Dbus_Value) -> (n: i64, ok: bool) {
     #partial switch t in v {
     case u8:
@@ -1383,13 +1342,13 @@ dbus_as_int :: proc(v: Dbus_Value) -> (n: i64, ok: bool) {
     case i64:
         return t, true
     case u64:
-        return i64(t), true // > 2^63 wraps; no property we read is anywhere near it
+        return i64(t), true // > 2^63 wraps; nothing we read is near it
     }
     return 0, false
 }
 
-// Unwraps a variant one level; any other value passes through unchanged. Property reads
-// come back as variants, so nearly every lookup starts here.
+// One level; anything else passes through. Property reads come back as variants, so nearly
+// every lookup starts here.
 dbus_unwrap :: proc(v: Dbus_Value) -> Dbus_Value {
     if va, ok := v.(Dbus_Variant); ok && va.val != nil {
         return va.val^
@@ -1397,8 +1356,8 @@ dbus_unwrap :: proc(v: Dbus_Value) -> Dbus_Value {
     return v
 }
 
-// Looks a key up in a marshalled dictionary (a{s*}), returning the value UNWRAPPED —
-// so a a{sv} property bag hands back the property itself, not its variant shell.
+// In a marshalled a{s*}, returning the value UNWRAPPED, so an a{sv} property bag hands back the
+// property itself rather than its variant shell.
 dbus_dict_get :: proc(v: Dbus_Value, key: string) -> (out: Dbus_Value, ok: bool) {
     arr := v.(Dbus_Array) or_return
     for item in arr.items {
@@ -1414,7 +1373,7 @@ dbus_dict_get :: proc(v: Dbus_Value, key: string) -> (out: Dbus_Value, ok: bool)
     return nil, false
 }
 
-// Convenience for the overwhelmingly common case: a string property out of a a{sv}.
+// The common case: a string property out of an a{sv}.
 dbus_dict_string :: proc(v: Dbus_Value, key: string) -> (s: string, ok: bool) {
     val := dbus_dict_get(v, key) or_return
     return dbus_as_string(val)

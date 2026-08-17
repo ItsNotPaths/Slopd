@@ -5,20 +5,20 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 
-// The config file's line syntax: `key: value` with '#' comments. Both directions matter —
-// load_config reads through config_strip_comment, and the Config pane writes back through
-// config_set — and the two must agree on where a comment starts.
+// `key: value` with '#' comments. Both directions matter — load_config reads through
+// config_strip_comment and the Config pane writes back through config_set — and the two must
+// agree on where a comment starts.
 
-// A trailing comment is not part of the value. Every shipped line documents itself with
-// one, so keeping it would hand parse_on_off "on   # on | off" (no match, silent fallback
-// to the default) or, where the value is free text, make the comment BE the value.
+// A trailing comment is not part of the value. Every shipped line documents itself with one, so
+// keeping it would hand parse_on_off "on   # on | off", or make the comment BE a free-text
+// value.
 @(test)
 test_config_strip_comment :: proc(t: ^testing.T) {
     testing.expect_value(t, app.config_strip_comment("mouse: on             # on | off"), "mouse: on")
     testing.expect_value(t, app.config_strip_comment("git_tool: lazygit  # e.g. lazygit"), "git_tool: lazygit")
 
-    // A key with no value but a comment comes back empty after the colon rather than
-    // carrying the comment — this is the one that would launch "# e.g. lazygit".
+    // A key with no value but a comment comes back empty rather than carrying the comment:
+    // this is the one that would launch "# e.g. lazygit".
     testing.expect_value(t, app.config_strip_comment("git_tool:             # e.g. lazygit"), "git_tool:")
 
     // Whole-line comments and blanks collapse to "", which the load loop skips.
@@ -27,19 +27,19 @@ test_config_strip_comment :: proc(t: ^testing.T) {
     testing.expect_value(t, app.config_strip_comment("\t# tab-indented"), "")
     testing.expect_value(t, app.config_strip_comment("   "), "")
 
-    // No comment: just trimmed. The common case must not be disturbed.
+    // No comment: just trimmed.
     testing.expect_value(t, app.config_strip_comment("  theme: themes/default.theme  "), "theme: themes/default.theme")
 }
 
-// A '#' glued to a token is part of the value, not a comment — the ini/git-config rule.
-// git_tool is free text handed to a shell, so `foo#bar` is a plausible argument, and a
-// theme name is arbitrary. Only a '#' at line start or after whitespace opens a comment.
+// A '#' glued to a token is part of the value, per the ini rule: git_tool is free text handed to
+// a shell, so `foo#bar` is a plausible argument. Only a '#' at line start or after whitespace
+// opens a comment.
 @(test)
 test_config_glued_hash_is_value :: proc(t: ^testing.T) {
     testing.expect_value(t, app.config_strip_comment("git_tool: sh -c foo#bar"), "git_tool: sh -c foo#bar")
     testing.expect_value(t, app.config_strip_comment("theme: my#theme"), "theme: my#theme")
 
-    // ...and a glued one still doesn't shield a later, spaced one.
+    // …and a glued one does not shield a later, spaced one.
     testing.expect_value(t, app.config_strip_comment("theme: my#theme  # the good one"), "theme: my#theme")
 
     // The split reports the comment verbatim, with the body's length as its column.
@@ -52,10 +52,9 @@ test_config_glued_hash_is_value :: proc(t: ^testing.T) {
     testing.expect_value(t, comment, "")
 }
 
-// Writeback preserves the file: other lines verbatim, and the edited line's own comment,
-// re-aligned to the column it sat at. That comment documents the setting ("# on | off"),
-// not its current value, so dropping it would strip the config's documentation one
-// setting at a time as the pane is used. An unknown key is appended.
+// Other lines verbatim, and the edited line's own comment re-aligned to its column. That comment
+// documents the setting, not its value, so dropping it would strip the config's documentation
+// one setting at a time. An unknown key is appended.
 @(test)
 test_config_set_keeps_comments :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_set_test.config"
@@ -74,7 +73,7 @@ git_tool:             # e.g. lazygit
 
     testing.expect(t, app.config_set("mouse", "off"))
     testing.expect(t, app.config_set("git_tool", "lazygit"))
-    testing.expect(t, app.config_set("jump_lines", "20")) // absent -> appended
+    testing.expect(t, app.config_set("jump_lines", "20")) // absent, so appended
 
     out, rerr := os.read_entire_file_from_path(path, context.temp_allocator)
     testing.expect_value(t, rerr, nil)
@@ -84,13 +83,13 @@ git_tool:             # e.g. lazygit
     testing.expect(t, strings.contains(got, "mouse: off            # on | off\n"))
     testing.expect(t, strings.contains(got, "git_tool: lazygit     # e.g. lazygit\n"))
 
-    // Untouched lines — including the commented-out `mouse` line, which must not have
-    // been mistaken for the key — survive verbatim, and the new key lands at the end.
+    // Untouched lines survive verbatim, the commented-out `mouse` line included, and the new
+    // key lands at the end.
     testing.expect(t, strings.contains(got, "theme: themes/default.theme\n"))
     testing.expect(t, strings.contains(got, "# mouse: on           <- a commented-out setting is not a match\n"))
     testing.expect(t, strings.has_suffix(got, "jump_lines: 20\n"))
 
-    // And the round trip: what was written reads back as what was set.
+    // The round trip: what was written reads back as what was set.
     cfg := app.load_config()
     defer app.config_destroy(&cfg)
     testing.expect_value(t, cfg.mouse, false)
@@ -98,8 +97,7 @@ git_tool:             # e.g. lazygit
     testing.expect_value(t, cfg.jump_lines, 20)
 }
 
-// A setting cleared back to empty writes a bare `key:`, like the shipped file — not
-// `key: ` with a trailing space — and reads back as unset.
+// A bare `key:`, like the shipped file, rather than `key: ` with a trailing space.
 @(test)
 test_config_set_empty_value :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_empty_test.config"
@@ -120,9 +118,8 @@ test_config_set_empty_value :: proc(t: ^testing.T) {
     testing.expect_value(t, cfg.git_tool, "")
 }
 
-// git_term is a dropdown and a dropdown cannot offer a blank row, so the pane writes
-// "detached" where this file leaves the value empty; it has to read back as 0. (git_tool
-// needs no such token — it is a text field, and an empty one writes an empty value.)
+// A dropdown cannot offer a blank row, so the pane writes "detached" where the file leaves the
+// value empty, and it has to read back as 0. git_tool needs no such token, being a text field.
 @(test)
 test_config_git_detached_token :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_git_test.config"
@@ -139,9 +136,9 @@ test_config_git_detached_token :: proc(t: ^testing.T) {
     testing.expect_value(t, cfg.git_term, 0)
 }
 
-// run_term names a SESSION and only a session — there is no detached case, because a program
-// you double-clicked has output you want to see. A junk value keeps t1 rather than resolving
-// to 0, which term_slot would read as "the session before the first".
+// A session and only a session: no detached case, because a program you double-clicked has
+// output you want to see. Junk keeps t1 rather than resolving to 0, which term_slot would read
+// as "the session before the first".
 @(test)
 test_config_run_term :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_run_term_test.config"
@@ -155,7 +152,7 @@ test_config_run_term :: proc(t: ^testing.T) {
     defer app.config_destroy(&cfg)
     testing.expect_value(t, cfg.run_term, 3)
 
-    // Junk, and a zero, both keep the default.
+    // Junk and a zero both keep the default.
     for bad in ([]string{"run_term: detached\n", "run_term: 0\n", "run_term:\n"}) {
         testing.expect(t, os.write_entire_file(path, transmute([]byte)bad) == nil)
         junk := app.load_config()
@@ -164,14 +161,12 @@ test_config_run_term :: proc(t: ^testing.T) {
     }
 }
 
-// --- the [places] block --- The file browser's sidebar lives in the config file, in the one
-// section it has. Everything below a `[section]` header is DATA, not settings, and the three
-// readers all have to agree on that — the loader stops there, config_set refuses to rewrite a
-// line past it, and config_places reads only what is inside it.
+// --- the [places] block --- The sidebar lives in the config file's one section. Everything
+// below a `[section]` header is DATA, and all three readers agree on that: the loader stops
+// there, config_set refuses to rewrite past it, and config_places reads only inside it.
 
-// A place named like a setting is the whole hazard: `theme: /home/me/themes` in the block is a
-// directory, and a loader that walked past the header would take it as the theme setting and
-// then a settings write would rewrite somebody's shortcut.
+// A place named like a setting is the hazard: `theme: /home/me/themes` in the block is a
+// directory, and a loader that walked past the header would take it as the theme setting.
 @(test)
 test_config_places_are_not_settings :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_places_test.config"
@@ -189,7 +184,7 @@ theme: /home/me/themes
 
     cfg := app.load_config()
     defer app.config_destroy(&cfg)
-    testing.expect_value(t, cfg.theme_path, "default") // NOT the block's /home/me/themes
+    testing.expect_value(t, cfg.theme_path, "default") // not the block's /home/me/themes
 
     places := app.config_places(context.allocator)
     defer {
@@ -201,10 +196,10 @@ theme: /home/me/themes
     testing.expect_value(t, len(places), 2)
     testing.expect_value(t, places[0].name, "Home")
     testing.expect_value(t, places[0].path, "/home/me")
-    testing.expect_value(t, places[1].path, "/home/me/themes") // read as a place, not a theme
+    testing.expect_value(t, places[1].path, "/home/me/themes") // a place, not a theme
 
-    // A settings write must not reach into the block, and a key the file does not carry has to
-    // land ABOVE it — appended after the block, load_config would never read it back.
+    // A settings write must not reach into the block, and a new key lands ABOVE it: appended
+    // after, load_config would never read it back.
     testing.expect(t, app.config_set("theme", "gruvbox"))
     testing.expect(t, app.config_set("jump_lines", "20"))
     out, _ := os.read_entire_file_from_path(path, context.temp_allocator)
@@ -222,9 +217,9 @@ theme: /home/me/themes
     testing.expect_value(t, cfg2.jump_lines, 20)
 }
 
-// Writing the block replaces it wholesale and leaves every other line — settings, comments,
-// their alignment — alone. A rewrite per add must also not grow blank lines at the end of the
-// file, which is what the trim before the header is for.
+// Writing the block replaces it wholesale and leaves every other line alone. A rewrite per add
+// must also not grow blank lines at the end of the file, which the trim before the header is
+// for.
 @(test)
 test_config_places_write :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_places_write.config"
@@ -249,7 +244,7 @@ Old: /old
     testing.expect(t, strings.has_suffix(got, "Home: /home/me\nSrc: /home/me/src\n"))
     testing.expect(t, !strings.contains(got, "\n\n\n"), "a rewrite grew a run of blank lines")
 
-    // The round trip is the point: what was written is what comes back, in order.
+    // The round trip: what was written is what comes back, in order.
     back := app.config_places(context.allocator)
     defer {
         for p in back {
@@ -261,15 +256,14 @@ Old: /old
     testing.expect_value(t, back[0].name, "Home")
     testing.expect_value(t, back[1].path, "/home/me/src")
 
-    // A file with no block at all gets one appended rather than nothing happening.
+    // A file with no block gets one appended rather than nothing happening.
     testing.expect(t, os.write_entire_file(path, transmute([]byte)string("theme: default\n")) == nil)
     testing.expect(t, app.config_places_write(places[:]))
     out2, _ := os.read_entire_file_from_path(path, context.temp_allocator)
     testing.expect(t, strings.contains(string(out2), "[places]"))
 }
 
-// The pane presentation is an enum, not a toggle, and an unreadable value keeps the default —
-// the same bargain every other setting strikes.
+// An enum, not a toggle, and an unreadable value keeps the default.
 @(test)
 test_config_file_pane :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_filepane.config"
@@ -286,20 +280,17 @@ test_config_file_pane :: proc(t: ^testing.T) {
     _, ok := app.parse_file_pane("dolphin")
     testing.expect(t, !ok, "an unknown presentation must not parse")
 
-    // The default that stands is the SHIPPED one — load_config parses the baked-in
-    // slopd.config before it parses yours, so an unreadable value falls back to the line this
-    // repo ships (`file_pane: browser`), not to the struct floor underneath it. That is the
-    // point of the layering: what a binary with no config file does and what the shipped file
-    // says cannot drift apart.
+    // The default that stands is the SHIPPED one: load_config parses the baked-in
+    // slopd.config before yours, so an unreadable value falls back to the line this repo ships
+    // rather than the struct floor underneath.
     testing.expect(t, os.write_entire_file(path, transmute([]byte)string("file_pane: nonsense\n")) == nil)
     bad := app.load_config()
     defer app.config_destroy(&bad)
     testing.expect_value(t, bad.file_pane, app.File_Pane.Browser)
 }
 
-// A key the config no longer knows is IGNORED, not an error: `term_ctrl_c` was removed when ^C
-// stopped being a mode, and an old file still carrying the line must load every other setting
-// exactly as before rather than falling over on it.
+// Ignored, not an error: `term_ctrl_c` was removed when ^C stopped being a mode, and an old file
+// carrying the line must still load every other setting.
 @(test)
 test_config_ignores_a_retired_key :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_retired_key.config"
@@ -311,6 +302,6 @@ test_config_ignores_a_retired_key :: proc(t: ^testing.T) {
 
     cfg := app.load_config()
     defer app.config_destroy(&cfg)
-    testing.expect_value(t, cfg.indent.width, 2) // the line after the dead key still applies
+    testing.expect_value(t, cfg.indent.width, 2) // the line after the dead key applies
 }
 

@@ -15,7 +15,7 @@ dline :: proc(d: ^app.Doc, i: int) -> string {
     return string(app.doc_line(d, i, context.temp_allocator))
 }
 
-// head position of cursor i, as a convenient pair to compare.
+// Cursor i's head, as a pair to compare.
 @(private = "file")
 head :: proc(d: ^app.Doc, i := 0) -> (line, col: int) {
     return d.cursors[i].head.line, d.cursors[i].head.col
@@ -91,8 +91,7 @@ test_doc_newline_and_join :: proc(t: ^testing.T) {
     l, c = head(&d);testing.expect_value(t, l, 0);testing.expect_value(t, c, 2)
 }
 
-// Two cursors on one line: the back-to-front driver must keep the later cursor
-// valid after the earlier edit shifts it.
+// The back-to-front driver keeps the later cursor valid after the earlier edit shifts it.
 @(test)
 test_doc_multi_cursor_same_line :: proc(t: ^testing.T) {
     d := mkdoc("abcd")
@@ -123,12 +122,11 @@ test_doc_multi_cursor_newline :: proc(t: ^testing.T) {
     testing.expect_value(t, dline(&d, 1), "b")
     testing.expect_value(t, dline(&d, 2), "c")
     testing.expect_value(t, dline(&d, 3), "d")
-    // The second cursor tracked down past the first cursor's inserted line.
+    // The second cursor tracked past the first's inserted line.
     l1, c1 := head(&d, 1);testing.expect_value(t, l1, 3);testing.expect_value(t, c1, 0)
 }
 
-// Drop an anchor, then the free caret roams alone leaving it behind. Movement
-// moves only the primary; the dropped cursor stays put. Collapse keeps the caret.
+// Movement moves only the primary; the dropped cursor stays put, and collapse keeps the caret.
 @(test)
 test_doc_drop_anchor :: proc(t: ^testing.T) {
     d := mkdoc("hello\nworld\nfoo")
@@ -140,7 +138,7 @@ test_doc_drop_anchor :: proc(t: ^testing.T) {
     testing.expect_value(t, len(d.cursors), 2)
     l, c := head(&d, d.primary);testing.expect_value(t, l, 2);testing.expect_value(t, c, 0)
 
-    // The other cursor is the anchor still sitting at the origin.
+    // The other cursor is the anchor, still at the origin.
     other := d.cursors[1 - d.primary].head
     testing.expect_value(t, other.line, 0);testing.expect_value(t, other.col, 0)
 
@@ -149,7 +147,6 @@ test_doc_drop_anchor :: proc(t: ^testing.T) {
     l, c = head(&d, 0);testing.expect_value(t, l, 2);testing.expect_value(t, c, 0)
 }
 
-// Shift-select then backspace removes the whole selection.
 @(test)
 test_doc_select_delete :: proc(t: ^testing.T) {
     d := mkdoc("hello")
@@ -162,7 +159,7 @@ test_doc_select_delete :: proc(t: ^testing.T) {
     testing.expect(t, !app.cursor_has_selection(d.cursors[0]))
 }
 
-// A selection spanning lines is deleted as one range, joining the endpoints.
+// Deleted as one range, joining the endpoints.
 @(test)
 test_doc_select_multiline_delete :: proc(t: ^testing.T) {
     d := mkdoc("abc\ndef")
@@ -175,8 +172,8 @@ test_doc_select_multiline_delete :: proc(t: ^testing.T) {
     testing.expect_value(t, dline(&d, 0), "af")
 }
 
-// doc_move_all moves every cursor together (the Alt+M prefix); Shift extends each
-// selection, then an edit replaces all of them.
+// Every cursor together (the Alt+M prefix); Shift extends each selection, then an edit replaces
+// all of them.
 @(test)
 test_doc_move_all :: proc(t: ^testing.T) {
     d := mkdoc("abc\ndef")
@@ -195,7 +192,7 @@ test_doc_move_all :: proc(t: ^testing.T) {
     testing.expect_value(t, dline(&d, 1), "Xf")
 }
 
-// A caret resting on a dropped anchor (coincident) edits the spot once, not twice.
+// A caret resting on a dropped anchor edits the spot once, not twice.
 @(test)
 test_doc_coincident_edit :: proc(t: ^testing.T) {
     d := mkdoc("ab")
@@ -209,17 +206,15 @@ test_doc_coincident_edit :: proc(t: ^testing.T) {
     testing.expect_value(t, len(d.cursors), 1)
 }
 
-// The pointer-placed cursor ops (C7). Every other cursor op answers "where next, from where
-// I am"; these take an absolute position, which is the one thing a pointer knows and no
-// keystroke can say. The clamp is the load-bearing part: a Pos derived from a pixel is only
-// as good as the geometry that made it, and a stale window must cost a caret in the wrong
-// place, never an index off the end of the buffer.
+// Every other cursor op answers "where next, from where I am"; these take an absolute position,
+// which is what a pointer knows and no keystroke can say. The clamp is load-bearing: a Pos from
+// a pixel is only as good as the geometry that made it.
 @(test)
 test_doc_pointer_cursors :: proc(t: ^testing.T) {
     d := mkdoc("alpha bravo\ncharlie")
     defer app.doc_destroy(&d)
 
-    // Set head, extending: the anchor stays put, so a shift-click grows the selection.
+    // Extending keeps the anchor, so a shift-click grows the selection.
     app.doc_set_head(&d, app.Pos{0, 2}, false)
     testing.expect_value(t, d.cursors[0].anchor, app.Pos{0, 2})
     app.doc_set_head(&d, app.Pos{1, 3}, true)
@@ -233,22 +228,19 @@ test_doc_pointer_cursors :: proc(t: ^testing.T) {
     app.doc_set_head(&d, app.Pos{-4, -4}, false)
     testing.expect_value(t, d.cursors[0].head, app.Pos{0, 0})
 
-    // A dropped cursor becomes the ROAMING one — the pointer named where it goes, so it is
-    // the one that moves on. (doc_drop_anchor is the other way round: the keyboard has to
-    // walk somewhere before a drop means anything, so the OLD cursor keeps roaming.)
+    // A dropped cursor becomes the ROAMING one, since the pointer named where it goes.
+    // doc_drop_anchor is the other way round: the keyboard has to walk somewhere first.
     app.doc_add_cursor(&d, app.Pos{1, 2})
     testing.expect_value(t, len(d.cursors), 2)
     testing.expect_value(t, d.cursors[d.primary].head, app.Pos{1, 2})
 
-    // Word: the run containing the position, head at its end so a following extend grows
-    // forward from where the eye is.
+    // The run containing the position, head at its end so a following extend grows forward.
     app.doc_select_word(&d, app.Pos{0, 8}) // inside "bravo"
     testing.expect_value(t, len(d.cursors), 1)
     testing.expect_value(t, d.cursors[0].anchor, app.Pos{0, 6})
     testing.expect_value(t, d.cursors[0].head, app.Pos{0, 11})
 
-    // Line: exactly what Home then Shift+End selects, so a copy from either path is the
-    // same string — the break is NOT included.
+    // Exactly what Home then Shift+End selects: the break is not included.
     app.doc_select_line(&d, 1)
     testing.expect_value(t, d.cursors[0].anchor, app.Pos{1, 0})
     testing.expect_value(t, d.cursors[0].head, app.Pos{1, 7})
@@ -256,14 +248,12 @@ test_doc_pointer_cursors :: proc(t: ^testing.T) {
     testing.expect_value(t, d.cursors[0].head.line, 1)
 }
 
-// C7c's drag algebra, which is a Doc question rather than a pixel one and is pinned here
-// because C7d reuses it over a terminal grid.
+// The drag algebra, a Doc question rather than a pixel one, and pinned here because the
+// terminal grid reuses it.
 //
-// The property under test is that BOTH ends are re-derived every frame. A double click
-// selects a word and then holds still; a double-click-DRAG has to keep expanding by whole
-// words, and crossing back over the press point has to move the ANCHOR from one end of the
-// pressed word to the other. An implementation that fixes the anchor when the button goes
-// down cannot express the second half at all.
+// The property is that BOTH ends are re-derived every frame: a double-click-drag has to keep
+// expanding by whole words, and crossing back over the press point has to move the ANCHOR from
+// one end of the pressed word to the other. A fixed anchor cannot express the second half.
 @(test)
 test_doc_drag_span :: proc(t: ^testing.T) {
     d: app.Doc
@@ -272,53 +262,51 @@ test_doc_drag_span :: proc(t: ^testing.T) {
     app.doc_set_text(&d, "alpha bravo\ncharlie delta")
 
     // Word grade, forward: the start of the pressed run to the end of the pointed-at one.
-    anchor, head := app.doc_drag_span(&d, 2, app.Pos{0, 7}, app.Pos{1, 10}) // in "bravo" -> in "delta"
+    anchor, head := app.doc_drag_span(&d, 2, app.Pos{0, 7}, app.Pos{1, 10}) // "bravo" -> "delta"
     testing.expect_value(t, anchor, app.Pos{0, 6})
     testing.expect_value(t, head, app.Pos{1, 13})
 
-    // Word grade, backward past the press: the anchor flips to the far END of "bravo".
-    anchor, head = app.doc_drag_span(&d, 2, app.Pos{0, 7}, app.Pos{0, 2}) // -> in "alpha"
+    // Backward past the press: the anchor flips to the far END of "bravo".
+    anchor, head = app.doc_drag_span(&d, 2, app.Pos{0, 7}, app.Pos{0, 2}) // -> "alpha"
     testing.expect_value(t, anchor, app.Pos{0, 11})
     testing.expect_value(t, head, app.Pos{0, 0})
 
-    // Held still inside the pressed word, it is exactly what the double click alone gives.
+    // Held still inside the pressed word, it is what the double click alone gives.
     anchor, head = app.doc_drag_span(&d, 2, app.Pos{0, 7}, app.Pos{0, 8})
     testing.expect_value(t, anchor, app.Pos{0, 6})
     testing.expect_value(t, head, app.Pos{0, 11})
 
     // Line grade compares LINES: dragging left within the pressed line has not reversed the
-    // gesture, it has not left the line — so this stays forward and selects the whole line.
+    // gesture, so this stays forward.
     anchor, head = app.doc_drag_span(&d, 3, app.Pos{1, 9}, app.Pos{1, 1})
     testing.expect_value(t, anchor, app.Pos{1, 0})
     testing.expect_value(t, head, app.Pos{1, 13})
 
-    // ... and upward it is whole lines the other way about.
+    // …and upward it is whole lines the other way about.
     anchor, head = app.doc_drag_span(&d, 3, app.Pos{1, 9}, app.Pos{0, 3})
     testing.expect_value(t, anchor, app.Pos{1, 13})
     testing.expect_value(t, head, app.Pos{0, 0})
 
-    // Both ends are clamped, the twin of doc_clamp_pos everywhere else a pixel becomes a
-    // Pos: a resize between the press and the frame that applies it costs a selection end in
-    // the wrong place, never an index off the end of the buffer.
+    // Both ends are clamped: a resize between the press and the frame applying it costs a
+    // selection end in the wrong place, never an index off the end.
     anchor, head = app.doc_drag_span(&d, 3, app.Pos{99, 99}, app.Pos{-5, -5})
     testing.expect_value(t, anchor, app.Pos{1, 13})
     testing.expect_value(t, head, app.Pos{0, 0})
 
-    // doc_select_span keeps the gesture's order rather than normalising it, so the head
-    // stays the end the eye is at and a later Shift+click extends from the right place.
+    // doc_select_span keeps the gesture's order rather than normalising it, so the head stays
+    // the end the eye is at.
     app.doc_select_span(&d, app.Pos{1, 5}, app.Pos{0, 2})
     testing.expect_value(t, len(d.cursors), 1)
     testing.expect_value(t, d.cursors[0].anchor, app.Pos{1, 5})
     testing.expect_value(t, d.cursors[0].head, app.Pos{0, 2})
-    testing.expect_value(t, d.cursors[0].goal, 2) // the goal follows the HEAD
+    testing.expect_value(t, d.cursors[0].goal, 2) // the goal follows the head
     lo, hi := app.cursor_range(d.cursors[0])
-    testing.expect_value(t, lo, app.Pos{0, 2}) // ordered on READ, as both references do
+    testing.expect_value(t, lo, app.Pos{0, 2}) // ordered on READ
     testing.expect_value(t, hi, app.Pos{1, 5})
 }
 
-// Multi-byte runes. A Pos column counts BYTES while the painter counts CELLS, so a confusion
-// between the two shows up here as a truncated or mis-joined string. Exercises the splice, the
-// cross-line read, and the byte/cell bridge together.
+// A Pos column counts BYTES while the painter counts CELLS, so a confusion shows up here as a
+// truncated or mis-joined string. Exercises the splice, the cross-line read and the bridge.
 //
 //   h é(2) l l o ␣ →(3) ␣ w ö(2) r l d      bytes: 0 1 3 4 5 6 7 10 11 12 14 15 16, len 17
 @(test)
@@ -326,17 +314,16 @@ test_doc_multibyte_roundtrip :: proc(t: ^testing.T) {
     d := mkdoc("héllo → wörld\nsecond ✓ line")
     defer app.doc_destroy(&d)
 
-    // The whole document, newlines and all — what the highlighter parses.
+    // The whole document, newlines and all: what the highlighter parses.
     testing.expect_value(t, app.doc_string(&d, context.temp_allocator), "héllo → wörld\nsecond ✓ line")
     testing.expect_value(t, app.doc_line_len(&d, 0), 17) // BYTES
 
-    // A one-line span landing on a 3-byte rune.
     testing.expect_value(t, app.doc_text(&d, app.Pos{0, 7}, app.Pos{0, 10}, context.temp_allocator), "→")
 
-    // A span crossing the break: tail of line 0, the newline, head of line 1.
+    // Crossing the break: tail of line 0, the newline, head of line 1.
     testing.expect_value(t, app.doc_text(&d, app.Pos{0, 11}, app.Pos{1, 6}, context.temp_allocator), "wörld\nsecond")
 
-    // The bridge: 13 cells over 17 bytes, and the two conversions are inverses on a boundary.
+    // 13 cells over 17 bytes, and the two conversions are inverses on a boundary.
     cells := app.doc_cells(&d, 0, context.temp_allocator)
     testing.expect_value(t, app.cells_count(cells), 13)
     testing.expect_value(t, app.doc_cell_col(&d, app.Pos{0, 11}), 8) // the 'w'
@@ -344,22 +331,21 @@ test_doc_multibyte_roundtrip :: proc(t: ^testing.T) {
     testing.expect_value(t, app.cells_off(cells, 6), 7) // the arrow
     testing.expect_value(t, app.cells_col(cells, 7), 6)
 
-    // A column landing INSIDE a rune snaps back onto its start — the one gate, doc_clamp_pos.
+    // A column landing inside a rune snaps back to its start: the one gate, doc_clamp_pos.
     testing.expect_value(t, app.doc_clamp_pos(&d, app.Pos{0, 8}), app.Pos{0, 7})
     testing.expect_value(t, app.doc_clamp_pos(&d, app.Pos{0, 9}), app.Pos{0, 7})
 
-    // Typing and deleting within the line, where the splice replaces the rebuild.
+    // Within the line, where the splice replaces the rebuild.
     app.doc_reset_cursor(&d, app.Pos{0, 1})
     app.doc_insert_rune(&d, 'ü')
     testing.expect_value(t, dline(&d, 0), "hüéllo → wörld")
     app.doc_backspace(&d)
     testing.expect_value(t, dline(&d, 0), "héllo → wörld")
-    testing.expect_value(t, app.doc_line_count(&d), 2) // a same-line edit never touches the line array
+    testing.expect_value(t, app.doc_line_count(&d), 2) // a same-line edit leaves the array
 }
 
-// What doc_set_text stores: CRLF collapsed to LF, and ONE trailing newline dropped (Buffer
-// remembers it as final_newline and puts it back on save). The order matters — trimming the
-// '\n' of a final "\r\n" first would leave the '\r' on the last line.
+// CRLF collapsed to LF, and one trailing newline dropped, which Buffer puts back on save. The
+// order matters: trimming the '\n' of a final "\r\n" first would leave the '\r' behind.
 @(test)
 test_doc_normalizes_on_load :: proc(t: ^testing.T) {
     lf := mkdoc("a\nb\n")
@@ -380,9 +366,8 @@ test_doc_normalizes_on_load :: proc(t: ^testing.T) {
     testing.expect_value(t, app.doc_string(&bare, context.temp_allocator), "a\rb")
 }
 
-// The sticky column carried through vertical motion is a CELL, not a byte. Stepping down from
-// past a multi-byte rune must land under the same GLYPH — a byte goal drifts sideways by one
-// column per extra byte above it, and drifts back on the way up.
+// The sticky column is a CELL, not a byte: stepping down from past a multi-byte rune must land
+// under the same GLYPH, where a byte goal drifts sideways by one column per extra byte above it.
 //
 //   line 0:  é(2) é(2) é(2) ␣ a b c    7 cells over 10 bytes
 //   line 1:  x x x x x x x             7 cells over 7 bytes
@@ -399,15 +384,15 @@ test_doc_vertical_goal_is_a_cell :: proc(t: ^testing.T) {
     app.doc_move(&d, .Down)
     l, c := head(&d)
     testing.expect_value(t, l, 1)
-    testing.expect_value(t, c, 5) // cell 5 of an ASCII line is byte 5, NOT byte 8
+    testing.expect_value(t, c, 5) // cell 5 of an ASCII line is byte 5, not byte 8
 
-    app.doc_move(&d, .Up) // and back under the same glyph it left
+    app.doc_move(&d, .Up) // back under the same glyph it left
     l, c = head(&d)
     testing.expect_value(t, l, 0)
     testing.expect_value(t, c, 8)
 
-    // Past the end of a shorter line the goal is kept for the next step, as it always was.
-    app.doc_reset_cursor(&d, app.Pos{1, 7}) // cell 7, past the end of line 0's 7 cells
+    // Past the end of a shorter line the goal is kept for the next step.
+    app.doc_reset_cursor(&d, app.Pos{1, 7}) // cell 7, past the end of line 0's 7
     app.doc_move(&d, .Up)
     l, c = head(&d)
     testing.expect_value(t, l, 0)

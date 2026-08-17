@@ -4,38 +4,34 @@ import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
 
-// In-buffer search: the mechanism under the `:f`/`:find` builtin (cl_find, cmdline.odin) and the
-// live preview that runs it as you type (cl_preview.odin).
+// In-buffer search: the mechanism under `:f`/`:find` and the live preview that runs it as you
+// type.
 //
-// **Literal, never a regex.** `:grep` is the pattern search and it already spans the project;
-// this one answers "where else is that word on THIS page", so a query is the characters you
-// typed and nothing else. Case follows the usual bargain: an all-lowercase query matches either
-// case, one with a capital in it matches exactly — which is also the only way to ask for a
-// case-sensitive search, since there is no flag to give.
+// Literal, never a regex — `:grep` is the pattern search, and this answers "where else is that
+// word on THIS page". Smart case: an all-lowercase query matches either case, one with a capital
+// matches exactly, which is also the only way to ask for a case-sensitive search.
 //
-// The state lives on App rather than inside the preview because three parts share it: the
-// preview writes it as you type, the builtin writes it when a line arrives from history with no
-// preview behind it, and the editor paints the marks from it (draw_find_marks).
+// The state lives on App because three parts share it: the preview writes it as you type, the
+// builtin writes it for a line recalled from history, and the editor paints the marks.
 Find :: struct {
     query:   string, // owned; "" = nothing searched
     matches: [dynamic]Find_Match, // in line order, then column order
-    cur:     int, // index into matches — the one the caret is on
-    // Paint the marks. Set by whoever ran the search rather than by the search: the preview
-    // wants them up while you type, and Enter takes them down and keeps the caret.
+    cur:     int, // the match the caret is on
+    // Paint the marks. Set by whoever ran the search: the preview wants them up while you type,
+    // and Enter takes them down and keeps the caret.
     show:    bool,
 }
 
-// One hit: a byte span on one line of the buffer the search ran over. Bytes, like Pos — the
-// painter converts to cells against the row it is drawing (draw_find_marks).
+// A byte span on one line. Bytes, like Pos: the painter converts to cells against the row it is
+// drawing.
 Find_Match :: struct {
     line: int,
     col:  int, // 0-based BYTE column
     n:    int, // length in BYTES
 }
 
-// Ceiling on the hits one scan reports. A query of "e" over a large file otherwise costs a
-// list nobody can use and a paint that walks it; stopping is the honest answer, and the count
-// in the strip says where it stopped.
+// A query of "e" over a large file otherwise costs a list nobody can use and a paint that walks
+// it. The count in the strip says where it stopped.
 FIND_LIMIT :: 4096
 
 find_destroy :: proc(f: ^Find) {
@@ -43,14 +39,11 @@ find_destroy :: proc(f: ^Find) {
     delete(f.matches)
 }
 
-// Run `query` over `b` and land `cur` on the first hit at or after `from`, wrapping to the
-// first when every hit is behind it.
-//
-// **The anchor is a parameter, not the live caret.** The preview re-runs this on every
-// keystroke, and reading the caret would walk the landing further down the file with each
-// letter typed — passing the caret the line STARTED from keeps it still.
+// Lands `cur` on the first hit at or after `from`, wrapping when every hit is behind it. The
+// anchor is a parameter, not the live caret: the preview re-runs this on every keystroke, and
+// reading the caret would walk the landing further down the file with each letter.
 find_set :: proc(f: ^Find, b: ^Buffer, query: string, from: Pos) {
-    q := strings.clone(query) // cloned before the old one goes: a caller may pass f.query back
+    q := strings.clone(query) // before the old one goes: a caller may pass f.query back
     delete(f.query)
     f.query = q
     clear(&f.matches)
@@ -62,8 +55,8 @@ find_set :: proc(f: ^Find, b: ^Buffer, query: string, from: Pos) {
     f.cur = find_index_from(f.matches[:], from)
 }
 
-// Every occurrence of `query` in `b`, in line order. Hits do not overlap: the scan resumes past
-// the one it just took, so `aa` in `aaa` is one match rather than two.
+// In line order, non-overlapping: the scan resumes past the hit it took, so `aa` in `aaa` is
+// one match.
 @(private = "file")
 find_scan :: proc(f: ^Find, b: ^Buffer, query: string) {
     pat := utf8.string_to_runes(query, context.temp_allocator)
@@ -89,8 +82,8 @@ find_scan :: proc(f: ^Find, b: ^Buffer, query: string) {
     }
 }
 
-// Whether `pat` sits at byte `col` in `src`, and how many BYTES it took — a folded match can
-// differ in length from the query. `fold` lowers both sides: the smart-case rule.
+// How many BYTES it took, since a folded match can differ in length from the query. `fold`
+// lowers both sides: the smart-case rule.
 @(private = "file")
 match_at :: proc(src: []u8, col: int, pat: []rune, fold: bool) -> (n: int, ok: bool) {
     i := col
@@ -111,7 +104,7 @@ match_at :: proc(src: []u8, col: int, pat: []rune, fold: bool) -> (n: int, ok: b
     return i - col, true
 }
 
-// Smart case: a query with no upper-case rune in it matches either case.
+// A query with no upper-case rune matches either case.
 @(private = "file")
 find_folds_case :: proc(query: string) -> bool {
     for r in query {
@@ -122,8 +115,8 @@ find_folds_case :: proc(query: string) -> bool {
     return true
 }
 
-// The first match at or after `from`, wrapping to 0 when every one is behind it. An empty
-// list answers 0 too — there is nothing to land on either way, and find_pos says so.
+// Wrapping to 0 when every match is behind it. An empty list answers 0 too, and find_pos
+// says so.
 @(private = "file")
 find_index_from :: proc(ms: []Find_Match, from: Pos) -> int {
     for m, i in ms {
@@ -134,14 +127,14 @@ find_index_from :: proc(ms: []Find_Match, from: Pos) -> int {
     return 0
 }
 
-// Step to the next/previous match, wrapping both ways. No matches is a no-op.
+// Wrapping both ways. No matches is a no-op.
 find_step :: proc(f: ^Find, dir: int) {
     if n := len(f.matches); n > 0 {
         f.cur = (f.cur + dir + n) % n
     }
 }
 
-// Where the caret belongs for the current match, or ok=false when there is no match to sit on.
+// ok=false when there is no match to sit on.
 find_pos :: proc(f: ^Find) -> (Pos, bool) {
     if f.cur < 0 || f.cur >= len(f.matches) {
         return {}, false
@@ -150,8 +143,8 @@ find_pos :: proc(f: ^Find) -> (Pos, bool) {
     return Pos{m.line, m.col}, true
 }
 
-// Index of the first match ON `line`, or one past the end when there is none at or after it.
-// A binary search because the paint asks once per visible row and the list is in line order.
+// One past the end when there is none at or after it. A binary search, because the paint asks
+// once per visible row and the list is in line order.
 find_first_on_line :: proc(ms: []Find_Match, line: int) -> int {
     lo, hi := 0, len(ms)
     for lo < hi {

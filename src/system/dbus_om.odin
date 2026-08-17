@@ -4,23 +4,19 @@ import "core:fmt"
 import "core:slice"
 import "core:strings"
 
-// PARKED — WIP. Nothing in the running editor uses this; see the banner in src/sysbus.odin.
+// PARKED — WIP. Nothing in the running editor uses this; see the banner in sysbus.odin.
 //
-// D-Bus ObjectManager — the live object tree, written ONCE (see "System panes" in
-// plan.txt). Every consumer the device panes have — NetworkManager, iwd, BlueZ, Mutter's
-// DisplayConfig, MPRIS, login1 — is the same shape: GetManagedObjects hands back
-// {path -> {interface -> {property -> variant}}}, and InterfacesAdded / InterfacesRemoved
-// / PropertiesChanged keep it current. The tree lives here and each pane is a thin mapping
-// from it onto rows; do not write four object-tree walkers.
+// The live object tree, written once. Every consumer the device panes have — NetworkManager,
+// iwd, BlueZ, DisplayConfig, MPRIS, login1 — is the same shape: GetManagedObjects hands back
+// {path -> {interface -> {property -> variant}}}, and InterfacesAdded / InterfacesRemoved /
+// PropertiesChanged keep it current. Each pane is a thin mapping from the tree onto rows.
 //
-// Ownership INVERTS dbus.odin's rule. A decoded message borrows its buffer, but this tree
-// outlives the message that filled it, so everything landing in it is deep-cloned
-// (`dbus_value_clone`) and freed on the way out. What comes back OUT of the queries below
-// is borrowed again — tree-owned, valid until the next apply.
+// Ownership INVERTS dbus.odin's rule: a decoded message borrows its buffer, but this tree
+// outlives the message that filled it, so everything landing in it is deep-cloned. What comes
+// back out of the queries is borrowed again — tree-owned, valid until the next apply.
 //
-// Everything except dbus_om_start / dbus_om_watch / dbus_om_fetch is PURE: dbus_om_apply
-// takes a DECODED message and mutates the tree, so the entire live half tests headless
-// off hand-built signals with no bus and no daemon (src/tests/dbus_om_test.odin).
+// Everything bar dbus_om_start / _watch / _fetch is pure: dbus_om_apply takes a DECODED message
+// and mutates the tree, so the whole live half tests headless off hand-built signals.
 
 DBUS_OM_IFACE :: "org.freedesktop.DBus.ObjectManager"
 DBUS_PROPS_IFACE :: "org.freedesktop.DBus.Properties"
@@ -28,29 +24,28 @@ DBUS_BUS_IFACE :: "org.freedesktop.DBus"
 DBUS_BUS_NAME :: "org.freedesktop.DBus"
 DBUS_BUS_PATH :: "/org/freedesktop/DBus"
 
-// One interface on one object: its property bag. Keys and values are owned clones.
+// One interface's property bag. Keys and values are owned clones.
 Dbus_Om_Iface :: struct {
     props: map[string]Dbus_Value,
 }
 
-// One object. The path is the key it is stored under, so it isn't repeated here.
+// The path is the key it is stored under, so it is not repeated here.
 Dbus_Om_Object :: struct {
     ifaces: map[string]Dbus_Om_Iface,
 }
 
 Dbus_Om :: struct {
-    service: string, // owned; the well-known name we track ("net.connman.iwd")
-    owner:   string, // owned; the unique name that actually stamps its signals (":1.7")
-    root:    string, // owned; the object path the ObjectManager sits on ("/")
-    filter:  []string, // owned; interfaces to keep. nil keeps everything
+    service: string, // owned; the well-known name we track
+    owner:   string, // owned; the unique name that stamps its signals
+    root:    string, // owned; the object path the ObjectManager sits on
+    filter:  []string, // owned; interfaces to keep, nil keeps everything
     objects: map[string]Dbus_Om_Object, // owned path keys
-    dirty:   bool, // mutated since the consumer last cleared it (sysbus snapshots on this)
-    refetch: bool, // the service (re)appeared: the tree is empty, GetManagedObjects must rerun
+    dirty:   bool, // mutated since the consumer last cleared it
+    refetch: bool, // the service reappeared: GetManagedObjects must rerun
 }
 
-// Builds an empty tree; touches no bus. `filter` is the set of interfaces worth keeping
-// (nil = keep all): iwd alone publishes a dozen we never read, and filtering here means
-// their property churn is never cloned in the first place.
+// Touches no bus. `filter` is the interfaces worth keeping, nil for all: iwd alone publishes a
+// dozen we never read, and filtering here means their churn is never cloned.
 dbus_om_make :: proc(service, root: string, filter: []string = nil) -> ^Dbus_Om {
     om := new(Dbus_Om)
     om.service = strings.clone(service)
@@ -81,9 +76,8 @@ dbus_om_destroy :: proc(om: ^Dbus_Om) {
     free(om)
 }
 
-// A deep copy of the CONTENTS — no connection, no live wiring. This is what the sysbus
-// worker hands the main thread each time something moves, so drawing needs no lock: the
-// same heap-owned handoff as ProcSnapshot.
+// The contents only: no connection, no live wiring. What the worker hands the main thread each
+// time something moves, so drawing needs no lock.
 dbus_om_clone :: proc(om: ^Dbus_Om) -> ^Dbus_Om {
     out := dbus_om_make(om.service, om.root, om.filter)
     dbus_om_set_owner(out, om.owner)
@@ -100,7 +94,7 @@ dbus_om_clone :: proc(om: ^Dbus_Om) -> ^Dbus_Om {
     return out
 }
 
-// Drops every object, keeping the tree's identity (service, root, filter).
+// Keeps the tree's identity: service, root, filter.
 dbus_om_clear :: proc(om: ^Dbus_Om) {
     for path, &obj in om.objects {
         om_object_free(&obj)
@@ -109,14 +103,13 @@ dbus_om_clear :: proc(om: ^Dbus_Om) {
     clear(&om.objects)
 }
 
-// Is the service on the bus at all? False means the pane draws "unavailable" rather than
-// an empty list.
+// False means the pane draws "unavailable" rather than an empty list.
 dbus_om_present :: proc(om: ^Dbus_Om) -> bool {
     return om.owner != ""
 }
 
-// The owning unique name has exactly one setter: it is the identity check every incoming
-// signal is measured against, and it is owned storage that has to be freed on the way out.
+// One setter: it is the identity check every incoming signal is measured against, and owned
+// storage that has to be freed.
 dbus_om_set_owner :: proc(om: ^Dbus_Om, owner: string) {
     delete(om.owner)
     om.owner = strings.clone(owner)
@@ -124,16 +117,12 @@ dbus_om_set_owner :: proc(om: ^Dbus_Om, owner: string) {
 
 // --- live wiring (the only three procs here that touch a socket) ---
 
-// Subscribes, resolves the owner, then takes the snapshot — IN THAT ORDER, and the order
-// is the point.
+// Subscribe, resolve the owner, then snapshot — in that order, and the order is the point.
+// Matches come FIRST, before we know the service exists: rules are keyed by name, not owner, so
+// registering early is the only way to hear a daemon that starts after we do, and whatever
+// races the GetManagedObjects reply lands in `conn.inbox` and applies after it.
 //
-// Matches FIRST, before we know whether the service exists: rules are keyed by name, not
-// owner, so registering early is the only way to hear a daemon that starts after we do —
-// and whatever races the GetManagedObjects reply lands in `conn.inbox` and applies after it.
-//
-// ok=false means the service isn't running (or refused us): the tree stays empty,
-// `dbus_om_present` stays false, and the NameOwnerChanged match registered above is what
-// wakes it up later.
+// ok=false means the service is not running, and the NameOwnerChanged match wakes it later.
 dbus_om_start :: proc(om: ^Dbus_Om, c: ^Dbus_Conn) -> bool {
     dbus_om_watch(om, c) or_return
     om_resolve_owner(om, c)
@@ -143,8 +132,8 @@ dbus_om_start :: proc(om: ^Dbus_Om, c: ^Dbus_Conn) -> bool {
     return dbus_om_fetch(om, c)
 }
 
-// The three match rules the tree runs on. Scoped to the service so a busy system bus
-// doesn't wake our worker for traffic we'd only throw away.
+// Scoped to the service, so a busy system bus does not wake the worker for traffic we would
+// throw away.
 dbus_om_watch :: proc(om: ^Dbus_Om, c: ^Dbus_Conn) -> bool {
     dbus_add_match(
         c,
@@ -163,8 +152,7 @@ dbus_om_watch :: proc(om: ^Dbus_Om, c: ^Dbus_Conn) -> bool {
             DBUS_PROPS_IFACE,
         ),
     ) or_return
-    // The daemon, not the service, sends this one — it is how we learn the service died
-    // or came back, and neither event produces any other traffic.
+    // The daemon sends this one, not the service: it is how we learn it died or came back.
     return dbus_add_match(
         c,
         fmt.tprintf(
@@ -176,13 +164,9 @@ dbus_om_watch :: proc(om: ^Dbus_Om, c: ^Dbus_Conn) -> bool {
     )
 }
 
-// GetManagedObjects, applied wholesale. Merges rather than replaces, so a re-fetch after
-// the service restarts costs nothing extra; call dbus_om_clear first if a hard reset is
-// wanted (dbus_om_apply already does that on NameOwnerChanged).
-//
-// ok reports whether the CALL succeeded, not whether anything landed: a daemon running
-// with nothing to manage yet (iwd with no adapter, BlueZ with no dongle) is a working
-// daemon and an empty list, not an unavailable one. Whether the tree moved is `dirty`.
+// Merges rather than replaces, so a re-fetch after a restart costs nothing extra; call
+// dbus_om_clear first for a hard reset. ok reports whether the CALL succeeded, not whether
+// anything landed: a daemon with nothing to manage yet is working and empty, not unavailable.
 dbus_om_fetch :: proc(om: ^Dbus_Om, c: ^Dbus_Conn) -> bool {
     reply, ok := dbus_call(c, om.service, om.root, DBUS_OM_IFACE, "GetManagedObjects")
     if !ok {
@@ -216,7 +200,7 @@ om_resolve_owner :: proc(om: ^Dbus_Om, c: ^Dbus_Conn) {
     )
     if !ok {
         if reply.type != .Invalid {
-            dbus_msg_free(&reply) // NameHasNoOwner: the service simply isn't running
+            dbus_msg_free(&reply) // NameHasNoOwner: the service is not running
         }
         return
     }
@@ -230,10 +214,9 @@ om_resolve_owner :: proc(om: ^Dbus_Om, c: ^Dbus_Conn) {
 
 // --- applying (pure: decoded message in, tree mutated) ---
 
-// Feeds one decoded message to the tree. Returns true when it was consumed AND changed
-// something, so a worker owning several trees can offer each message to each in turn and
-// snapshot only when one says yes. It came from another process, so every field is checked
-// before it is believed: type, sender, path, member, and the body signature.
+// True when the message was consumed AND changed something, so a worker owning several trees
+// offers each message to each in turn and snapshots only when one says yes. It came from
+// another process, so type, sender, path, member and body signature are all checked.
 dbus_om_apply :: proc(om: ^Dbus_Om, m: ^Dbus_Message) -> bool {
     if m.type != .Signal {
         return false
@@ -247,7 +230,7 @@ dbus_om_apply :: proc(om: ^Dbus_Om, m: ^Dbus_Message) -> bool {
     switch {
     case m.iface == DBUS_OM_IFACE && m.member == "InterfacesAdded":
         if m.path != om.root {
-            return false // some other manager on the same connection
+            return false // another manager on the same connection
         }
         args := om_args(m, "oa{sa{sv}}") or_return
         path := dbus_as_string(args[0]) or_return
@@ -269,8 +252,7 @@ dbus_om_apply :: proc(om: ^Dbus_Om, m: ^Dbus_Message) -> bool {
     return false
 }
 
-// Loads a whole a{oa{sa{sv}}} — the GetManagedObjects reply body, and the one shape every
-// backend starts from.
+// a{oa{sa{sv}}}: the GetManagedObjects reply body, and the shape every backend starts from.
 dbus_om_load :: proc(om: ^Dbus_Om, managed: Dbus_Value) -> bool {
     arr := managed.(Dbus_Array) or_return
     changed := false
@@ -287,9 +269,8 @@ dbus_om_load :: proc(om: ^Dbus_Om, managed: Dbus_Value) -> bool {
     return changed
 }
 
-// Merges one object's a{sa{sv}} interface dict. An interface named here is REPLACED
-// wholesale, not merged: InterfacesAdded and GetManagedObjects are authoritative for the
-// interfaces they name, and a stale property surviving a re-announce would be a silent lie.
+// An interface named here is REPLACED wholesale: InterfacesAdded and GetManagedObjects are
+// authoritative for what they name, and a stale property surviving a re-announce would lie.
 dbus_om_put :: proc(om: ^Dbus_Om, path: string, ifaces: Dbus_Value) -> bool {
     if !om_in_scope(om, path) {
         return false
@@ -317,8 +298,7 @@ dbus_om_put :: proc(om: ^Dbus_Om, path: string, ifaces: Dbus_Value) -> bool {
     return changed
 }
 
-// Removes the named interfaces from an object; the object itself goes when its last one
-// does, which is how the spec spells "this object is gone".
+// The object itself goes when its last interface does, which is how the spec spells "gone".
 dbus_om_drop :: proc(om: ^Dbus_Om, path: string, names: Dbus_Value) -> bool {
     obj := om_object_find(om, path) or_return
     arr := names.(Dbus_Array) or_return
@@ -345,9 +325,8 @@ dbus_om_drop :: proc(om: ^Dbus_Om, path: string, names: Dbus_Value) -> bool {
     return changed
 }
 
-// Applies a PropertiesChanged body. An unknown object, or an interface we never saw
-// announced, is ignored rather than invented: the tree's contents come from
-// GetManagedObjects and InterfacesAdded, and anything outside that is filtered or not ours.
+// An unknown object, or an interface never announced, is ignored rather than invented: the
+// tree's contents come from GetManagedObjects and InterfacesAdded.
 dbus_om_changed :: proc(
     om: ^Dbus_Om,
     path, iface: string,
@@ -370,8 +349,7 @@ dbus_om_changed :: proc(
             touched = true
         }
     }
-    // Invalidated properties are dropped, not blanked: the daemon is saying "this changed
-    // but I won't say to what", so the only honest state is absent until a Get.
+    // Dropped, not blanked: the daemon is saying "this changed but I will not say to what".
     if arr, aok := invalidated.(Dbus_Array); aok {
         for item in arr.items {
             name := dbus_as_string(item) or_continue
@@ -390,8 +368,8 @@ dbus_om_changed :: proc(
     return touched
 }
 
-// The service came, went, or restarted. Either way every path we hold is meaningless, so
-// the tree resets and `refetch` tells the worker to take a fresh snapshot.
+// Every path we hold is meaningless either way, so the tree resets and `refetch` tells the
+// worker to take a fresh snapshot.
 @(private = "file")
 om_name_owner_changed :: proc(om: ^Dbus_Om, m: ^Dbus_Message) -> bool {
     args := om_args(m, "sss") or_return
@@ -407,9 +385,9 @@ om_name_owner_changed :: proc(om: ^Dbus_Om, m: ^Dbus_Message) -> bool {
     return true
 }
 
-// Signals are stamped by the daemon with the sender's UNIQUE name, so the well-known name
-// alone won't match once we're live. An unstamped message (a peer connection, or a
-// synthesized one in a test) is taken at face value — there is no daemon to have stamped it.
+// The daemon stamps signals with the sender's UNIQUE name, so the well-known name alone will
+// not match once we are live. An unstamped message is taken at face value: no daemon stamped
+// it.
 @(private = "file")
 om_from_service :: proc(om: ^Dbus_Om, m: ^Dbus_Message) -> bool {
     if m.sender == "" || om.service == "" {
@@ -418,9 +396,8 @@ om_from_service :: proc(om: ^Dbus_Om, m: ^Dbus_Message) -> bool {
     return m.sender == om.service || m.sender == om.owner
 }
 
-// Body arguments, but only if the signature is exactly what this member is defined to
-// carry. Guards every apply path: a mismatched signature means the peer is not speaking
-// the interface we think it is, and unmarshalling it anyway is how a signal becomes a crash.
+// Only if the signature is exactly what the member is defined to carry. A mismatch means the
+// peer is not speaking the interface we think it is, and unmarshalling it anyway crashes.
 @(private = "file")
 om_args :: proc(m: ^Dbus_Message, sig: string) -> (args: []Dbus_Value, ok: bool) {
     if m.signature != sig {
@@ -430,7 +407,7 @@ om_args :: proc(m: ^Dbus_Message, sig: string) -> (args: []Dbus_Value, ok: bool)
     return args, len(args) == om_sig_count(sig)
 }
 
-// How many complete types `sig` is: walking it with dbus_sig_next IS the count.
+// Walking it with dbus_sig_next IS the count.
 @(private = "file")
 om_sig_count :: proc(sig: string) -> int {
     n, pos := 0, 0
@@ -445,7 +422,7 @@ om_sig_count :: proc(sig: string) -> int {
     return n
 }
 
-// Is this path ours? Objects live at or under the manager's root.
+// Objects live at or under the manager's root.
 @(private = "file")
 om_in_scope :: proc(om: ^Dbus_Om, path: string) -> bool {
     if len(path) == 0 || path[0] != '/' {
@@ -510,9 +487,8 @@ dbus_om_int :: proc(om: ^Dbus_Om, path, iface, name: string) -> (n: i64, ok: boo
     return dbus_as_int(v)
 }
 
-// Every path carrying `iface`, sorted — the row order a pane draws. Map iteration order is
-// arbitrary and a list that reshuffles every frame is unusable; object paths sort into the
-// daemon's own hierarchy for free. `iface` empty returns every path.
+// Sorted: the row order a pane draws. Map iteration order is arbitrary, and object paths sort
+// into the daemon's own hierarchy for free. An empty `iface` returns every path.
 dbus_om_paths :: proc(
     om: ^Dbus_Om,
     iface: string = "",
@@ -570,8 +546,8 @@ om_props_load :: proc(ifc: ^Dbus_Om_Iface, props: Dbus_Value) {
     }
 }
 
-// Stores a deep clone, replacing (and freeing) whatever was there. The key is cloned only
-// on first insert — a property that updates every second must not leak a key each time.
+// Replacing and freeing whatever was there. The key is cloned only on first insert: a property
+// updating every second must not leak a key each time.
 @(private = "file")
 om_prop_set :: proc(ifc: ^Dbus_Om_Iface, name: string, v: Dbus_Value) {
     if old, ok := &ifc.props[name]; ok {
@@ -608,12 +584,9 @@ om_object_free :: proc(obj: ^Dbus_Om_Object) {
     obj^ = {}
 }
 
-// --- deep clone / free ---
-//
-// The pair that makes keeping a decoded value legal. dbus.odin's values BORROW the message
-// buffer — including the `sig` strings inside arrays and variants — so anything outliving
-// the message has to be copied out whole. Free mirrors clone exactly; never free a value
-// you did not clone.
+// --- deep clone / free --- What makes keeping a decoded value legal: dbus.odin's values borrow
+// the message buffer, including the `sig` strings inside arrays and variants, so anything
+// outliving the message is copied out whole. Free mirrors clone exactly.
 
 dbus_value_clone :: proc(v: Dbus_Value, alloc := context.allocator) -> Dbus_Value {
     #partial switch t in v {

@@ -1,18 +1,13 @@
 package libvterm
 
-// Odin bindings for leonerd's libvterm (github.com/neovim/libvterm) — the
-// editor-standard VT state machine Vim/Neovim embed. It is a PURE parser: no PTY,
-// no curses, no I/O. We feed it output bytes (input_write) and read back a cell
-// grid (screen_get_cell); Slopd owns the PTY and the rendering itself. Only the
-// handful of entry points Slopd actually calls are bound here.
+// Odin bindings for leonerd's libvterm, the VT state machine Vim/Neovim embed. A PURE parser:
+// no PTY, no curses, no I/O. We feed it output bytes and read back a cell grid; Slopd owns the
+// PTY and the rendering. Only the entry points Slopd calls are bound.
 //
-// These bindings are first-party SOURCE (libvterm ships none of its own), so they
-// live in bindings/ and are tracked in git — unlike vendor/, which holds only
-// downloaded/built artifacts and is gitignored. download-deps.sh clones the C
-// sources and builds the dependency-free static archive (cc + ar, no libtool/
-// ncurses) into vendor/libvterm/.libs/libvterm.a; the foreign import below reaches
-// it by relative path, so `odin build src` picks it up transitively (as the
-// tree-sitter runtime archive does).
+// These bindings are first-party SOURCE — libvterm ships none — so they are tracked in git,
+// unlike vendor/. download-deps.sh clones the C sources and builds the dependency-free static
+// archive into vendor/libvterm/.libs/libvterm.a, which the foreign import below reaches by
+// relative path.
 
 import "core:c"
 
@@ -22,11 +17,10 @@ when ODIN_OS == .Windows {
     foreign import vt "../../vendor/libvterm/.libs/libvterm.a"
 }
 
-// ABI-fixed: a cell holds one printing character plus up to five combining marks.
+// ABI-fixed: one printing character plus up to five combining marks.
 MAX_CHARS_PER_CELL :: 6
 
-// Opaque handles owned by libvterm. A VTerm owns one Screen and one State, both
-// obtained from it and freed with it.
+// A VTerm owns one Screen and one State, both obtained from it and freed with it.
 VTerm  :: distinct rawptr
 Screen :: distinct rawptr
 State  :: distinct rawptr
@@ -36,16 +30,14 @@ Pos :: struct {
     col: c.int,
 }
 
-// Keyboard modifier bitmask (VTermModifier). Slopd keeps Alt global, so only
-// Shift/Ctrl ever reach a focused terminal.
+// VTermModifier. Slopd keeps Alt global, so only Shift/Ctrl reach a focused terminal.
 Modifier  :: distinct c.int
 MOD_NONE  :: Modifier(0x00)
 MOD_SHIFT :: Modifier(0x01)
 MOD_ALT   :: Modifier(0x02)
 MOD_CTRL  :: Modifier(0x04)
 
-// Named non-text keys (VTermKey). Values mirror the header's enum order; we bind
-// only the keys an editor sends (the function/keypad block is unused).
+// VTermKey, in the header's enum order. Only the keys an editor sends are bound.
 Key :: enum c.int {
     None = 0,
     Enter,
@@ -64,17 +56,15 @@ Key :: enum c.int {
     PageDown,
 }
 
-// Colour type bits packed into Color.type (the C tagged-union discriminator). The
-// low bit is RGB(0)/indexed(1); the next two flag the default fg/bg, set when the
-// app made no SGR colour request — render maps those onto the theme.
+// The C tagged-union discriminator: the low bit is RGB(0)/indexed(1), the next two flag the
+// default fg/bg, set when the app made no SGR colour request.
 COLOR_TYPE_MASK  :: 0x01
 COLOR_DEFAULT_FG :: 0x02
 COLOR_DEFAULT_BG :: 0x04
 
-// A tagged union in C. The first byte (`type`) discriminates and carries the
-// default-fg/bg flags; for an RGB colour red/green/blue are valid, for an indexed
-// colour the palette index lives in the `red` byte. convert_color_to_rgb()
-// normalises any colour to RGB in place.
+// A tagged union in C: `type` discriminates and carries the default flags, an RGB colour uses
+// red/green/blue, an indexed one puts its palette index in `red`. convert_color_to_rgb()
+// normalises either to RGB in place.
 Color :: struct {
     type:             u8,
     red, green, blue: u8,
@@ -83,9 +73,8 @@ Color :: struct {
 color_is_default_fg :: proc(col: Color) -> bool {return col.type & COLOR_DEFAULT_FG != 0}
 color_is_default_bg :: proc(col: Color) -> bool {return col.type & COLOR_DEFAULT_BG != 0}
 
-// Per-cell rendering attributes (a C bit-field over one unsigned int). Slopd acts
-// only on `reverse` for v1; the rest are bound so the struct layout matches the
-// ABI exactly when read by value.
+// A C bit-field over one unsigned int. Slopd acts only on `reverse`; the rest are bound so the
+// layout matches the ABI when read by value.
 ScreenCellAttrs :: bit_field c.uint {
     bold:      bool   | 1,
     underline: c.uint | 2,
@@ -108,13 +97,11 @@ ScreenCell :: struct {
     fg, bg: Color,
 }
 
-// Output callback: libvterm hands us the bytes it generates in reply to the app
-// (query responses, etc.); Slopd writes them straight to the PTY master.
+// The bytes libvterm generates in reply to the app; Slopd writes them to the PTY master.
 Output_Callback :: #type proc "c" (s: [^]u8, len: c.size_t, user: rawptr)
 
-// A chunk of an OSC/DCS string payload. The payload can arrive in pieces: `initial`
-// marks the first, `final` the last. The three sub-fields are a C bit-field packed
-// into one size_t, after the str pointer.
+// A chunk of an OSC/DCS payload, which can arrive in pieces: `initial` marks the first, `final`
+// the last. The three sub-fields are a C bit-field packed into one size_t.
 StringFragment :: struct {
     str:        [^]u8,
     using bits: bit_field c.size_t {
@@ -124,13 +111,11 @@ StringFragment :: struct {
     },
 }
 
-// OSC fallback: called for OSC sequences libvterm doesn't handle itself. Slopd uses
-// a private OSC to carry shell-command exit codes (see the command-line chain
-// runner). `command` is the numeric prefix (697 for `OSC 697 ; ...`), `frag` the rest.
+// For OSC sequences libvterm does not handle itself. Slopd uses a private OSC to carry
+// shell-command exit codes; `command` is the numeric prefix, `frag` the rest.
 OSC_Callback :: #type proc "c" (command: c.int, frag: StringFragment, user: rawptr) -> c.int
 
-// Unrecognised-sequence fallbacks. Slopd uses only `osc`; the rest stay nil (they
-// are function pointers, so rawptr matches the ABI for an unset slot).
+// Slopd uses only `osc`; the rest stay nil, and rawptr matches the ABI for an unset slot.
 StateFallbacks :: struct {
     control: rawptr,
     csi:     rawptr,
@@ -141,51 +126,43 @@ StateFallbacks :: struct {
     sos:     rawptr,
 }
 
-// Scrollback hand-off. libvterm holds only the live grid; the app keeps the
-// history. sb_pushline fires when a line scrolls off the top (its cells handed to
-// us to stash); sb_popline lets us feed a stashed line back when the screen grows
-// taller (we fill `cells`, return 1, or return 0 to decline). cells is a [^] of
-// exactly `cols` entries. Slopd implements these two plus settermprop — the rest of
-// the VTermScreenCallbacks slots stay nil (rawptr matches the ABI for an unset func ptr).
+// libvterm holds only the live grid; the app keeps the history. sb_pushline fires when a line
+// scrolls off the top, handing us its cells to stash; sb_popline lets us feed one back when the
+// screen grows taller (fill `cells` and return 1, or return 0 to decline). `cells` holds exactly
+// `cols` entries.
 SB_Pushline_Callback :: #type proc "c" (cols: c.int, cells: [^]ScreenCell, user: rawptr) -> c.int
 SB_Popline_Callback  :: #type proc "c" (cols: c.int, cells: [^]ScreenCell, user: rawptr) -> c.int
 
-// sb_pushline's four-argument form, which carries the one bit the three-argument form drops:
-// whether the line being pushed is a flow CONTINUATION of the line above it — i.e. whether
-// it exists because the one before it wrapped, rather than because something printed a
-// newline. Without it a copied soft-wrapped shell command comes back in two pieces.
+// The four-argument form, carrying the bit the three-argument one drops: whether the line exists
+// because the one above it wrapped. Without it a copied soft-wrapped command comes back in two
+// pieces.
 //
-// It is an ABI-compatible tenth slot in the same struct and libvterm ignores it until
-// screen_callbacks_has_pushline4 is called, after which it is used INSTEAD of sb_pushline
-// (screen.c, sb_pushline_from_row) — so an implementation that opts in must fill this slot
+// An ABI-compatible tenth slot, ignored until screen_callbacks_has_pushline4 is called, after
+// which it is used INSTEAD of sb_pushline — so an implementation that opts in fills this slot
 // and may leave the other nil.
 SB_Pushline4_Callback :: #type proc "c" (cols: c.int, cells: [^]ScreenCell, continuation: bool, user: rawptr) -> c.int
 
-// settermprop reports terminal property changes (cursor visibility, title, ...). Slopd
-// reads only PROP_ALTSCREEN, to know when a full-screen TUI is on its own alt buffer
-// (then it owns scrolling — PageUp passes through to it, not Slopd's scrollback). `val`
-// points at a VTermValue union; for the bool props its first int is the boolean.
+// Terminal property changes. Slopd reads PROP_ALTSCREEN, to know when a TUI is on its own alt
+// buffer and owns scrolling. `val` points at a VTermValue union, whose first int is the boolean
+// for the bool props.
 Settermprop_Callback :: #type proc "c" (prop: c.int, val: rawptr, user: rawptr) -> c.int
 
-PROP_ALTSCREEN :: 3 // VTERM_PROP_ALTSCREEN (CURSORVISIBLE=1, CURSORBLINK=2, ALTSCREEN=3)
-PROP_MOUSE     :: 8 // VTERM_PROP_MOUSE: 0 = off, else the active mouse tracking mode
+PROP_ALTSCREEN :: 3 // CURSORVISIBLE=1, CURSORBLINK=2, ALTSCREEN=3
+PROP_MOUSE     :: 8 // 0 = off, else the active mouse tracking mode
 
-// Per-line flags. Slopd reads only `continuation` (C7d: a soft-wrapped line must copy back
-// as one line), but the whole bit-field is declared so the struct's layout matches the ABI
-// when read through a pointer.
+// Slopd reads only `continuation`, but the whole bit-field is declared so the layout matches the
+// ABI when read through a pointer.
 LineInfo :: bit_field c.uint {
     doublewidth:  bool   | 1,
     doubleheight: c.uint | 2,
     continuation: bool   | 1, // this line exists because the one above it wrapped
 }
 
-// VTermScreenCallbacks, field order ABI-fixed to the header. All entries are
-// function pointers; the ones Slopd ignores (damage/moverect/movecursor/bell/resize/
-// sb_clear) stay rawptr-nil.
+// Field order ABI-fixed to the header. All entries are function pointers, and the ones Slopd
+// ignores stay rawptr-nil.
 //
-// sb_pushline4 is the tenth slot and is the one Slopd fills — see that callback type. The
-// nine-slot version stays declared and nil, because the two are alternatives rather than a
-// pair, and a reader of this struct should be able to see that the plain one was a choice.
+// sb_pushline4 is the tenth slot and the one Slopd fills. The nine-slot version stays declared
+// and nil, since the two are alternatives rather than a pair.
 ScreenCallbacks :: struct {
     damage:       rawptr,
     moverect:     rawptr,
@@ -211,14 +188,12 @@ foreign vt {
     output_set_callback :: proc(term: VTerm, func: Output_Callback, user: rawptr) ---
     keyboard_unichar    :: proc(term: VTerm, cp: u32, mod: Modifier) ---
     keyboard_key        :: proc(term: VTerm, key: Key, mod: Modifier) ---
-    // Bracketed-paste markers (CSI 200~ / CSI 201~) around pasted text. libvterm tracks
-    // DECSET 2004 itself, so these emit NOTHING for a shell that never asked — which is
-    // why a paste wraps unconditionally rather than testing a mode flag of our own.
+    // CSI 200~ / CSI 201~ around pasted text. libvterm tracks DECSET 2004 itself, so these
+    // emit nothing for a shell that never asked — hence wrapping unconditionally.
     keyboard_start_paste :: proc(term: VTerm) ---
     keyboard_end_paste   :: proc(term: VTerm) ---
-    // Mouse input -> the app via the output callback, encoded to the TUI's active mouse
-    // protocol. Wheel is button 4 (up) / 5 (down); Slopd uses only the wheel, to scroll
-    // a focused full-screen TUI (its scrollback is its own — see the terminal selector).
+    // To the app via the output callback, encoded to the TUI's active mouse protocol. Wheel is
+    // button 4 (up) / 5 (down).
     mouse_move          :: proc(term: VTerm, row, col: c.int, mod: Modifier) ---
     mouse_button        :: proc(term: VTerm, button: c.int, pressed: bool, mod: Modifier) ---
 
@@ -230,15 +205,12 @@ foreign vt {
     screen_set_default_colors   :: proc(screen: Screen, default_fg, default_bg: ^Color) ---
     screen_set_unrecognised_fallbacks :: proc(screen: Screen, fallbacks: ^StateFallbacks, user: rawptr) ---
     screen_set_callbacks :: proc(screen: Screen, callbacks: ^ScreenCallbacks, user: rawptr) ---
-    // Opt into the four-argument sb_pushline. The flag lives on the SCREEN rather than in
-    // the callbacks struct (that is what makes the tenth slot ABI-compatible), so it is
-    // independent of screen_set_callbacks and survives it — but both have to be in place
-    // before the first line scrolls off, or that line is pushed through the three-argument
-    // form and loses its continuation bit.
+    // The flag lives on the SCREEN rather than the callbacks struct, which is what makes the
+    // tenth slot ABI-compatible — but both must be in place before the first line scrolls off,
+    // or that line loses its continuation bit.
     screen_callbacks_has_pushline4 :: proc(screen: Screen) ---
 
     state_get_cursorpos :: proc(state: State, cursorpos: ^Pos) ---
-    // Per-line flags for a LIVE grid row. The scrollback's copy of the same bit arrives
-    // through sb_pushline4; this is how the rows that have not scrolled off yet are asked.
+    // For a LIVE grid row. The scrollback's copy of the same bit arrives through sb_pushline4.
     state_get_lineinfo  :: proc(state: State, row: c.int) -> ^LineInfo ---
 }

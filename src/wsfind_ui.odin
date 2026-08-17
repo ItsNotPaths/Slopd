@@ -2,23 +2,18 @@ package main
 
 import clay "../bindings/clay"
 
-// The workspace prompt's UI half — ONE bar and ONE list, called by both faces of the file pane.
-// The two faces differ only in the box they hand it: the `ls` header row, or the browser's path
-// region and the content area right of its sidebar. Everything a row means (what is selected,
-// what is unsaved, what a press does) is decided here, once, so the two cannot drift.
+// The workspace prompt's UI half — one bar and one list, called by both faces of the file pane.
+// They differ only in the box they hand it, so everything a row means is decided here once.
 //
 //   <caller's bar>
-//     ws_lbl     "WORKSPACE/", in the accent — the prompt, and the only thing saying you are
-//                in one, since the pane under it is unchanged
-//     ws_edit    the typed line: the shared one-line Field (field_ui.odin), the path bar's twin
+//     ws_lbl     "WORKSPACE/", in the accent — the only thing saying you are in a prompt
+//     ws_edit    the typed line: the shared one-line Field, the path bar's twin
 //   ws_body      the clip group the rows scroll inside
 //     ws_row/i     one per visible row, keyed by ROW index so a hit names a row
 //       ws_pre/i     the two-cell prefix column: '*' for the unsaved ring, else '-'
-//     ws_none    instead of the rows when there are none: one muted line saying which nothing
-//                this is — an empty ring, or a filter that matched nothing
+//     ws_none    instead of the rows when there are none, saying WHICH nothing this is
 
-// The prompt's contents, declared into the box the caller has already opened. Reads App, writes
-// only Clay.
+// Into the box the caller has already opened. Reads App, writes only Clay.
 wsfind_declare_bar :: proc(a: ^App, lh: i32, now: f64) {
     th := &a.theme
     ws := &a.wsfind
@@ -31,8 +26,7 @@ wsfind_declare_bar :: proc(a: ^App, lh: i32, now: f64) {
     )
 }
 
-// The rows, in a clip group `r` tall. Owns its own viewport tween: the listing underneath keeps
-// `tree.scroll` where the user left it, and the two lists scroll independently by construction.
+// Its own viewport tween: the listing underneath keeps `tree.scroll` where the user left it.
 wsfind_declare_body :: proc(a: ^App, r: Rect, row_h, lh: i32, cw: f32, now: f64) {
     ws := &a.wsfind
     th := &a.theme
@@ -43,8 +37,8 @@ wsfind_declare_body :: proc(a: ^App, r: Rect, row_h, lh: i32, cw: f32, now: f64)
     if clay.UI(clay.ID("ws_body"))(
         {
             layout = {
-                // Fixed, not Grow, as every list pane's clip group is: the row easing into view
-                // must not stretch the group it is inside (rule 8).
+                // Fixed, not Grow: the row easing into view must not stretch the clip group
+                // it is inside (rule 8).
                 sizing          = {clay.SizingGrow(), clay.SizingFixed(f32(max(0, r.h)))},
                 layoutDirection = .TopToBottom,
             },
@@ -85,8 +79,7 @@ wsfind_declare_body :: proc(a: ^App, r: Rect, row_h, lh: i32, cw: f32, now: f64)
                     backgroundColor = bg,
                 },
             ) {
-                // The listing's two-cell prefix column, with its two marks: the unsaved star,
-                // or a dash for a row that is only a file.
+                // The listing's two-cell prefix column: the unsaved star, or a dash.
                 col := row.dirty ? th.urgent : th.muted
                 if clay.UI(clay.ID("ws_pre", u32(i)))(
                     {layout = {sizing = {width = clay.SizingFixed(2 * cw)}}},
@@ -100,9 +93,8 @@ wsfind_declare_body :: proc(a: ^App, r: Rect, row_h, lh: i32, cw: f32, now: f64)
     }
 }
 
-// Where the typed line was declared, given the bar's CONTENT box (the caller's, since the two
-// faces pad their bars differently) — the box the press, the drag and the window resolve
-// against. The label takes the first cells; the line takes the rest.
+// Given the bar's content box, since the two faces pad differently: the box the press, the drag
+// and the window resolve against. The label takes the first cells, the line the rest.
 wsfind_field_rect :: proc(inner: Rect, cw: f32) -> Rect {
     w := i32(f32(len(WS_PROMPT)) * cw)
     return Rect{inner.x + w, inner.y, max(0, inner.w - w), inner.h}
@@ -113,8 +105,8 @@ wsfind_field_box :: proc(a: ^App, field: Rect, cw: f32) -> Field_Box {
     return {doc = &ws.query, target = FIELD_WSFIND, r = field, off = ws.off, cw = cw}
 }
 
-// Which row the pointer is over, or -1 — over the window that was PAINTED (`top`, the animated
-// position) rather than the target, for filetree_hit's reason.
+// -1 when over none. Over the PAINTED window (`top`, animated) rather than the target, for
+// filetree_hit's reason.
 wsfind_hit :: proc(ws: ^WS_Find, top, visible: int) -> int {
     first := clamp(top, 0, max(0, len(ws.rows)))
     n := max(0, min(len(ws.rows) - first, visible))
@@ -127,8 +119,8 @@ wsfind_hit :: proc(ws: ^WS_Find, top, visible: int) -> int {
     return -1
 }
 
-// A press: a row selects on one and opens on two (the listing's rule, so a prompt is not a
-// second kind of list), and a press on the typed line is the field's own.
+// A row selects on one press and opens on two, as the listing does; a press on the typed line
+// is the field's own.
 @(private = "file")
 wsfind_click :: proc(a: ^App, row: int, field: Rect, cw: f32) {
     if row < 0 {
@@ -149,9 +141,8 @@ wsfind_click :: proc(a: ^App, row: int, field: Rect, cw: f32) {
     }
 }
 
-// The prompt's frame phases, in the pane template's order — the whole of what the face hosting
-// it has to do, since with the prompt up the listing behind it takes no input at all. `field` is
-// the typed line's box and `body` the region the rows are in.
+// The pane template's phases, and the whole of what the hosting face has to do: with the prompt
+// up the listing takes no input at all.
 wsfind_frame :: proc(a: ^App, field, body: Rect, row_h: i32, cw: f32, now: f64) {
     ws := &a.wsfind
     if row_h <= 0 {
@@ -171,8 +162,8 @@ wsfind_frame :: proc(a: ^App, field, body: Rect, row_h: i32, cw: f32, now: f64) 
         pane_input_at(a),
     )
 
-    // The line's drag and its window, as the path bar runs them: the gesture that walks the
-    // caret off the end must move the window in the frame that moved it.
+    // As the path bar runs them: a gesture that walks the caret off the end must move the
+    // window in the frame that moved it.
     field_drag(a, wsfind_field_box(a, field, cw), now)
     if doc_line_count(&ws.query) > 0 {
         cells := doc_cells(&ws.query, 0)

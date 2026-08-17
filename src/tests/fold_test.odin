@@ -23,8 +23,7 @@ test_indent_cols_and_blank :: proc(t: ^testing.T) {
     testing.expect(t, app.line_is_blank(app.doc_line(&b.doc, 2, context.temp_allocator))) // whitespace-only
 }
 
-// A blank line borrows the deeper of its non-blank neighbours so a guide runs
-// unbroken through it.
+// A blank line borrows the deeper of its non-blank neighbours, so a guide runs unbroken.
 @(test)
 test_indent_levels_through_blank :: proc(t: ^testing.T) {
     b := mkbuf("def f():\n    a = 1\n\n    b = 2\nx = 3")
@@ -36,8 +35,8 @@ test_indent_levels_through_blank :: proc(t: ^testing.T) {
     testing.expect_value(t, app.buffer_indent_levels(&b, 4, 4), 0)
 }
 
-// The active scope spans the run around the cursor at least as deep as its line,
-// blank lines included, with the rail level one below the cursor depth.
+// The run around the cursor at least as deep as its line, blank lines included, with the rail
+// one level below the cursor depth.
 @(test)
 test_active_scope :: proc(t: ^testing.T) {
     b := mkbuf("def f():\n    a = 1\n\n    b = 2\nx = 3")
@@ -49,17 +48,16 @@ test_active_scope :: proc(t: ^testing.T) {
     testing.expect_value(t, s.hi, 3)
     testing.expect_value(t, s.level, 0)
 
-    top := app.buffer_active_scope(&b, 4, 4, 0, all) // top level -> no scope
+    top := app.buffer_active_scope(&b, 4, 4, 0, all) // top level: no scope
     testing.expect(t, !top.ok)
 
-    // The walk stops at the DRAWN lines: the rail is only painted inside the viewport, so a
-    // span past it is work nobody can see. Inside the bound it is still exact — the run ending
-    // first still ends the walk, which is why the second case below is 3 and not the bound.
+    // The walk stops at the DRAWN lines, since the rail is only painted inside the viewport.
+    // Inside the bound it is still exact: the run ending first still ends the walk.
     win := app.buffer_active_scope(&b, 1, 4, 1, 2)
     testing.expect_value(t, win.lo, 1)
     testing.expect_value(t, win.hi, 2) // clipped by the window
     exact := app.buffer_active_scope(&b, 1, 4, 0, 4)
-    testing.expect_value(t, exact.hi, 3) // the run really does end here, inside the bound
+    testing.expect_value(t, exact.hi, 3) // the run really does end here
 
     // A caret scrolled off the top still lights the part of its run that IS on screen.
     below := app.buffer_active_scope(&b, 1, 4, 2, 3)
@@ -78,7 +76,7 @@ test_fold_range_indent :: proc(t: ^testing.T) {
     s, e, ok := app.fold_range_indent(&b, 0)
     testing.expect(t, ok)
     testing.expect_value(t, s, 0)
-    testing.expect_value(t, e, 2) // hides both body lines, not "x = 3"
+    testing.expect_value(t, e, 2) // both body lines, not "x = 3"
 
     _, _, ok2 := app.fold_range_indent(&b, 1) // a body line opens no block
     testing.expect(t, !ok2)
@@ -91,7 +89,7 @@ test_fold_range_indent_keeps_blank :: proc(t: ^testing.T) {
     s, e, ok := app.fold_range_indent(&b, 0)
     testing.expect(t, ok)
     testing.expect_value(t, s, 0)
-    testing.expect_value(t, e, 3) // blank line inside the block stays inside it
+    testing.expect_value(t, e, 3) // a blank line inside the block stays inside
 }
 
 // --- visibility helpers over a folded buffer ---
@@ -112,10 +110,9 @@ test_fold_visibility_helpers :: proc(t: ^testing.T) {
     testing.expect_value(t, app.buffer_visible_count(&b, 0, 3), 2)
     testing.expect_value(t, app.buffer_back_visible(&b, 3, 1), 0)
 
-    // Its forward twin (C7c, which walks a drag past the bottom edge with it). The two ends
-    // are not symmetric and that is the whole reason this proc is not a mirror image: line 0
-    // can never be hidden (a fold hides `line > f.line`), but the LAST line can, so a walk
-    // that runs out of buffer INSIDE a collapsed block has to back out of it.
+    // Its forward twin, which the drag autoscroll uses. The two ends are not symmetric: line 0
+    // can never be hidden, but the LAST line can, so a walk that runs out of buffer inside a
+    // collapsed block has to back out.
     testing.expect_value(t, app.buffer_fwd_visible(&b, 0, 1), 3)
     testing.expect_value(t, app.buffer_fwd_visible(&b, 0, 9), 3) // past the end clamps
     testing.expect_value(t, app.buffer_fwd_visible(&b, 3, 1), 3)
@@ -136,7 +133,7 @@ test_fold_toggle_motion_and_sync :: proc(t: ^testing.T) {
     b := app.editor_current(&a.editor)
     app.buffer_set_text(b, "def f():\n    a = 1\n    b = 2\nx = 3")
 
-    // Fold the block opening on line 0 (no grammar loaded -> indentation fallback).
+    // The block opening on line 0; no grammar loaded, so the indentation fallback.
     app.buffer_fold_toggle(&a, b)
     testing.expect_value(t, len(b.folds), 1)
     testing.expect(t, app.buffer_line_hidden(b, 1))
@@ -144,16 +141,14 @@ test_fold_toggle_motion_and_sync :: proc(t: ^testing.T) {
     // Down steps over the whole fold to the next visible line.
     app.buffer_motion(b, .Down)
     testing.expect_value(t, b.cursors[0].head.line, 3)
-    // Up steps back onto the header (visible), not into the hidden body.
+    // Up steps back onto the header, not into the hidden body.
     app.buffer_motion(b, .Up)
     testing.expect_value(t, b.cursors[0].head.line, 0)
 
-    // Re-pressing on the header expands it.
     app.buffer_fold_toggle(&a, b)
     testing.expect_value(t, len(b.folds), 0)
 
-    // A line-count change BELOW a fold leaves it alone — it used to drop every fold in the
-    // buffer, which is what made folding not worth using while editing.
+    // A line-count change below a fold leaves it alone; it used to drop every fold.
     app.buffer_fold_toggle(&a, b)
     testing.expect_value(t, len(b.folds), 1)
     app.buffer_motion(b, .Down) // onto the first visible line past the fold
@@ -163,10 +158,9 @@ test_fold_toggle_motion_and_sync :: proc(t: ^testing.T) {
     testing.expect_value(t, b.folds[0], app.Fold{line = 0, end = 2})
 }
 
-// E6: a fold is a range of absolute line numbers, so an edit above it MOVES it, an edit below
-// it does not, and an edit that reaches into it drops it. The shift comes from the document's
-// change log through the fold reader's own slot (Doc_Reader), so it does not matter whether the
-// highlighter has looked at the same changes first.
+// A fold is a range of absolute line numbers, so an edit above it MOVES it, one below does not,
+// and one reaching into it drops it. The shift comes through the fold reader's own change-log
+// slot, so the highlighter having looked first does not matter.
 @(test)
 test_fold_survives_edits :: proc(t: ^testing.T) {
     a: app.App
@@ -185,14 +179,14 @@ test_fold_survives_edits :: proc(t: ^testing.T) {
     testing.expect_value(t, len(b.folds), 1)
     testing.expect_value(t, b.folds[0], app.Fold{line = 2, end = 4})
 
-    // ABOVE: two lines inserted at the top slide the whole fold down by two.
+    // Above: two lines at the top slide the whole fold down by two.
     app.doc_reset_cursor(&b.doc, app.Pos{0, 0})
     app.doc_insert_text(&b.doc, "// one\n// two\n")
     app.buffer_sync_folds(b)
     testing.expect_value(t, len(b.folds), 1)
     testing.expect_value(t, b.folds[0], app.Fold{line = 4, end = 6})
 
-    // ABOVE, the other way: deleting a line above slides it back up.
+    // Above, the other way: deleting a line slides it back up.
     app.doc_reset_cursor(&b.doc, app.Pos{0, 0})
     app.doc_move(&b.doc, .Down, true)
     app.doc_delete(&b.doc)

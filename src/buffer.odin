@@ -4,32 +4,30 @@ import "core:os"
 import "core:strings"
 import "core:time"
 
-// The text editor: a list of open Buffers (the ring) with one active. Each Buffer is a Doc
-// (the shared multi-cursor editing core) plus file/view state, so every motion and edit op is
-// the same code the command line uses. Multi-cursor native: single-cursor is just N == 1.
+// A list of open Buffers (the ring) with one active. Each is a Doc plus file/view state, so
+// every motion and edit op is the code the command line uses.
 
 Buffer :: struct {
     using doc:     Doc, // lines + cursors
     path:            string, // owned; "" = unnamed/scratch
-    scroll:          int, // first visible line, the scroll TARGET (clamped at render)
-    scroll_anim:     Anim, // visual top line tweening toward `scroll` (smooth scroll)
-    scroll_detached: f64, // glfw time the wheel cut the view loose from the caret; 0 = following it
-    // The same three fields for the COLUMN axis (no soft wrap, so a long line runs off the
-    // right edge and this is how you reach it). Separate from the vertical set because the
-    // gestures are separate: Shift+wheel detaches sideways without touching the page.
-    hscroll:          int, // first visible column, the horizontal TARGET (clamped at render)
-    hscroll_anim:     Anim, // visual left column tweening toward `hscroll`
-    hscroll_detached: f64, // glfw time Shift+wheel cut the column loose from the caret
+    scroll:          int, // first visible line, the TARGET (clamped at render)
+    scroll_anim:     Anim, // visual top line tweening toward `scroll`
+    scroll_detached: f64, // glfw time the wheel cut the view loose; 0 = following the caret
+    // The same three for the COLUMN axis: no soft wrap, so a long line runs off the right edge
+    // and this is how you reach it. Separate because Shift+wheel detaches sideways alone.
+    hscroll:          int,
+    hscroll_anim:     Anim,
+    hscroll_detached: f64,
     dirty:           bool,
-    final_newline:   bool, // did the file end in '\n'? preserved on save (POSIX round-trip)
-    folds:           [dynamic]Fold, // collapsed blocks (Ctrl+Enter); see fold.odin
-    disk_mtime:      time.Time, // file mtime at our last load/save; detects external rewrites (see buffer_reload_if_changed)
-    conflict:        bool, // the file changed on disk under unsaved edits: a decision is pending (the prompt; see buffer_conflict_resolve)
-    // The private copy a staged `sudo cp` line reads (owned; "" = none staged). Held so the
-    // NEXT staging can delete the last one — see save_stage_sudo.
+    final_newline:   bool, // did the file end in '\n'? preserved on save
+    folds:           [dynamic]Fold, // collapsed blocks (fold.odin)
+    disk_mtime:      time.Time, // mtime at our last load/save; detects external rewrites
+    conflict:        bool, // the file changed on disk under unsaved edits; a decision is pending
+    // The private copy a staged `sudo cp` line reads (owned; "" = none). Held so the next
+    // staging can delete the last — see save_stage_sudo.
     save_tmp:        string,
-    // Content came from the binary, not the filesystem (the `readme` / `license` builtins).
-    // `path` is then a DISPLAY NAME, not a location: nothing may save to it or stat it.
+    // Content came from the binary (the `:readme` / `:license` builtins), so `path` is a display
+    // name, not a location: nothing may save to it or stat it.
     embedded:        bool,
 }
 
@@ -41,7 +39,7 @@ Editor :: struct {
 editor_init :: proc(e: ^Editor) {
     b: Buffer
     doc_init(&b.doc) // one empty line, one cursor
-    b.final_newline = true // a fresh file gets the conventional trailing newline
+    b.final_newline = true
     append(&e.buffers, b)
 }
 
@@ -56,10 +54,8 @@ editor_current :: proc(e: ^Editor) -> ^Buffer {
     return &e.buffers[e.active]
 }
 
-// The main pane's buffer WHEN there is one to act on — editor_current behind the two questions
-// every whole-buffer tool has to ask first. Nil on the image surface (no text there) and on the
-// bare App the tests build (no buffers at all). Shared by the search and the command line's
-// live preview, so neither has to remember the pair.
+// editor_current behind the two questions every whole-buffer tool asks first. Nil on the image
+// surface and on the bare App the tests build.
 main_text_buffer :: proc(a: ^App) -> ^Buffer {
     if a.main != .Text || len(a.editor.buffers) == 0 {
         return nil
@@ -67,7 +63,7 @@ main_text_buffer :: proc(a: ^App) -> ^Buffer {
     return editor_current(&a.editor)
 }
 
-// Expand every fold in every buffer (folding turned off in config).
+// Folding turned off in config.
 editor_clear_folds :: proc(e: ^Editor) {
     for &b in e.buffers {
         clear(&b.folds)
@@ -76,14 +72,12 @@ editor_clear_folds :: proc(e: ^Editor) {
 
 // --- cross-part seams (called by the filetree / command line) ---
 
-// Loads path into the main pane: an image routes to the media viewer (Image surface);
-// any other file is text — reactivates an existing buffer for it, reuses the scratch
-// buffer if it's untouched, otherwise opens a new buffer. Focuses the main pane either way.
+// An image routes to the media viewer; anything else is text — an existing buffer for it, or
+// the scratch buffer if untouched, or a new one. Focuses the main pane either way.
 open_file :: proc(a: ^App, path: string) {
     defer set_focus(a, .Editor)
 
-    // Image (and future media): decode into the viewer instead of the text ring, and flip
-    // the main pane to .Image. A failed decode leaves the current surface untouched.
+    // A failed decode leaves the current surface untouched.
     if is_media_path(path) {
         if m, ok := media_load(path); ok {
             media_destroy(&a.media)
@@ -93,10 +87,10 @@ open_file :: proc(a: ^App, path: string) {
         return
     }
 
-    a.main = .Text // a text file flips the main pane back to the editor
+    a.main = .Text
     e := &a.editor
     for &b, i in e.buffers {
-        if b.path == path && !b.embedded { // an embedded doc's path is a name, never a location
+        if b.path == path && !b.embedded { // an embedded doc's path is a name
             e.active = i
             return
         }
@@ -115,8 +109,7 @@ open_file :: proc(a: ^App, path: string) {
     }
 }
 
-// How many open buffers hold unsaved changes (the ring's size). The quit/write
-// builtins guard on this so a stray `q` can't discard work.
+// The quit/write builtins guard on this so a stray `:q` cannot discard work.
 ring_dirty_count :: proc(e: ^Editor) -> int {
     n := 0
     for &b in e.buffers {
@@ -127,7 +120,7 @@ ring_dirty_count :: proc(e: ^Editor) -> int {
     return n
 }
 
-// Is path open with unsaved changes? (Lights up its '*' in the filetree.)
+// Lights up its '*' in the filetree.
 ring_contains :: proc(a: ^App, path: string) -> bool {
     for &b in a.editor.buffers {
         if b.dirty && b.path == path {
@@ -143,18 +136,18 @@ buffer_destroy :: proc(b: ^Buffer) {
     doc_destroy(&b.doc)
     delete(b.folds)
     delete(b.path)
-    buffer_drop_save_tmp(b) // a staged sudo line dies with its buffer; the copy must not outlive it
+    buffer_drop_save_tmp(b) // the copy must not outlive its buffer
 }
 
 buffer_set_text :: proc(b: ^Buffer, text: string) {
     doc_set_text(&b.doc, text)
     b.scroll = 0
-    b.scroll_anim = {} // settled at the top; a reused scratch buffer won't smear from its old scroll
-    b.scroll_detached = 0 // a wholesale text swap re-attaches the view to the caret
+    b.scroll_anim = {} // settled, so a reused scratch buffer does not smear from its old scroll
+    b.scroll_detached = 0 // a wholesale swap re-attaches the view to the caret
     b.hscroll = 0
-    b.hscroll_anim = {} // …and settled at column 0, for the same reason
+    b.hscroll_anim = {}
     b.hscroll_detached = 0
-    clear(&b.folds) // a wholesale text swap invalidates every fold range
+    clear(&b.folds) // every fold range is invalidated
 }
 
 buffer_load :: proc(b: ^Buffer, path: string) -> bool {
@@ -163,41 +156,36 @@ buffer_load :: proc(b: ^Buffer, path: string) -> bool {
         return false
     }
     content := string(src)
-    // Capture everything derived from `path` BEFORE freeing the old b.path: a reload
-    // (buffer_reload_keep_view) passes b.path itself, so freeing first would leave `path`
-    // dangling and clone/stat it from freed memory.
+    // Everything derived from `path` BEFORE freeing the old b.path: a reload passes b.path
+    // itself, so freeing first would clone and stat freed memory.
     new_path := strings.clone(path)
-    mtime := file_mtime(path) or_else time.Time{} // the stamp staleness is measured against
+    mtime := file_mtime(path) or_else time.Time{}
     buffer_set_text(b, content)
     delete(b.path)
     b.path = new_path
     b.dirty = false
-    b.embedded = false // a real file, even if this buffer previously held an embedded doc
-    b.final_newline = strings.has_suffix(content, "\n") // remember it for save
+    b.embedded = false // a real file, whatever this buffer held before
+    b.final_newline = strings.has_suffix(content, "\n")
     b.disk_mtime = mtime
     return true
 }
 
-// Whether `path` names a real file — the precondition every disk op shares. False for a
-// scratch buffer (no name yet) and for an embedded doc (a name that is not a location).
+// The precondition every disk op shares. False for a scratch buffer and an embedded doc.
 buffer_on_disk :: proc(b: ^Buffer) -> bool {
     return b.path != "" && !b.embedded
 }
 
-// Why a save did not happen. `.Denied` is the one an ordinary user hits on purpose — a file they
-// may read and not write — and it is the only failure with a way forward, so it is the only one
-// the callers act on rather than report (the staged `sudo cp`; see save_stage_sudo).
+// `.Denied` is the only failure with a way forward (the staged `sudo cp`), so it is the only
+// one callers act on rather than report.
 Save_Result :: enum {
     Ok,
-    No_Path, // unnamed scratch, or an embedded doc: there is nothing to write to
-    Denied, // EACCES / EPERM, on the file or on the folder it would be created in
-    Failed, // anything else: a full disk, a vanished folder, an I/O error
+    No_Path, // unnamed scratch, or an embedded doc
+    Denied, // EACCES / EPERM, on the file or on its folder
+    Failed, // a full disk, a vanished folder, an I/O error
 }
 
-// The bytes a save writes: the shared serializer (lines joined by '\n', no trailing one), plus
-// the trailing newline back if the file we loaded had one. THREE callers must agree byte for
-// byte — the save, the private copy the sudo line carries, and the compare in `:saved` — which
-// is why the rule lives in one proc instead of being spelled out at each of them.
+// Lines joined by '\n', plus the trailing newline back if the loaded file had one. Three
+// callers must agree byte for byte: the save, the sudo line's private copy, and `:saved`.
 buffer_bytes :: proc(b: ^Buffer, allocator := context.temp_allocator) -> string {
     data := doc_string(&b.doc, allocator)
     if !b.final_newline {
@@ -210,31 +198,29 @@ buffer_bytes :: proc(b: ^Buffer, allocator := context.temp_allocator) -> string 
 
 buffer_save :: proc(b: ^Buffer) -> Save_Result {
     if !buffer_on_disk(b) {
-        return .No_Path // unnamed (save-as not implemented yet), or an embedded doc
+        return .No_Path // unnamed (no save-as yet), or embedded
     }
     data := buffer_bytes(b)
     if err := os.write_entire_file(b.path, transmute([]u8)data); err != nil {
-        // EACCES and EPERM both arrive as Permission_Denied, from the file OR from a folder we
-        // may not create in. EROFS does not: a read-only mount is not a door sudo can open.
+        // EACCES and EPERM both arrive as Permission_Denied. EROFS does not: a read-only mount
+        // is not a door sudo can open.
         return err == .Permission_Denied ? .Denied : .Failed
     }
     buffer_mark_saved(b)
     return .Ok
 }
 
-// Adopt the disk as ours: clean, unconflicted, and stamped with the file's CURRENT mtime so the
-// staleness poll does not read our own write back as somebody else's. Shared by the save and by
-// `:saved` — the builtin that ends a staged sudo line, where the write was root's, not ours.
+// Clean, unconflicted, stamped with the file's current mtime so the staleness poll does not
+// read our own write back as somebody else's. Shared by the save and by `:saved`.
 buffer_mark_saved :: proc(b: ^Buffer) {
     b.dirty = false
-    b.conflict = false // our write IS the disk now, so any pending conflict is resolved
+    b.conflict = false // our write IS the disk now
     b.disk_mtime = file_mtime(b.path) or_else {}
-    buffer_drop_save_tmp(b) // the staged copy has served its purpose
+    buffer_drop_save_tmp(b)
 }
 
-// Whether the file on disk already holds exactly what this buffer would write. The check that
-// makes `:saved` safe to type anywhere: on any other buffer it is simply false, so a builtin
-// that marks work clean can never be pointed at work that is not.
+// What makes `:saved` safe to type anywhere: false on any other buffer, so a builtin that marks
+// work clean cannot be pointed at work that is not.
 buffer_matches_disk :: proc(b: ^Buffer) -> bool {
     if !buffer_on_disk(b) {
         return false
@@ -243,8 +229,8 @@ buffer_matches_disk :: proc(b: ^Buffer) -> bool {
     return err == nil && string(disk) == buffer_bytes(b)
 }
 
-// Remove the private copy staged for a sudo save, on disk and from the buffer. Safe to call
-// when there is none; called on every restaging, on `:saved`, and on close.
+// On disk and from the buffer. Safe when there is none; called on restaging, `:saved` and
+// close.
 buffer_drop_save_tmp :: proc(b: ^Buffer) {
     if b.save_tmp == "" {
         return
@@ -254,8 +240,7 @@ buffer_drop_save_tmp :: proc(b: ^Buffer) {
     b.save_tmp = ""
 }
 
-// The file's on-disk modification time, ok=false if it can't be stat'd (gone/unreadable).
-// The single source of the staleness stamp shared by the text buffer and the image viewer.
+// ok=false when it cannot be stat'd. The one staleness stamp, shared with the image viewer.
 file_mtime :: proc(path: string) -> (time.Time, bool) {
     fi, err := os.stat(path, context.temp_allocator)
     if err != nil {
@@ -264,9 +249,8 @@ file_mtime :: proc(path: string) -> (time.Time, bool) {
     return fi.modification_time, true
 }
 
-// Re-read the file if it changed on disk since we last loaded or saved it, so a later save
-// can't clobber an external tool's edits. A CLEAN buffer reloads silently; a DIRTY one is a
-// conflict — `prompt_on_conflict` raises `conflict` and deliberately does NOT adopt the stamp.
+// So a later save cannot clobber an external tool's edits. A clean buffer reloads silently; a
+// dirty one is a conflict, and `prompt_on_conflict` raises it without adopting the stamp.
 buffer_reload_if_changed :: proc(b: ^Buffer, prompt_on_conflict: bool) -> bool {
     if !buffer_on_disk(b) {
         return false
@@ -277,9 +261,9 @@ buffer_reload_if_changed :: proc(b: ^Buffer, prompt_on_conflict: bool) -> bool {
     }
     if b.dirty {
         if prompt_on_conflict {
-            b.conflict = true // disk changed under unsaved edits: ask, don't clobber
+            b.conflict = true // ask, do not clobber
         } else {
-            b.disk_mtime = mt // relaxed: keep my edits silently, accept the new disk stamp
+            b.disk_mtime = mt // relaxed: keep my edits, accept the new stamp
         }
         return false
     }
@@ -287,9 +271,8 @@ buffer_reload_if_changed :: proc(b: ^Buffer, prompt_on_conflict: bool) -> bool {
     return buffer_reload_keep_view(b)
 }
 
-// Re-read the file from disk, holding the caret line/column and scroll across the swap
-// (clamped to the new length) so a background edit doesn't yank the view to the top. The
-// unconditional reload core, shared by the silent auto-reload and the conflict "reload".
+// Holds the caret and scroll across the swap, clamped to the new length, so a background edit
+// does not yank the view to the top. Shared by the silent auto-reload and `:reload y`.
 buffer_reload_keep_view :: proc(b: ^Buffer) -> bool {
     if !buffer_on_disk(b) {
         return false
@@ -300,22 +283,21 @@ buffer_reload_keep_view :: proc(b: ^Buffer) -> bool {
     if !buffer_load(b, b.path) {
         return false
     }
-    doc_reset_cursor(&b.doc, head) // clamped onto the reloaded content, rune boundary included
+    doc_reset_cursor(&b.doc, head) // clamped onto the reloaded content
     b.scroll = clamp(scroll, 0, max(0, doc_line_count(&b.doc) - 1))
     b.hscroll = hscroll // bounded next frame, where the pane width is known
     return true
 }
 
-// Settle a pending disk-change conflict. reload=true takes the disk version; reload=false
-// KEEPS the edits and adopts the current disk stamp — the cached decision, so the prompt
-// stays down until the file changes AGAIN. Either clears the conflict.
+// reload=true takes the disk version; false keeps the edits and adopts the current stamp, so
+// the prompt stays down until the file changes again. Either clears the conflict.
 buffer_conflict_resolve :: proc(b: ^Buffer, reload: bool) {
     b.conflict = false
     if reload {
-        b.dirty = false // the reload re-reads from disk, so the buffer is clean again
+        b.dirty = false
         buffer_reload_keep_view(b)
     } else {
-        b.disk_mtime = file_mtime(b.path) or_else b.disk_mtime // cache "keep mine" against the current disk version
+        b.disk_mtime = file_mtime(b.path) or_else b.disk_mtime // cache "keep mine"
     }
 }
 
@@ -325,19 +307,17 @@ buffer_insert_rune :: proc(b: ^Buffer, r: rune) {
     b.dirty |= doc_insert_rune(&b.doc, r)
 }
 
-// A plain newline at every cursor, no auto-indent (the editor uses buffer_enter; this is the
-// dumb primitive for programmatic splits + tests).
+// No auto-indent — the editor uses buffer_enter. The primitive for programmatic splits.
 buffer_newline :: proc(b: ^Buffer) {
     b.dirty |= doc_newline(&b.doc)
 }
 
-// Enter in the editor: a newline that copies the line's leading whitespace, plus one indent
-// unit when the line opens a block at the caret. Special case: a lone caret between a bracket
-// pair expands across three lines. Heuristic-first, so it works with no grammar installed.
+// A newline copying the line's leading whitespace, plus one indent unit when the line opens a
+// block at the caret. A lone caret between a bracket pair expands across three lines.
+// Heuristic-first, so it works with no grammar installed.
 buffer_enter :: proc(a: ^App, b: ^Buffer) {
     d := &b.doc
 
-    // Brace-pair expansion: a lone caret between an opener and its matching closer.
     if len(d.cursors) == 1 && !cursor_has_selection(d.cursors[0]) {
         c := d.cursors[0]
         prev, size := doc_rune_before(d, c.head)
@@ -349,12 +329,12 @@ buffer_enter :: proc(a: ^App, b: ^Buffer) {
             if doc_insert_text(d, body) {
                 b.dirty = true
             }
-            doc_reset_cursor(d, Pos{c.head.line + 1, len(inner)}) // onto the indented middle line
+            doc_reset_cursor(d, Pos{c.head.line + 1, len(inner)}) // the indented middle line
             return
         }
     }
 
-    // General case (incl. multi-cursor): each cursor gets a newline + its own computed indent.
+    // Each cursor gets a newline plus its own computed indent.
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
     for c in d.cursors {
         lo, hi := cursor_range(c)
@@ -366,8 +346,7 @@ buffer_enter :: proc(a: ^App, b: ^Buffer) {
     }
 }
 
-// The indentation the line after Enter should start with: the current line's leading
-// whitespace, plus one unit when the line opens a block at the caret.
+// The current line's leading whitespace, plus one unit when it opens a block at the caret.
 @(private = "file")
 enter_indent :: proc(a: ^App, b: ^Buffer, pos: Pos) -> string {
     lead := line_lead(&b.doc, pos.line)
@@ -377,8 +356,8 @@ enter_indent :: proc(a: ^App, b: ^Buffer, pos: Pos) -> string {
     return lead
 }
 
-// Opens a block at the caret = its last non-blank char before the caret is an opener `([{`
-// that's real code (tree-sitter rules out one inside a string/comment when a grammar exists).
+// The last non-blank char before the caret is an opener `([{` that is real code — tree-sitter
+// rules out one inside a string or comment where a grammar exists.
 @(private = "file")
 enter_opens_block :: proc(a: ^App, b: ^Buffer, pos: Pos) -> bool {
     line := doc_line(&b.doc, pos.line)
@@ -399,8 +378,7 @@ enter_opens_block :: proc(a: ^App, b: ^Buffer, pos: Pos) -> bool {
     return false
 }
 
-// True when Enter between `prev` and `next` should expand a bracket pair (quotes excluded —
-// splitting a string across lines isn't wanted).
+// Quotes excluded: splitting a string across lines is not wanted.
 @(private = "file")
 enter_expands_pair :: proc(prev, next: rune) -> bool {
     switch prev {
@@ -414,14 +392,13 @@ enter_expands_pair :: proc(prev, next: rune) -> bool {
     return false
 }
 
-// A line's leading whitespace, as a sub-slice of its bytes (read before any edit mutates it).
+// A sub-slice of the line's bytes, so read it before any edit.
 @(private = "file")
 line_lead :: proc(d: ^Doc, line: int) -> string {
     src := doc_line(d, line)
     return string(src[:line_indent_cols(src)])
 }
 
-// `lead` plus one indentation unit.
 @(private = "file")
 grow_indent :: proc(lead: string, ind: Indent) -> string {
     return strings.concatenate({lead, indent_text(ind)}, context.temp_allocator)
@@ -457,9 +434,8 @@ buffer_redo :: proc(b: ^Buffer) {
 
 // --- view ---
 
-// The viewport's target top line for a `rows`-tall pane — the `scroll_mode` policy, kept out
-// of the renderer so it is testable without GL. FOLLOW moves the minimum only once the caret
-// would leave the view; MIDDLE pins the TOPMOST cursor to the middle. Both walk VISIBLE rows.
+// The `scroll_mode` policy, kept out of the renderer so it tests without GL. Follow moves the
+// minimum once the caret would leave; Middle pins the topmost cursor. Both walk visible rows.
 buffer_scroll_target :: proc(b: ^Buffer, rows: int, center: bool) -> int {
     if center {
         line := buffer_prev_visible(b, doc_top_cursor_line(&b.doc))
@@ -476,51 +452,40 @@ buffer_scroll_target :: proc(b: ^Buffer, rows: int, center: bool) -> int {
     return top
 }
 
-// Settle this frame's scroll target — the one place b.scroll is written per frame. While the
-// WHEEL has the view detached the policy must NOT run (both modes derive the top from the
-// caret and would yank it back); comparing timestamps re-attaches on any keystroke.
+// The one place b.scroll is written per frame. While the wheel has the view detached the policy
+// must not run — both modes derive the top from the caret. A keystroke re-attaches.
 buffer_scroll_apply :: proc(b: ^Buffer, rows: int, center: bool, last_input_at: f64) {
     if b.scroll_detached > 0 && last_input_at > b.scroll_detached {
         b.scroll_detached = 0
     }
     if b.scroll_detached > 0 {
-        // No policy, only bounds: any visible line may be the top, first to last.
+        // No policy, only bounds: any visible line may be the top.
         b.scroll = buffer_prev_visible(b, clamp(b.scroll, 0, max(0, doc_line_count(&b.doc) - 1)))
         return
     }
     b.scroll = buffer_scroll_target(b, rows, center)
 }
 
-// Move the detached view by `delta` visible-ish lines and stamp it as detached at `now`
-// (the wheel's entry point — see mouse.odin). Clamped to the buffer; buffer_scroll_apply
-// snaps the result onto a visible line, so folds need no handling here.
+// The wheel's entry point. buffer_scroll_apply snaps the result onto a visible line, so folds
+// need no handling here.
 buffer_scroll_by :: proc(b: ^Buffer, delta: int, now: f64) {
     b.scroll = clamp(b.scroll + delta, 0, max(0, doc_line_count(&b.doc) - 1))
     b.scroll_detached = now
 }
 
-// --- the column axis ---
-//
-// There is no soft wrap: a long line runs off the right edge and is reached by moving the
-// window sideways instead. The three procs below mirror the vertical set exactly — target,
-// apply, and the wheel's by — so both axes detach, re-attach and animate under one set of
-// rules, and only the policy in the middle differs.
+// --- the column axis --- No soft wrap: a long line is reached by moving the window sideways.
+// The three procs below mirror the vertical set — target, apply, by — so both axes detach,
+// re-attach and animate alike, and only the policy differs.
 
-// Columns of context the caret keeps between itself and either edge — "don't leave it on the
-// edge". At the right margin you can then see the few characters you are about to type over,
-// and at the left the start of the token you are walking back into, rather than the caret
-// butting against the clip with the text appearing one column at a time.
+// Columns of context between the caret and either edge, so you can see what you are about to
+// type over rather than the caret butting against the clip.
 HSCROLL_PAD :: 8
 
-// The target first COLUMN for a `cols`-wide text region. The vertical policy's twin, with one
-// deliberate difference: there is no MIDDLE mode. `scroll_mode: middle` pins what you follow to
-// the centre, which reads fine down a page — the rows either side stay put — but sideways it
-// slides the WHOLE file under every keystroke past the halfway column, and nothing on screen
-// holds still to read against. So the column axis is always the margin policy: hold while the
-// caret is inside the padded window, then move the minimum to put it back.
-//
-// The margin is halved out on a narrow pane. Two margins wider than the region between them
-// would each pull the opposite way, and the view would never settle on either.
+// The vertical policy's twin, with no Middle mode: pinning to the centre reads fine down a page
+// but sideways it slides the whole file under every keystroke past the halfway column. So the
+// column axis is always the margin policy — hold inside the padded window, then move the
+// minimum. The margin halves out on a narrow pane, or two margins wider than the region between
+// them would each pull the opposite way.
 buffer_hscroll_target :: proc(left, col, cols: int) -> int {
     if cols <= 0 {
         return 0
@@ -528,7 +493,7 @@ buffer_hscroll_target :: proc(left, col, cols: int) -> int {
     pad := min(HSCROLL_PAD, (cols - 1) / 2)
     l := max(0, left)
     if col - pad < l {
-        return max(0, col - pad) // the clamp is also what snaps a near-home caret back to column 0
+        return max(0, col - pad) // the clamp also snaps a near-home caret to column 0
     }
     if col + pad > l + cols - 1 {
         return col + pad - cols + 1
@@ -536,14 +501,11 @@ buffer_hscroll_target :: proc(left, col, cols: int) -> int {
     return l
 }
 
-// Settle this frame's column target — the one place b.hscroll is written per frame. `longest`
-// is the widest line the window is DRAWING, which is what bounds the view: past its end plus
-// the margin there is nothing to look at, and blank space is not a place to be scrolled to.
+// The one place b.hscroll is written per frame. `longest` is the widest line the window is
+// DRAWING, which bounds the view: blank space is not a place to be scrolled to.
 //
-// **Call this after buffer_scroll_apply**, whose result it reads: the caret is only guaranteed
-// on screen while the VERTICAL view is following it, and a column policy aimed at a line nobody
-// can see would slide the visible ones sideways for nothing. So a wheel-detached page holds its
-// column too, and the keystroke that re-attaches one axis re-attaches both.
+// Call after buffer_scroll_apply, whose result it reads: the caret is only on screen while the
+// vertical view follows it, so a detached page holds its column too.
 buffer_hscroll_apply :: proc(b: ^Buffer, cols, longest: int, last_input_at: f64) {
     if b.hscroll_detached > 0 && last_input_at > b.hscroll_detached {
         b.hscroll_detached = 0
@@ -553,25 +515,22 @@ buffer_hscroll_apply :: proc(b: ^Buffer, cols, longest: int, last_input_at: f64)
         b.hscroll = clamp(b.hscroll, 0, limit)
         return
     }
-    col := doc_cell_col(&b.doc, b.cursors[b.primary].head) // the axis is CELLS, not bytes
+    col := doc_cell_col(&b.doc, b.cursors[b.primary].head) // the axis is CELLS
     b.hscroll = clamp(buffer_hscroll_target(b.hscroll, col, cols), 0, limit)
 }
 
-// Move the detached column by `delta` and stamp it — Shift+wheel's entry point. Only the
-// lower bound is applied: the callback has no font and no pane rect, so it cannot know how
-// wide a column is or how many fit, and buffer_hscroll_apply bounds the top next frame with
-// one notch of overshoot at most (as the vertical wheel does).
+// Shift+wheel's entry point. Only the lower bound: the callback has no font and no pane rect,
+// so buffer_hscroll_apply bounds the top next frame, with one notch of overshoot at most.
 buffer_hscroll_by :: proc(b: ^Buffer, delta: int, now: f64) {
     b.hscroll = max(0, b.hscroll + delta)
     b.hscroll_detached = now
 }
 
-// --- movement (no edits; the Doc ops wrap across line boundaries). select=true
-// (Shift) grows a selection; all=true (the Alt+M prefix) moves every cursor rather
-// than just the free caret. ---
+// --- movement --- select=true (Shift) grows a selection; all=true (the Alt+M prefix) moves
+// every cursor rather than the free caret.
 
 buffer_motion :: proc(b: ^Buffer, motion: Motion, select := false, all := false, count := 1) {
-    buffer_sync_folds(b) // a prior same-frame edit may have invalidated the fold set
+    buffer_sync_folds(b) // an earlier same-frame edit may have invalidated the folds
     if all {
         doc_move_all(&b.doc, motion, select, count)
     } else {
@@ -580,9 +539,8 @@ buffer_motion :: proc(b: ^Buffer, motion: Motion, select := false, all := false,
     buffer_skip_hidden(b, motion)
 }
 
-// Keeps cursors off folded (hidden) lines after a motion: a cursor that stepped into a
-// collapsed block snaps to the fold's visible edge in the direction it moved (header above,
-// first visible line past it), so a single Up/Down/arrow steps cleanly over a fold.
+// A cursor that stepped into a collapsed block snaps to the fold's visible edge in the
+// direction it moved, so one keypress steps cleanly over a fold.
 @(private = "file")
 buffer_skip_hidden :: proc(b: ^Buffer, motion: Motion) {
     if len(b.folds) == 0 {
@@ -595,8 +553,8 @@ buffer_skip_hidden :: proc(b: ^Buffer, motion: Motion) {
             continue
         }
         target := forward ? buffer_next_visible(b, c.head.line) : buffer_prev_visible(b, c.head.line)
-        // Vertical motion keeps the goal column; a horizontal wrap lands at the line
-        // edge it would have reached (end of the header / start of the line past it).
+        // Vertical keeps the goal column; a horizontal wrap lands at the line edge it would
+        // have reached.
         col :=
             vertical \
             ? doc_byte_col(&b.doc, target, c.goal) \

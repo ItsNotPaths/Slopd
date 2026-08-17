@@ -2,15 +2,14 @@ package main
 
 import "core:unicode/utf8"
 
-// Undo — a linear patch journal sitting on the Doc edit funnel (doc_apply). Each edit records a
-// reversible Op; consecutive single-character word inserts coalesce into one step, broken by a
-// whitespace key, a caret move, or any other edit. The op-level granularity is deliberately
-// graph-ready: swapping the linear stacks for a tree later doesn't touch how edits are recorded.
+// A linear patch journal on the Doc edit funnel. Each edit records a reversible Op; consecutive
+// single-character inserts coalesce into one step, broken by whitespace, a caret move or any
+// other edit. The op-level granularity is graph-ready: swapping the linear stacks for a tree
+// would not touch how edits are recorded.
 
-// One reversible replacement, as two byte offsets — one per direction, because a batch's edits
-// shift each other. Forward (and redo), [at, at+len(removed)) in the PRE-batch document became
-// `inserted`; undo replaces [inv_at, inv_at+len(inserted)) in the POST-batch one with `removed`.
-// Both strings are owned.
+// Two byte offsets, one per direction, because a batch's edits shift each other. Forward,
+// [at, at+len(removed)) in the PRE-batch document became `inserted`; undo replaces
+// [inv_at, inv_at+len(inserted)) in the POST-batch one with `removed`. Both strings are owned.
 Op :: struct {
     at:                int,
     inv_at:            int,
@@ -22,9 +21,8 @@ Batch :: struct {
     ops: [dynamic]Op,
 }
 
-// One undo step: the batches applied while the step was open, plus the cursor sets (and which
-// was primary) to restore. Undo replays the batches' inverses last-to-first and restores
-// `before`; redo replays them forward and restores `after`.
+// The batches applied while the step was open, plus the cursor sets to restore. Undo replays
+// the inverses last-to-first and restores `before`; redo replays forward and restores `after`.
 Undo_Step :: struct {
     batches:                       [dynamic]Batch,
     before, after:                 [dynamic]Cursor,
@@ -50,9 +48,8 @@ undo_destroy :: proc(d: ^Doc) {
     d.undo = {}
 }
 
-// Applies edits through doc_apply and journals them. A single-character insert extends the
-// most recent step while that step's last inserted char wasn't a break char and the caret is
-// where the step left off. Returns whether anything changed (callers set dirty).
+// A single-character insert extends the most recent step while that step's last inserted
+// character was not a break char and the caret is where the step left off.
 doc_commit :: proc(d: ^Doc, edits: []Edit) -> bool {
     before := clone_cursors(d.cursors[:])
     before_primary := d.primary
@@ -88,8 +85,8 @@ doc_commit :: proc(d: ^Doc, edits: []Edit) -> bool {
     return true
 }
 
-// Reverts the most recent step: replay each batch's inverse last-to-first, restore
-// the pre-edit cursors, and move the step onto the redo stack.
+// Replays each batch's inverse last-to-first, restores the pre-edit cursors, and moves the step
+// onto the redo stack.
 doc_undo :: proc(d: ^Doc) -> bool {
     u := &d.undo
     if len(u.steps) == 0 {
@@ -108,8 +105,7 @@ doc_undo :: proc(d: ^Doc) -> bool {
     return true
 }
 
-// Re-applies the most recently undone step: replay each batch forward, restore the
-// post-edit cursors, and move the step back onto the undo stack.
+// Replays each batch forward, restores the post-edit cursors, and moves the step back.
 doc_redo :: proc(d: ^Doc) -> bool {
     u := &d.undo
     if len(u.redo) == 0 {
@@ -130,9 +126,7 @@ doc_redo :: proc(d: ^Doc) -> bool {
 
 // --- internals ---
 
-// True when a break character ends an undo run: whitespace, or a bracket/quote
-// delimiter. After one is typed the current step is sealed, so the next character
-// opens a fresh step.
+// Whitespace, or a bracket/quote delimiter. After one is typed the step is sealed.
 @(private = "file")
 is_undo_break :: proc(r: rune) -> bool {
     switch r {
@@ -142,9 +136,8 @@ is_undo_break :: proc(r: rune) -> bool {
     return false
 }
 
-// Whether this edit extends the most recent step rather than starting a new one:
-// it must be a single-character insert landing where that step left off, and the
-// step's last inserted character must not have been a break char.
+// A single-character insert landing where that step left off, whose last inserted character was
+// not a break char.
 @(private = "file")
 coalesces :: proc(u: ^Undo, batch: ^Batch, before: []Cursor) -> bool {
     if !batch_is_char_insert(batch) || len(u.steps) == 0 {
@@ -154,9 +147,8 @@ coalesces :: proc(u: ^Undo, batch: ^Batch, before: []Cursor) -> bool {
     return cursors_match(top.after[:], before) && step_open(top)
 }
 
-// A keystroke fans out to every cursor as the same single character, so a batch
-// coalesces when ALL its ops are single-char inserts — the per-cursor streams
-// advance in lockstep within one step.
+// A keystroke fans out to every cursor as one character, so a batch coalesces when ALL its ops
+// are single-char inserts.
 @(private = "file")
 batch_is_char_insert :: proc(b: ^Batch) -> bool {
     if len(b.ops) == 0 {
@@ -170,7 +162,7 @@ batch_is_char_insert :: proc(b: ^Batch) -> bool {
     return true
 }
 
-// A step is still open if its last edit inserted a non-break character.
+// Still open if its last edit inserted a non-break character.
 @(private = "file")
 step_open :: proc(s: ^Undo_Step) -> bool {
     if len(s.batches) == 0 {
@@ -223,7 +215,6 @@ undo_clear_redo :: proc(d: ^Doc) {
     clear(&d.undo.redo)
 }
 
-// Trims the oldest steps past the cap.
 @(private = "file")
 undo_cap :: proc(d: ^Doc) {
     for len(d.undo.steps) > UNDO_MAX {

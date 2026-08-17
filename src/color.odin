@@ -6,20 +6,16 @@ import "core:strconv"
 import "core:strings"
 import "core:unicode/utf8"
 
-// Colour literals, and the picker's model. Alt+Enter on a colour opens the pane on it and edits
-// it IN PLACE, so reading one is only half the job — what comes out has to go back in the form
-// it came from. Three forms, because none can be rewritten as another without changing the file:
+// Colour literals, and the picker's model. Alt+Enter on a colour edits it IN PLACE, so what
+// comes out has to go back in the form it came from. Three forms, none rewritable as another:
 //
 //   #rgb #rgba #rrggbb #rrggbbaa      hex: CSS, theme files, most config
 //   rgb(r, g, b)   rgba(r, g, b, a)   the CSS function; channels are 0..255
-//   {r, g, b}  (r, g, b, a)  [r,g,b]  a bare tuple: an Odin [3]f32, a GLSL vec3, a Python tuple
+//   {r, g, b}  (r, g, b, a)  [r,g,b]  a bare tuple: an Odin [3]f32, a vec3, a Python tuple
 //
-// The tuple is the HEURISTIC one — three or four numbers in brackets is not a colour by itself,
-// and nothing in the text says which scale they are on. The values decide: channels that all fit
-// in 0..1 are read as unit floats, anything larger as 0..255 bytes. `{1, 0, 0}` is therefore
-// red, which is what it means in every language that writes a colour that way, rather than the
-// near-black that 1/255 would give. Numbers outside 0..255 are not a colour at all, which is
-// what keeps `(1920, 1080, 60)` out of the picker.
+// The tuple is the heuristic one: nothing in the text says which scale it is on, so the values
+// decide — all fitting in 0..1 reads as unit floats, anything larger as bytes. `{1, 0, 0}` is
+// therefore red. Numbers outside 0..255 are not a colour, which keeps `(1920, 1080, 60)` out.
 
 Color_Kind :: enum {
     Hex,
@@ -27,8 +23,7 @@ Color_Kind :: enum {
     Tuple, // brackets and commas
 }
 
-// How a colour was written. The picker has to put back what it took out: the same brackets, the
-// same scale, the same channel count.
+// The picker has to put back what it took: the same brackets, scale and channel count.
 Color_Style :: struct {
     kind:        Color_Kind,
     has_alpha:   bool,
@@ -37,9 +32,9 @@ Color_Style :: struct {
     alpha_float: bool, // the alpha field is 0..1 where the channels are bytes
 }
 
-// The picker's state: the colour, the buffer range it came from, and enough of the original to
-// put back on Escape. `hsva` is the editable copy — the sliders are HSV and round-tripping them
-// through RGB would drift the hue every time the value passed through 0.
+// The colour, the buffer range it came from, and enough of the original to put back on Escape.
+// `hsva` is the editable copy: round-tripping the sliders through RGB would drift the hue every
+// time the value passed through 0.
 ColorPane :: struct {
     rgba:       [4]f32,
     hsva:       [4]f32, // h 0..360, s 0..1, v 0..1, a 0..1
@@ -53,14 +48,13 @@ ColorPane :: struct {
     orig_text:  string, // owned clone of the original token
     orig_rgba:  [4]f32,
     orig_dirty: bool,
-    sel:        int, // focused slider; a live drag lives in a.drag, not here
+    sel:        int, // focused slider; a live drag lives in a.drag
 }
 
 // --- reading ---
 
-// The colour under rune column `col`: its value, the rune span it fills, and how it was written.
-// Ordered most- to least-specific — an rgb() call is a tuple with a name in front of it, and the
-// tuple's bare brackets are the loosest pattern here, so it goes last.
+// Its value, the rune span it fills, and how it was written. Ordered most- to least-specific:
+// an rgb() call is a tuple with a name in front, and bare brackets are the loosest pattern.
 color_at :: proc(line: []rune, col: int) -> (rgba: [4]f32, lo, hi: int, st: Color_Style, ok: bool) {
     if l, h, hok := color_hex_span(line, col); hok {
         if v, vok := color_parse_hex(line[l + 1:h]); vok {
@@ -82,13 +76,12 @@ color_at :: proc(line: []rune, col: int) -> (rgba: [4]f32, lo, hi: int, st: Colo
     return {}, 0, 0, {}, false
 }
 
-// `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` under the caret, span INCLUDING the '#'. A bare hex
-// run is too ambiguous to be a colour, so the '#' is required.
+// Span INCLUDING the '#', which is required: a bare hex run is too ambiguous to be a colour.
 color_hex_span :: proc(line: []rune, col: int) -> (lo, hi: int, ok: bool) {
     n := len(line)
     c := clamp(col, 0, n)
     if c < n && line[c] == '#' && c + 1 < n && color_is_hex(line[c + 1]) {
-        c += 1 // the caret is on the '#': step onto the first digit
+        c += 1 // on the '#': step onto the first digit
     }
     if c >= n || !color_is_hex(line[c]) {
         if c > 0 && (color_is_hex(line[c - 1]) || line[c - 1] == '#') {
@@ -116,8 +109,8 @@ color_hex_span :: proc(line: []rune, col: int) -> (lo, hi: int, ok: bool) {
     return 0, 0, false
 }
 
-// An `rgb(...)` / `rgba(...)` call containing `col`: the call's span, its arguments' span, and
-// the name's length — 4 is `rgba`, which is the only announcement the alpha field gets.
+// The call's span, its arguments' span, and the name's length — 4 is `rgba`, the only
+// announcement the alpha field gets.
 color_func_span :: proc(line: []rune, col: int) -> (lo, hi, a_lo, a_hi, name: int, ok: bool) {
     n := len(line)
     for i := 0; i < n; i += 1 {
@@ -147,25 +140,22 @@ color_func_span :: proc(line: []rune, col: int) -> (lo, hi, a_lo, a_hi, name: in
     return 0, 0, 0, 0, 0, false
 }
 
-// The innermost bracket pair holding `col`, in any of the three bracket kinds. A caret ON either
-// bracket counts, and so does one just past the closer — which is where the caret usually is
-// after you type the thing.
+// In any of the three bracket kinds. A caret ON either bracket counts, and so does one just
+// past the closer, where the caret usually is after you type the thing.
 color_tuple_span :: proc(line: []rune, col: int) -> (lo, hi: int, ok: bool) {
     if len(line) == 0 {
         return 0, 0, false
     }
     c := clamp(col, 0, len(line) - 1)
-    // A caret just past a closing bracket belongs to the pair that bracket closes, not to
-    // whatever pair happens to contain the caret now — which is the one AROUND it.
+    // A caret just past a closer belongs to the pair that bracket closes, not the one around.
     if c > 0 && color_is_close(line[c - 1]) {
         c -= 1
     }
     return color_pair_at(line, c)
 }
 
-// The bracket pair `at` sits inside. Walking left counts depth so a pair nested in another (the
-// `{...}` of `[3]f32{...}`) resolves to the inner one; a position ON a closer starts one to its
-// left, or that closer's own depth would carry the walk out to the pair around it.
+// Walking left counts depth, so a nested pair resolves to the inner one. A position ON a closer
+// starts one to its left, or that closer's own depth would carry the walk outward.
 @(private = "file")
 color_pair_at :: proc(line: []rune, at: int) -> (lo, hi: int, ok: bool) {
     i := color_is_close(line[at]) ? at - 1 : at
@@ -191,7 +181,7 @@ color_pair_at :: proc(line: []rune, at: int) -> (lo, hi: int, ok: bool) {
         } else if color_is_close(line[j]) {
             if depth == 0 {
                 if line[j] != want {
-                    return 0, 0, false // crossed brackets: not a literal
+                    return 0, 0, false // crossed brackets
                 }
                 return i, j + 1, true
             }
@@ -201,9 +191,8 @@ color_pair_at :: proc(line: []rune, at: int) -> (lo, hi: int, ok: bool) {
     return 0, 0, false
 }
 
-// The `r, g, b[, a]` inside either bracket form. `st` carries what the caller already knows —
-// the kind and the brackets — and comes back with what the FIELDS decide: how many there are
-// and which scale each was written on.
+// `st` carries what the caller knows — the kind and the brackets — and comes back with what the
+// FIELDS decide: how many there are, and which scale.
 color_parse_args :: proc(args: []rune, st: Color_Style) -> (rgba: [4]f32, out: Color_Style, ok: bool) {
     out = st
     s := utf8.runes_to_string(args, context.temp_allocator)
@@ -221,8 +210,8 @@ color_parse_args :: proc(args: []rune, st: Color_Style) -> (rgba: [4]f32, out: C
         v[i], dot[i] = n, d
     }
     out.has_alpha = len(parts) == 4
-    // The scale: a CSS call is 0..255 whatever it holds; a bare tuple is floats when every
-    // channel fits in 0..1. See the header for why that reading wins.
+    // A CSS call is 0..255 whatever it holds; a bare tuple is floats when every channel fits
+    // in 0..1. See the header.
     out.floats = st.kind == .Tuple && max(v[0], v[1], v[2]) <= 1
     out.alpha_float = out.floats || dot[3]
     rgba = {0, 0, 0, 1}
@@ -235,8 +224,7 @@ color_parse_args :: proc(args: []rune, st: Color_Style) -> (rgba: [4]f32, out: C
     return rgba, out, true
 }
 
-// One field: a plain decimal number, and whether it was written with a point — the difference
-// between an alpha of `128` (a byte) and one of `0.5`.
+// A decimal number, and whether it was written with a point — `128` against `0.5`.
 color_field :: proc(s: string) -> (v: f64, dot, ok: bool) {
     txt := strings.trim_space(s)
     if txt == "" {
@@ -279,8 +267,7 @@ color_parse_hex :: proc(hex: []rune) -> (rgba: [4]f32, ok: bool) {
     return {f32((v >> 16) & 0xff) / 255, f32((v >> 8) & 0xff) / 255, f32(v & 0xff) / 255, 1}, true
 }
 
-// The function name at `i`: 4 for "rgba", 3 for "rgb", 0 otherwise. A word boundary is required
-// before it, so `srgb(` is not a colour call.
+// 4 for "rgba", 3 for "rgb", 0 otherwise. A word boundary is required, so `srgb(` is not one.
 color_func_name :: proc(line: []rune, i: int) -> int {
     if i > 0 && color_is_word(line[i - 1]) {
         return 0
@@ -349,8 +336,8 @@ color_is_close :: proc(r: rune) -> bool {
 
 // --- writing ---
 
-// `rgba` in the form `st` names — the inverse of color_at, and it has to stay one: the picker
-// replaces a live buffer range with this on every drag frame.
+// The inverse of color_at, and it has to stay one: the picker replaces a live buffer range with
+// this on every drag frame.
 color_format :: proc(rgba: [4]f32, st: Color_Style, alloc := context.allocator) -> string {
     b := strings.builder_make(alloc)
     switch st.kind {
@@ -380,8 +367,7 @@ color_byte :: proc(v: f32) -> int {
     return clamp(int(math.round(v * 255)), 0, 255)
 }
 
-// A channel as it was written: a byte, or a unit float with its trailing zeros cut, so a drag
-// leaves `0.5` rather than `0.500`.
+// A byte, or a unit float with its trailing zeros cut, so a drag leaves `0.5` not `0.500`.
 @(private = "file")
 color_write_chan :: proc(b: ^strings.Builder, v: f32, as_float: bool) {
     if !as_float {
@@ -450,8 +436,7 @@ color_hsva_to_rgba :: proc(hsva: [4]f32) -> [4]f32 {
 
 // --- the picker ---
 
-// The open picker, when the keys are pointed at it. The nav/activate verbs ask this the way
-// every other pane's verbs ask their own target.
+// The open picker, when the keys point at it, as every other pane's verbs ask their target.
 color_target :: proc(a: ^App) -> ^ColorPane {
     if a.aux_mode != .Color || !a.color.active || a.focus != .Aux {
         return nil
@@ -459,15 +444,14 @@ color_target :: proc(a: ^App) -> ^ColorPane {
     return &a.color
 }
 
-// Open on a colour with nowhere to write it back to — the `:color` command with no literal
-// under the caret.
+// With nowhere to write it back to: `:color` with no literal under the caret.
 color_open :: proc(a: ^App, rgba: [4]f32) {
     color_open_full(a, rgba, {kind = .Hex}, -1, 0, 0, 0, "")
 }
 
 color_open_full :: proc(a: ^App, rgba: [4]f32, st: Color_Style, buf_idx, line, lo, hi: int, orig_text: string) {
     cp := &a.color
-    if cp.orig_text != "" { // re-opening over an open picker still owns the last token
+    if cp.orig_text != "" { // re-opening still owns the last token
         delete(cp.orig_text)
     }
     cp^ = ColorPane {
@@ -487,8 +471,7 @@ color_open_full :: proc(a: ^App, rgba: [4]f32, st: Color_Style, buf_idx, line, l
     set_aux(a, .Color)
 }
 
-// Open on the colour under the caret and edit it in place. False when the caret is not on one,
-// which is what lets Alt+Enter fall through to the identifier jump (link.odin).
+// False when the caret is not on one, which lets Alt+Enter fall through to the identifier jump.
 color_open_at_caret :: proc(a: ^App) -> bool {
     b := main_text_buffer(a)
     if b == nil {
@@ -503,18 +486,16 @@ color_open_at_caret :: proc(a: ^App) -> bool {
     if !ok {
         return false
     }
-    // The picker edits BYTE ranges — the document stores bytes and nothing under it knows
-    // about the rune columns the classifiers scan.
+    // Byte ranges: the document stores bytes, not the rune columns the classifiers scan.
     line := string(doc_line(&b.doc, cur.line, context.temp_allocator))
     b_lo, b_hi := color_byte_col(line, lo), color_byte_col(line, hi)
     color_open_full(a, rgba, st, a.editor.active, cur.line, b_lo, b_hi, line[b_lo:b_hi])
     return true
 }
 
-// Cancel puts the original token back. Commit REWINDS the preview and re-applies the final
-// colour once, through the journal: the live writes are deliberately unjournalled — a drag
-// would push an undo step per frame, and the colours it swept past are not states anybody
-// asked to come back to — so this is where the whole session becomes one undoable edit.
+// Cancel puts the original token back. Commit rewinds the preview and re-applies the final
+// colour once through the journal: the live writes are unjournalled, since a drag would push an
+// undo step per frame, so this is where the session becomes one undoable edit.
 color_close :: proc(a: ^App, commit: bool) {
     cp := &a.color
     if !cp.active {
@@ -542,7 +523,7 @@ color_restore :: proc(a: ^App) {
         return
     }
     color_write(a, b, cp.orig_text)
-    b.dirty = cp.orig_dirty // an untouched file must not be left starred by a cancelled edit
+    b.dirty = cp.orig_dirty // a cancelled edit must not leave the file starred
     cp.rgba = cp.orig_rgba
     cp.hsva = color_rgba_to_hsva(cp.orig_rgba)
 }
@@ -556,7 +537,7 @@ color_apply_live :: proc(a: ^App) {
     b.dirty = true
 }
 
-// The buffer the picker is writing into, when it still exists and still has the line.
+// When it still exists and still has the line.
 @(private = "file")
 color_live_buffer :: proc(a: ^App) -> ^Buffer {
     cp := &a.color
@@ -570,9 +551,8 @@ color_live_buffer :: proc(a: ^App) -> ^Buffer {
     return b
 }
 
-// Replace the tracked range with `text` and re-point the range at what was written — every
-// drag frame runs this, and the two forms differ in length. `journal` picks the funnel: the
-// undo journal for the one committed edit, the bare document for the preview (color_close).
+// Re-points the range at what was written, since the two forms differ in length. `journal`
+// picks the funnel: the undo journal for the committed edit, the bare document for the preview.
 @(private = "file")
 color_write :: proc(a: ^App, b: ^Buffer, text: string, journal := false) {
     cp := &a.color
@@ -596,7 +576,7 @@ color_set_rgba :: proc(a: ^App, rgba: [4]f32) {
     color_apply_live(a)
 }
 
-// The byte offset of rune column `col` in `s`, clamped to the line's end.
+// Clamped to the line's end.
 color_byte_col :: proc(s: string, col: int) -> int {
     n := 0
     for i := 0; i < len(s); n += 1 {

@@ -9,30 +9,28 @@ import gl "vendor:OpenGL"
 import "vendor:glfw"
 import stbi "vendor:stb/image"
 
-// The media viewer — the main (document) pane showing an image instead of a text buffer.
-// MainSurface (app.odin) says which KIND; Text/Image are peers there, both distinct from
-// the tool/aux pane. Audio/Video would slot in beside this with their own load/draw/key.
+// The main pane showing an image instead of a text buffer. MainSurface says which kind; Text
+// and Image are peers, both distinct from the aux pane.
 //
-// Self-contained on purpose: the pure geometry (media_fit_rect) and the extension table
-// (is_media_path) are GL-free and unit-tested; only media_load / media_destroy touch GL.
-// One image is held at a time, on App.media.
+// The pure geometry (media_fit_rect) and the extension table are GL-free and unit-tested; only
+// media_load / media_destroy touch GL. One image is held at a time, on App.media.
 
 Media :: struct {
     path: string, // owned; "" = nothing loaded
     tex:  u32, // GL RGBA texture (0 = none)
     w, h: i32, // image pixel dimensions
-    zoom:  f32, // 1 = fit-to-pane (contain); >1 zooms in
-    pan:   [2]f32, // view offset in physical pixels, applied after centering
-    mtime: time.Time, // file mtime when decoded; re-decodes when it changes (see media_reload_if_changed)
+    zoom:  f32, // 1 = fit-to-pane; >1 zooms in
+    pan:   [2]f32, // view offset in physical pixels, applied after centring
+    mtime: time.Time, // mtime when decoded; a change re-decodes
 }
 
-// The stb_image extensions routed to the viewer. Lowercase; is_media_path matches
-// case-insensitively. Animated GIF shows the first frame — stb decodes only one.
+// Lowercase; is_media_path matches case-insensitively. An animated GIF shows its first frame,
+// since stb decodes only one.
 @(rodata)
 MEDIA_EXTS := []string{"png", "jpg", "jpeg", "gif", "bmp", "tga", "psd", "hdr", "ppm", "pgm", "pic"}
 
-// Does this path name an image the viewer handles? The extension decides the surface,
-// as grammar_for_ext does for the highlighter. GL-free + allocation-free.
+// The extension decides the surface, as grammar_for_ext does for the highlighter. GL-free and
+// allocation-free.
 is_media_path :: proc(path: string) -> bool {
     ext := strings.trim_prefix(filepath.ext(path), ".")
     if ext == "" {
@@ -46,9 +44,8 @@ is_media_path :: proc(path: string) -> bool {
     return false
 }
 
-// Where the image draws inside `pane` (the inset content area). "Contain" letterbox at
-// zoom 1 — the largest size that fits whole, centred — then scaled by zoom, shifted by
-// pan. Pure: no GL, no App.
+// A contain letterbox at zoom 1 — the largest size that fits whole, centred — then scaled by
+// zoom and shifted by pan. Pure: no GL, no App.
 media_fit_rect :: proc(pane: Rect, iw, ih: i32, zoom: f32, pan: [2]f32) -> Rect {
     if iw <= 0 || ih <= 0 || pane.w <= 0 || pane.h <= 0 || zoom <= 0 {
         return Rect{pane.x, pane.y, 0, 0}
@@ -62,20 +59,20 @@ media_fit_rect :: proc(pane: Rect, iw, ih: i32, zoom: f32, pan: [2]f32) -> Rect 
     return Rect{dx, dy, dw, dh}
 }
 
-// Zoom bounds, so a stray key can't shrink the image to a dot or blow it up forever.
+// So a stray key cannot shrink the image to a dot or blow it up forever.
 MEDIA_ZOOM_MIN :: f32(0.05)
 MEDIA_ZOOM_MAX :: f32(32)
 
-// One step of zoom, shared by the =/- keys and a wheel notch so the two can't drift apart.
+// Shared by the =/- keys and a wheel notch, so the two cannot drift.
 MEDIA_ZOOM_STEP :: f32(1.25)
 
 media_zoom :: proc(m: ^Media, factor: f32) {
     m.zoom = clampf(m.zoom * factor, MEDIA_ZOOM_MIN, MEDIA_ZOOM_MAX)
 }
 
-// Zoom about a POINT: the pixel under (mx, my) stays there (media_zoom fixes the centre — a key
-// has no point). Fitted size scales exactly with zoom, so pinning the pointer means shifting pan
-// by (r-1) times the pointer-to-centre vector; `r` is the landed zoom, so a clamped step can't drift.
+// The pixel under (mx, my) stays there; media_zoom fixes the centre, since a key has no point.
+// Fitted size scales exactly with zoom, so pinning means shifting pan by (r-1) times the
+// pointer-to-centre vector. `r` is the LANDED zoom, so a clamped step cannot drift.
 media_zoom_at :: proc(m: ^Media, factor: f32, pane: Rect, mx, my: i32) {
     before := m.zoom
     media_zoom(m, factor)
@@ -96,15 +93,15 @@ media_pan :: proc(m: ^Media, dx, dy: f32) {
     m.pan.y += dy
 }
 
-// Reset to fit-to-pane, centred (the open-state and the `0`/`f` key).
+// The open state, and the `0` / `f` key.
 media_fit :: proc(m: ^Media) {
     m.zoom = 1
     m.pan = {0, 0}
 }
 
-// Decode `path` via stb_image (forced RGBA) and upload to a GL texture. CPU pixels are freed
-// once uploaded. **Must run on the GL (main) thread** — called synchronously from open_file.
-// ok=false on a decode failure (the caller leaves the surface unchanged).
+// stb_image, forced RGBA, uploaded to a GL texture; the CPU pixels are freed once uploaded.
+// Must run on the GL thread. ok=false on a decode failure, and the caller leaves the surface
+// unchanged.
 media_load :: proc(path: string) -> (Media, bool) {
     cpath := strings.clone_to_cstring(path, context.temp_allocator)
     w, h, comp: c.int
@@ -129,9 +126,8 @@ media_load :: proc(path: string) -> (Media, bool) {
     return Media{path = strings.clone(path), tex = tex, w = i32(w), h = i32(h), zoom = 1, mtime = mtime}, true
 }
 
-// Re-decode the open image if it changed on disk (an external tool rewrote it),
-// keeping the current zoom/pan so a background change doesn't reset the view. No-op
-// when nothing is loaded or the file is unchanged/unreadable. Returns true on reload.
+// Keeps the current zoom and pan, so a background change does not reset the view. A no-op when
+// nothing is loaded or the file is unchanged.
 media_reload_if_changed :: proc(m: ^Media) -> bool {
     if m.path == "" {
         return false
@@ -140,9 +136,9 @@ media_reload_if_changed :: proc(m: ^Media) -> bool {
     if mt == m.mtime {
         return false
     }
-    nm, ok := media_load(m.path) // fresh decode + texture upload (carries the new mtime)
+    nm, ok := media_load(m.path) // carries the new mtime
     if !ok {
-        m.mtime = mt // mid-write or corrupt: adopt the stamp so we don't re-decode it every tick
+        m.mtime = mt // mid-write or corrupt: adopt the stamp, or we re-decode every tick
         return false
     }
     nm.zoom, nm.pan = m.zoom, m.pan // keep the viewer where the user left it
@@ -151,7 +147,7 @@ media_reload_if_changed :: proc(m: ^Media) -> bool {
     return true
 }
 
-// Frees the texture + owned path and zeroes the slot. Safe on an empty Media (tex 0).
+// Safe on an empty Media.
 media_destroy :: proc(m: ^Media) {
     if m.tex != 0 {
         gl.DeleteTextures(1, &m.tex)

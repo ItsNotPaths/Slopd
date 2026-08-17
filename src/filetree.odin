@@ -8,9 +8,9 @@ import "core:strings"
 import "core:time"
 import "core:unicode/utf8"
 
-// FileTree — a self-contained dired-style directory listing: read a directory, move/enter,
-// pre-format each row's fixed-width columns. **No dependency on the rest of Slopd** (no App,
-// no GL); the host wires up rendering, the unsaved-ring prefix, and what Enter does.
+// A self-contained dired-style listing: read a directory, move or enter, pre-format each row's
+// fixed-width columns. No App and no GL — the host wires up rendering, the unsaved-ring prefix
+// and what Enter does.
 
 FT_NAME_W :: 24 // name column width, in cells (padded / truncated)
 FT_SIZE_W :: 8 // size column width, right-justified
@@ -19,12 +19,12 @@ FileEntry :: struct {
     name:    string, // base name (owned)
     path:    string, // absolute path (owned)
     is_dir:  bool,
-    exec:    bool, // the owner's execute bit — a binary or a script the host can offer to RUN
-    display: string, // owned "<mode>  <name>  <size>  <mtime>"; host adds the ring prefix
+    exec:    bool, // the owner's execute bit: something the host can offer to run
+    display: string, // owned "<mode>  <name>  <size>  <mtime>"; the host adds the prefix
 }
 
-// What a paste does with what the clipboard holds: duplicate (Copy) or move (Cut). The mode is
-// decided by the chord that FILLED the clipboard, not by a separate toggle — see the block below.
+// Duplicate (Copy) or move (Cut), decided by the chord that FILLED the clipboard rather than by
+// a separate toggle.
 Clip_Mode :: enum {
     Copy,
     Cut,
@@ -34,30 +34,27 @@ FileTree :: struct {
     dir:      string, // current directory, absolute (owned)
     entries:  [dynamic]FileEntry,
     selected: int,
-    scroll:   int, // first visible row — the viewport top (see list_scroll_target)
-    hover:    int, // the entry under the pointer, or -1 — transient frame state (config_ui)
+    scroll:   int, // first visible row: the viewport top
+    hover:    int, // the entry under the pointer, or -1; transient frame state
 
     // Wheel-detached at this glfw time; 0 = following the selection. See list_scroll_apply.
     scroll_detached: f64,
 
-    // The viewport's tween toward `scroll`, in ROWS (the editor's b.scroll_anim under another
-    // name). `scroll` is where the view is going; this is where it currently IS, and the two
-    // differ for SCROLL_DUR after every move. Shared by both presentations of the pane because
-    // both scroll this one field, and only one of them is ever on screen.
+    // The tween toward `scroll`, in rows: `scroll` is where the view is going, this is where it
+    // IS, and the two differ for SCROLL_DUR after a move. Shared by both presentations, since
+    // both scroll this one field and only one is ever on screen.
     scroll_anim: Anim,
 
-    // Two sets, deliberately separate — the pane used to conflate them as one "yank set" plus a
-    // mode flag, which made "what will paste do" a question you had to reconstruct from two
-    // fields. `marks` is the MULTI-SELECTION: what a file op acts on instead of the one row under
-    // the cursor. `clip` is the CLIPBOARD: what copy/cut took, OWNED and kept across navigation
-    // (copy here, walk elsewhere, paste there), applied by `clip_mode`.
+    // Two sets, deliberately separate. `marks` is the MULTI-SELECTION: what a file op acts on
+    // instead of the row under the cursor. `clip` is the CLIPBOARD: what copy/cut took, owned
+    // and kept across navigation, applied by `clip_mode`.
     marks:     [dynamic]string,
     clip:      [dynamic]string,
     clip_mode: Clip_Mode,
 }
 
 filetree_init :: proc(ft: ^FileTree) {
-    ft.hover = -1 // nothing is hovered until a pointer event says so
+    ft.hover = -1
     cwd, err := os.get_working_directory(context.allocator)
     if err != nil {
         cwd = strings.clone(".")
@@ -75,13 +72,13 @@ filetree_destroy :: proc(ft: ^FileTree) {
     delete(ft.clip)
 }
 
-// (Re)reads dir. ".." is always the first entry (except at the filesystem root);
-// the rest are sorted directories-first, then by name.
+// ".." is always first, bar at the filesystem root; the rest sort directories-first, then by
+// name.
 filetree_load :: proc(ft: ^FileTree, dir: string) {
     filetree_clear(ft)
     ft.dir = strings.clone(dir)
     ft.selected = 0
-    ft.scroll = 0 // a new listing starts at the top; don't carry the old dir's viewport
+    ft.scroll = 0 // do not carry the old dir's viewport
 
     if f, oerr := os.open(dir); oerr == nil {
         defer os.close(f)
@@ -93,7 +90,7 @@ filetree_load :: proc(ft: ^FileTree, dir: string) {
     }
     slice.sort_by(ft.entries[:], entry_less)
 
-    parent := filepath.dir(dir) // slices into dir — not owned, never delete it
+    parent := filepath.dir(dir) // slices into dir; not owned
     if parent != dir { // not at the filesystem root
         inject_at(&ft.entries, 0, dotdot_entry(parent))
     }
@@ -113,23 +110,23 @@ filetree_selected :: proc(ft: ^FileTree) -> ^FileEntry {
     return &ft.entries[ft.selected]
 }
 
-// Enter the selected directory (no-op on a file). Right / l.
+// Right / l. A no-op on a file.
 filetree_enter :: proc(ft: ^FileTree) {
     e := filetree_selected(ft)
     if e == nil || !e.is_dir {
         return
     }
-    target := strings.clone(e.path, context.temp_allocator) // e.path is freed by reload
+    target := strings.clone(e.path, context.temp_allocator) // freed by the reload
     filetree_load(ft, target)
 }
 
-// Go to the parent directory, re-selecting the directory we came from. Left / h.
+// Left / h, re-selecting the directory we came from.
 filetree_parent :: proc(ft: ^FileTree) {
-    parent := filepath.dir(ft.dir) // slices into ft.dir — not owned
+    parent := filepath.dir(ft.dir) // slices into ft.dir; not owned
     if parent == ft.dir { // already at the filesystem root
         return
     }
-    // Clone before reloading: the reload frees ft.dir, which parent aliases.
+    // The reload frees ft.dir, which `parent` aliases.
     parent_dir := strings.clone(parent, context.temp_allocator)
     came_from := strings.clone(ft.dir, context.temp_allocator)
     filetree_load(ft, parent_dir)
@@ -141,27 +138,25 @@ filetree_parent :: proc(ft: ^FileTree) {
     }
 }
 
-// Activate the selection: descend into a directory (reloading) or report a file
-// path to open. Returns ("", false) when it entered a directory.
+// Descend into a directory, or report a file path to open. ("", false) when it descended.
 filetree_activate :: proc(ft: ^FileTree) -> (path: string, is_file: bool) {
     e := filetree_selected(ft)
     if e == nil {
         return "", false
     }
     if e.is_dir {
-        target := strings.clone(e.path, context.temp_allocator) // e.path is freed by reload
+        target := strings.clone(e.path, context.temp_allocator) // freed by the reload
         filetree_load(ft, target)
         return "", false
     }
     return e.path, true
 }
 
-// --- marks, clipboard + file operations --- Marking is toggle-on-toggle-off and says WHAT an op
-// acts on; copy/cut fill the clipboard from that (or from the row under the cursor) and say what
-// paste will DO. filetree_targets reports what the host should delete. Every op that changes the
-// directory reloads the listing, keeping the cursor row where it can.
+// --- marks, clipboard and file operations --- Marking says WHAT an op acts on; copy/cut fill
+// the clipboard from that, or from the row under the cursor, and say what paste will DO. Every
+// op that changes the directory reloads the listing, keeping the cursor row where it can.
 
-// Toggle the highlighted entry in/out of the marked set. ".." is never marked.
+// ".." is never marked.
 filetree_mark_toggle :: proc(ft: ^FileTree) {
     e := filetree_selected(ft)
     if e == nil || e.name == ".." {
@@ -177,8 +172,7 @@ filetree_mark_toggle :: proc(ft: ^FileTree) {
     append(&ft.marks, strings.clone(e.path))
 }
 
-// Add the highlighted entry to the marked set if absent (idempotent — unlike the toggle).
-// ".." is never marked. Used by the sweep so re-crossing a row never un-marks it.
+// Idempotent, unlike the toggle, so the sweep re-crossing a row never un-marks it.
 filetree_mark_add :: proc(ft: ^FileTree) {
     e := filetree_selected(ft)
     if e == nil || e.name == ".." || filetree_marked(ft, e.path) {
@@ -187,15 +181,14 @@ filetree_mark_add :: proc(ft: ^FileTree) {
     append(&ft.marks, strings.clone(e.path))
 }
 
-// Sweep-mark: mark the current row, step the cursor, mark the row it lands on. Holding
-// Shift while pressing Up/Down thus paints a contiguous marked run as the cursor moves.
+// Mark the current row, step, mark the row it lands on — so Shift+Up/Down paints a run.
 filetree_mark_sweep :: proc(ft: ^FileTree, delta: int) {
     filetree_mark_add(ft)
     filetree_move(ft, delta)
     filetree_mark_add(ft)
 }
 
-// Clear the whole marked set (the "unmark" chord).
+// The "unmark" chord.
 filetree_marks_reset :: proc(ft: ^FileTree) {
     for p in ft.marks {
         delete(p)
@@ -219,10 +212,9 @@ filetree_clip_clear :: proc(ft: ^FileTree) {
     clear(&ft.clip)
 }
 
-// Copy / cut: fill the clipboard from the marked set, or from the row under the cursor when
-// nothing is marked, and record which the paste will be. The paths are OWNED, because the
-// listing they came from is freed by the next navigation and the clipboard outlives it.
-// An empty take (".." alone, an empty listing) leaves the previous clipboard intact.
+// From the marked set, or the row under the cursor when nothing is marked, recording which the
+// paste will be. The paths are OWNED: the listing they came from is freed by the next
+// navigation. An empty take leaves the previous clipboard intact.
 filetree_clip_take :: proc(ft: ^FileTree, mode: Clip_Mode) {
     src := filetree_targets(ft, len(ft.marks) > 0, context.temp_allocator)
     if len(src) == 0 {
@@ -235,9 +227,8 @@ filetree_clip_take :: proc(ft: ^FileTree, mode: Clip_Mode) {
     ft.clip_mode = mode
 }
 
-// Stage ONE named path, for the caller that says what to act on instead of pointing at it — the
-// context menu opened on a path-bar segment or a places row, which name directories the listing
-// need not contain and the cursor is not on.
+// For the caller that NAMES what to act on rather than pointing at it: the context menu opened
+// on a path-bar segment or a places row.
 filetree_clip_one :: proc(ft: ^FileTree, path: string, mode: Clip_Mode) {
     if path == "" {
         return
@@ -247,10 +238,9 @@ filetree_clip_one :: proc(ft: ^FileTree, path: string, mode: Clip_Mode) {
     ft.clip_mode = mode
 }
 
-// Paste the clipboard into the current dir: Copy duplicates, Cut moves. Each destination name is
-// made unique so an existing file is never clobbered. A CUT is spent by its paste — the sources
-// are gone, so the clipboard and any marks naming them would dangle; a COPY stays, so the same
-// set can be pasted into several directories.
+// Copy duplicates, Cut moves. Each destination name is made unique, so nothing is clobbered. A
+// cut is SPENT by its paste, since the sources are gone; a copy stays, so the same set can go
+// into several directories.
 filetree_paste :: proc(ft: ^FileTree) {
     if len(ft.clip) == 0 {
         return
@@ -258,8 +248,8 @@ filetree_paste :: proc(ft: ^FileTree) {
     for src in ft.clip {
         dst := fs_unique_dest(ft.dir, filepath.base(src)) // base slices src; used at once
         if ft.clip_mode == .Cut {
-            // rename is an atomic move on one filesystem; fall back to copy+remove
-            // across devices (EXDEV), where rename can't relink the inode.
+            // An atomic move on one filesystem; across devices (EXDEV) rename cannot relink
+            // the inode, so fall back to copy + remove.
             if os.rename(src, dst) != nil && fs_copy_path(src, dst) {
                 fs_remove_path(src)
             }
@@ -274,9 +264,9 @@ filetree_paste :: proc(ft: ^FileTree) {
     filetree_reload(ft)
 }
 
-// The paths a file op acts on: the whole marked set, or just the highlighted entry (".."
-// excluded). The strings are **BORROWED from the tree** — use them before the next reload frees
-// them. The host turns these into a staged `rm -rf` line, not a delete behind a modal prompt.
+// The whole marked set, or the highlighted entry, with ".." excluded. The strings are BORROWED
+// from the tree, so use them before the next reload. The host turns these into a staged
+// `rm -rf` line, not a delete behind a modal prompt.
 filetree_targets :: proc(ft: ^FileTree, marked: bool, alloc := context.allocator) -> []string {
     if marked {
         return slice.clone(ft.marks[:], alloc)
@@ -290,8 +280,8 @@ filetree_targets :: proc(ft: ^FileTree, marked: bool, alloc := context.allocator
     return out
 }
 
-// Re-read the current dir, keeping the cursor near where it was (filetree_load resets it to 0).
-// ft.dir is freed by the load, so clone before handing it back in.
+// Keeps the cursor near where it was, which filetree_load would reset. ft.dir is freed by the
+// load, so clone before handing it back.
 filetree_reload :: proc(ft: ^FileTree) {
     if ft.dir == "" {
         return
@@ -304,15 +294,14 @@ filetree_reload :: proc(ft: ^FileTree) {
 
 // --- internals ---
 
-// A destination under `dir` for base name `name` that does not already exist: the bare name if
-// free, else "<stem>_copy<ext>", "_copy2", ... so a paste never overwrites.
+// The bare name if free, else "<stem>_copy<ext>", "_copy2", … so a paste never overwrites.
 @(private = "file")
 fs_unique_dest :: proc(dir, name: string) -> string {
     base := filepath.join({dir, name}, context.temp_allocator) or_else ""
     if !os.exists(base) {
         return base
     }
-    ext := filepath.ext(name) // includes the dot, or "" if none
+    ext := filepath.ext(name) // includes the dot, or "" 
     stem := name[:len(name) - len(ext)]
     for i in 1 ..< 10000 {
         suffix := i == 1 ? "_copy" : fmt.tprintf("_copy%d", i)
@@ -324,12 +313,11 @@ fs_unique_dest :: proc(dir, name: string) -> string {
     return base
 }
 
-// Recursively copy a file or directory tree src -> dst. Returns false if any leaf
-// failed (best-effort: a partial tree may remain).
+// False if any leaf failed. Best-effort: a partial tree may remain.
 @(private = "file")
 fs_copy_path :: proc(src, dst: string) -> bool {
     if os.is_dir(src) {
-        os.make_directory(dst) // ignore "already exists" — fs_unique_dest kept it fresh
+        os.make_directory(dst) // "already exists" is fine; fs_unique_dest kept it fresh
         ok := true
         if f, oerr := os.open(src); oerr == nil {
             defer os.close(f)
@@ -353,9 +341,8 @@ fs_copy_path :: proc(src, dst: string) -> bool {
     return os.write_entire_file(dst, data) == nil
 }
 
-// Recursively remove a file or directory tree; a directory is emptied first (os.remove is rmdir
-// on a dir) with its handle closed before the rmdir. **Only the cross-device Cut path uses this**
-// — a user-facing delete is a staged `rm -rf`, so nothing here deletes behind the user's back.
+// A directory is emptied first, with its handle closed before the rmdir. Only the cross-device
+// Cut path uses this: a user-facing delete is a staged `rm -rf`.
 @(private = "file")
 fs_remove_path :: proc(path: string) -> bool {
     if os.is_dir(path) {
@@ -394,9 +381,9 @@ entry_less :: proc(a, b: FileEntry) -> bool {
 @(private = "file")
 entry_from :: proc(dir: string, fi: os.File_Info) -> FileEntry {
     path := filepath.join({dir, fi.name}) or_else strings.clone(fi.name)
-    // A symlink to a directory navigates and tints like one, so stat follows the link (broken
-    // links fall back to non-dir); the mode column still shows 'l'. The exec bit comes from the
-    // same stat — a symlink's own mode is always rwx, so only the TARGET's bit is meaningful.
+    // A symlink to a directory navigates and tints like one, so stat follows the link; the mode
+    // column still shows 'l'. The exec bit comes from the same stat, since a symlink's own mode
+    // is always rwx.
     is_dir := fi.type == .Directory
     exec := .Execute_User in fi.mode
     if fi.type == .Symlink {
@@ -426,7 +413,7 @@ entry_from :: proc(dir: string, fi: os.File_Info) -> FileEntry {
 dotdot_entry :: proc(parent: string) -> FileEntry {
     e := FileEntry {
         name   = strings.clone(".."),
-        path   = strings.clone(parent), // parent is a slice; own a copy
+        path   = strings.clone(parent), // parent is a slice
         is_dir = true,
     }
     mbuf: [10]u8

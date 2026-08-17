@@ -6,9 +6,8 @@ import "core:path/filepath"
 import "core:testing"
 import "vendor:glfw"
 
-// The file browser's model: history, the path bar's segments, and the grid arithmetic. All of
-// it is host-independent (no App, no Clay, no GL) for filetree.odin's reason — the listing and
-// the presentation are separable, and this is the half that can be exercised without a window.
+// History, the path bar's segments, and the grid arithmetic — all host-independent for
+// filetree.odin's reason, so it exercises without a window.
 
 @(private = "file")
 tmpdir :: proc(name: string) -> string {
@@ -19,9 +18,9 @@ tmpdir :: proc(name: string) -> string {
     return filepath.join({base, name}, context.temp_allocator) or_else ""
 }
 
-// The path bar is a row of buttons, so the path has to become a list of (name, where it goes).
-// The root is always the first, and every segment's path is a PREFIX of the one being browsed —
-// which is what makes clicking one an ordinary navigation rather than a special case.
+// The path becomes a list of (name, where it goes). The root is always first, and every
+// segment's path is a PREFIX of the one being browsed, which makes clicking one an ordinary
+// navigation.
 @(test)
 test_filebrowser_segments :: proc(t: ^testing.T) {
     segs := app.filebrowser_segments("/home/paths/src")
@@ -33,8 +32,7 @@ test_filebrowser_segments :: proc(t: ^testing.T) {
     testing.expect_value(t, segs[3].name, "src")
     testing.expect_value(t, segs[3].path, "/home/paths/src")
 
-    // The root on its own is one segment, not two — a trailing empty name would be a button
-    // that goes nowhere.
+    // The root alone is one segment: a trailing empty name would be a button going nowhere.
     root := app.filebrowser_segments("/")
     testing.expect_value(t, len(root), 1)
     testing.expect_value(t, root[0].path, "/")
@@ -45,9 +43,8 @@ test_filebrowser_segments :: proc(t: ^testing.T) {
     testing.expect_value(t, trail[2].name, "paths")
 }
 
-// Elision: a path wider than the bar drops segments from the LEFT, because the directory you
-// are in matters more than the root you came from. The last segment always survives, however
-// narrow the pane — a path bar showing nothing is worse than one showing a truncated path.
+// A path wider than the bar drops segments from the LEFT, since the directory you are in matters
+// more than the root you came from. The last segment always survives.
 @(test)
 test_filebrowser_seg_first :: proc(t: ^testing.T) {
     segs := app.filebrowser_segments("/home/paths/projects/slopd")
@@ -56,21 +53,19 @@ test_filebrowser_seg_first :: proc(t: ^testing.T) {
     // Wide enough for everything: nothing is dropped.
     testing.expect_value(t, app.filebrowser_seg_first(segs, 100), 0)
 
-    // Each segment costs its runes plus one cell of separator: "slopd" is 6, "projects" 9,
-    // "paths" 6, "home" 5, "/" 2. So 21 cells is exactly the last three, and one fewer drops
-    // another — the boundary either side, so this is a boundary rather than a number.
+    // Each segment costs its runes plus one cell of separator, so 21 cells is exactly the last
+    // three and one fewer drops another. The boundary either side, so it is a boundary.
     testing.expect_value(t, app.filebrowser_seg_first(segs, 21), 2)
     testing.expect_value(t, app.filebrowser_seg_first(segs, 20), 3)
 
-    // Narrower than the last segment alone still shows the last segment.
+    // Narrower than the last segment still shows the last segment.
     testing.expect_value(t, app.filebrowser_seg_first(segs, 1), 4)
     testing.expect_value(t, app.filebrowser_seg_first(segs, 0), 4)
 
     testing.expect_value(t, app.filebrowser_seg_first(nil, 10), 0)
 }
 
-// What a typed line means: `~`, an absolute path, or one relative to where you are — the same
-// three cases the `cd` builtin takes, because the line is the pointer's way of typing one.
+// `~`, an absolute path, or one relative to where you are: the same three cases `:cd` takes.
 @(test)
 test_filebrowser_path_resolve :: proc(t: ^testing.T) {
     testing.expect_value(t, app.filebrowser_path_resolve("/home/me", "/etc/ssl"), "/etc/ssl")
@@ -78,7 +73,7 @@ test_filebrowser_path_resolve :: proc(t: ^testing.T) {
     testing.expect_value(t, app.filebrowser_path_resolve("/home/me/src", ".."), "/home/me")
     testing.expect_value(t, app.filebrowser_path_resolve("/home/me", "  /etc  "), "/etc") // trimmed
 
-    // An empty line is HOME, not the empty path — the same answer a bare `cd` gives.
+    // An empty line is HOME, not the empty path: a bare `:cd`'s answer.
     home := os.get_env("HOME", context.temp_allocator)
     if home != "" {
         testing.expect_value(t, app.filebrowser_path_resolve("/home/me", ""), home)
@@ -86,21 +81,19 @@ test_filebrowser_path_resolve :: proc(t: ^testing.T) {
     }
 }
 
-// The grid's arithmetic, and the reason `ft.scroll` can mean "first visible row" under both
-// presentations: a row is an entry in List and a row of tiles in Grid, and the anchor the
-// viewport follows is derived rather than stored.
+// The reason `ft.scroll` can mean "first visible row" under both presentations: a row is an
+// entry in List and a row of tiles in Grid, and the anchor is derived rather than stored.
 @(test)
 test_filebrowser_grid :: proc(t: ^testing.T) {
     testing.expect_value(t, app.filebrowser_grid_cols(300, 100), 3)
     testing.expect_value(t, app.filebrowser_grid_cols(299, 100), 2)
 
-    // Never zero: below one tile's width the grid is a single clipped column, which is what
-    // the clip group is for — a zero here would divide by it.
+    // Never zero: below one tile's width the grid is a single clipped column.
     testing.expect_value(t, app.filebrowser_grid_cols(40, 100), 1)
     testing.expect_value(t, app.filebrowser_grid_cols(0, 100), 1)
     testing.expect_value(t, app.filebrowser_grid_cols(300, 0), 1)
 
-    // Rows round UP: a part-full last row is still a row you can scroll to.
+    // Rows round up: a part-full last row is still one you can scroll to.
     testing.expect_value(t, app.filebrowser_grid_rows(9, 3), 3)
     testing.expect_value(t, app.filebrowser_grid_rows(10, 3), 4)
     testing.expect_value(t, app.filebrowser_grid_rows(0, 3), 0)
@@ -111,8 +104,8 @@ test_filebrowser_grid :: proc(t: ^testing.T) {
     testing.expect_value(t, app.filebrowser_anchor(&ft, .Grid, 3), 2) // its tile row
 }
 
-// A tile's name is cut in RUNES with a '~' marking the cut, like the listing's name column —
-// bytes would truncate a two-byte character mid-sequence and draw a replacement glyph.
+// Cut in RUNES with a '~' marking the cut: bytes would truncate a two-byte character
+// mid-sequence and draw a replacement glyph.
 @(test)
 test_filebrowser_elide :: proc(t: ^testing.T) {
     testing.expect_value(t, app.filebrowser_elide("short", 10), "short")
@@ -122,8 +115,8 @@ test_filebrowser_elide :: proc(t: ^testing.T) {
     testing.expect_value(t, app.filebrowser_elide("anything", 0), "")
 }
 
-// Back and forward, over a real directory tree because a navigation reloads the listing. The
-// rule that makes forward mean anything: arriving anywhere by any other route drops it.
+// Over a real directory tree, because a navigation reloads the listing. The rule that makes
+// forward mean anything: arriving by any other route drops it.
 @(test)
 test_filebrowser_history :: proc(t: ^testing.T) {
     dir := tmpdir("slopd_fb_hist")
@@ -160,24 +153,23 @@ test_filebrowser_history :: proc(t: ^testing.T) {
     testing.expect_value(t, ft.dir, a_dir)
     testing.expect(t, !app.filebrowser_can_forward(&br))
 
-    // Back, then somewhere else: the branch we came back from is gone, since [▶] must never
-    // point at a path the user has left.
+    // Back, then elsewhere: the branch we came back from is gone.
     app.filebrowser_back(&br, &ft)
     testing.expect(t, app.filebrowser_can_forward(&br))
     app.filebrowser_navigate(&br, &ft, b_dir)
     testing.expect_value(t, ft.dir, b_dir)
     testing.expect(t, !app.filebrowser_can_forward(&br), "a fresh navigation must clear the forward stack")
 
-    // Navigating to where you already are is not a history entry — otherwise clicking the last
-    // path-bar segment (which is the current directory) would stack duplicates.
+    // Navigating to where you already are is not a history entry, or clicking the last
+    // path-bar segment would stack duplicates.
     before := app.filebrowser_can_back(&br)
     app.filebrowser_navigate(&br, &ft, b_dir)
     testing.expect_value(t, app.filebrowser_can_back(&br), before)
     testing.expect_value(t, ft.dir, b_dir)
 }
 
-// Places are a set of destinations: adding one twice is not two rows, and the index is what the
-// menu asks to decide whether it offers "add" or "remove". The persistence is config_test's.
+// A set of destinations: adding one twice is not two rows, and the index is what the menu asks
+// to decide between "add" and "remove". The persistence is config_test's.
 @(test)
 test_filebrowser_places :: proc(t: ^testing.T) {
     path := "/tmp/slopd_fb_places.config"
@@ -203,9 +195,8 @@ test_filebrowser_places :: proc(t: ^testing.T) {
     testing.expect_value(t, len(br.places), 0)
     testing.expect(t, !app.filebrowser_place_remove(&br, 0), "removing off the end must not underflow")
 
-    // First run, or a deleted block: the defaults are HOME, whichever standard folders under it
-    // actually exist, and the root. Nothing is invented — a shortcut to a directory that is not
-    // there is worse than a shorter sidebar — so only the two certain rows are asserted.
+    // First run, or a deleted block: HOME, whichever standard folders under it exist, and the
+    // root. Nothing is invented, so only the two certain rows are asserted.
     def := app.filebrowser_default_places(context.allocator)
     defer {
         for p in def {
@@ -227,10 +218,9 @@ test_filebrowser_places :: proc(t: ^testing.T) {
     testing.expect_value(t, home, os.get_env("HOME", context.temp_allocator) != "")
 }
 
-// **One chord table, two presentations.** The file ops are Surface binds and BOTH faces are the
+// One chord table, two presentations. The file ops are Surface binds and both faces are the
 // Surface context, so this asserts the claim `file_pane` rests on: the browser changes what the
-// arrows and the top bar do, and nothing about what `^c` does. Driven through `action_run`, the
-// one seam a key, a click and a menu item all reach — nothing here calls a key handler.
+// arrows and the top bar do, and nothing about `^c`. Driven through action_run.
 @(test)
 test_filetree_ops_chords :: proc(t: ^testing.T) {
     dir := tmpdir("slopd_fb_chords")
@@ -245,7 +235,7 @@ test_filetree_ops_chords :: proc(t: ^testing.T) {
     testing.expect(t, os.write_entire_file(filepath.join({dir, "a.txt"}, context.temp_allocator) or_else "", transmute([]byte)string("hi")) == nil)
 
     a: app.App
-    a.focus = .Aux // the file pane has the keys; without this every op below is a no-op
+    a.focus = .Aux // the file pane has the keys; without it every op below is a no-op
     app.filetree_load(&a.tree, dir)
     defer app.filetree_destroy(&a.tree)
     for e, i in a.tree.entries {
@@ -257,28 +247,28 @@ test_filetree_ops_chords :: proc(t: ^testing.T) {
         return app.action_run(a, act, 0, false, false)
     }
 
-    // ^y marks, ^u clears — marking is now only ever "what does an op act on".
+    // ^y marks, ^u clears: marking is only ever "what does an op act on".
     testing.expect(t, run(&a, .File_Mark))
     testing.expect_value(t, len(a.tree.marks), 1)
     testing.expect(t, run(&a, .File_Marks_Clear))
     testing.expect_value(t, len(a.tree.marks), 0)
 
     // ^c fills the clipboard from the row under the cursor when nothing is marked, and says
-    // what the paste will be. There is no mode left to leave set from an hour ago.
+    // what the paste will be.
     testing.expect(t, run(&a, .Clip_Copy))
     testing.expect_value(t, len(a.tree.clip), 1)
     testing.expect_value(t, a.tree.clip_mode, app.Clip_Mode.Copy)
     testing.expect(t, run(&a, .Clip_Cut))
     testing.expect_value(t, a.tree.clip_mode, app.Clip_Mode.Cut)
 
-    // ^v pastes. A copy survives its paste, so the same set can go into several directories.
+    // A copy survives its paste, so the same set can go into several directories.
     testing.expect(t, run(&a, .Clip_Copy))
     testing.expect(t, run(&a, .Clip_Paste))
     testing.expect(t, os.exists(filepath.join({dir, "a_copy.txt"}, context.temp_allocator) or_else ""))
     testing.expect_value(t, len(a.tree.clip), 1)
 
-    // A file op DECLINES when the file pane is not the one with the keys, rather than acting on
-    // a listing you cannot see. That guard is what lets ^y be Redo in the editor and Mark here.
+    // A file op declines when the file pane does not have the keys, which is what lets ^y be
+    // Redo in the editor and Mark here.
     a.focus = .Editor
     testing.expect(t, !run(&a, .File_Mark), "^y in the editor must not reach the listing")
     testing.expect_value(t, len(a.tree.marks), 0)

@@ -6,30 +6,24 @@ import "core:path/filepath"
 import "core:strings"
 import clay "../bindings/clay"
 
-// The status strip: one row along the bottom of the window showing one of two things:
-//
+// One row along the bottom, showing one of two things:
 //   the command line while it is open — a prompt, an editable line, a ghosted hint
-//   the modeline     otherwise — file, project root, language / caret / line count
+//   the modeline otherwise — file, project root, language / caret / line count
 //
-// **A disk conflict has no line of its own down here.** The file changing on disk under unsaved
-// edits stages `:reload ` in the COMMAND LINE (view_refresh), because that is where its answer
-// is typed — a second prompt telling you to type the line already sitting in front of you is
-// one banner too many. What the modeline carries is the state: the name's `*` becomes a `!`.
+// A disk conflict has no line of its own here: it stages `:reload ` in the command line, where
+// its answer is typed. The modeline carries only the state — the name's `*` becomes a `!`.
 //
-// The strip has no hit test and no click verb: nothing in it is clickable, and the obvious
-// candidate — click-to-caret — is a question about one-line TEXT FIELDS, not about the strip.
+// No hit test and no click verb: nothing in the strip is clickable.
 //
-// **The modeline is three anchored labels, not a row.** Three grown thirds stop being thirds
-// the moment one label outgrows its share, and the root would drift off centre as the file
-// name changed — so each is a floating child on its own corner of the strip. `clipTo =
-// .AttachedParent` keeps them in the strip's scissor, which a floating child does NOT get by
-// default: it is hoisted to the root's floating list and would paint over the panes.
+// The modeline is three anchored labels, not a row: three grown thirds stop being thirds the
+// moment one outgrows its share, and the root would drift off centre as the file name changed.
+// `clipTo = .AttachedParent` keeps them in the strip's scissor, which a floating child does not
+// get by default — it is hoisted to the root's floating list and would paint over the panes.
 
-// The strip's left/right margin in logical pixels, shared by all three of its modes.
+// Logical pixels, shared by both modes.
 STRIP_PAD :: 8
 
-// Which of the two things the strip is showing. Pure, and kept as a named decision because two
-// of the strip's phases ask it — the ring and the declaration.
+// Named because two phases ask it: the ring and the declaration.
 Strip_Mode :: enum {
     Status,
     Command,
@@ -39,16 +33,14 @@ strip_mode :: proc(a: ^App) -> Strip_Mode {
     return a.cl_active ? .Command : .Status
 }
 
-// The strip's geometry: the region itself and the margin, in the units Clay wants them. No
-// inset — the strip has no focus ring, since it is never a pane you can focus. It exists for
-// the pane geoms' reason: every phase sizes itself from one call.
+// The region and the margin, in Clay's units. No inset: the strip has no focus ring, being
+// nothing you can focus.
 strip_geom :: proc(strip: Rect, scale: f32) -> (area: Rect, pad: u16) {
     return strip, u16(max(0.0, STRIP_PAD * scale))
 }
 
-// A label pinned to one corner of the strip, out of the flow — see the header for why the
-// modeline is three of these rather than a row. The offset is the margin: a floating child
-// attaches to its parent's BOX, not its content box, so the parent's padding does not reach it.
+// Pinned to one corner, out of the flow — see the header. The offset is the margin: a floating
+// child attaches to its parent's BOX, not its content box, so the padding does not reach it.
 @(private = "file")
 strip_slot :: proc(at: clay.FloatingAttachPointType, dx: f32) -> clay.ElementDeclaration {
     return {
@@ -63,17 +55,14 @@ strip_slot :: proc(at: clay.FloatingAttachPointType, dx: f32) -> clay.ElementDec
     }
 }
 
-// What the command line's Custom needs to paint itself: the one-line Doc and the frame's
-// timestamp, for the caret blink. Handed to the bridge as `customData`, so it lives in the
-// frame's temp arena and outlives EndLayout.
+// The one-line Doc and the frame's timestamp, for the blink. Lives in the frame's temp arena.
 Strip_Edit :: struct {
     doc: ^Doc,
     now: f64,
 }
 
-// The editable half of the command line: the typed runes, a selection span per cursor, and a
-// caret per cursor. A caret is an OVER-quad (text.odin) and must land above the glyphs, which a
-// Clay Rectangle cannot do — the bridge maps those to `fill`, which paints under the text.
+// The typed runes, a selection span per cursor and a caret per cursor. A caret is an over-quad
+// and must land above the glyphs, which a Clay Rectangle cannot do.
 strip_paint_cl :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
     e := (^Strip_Edit)(user)
     if e == nil || e.doc == nil || doc_line_count(e.doc) == 0 {
@@ -86,7 +75,7 @@ strip_paint_cl :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user
     ty := f32(r.y) + (f32(r.h) - lh) / 2
     y := i32(ty) // selection and caret share the glyph cell's top
 
-    cells := doc_cells(e.doc, 0) // the command line is one line; bytes -> the cell grid
+    cells := doc_cells(e.doc, 0) // one line; bytes -> the cell grid
     for c in e.doc.cursors {
         if cursor_has_selection(c) {
             lo, hi := cursor_range(c)
@@ -102,22 +91,20 @@ strip_paint_cl :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user
             caret(t, Rect{i32(cx), y, i32(2 * a.scale), i32(lh)}, th.fg)
         }
     }
-    // The painter owns its region and ends with its own flush (the ClayCustom contract);
-    // `clip` arrives already intersected with the box, so this is the whole obligation.
+    // The ClayCustom contract: the painter ends with its own flush.
     flush_pane(t, clip, win_w, win_h)
 }
 
 // Declare the strip into the window's tree. Reads App, writes only Clay — no mutation, no GL.
 //
-// The tree is:
-//   st_pane   the strip itself, floating at its rect, clipping its own content, and the ONE
-//             element in the file that paints a background — there is no panel() down here
+//   st_pane   the strip, floating at its rect, clipping its content, and the one element here
+//             that paints a background — there is no panel() down here
 //     .Command   st_prompt  the "> ", muted
-//                st_edit    the typed line, as a Custom — runes, selection spans, carets
+//                st_edit    the typed line, as a Custom — runes, selections, carets
 //                st_hint    the ghosted argument hint, one cell past the text
-//                (a border on st_pane while an injected line is still pristine)
-//     .Status    st_left    the modified marker (`!` on a disk conflict) + file name, pinned left
-//                st_root    the project root, pinned to the strip's centre
+//                (plus a border on st_pane while an injected line is still pristine)
+//     .Status    st_left    the modified marker and file name, pinned left
+//                st_root    the project root, centred
 //                st_right   language / caret / line count / cursors / scroll, pinned right
 strip_declare :: proc(a: ^App, f: ^Font, strip: Rect, now: f64 = 0) {
     th := &a.theme
@@ -129,9 +116,8 @@ strip_declare :: proc(a: ^App, f: ^Font, strip: Rect, now: f64 = 0) {
     lh := i32(f.line_height)
     mode := strip_mode(a)
 
-    // The strip is rung in the alert colour when it holds something that wants an answer: an
-    // injected command line the user has not touched yet (the staged `:reload ` among them).
-    // Any edit bumps doc.version past the mark and the ring clears itself — no per-edit hook.
+    // Rung in the alert colour when it holds an untouched injected line. Any edit bumps
+    // doc.version past the mark and the ring clears itself.
     ring := mode == .Command && a.cl.injected && a.cl.doc.version == a.cl.inject_ver
     bw := u16(2 * a.scale)
 
@@ -154,15 +140,14 @@ strip_declare :: proc(a: ^App, f: ^Font, strip: Rect, now: f64 = 0) {
     }
 }
 
-// The command line: prompt, field, hint, left to right and touching. The field is sized to the
-// typed text PLUS ONE CELL — that cell is the caret column (a caret sits at col == len(text)
-// when typing at the end), and it is also where the hint starts, so the hint follows with no gap.
+// Prompt, field, hint, left to right and touching. The field is the typed text plus one cell:
+// the caret column, which is also where the hint starts.
 @(private = "file")
 strip_declare_command :: proc(a: ^App, cw: f32, lh: i32, now: f64) {
     PROMPT :: "> "
     th := &a.theme
     if doc_line_count(&a.cl.doc) == 0 {
-        return // a command line that was never cl_init'd has no line to show
+        return // never cl_init'd, so there is no line to show
     }
     text := string(doc_line(&a.cl.doc, 0))
     ncells := cells_count(doc_cells(&a.cl.doc, 0))
@@ -182,8 +167,7 @@ strip_declare_command :: proc(a: ^App, cw: f32, lh: i32, now: f64) {
         },
     ) {}
 
-    // Ghosted per-builtin argument hint (e.g. `:reload` -> "(y/n)"), until an argument is
-    // entered. cl_ghost_hint is the extensible registry and stays where it is.
+    // e.g. `:reload` -> "(y/n)", until an argument is entered.
     if hint := cl_ghost_hint(a, text); hint != "" {
         if clay.UI(clay.ID("st_hint"))({layout = {childAlignment = {y = .Center}}}) {
             clay.Text(hint, clay_text_config(th.muted, lh))
@@ -191,16 +175,14 @@ strip_declare_command :: proc(a: ^App, cw: f32, lh: i32, now: f64) {
     }
 }
 
-// The idle modeline: an emacs-style readout of the document pane. Three anchored labels — see
-// the header for why. The right-hand readout is one string rather than several elements: it is
-// one thing in one colour, and "   " already says what four elements and three gaps would.
+// An emacs-style readout of the document pane, as three anchored labels. The right-hand one is
+// a single string: it is one thing in one colour, and "   " says what three gaps would.
 @(private = "file")
 strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
     th := &a.theme
     dx := f32(pad)
 
-    // No editor on screen (Full on the aux surface): just name the aux pane there. The root
-    // and the right-hand readout are about a document, and there is no document up.
+    // No editor on screen: name the aux pane. The rest is about a document, and there is none.
     if !panes_visible(a).editor {
         if clay.UI(clay.ID("st_left"))(strip_slot(.LeftCenter, dx)) {
             clay.Text(aux_mode_name(a.aux_mode), clay_text_config(th.muted, lh))
@@ -211,8 +193,7 @@ strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
     left, right: string
     left_col: [3]f32
     if a.main == .Image {
-        // The main pane shows media, not a buffer, so the modeline reports the image: name,
-        // pixel dimensions, zoom%. Nothing here has a line:col to report.
+        // Media, not a buffer: name, pixel dimensions, zoom. Nothing here has a line:col.
         m := &a.media
         left = fmt.tprintf("  %s", m.path == "" ? "(no image)" : filepath.base(m.path))
         left_col = th.muted
@@ -220,10 +201,8 @@ strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
     } else {
         b := editor_current(&a.editor)
         name := b.path == "" ? "untitled" : filepath.base(b.path)
-        // One marker column, three states: clean, `*` unsaved, `!` unsaved AND the file changed
-        // under them. `!` is the whole report of a pending conflict now that the strip has no
-        // line for it, so it takes the alert colour — the answer is `:reload y` / `:reload n`,
-        // or a `:w` to make this version the disk one.
+        // One column, three states: clean, `*` unsaved, `!` unsaved and changed on disk. `!`
+        // is the whole report of a pending conflict, so it takes the alert colour.
         mark := b.conflict ? "!" : b.dirty ? "*" : " "
         left = fmt.tprintf("%s %s", mark, name) // a dirty buffer reads brighter
         left_col = b.conflict ? th.urgent : b.dirty ? th.fg : th.muted
@@ -244,8 +223,8 @@ strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
         clay.Text(right, clay_text_config(th.muted, lh))
     }
 
-    // Centre: the project root (~-abbreviated), so the `cd`-captured root the tools and `tu`
-    // use is visible whenever the command line is not.
+    // The project root, so the root the tools and `:tu` use is visible whenever the command
+    // line is not.
     if root := home_abbrev(a.project_root, context.temp_allocator); root != "" {
         if clay.UI(clay.ID("st_root"))(strip_slot(.CenterCenter, 0)) {
             clay.Text(root, clay_text_config(th.muted, lh))
@@ -262,16 +241,13 @@ strip_layout :: proc(a: ^App, f: ^Font, strip: Rect, win_w, win_h: i32, now: f64
     return clay.EndLayout(0)
 }
 
-// The strip's per-frame entry point. Shorter than any pane's, because a surface with no list,
-// no viewport and no click has nothing to do before it declares itself — the template's first
-// three phases are all about resolving a pointer against rows, and there are none here.
+// Shorter than any pane's: with no list, no viewport and no click there is nothing to do
+// before declaring.
 strip_frame :: proc(t: ^Text, a: ^App, strip: Rect, now: f64) {
     strip_declare(a, &t.font, strip, now)
 }
 
-// Abbreviate a leading $HOME to ~ for display (e.g. /home/me/src -> ~/src). Returns a borrowed
-// slice of `path` when nothing changes, else a fresh string in `alloc`. Package-level: the
-// Config pane's install row shows paths the same way (install_state_text).
+// /home/me/src -> ~/src. Borrows `path` when nothing changes, else a fresh string in `alloc`.
 home_abbrev :: proc(path: string, alloc := context.allocator) -> string {
     home := os.get_env("HOME", context.temp_allocator)
     if home != "" && strings.has_prefix(path, home) {
@@ -280,8 +256,7 @@ home_abbrev :: proc(path: string, alloc := context.allocator) -> string {
     return path
 }
 
-// Modeline language label: the registry's name for the file's extension, else the bare
-// extension, else "text" (unnamed / extension-less buffers).
+// The registry's name for the extension, else the bare extension, else "text".
 @(private = "file")
 status_lang :: proc(a: ^App, path: string) -> string {
     ext := strings.trim_prefix(filepath.ext(path), ".")
@@ -294,8 +269,7 @@ status_lang :: proc(a: ^App, path: string) -> string {
     return ext
 }
 
-// Emacs-style scroll indicator from the caret line: Top / Bot / All, else percent through the
-// buffer.
+// Emacs-style: Top / Bot / All, else percent through the buffer.
 @(private = "file")
 scroll_label :: proc(line, nlines: int) -> string {
     if nlines <= 1 {

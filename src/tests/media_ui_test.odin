@@ -4,20 +4,16 @@ import app ".."
 import clay "../../bindings/clay"
 import "core:testing"
 
-// C8d's media surface — the last thing in the program that was painted by hand, now declared
-// like everything else. Two claims, and the first one is the checkpoint's:
+// The media surface, the last thing in the program painted by hand. Two claims:
 //
-//   1. **The image is an element at media_fit_rect's rect**, floating inside the pane box and
-//      clipped to it. That clip is what the hand painter's trailing `flush_pane(t, area, …)`
-//      was; a zoomed image is LARGER than its pane, so losing it means painting over the focus
-//      ring and into the aux pane.
-//   2. **The pointer moves it.** A drag pans by the total travel since the press, a notch
-//      zooms about the pointer (media_test.odin owns that arithmetic), and a click on the
-//      surface claims the press so the pane behind it does not also act on it.
+//   1. The image is an element at media_fit_rect's rect, floating inside the pane box and
+//      clipped to it. That clip is what the hand painter's trailing flush_pane was; a zoomed
+//      image is LARGER than its pane, so losing it paints over the ring and into the aux pane.
+//   2. The pointer moves it: a drag pans by the total travel since the press, a notch zooms
+//      about the pointer, and a click claims the press.
 //
-// The texture name is a made-up non-zero u32 throughout: nothing here dereferences it — Clay
-// carries a GL name in the imageData pointer and the bridge casts it straight back out
-// (clay_render.odin) — so the declaration is testable without a GL context.
+// The texture name is a made-up non-zero u32: nothing dereferences it, since Clay carries a GL
+// name in the imageData pointer and the bridge casts it straight back out.
 
 @(private = "file")
 WIN_W :: 400
@@ -30,7 +26,7 @@ AREA :: app.Rect{2, 2, 196, 276} // inset by the 2px focus ring
 @(private = "file")
 FAKE_TEX :: 7
 
-// An App showing a 200x100 image on the main surface, with the pointer live over the pane.
+// A 200x100 image on the main surface, with the pointer live over the pane.
 @(private = "file")
 media_app :: proc(x, y: i32) -> app.App {
     a := app.App {
@@ -50,7 +46,7 @@ media_app :: proc(x, y: i32) -> app.App {
     return a
 }
 
-// A press parked for a pane to claim, as mouse_button_callback would have left it.
+// As mouse_button_callback would have left it.
 @(private = "file")
 press :: proc(a: ^app.App, count: int) {
     a.mouse.down = true
@@ -58,23 +54,18 @@ press :: proc(a: ^app.App, count: int) {
     a.mouse.click_count = count
 }
 
-// The geometry every phase sizes itself from: the content area inside the focus ring, which
-// is the same inset the pane backdrop leaves and the same rect the old painter clipped to.
+// The content area inside the focus ring: the same inset the pane backdrop leaves.
 @(test)
 test_media_geom_is_the_ring_inset :: proc(t: ^testing.T) {
     testing.expect_value(t, app.media_geom(PANE, 1), AREA)
     testing.expect_value(t, app.media_geom(PANE, 2), app.Rect{4, 4, 192, 272})
-    // A pane too small to have an inside yields a rect with no area, which every phase
-    // refuses — this is the Full-on-the-aux-surface case, where the editor rect is zero.
+    // Too small to have an inside yields a rect with no area, which every phase refuses.
     testing.expect(t, app.media_geom(app.Rect{}, 1).w <= 0, "a hidden pane has no content area")
 }
 
-// THE POINT OF THE MOVE. The image lands at media_fit_rect's answer, inside the pane's clip
-// group — so the two things that used to be a `image_push` and a `flush_pane` at the bottom
-// of render.odin are now one element and one config field.
-//
-// The mutation this pins: dropping `clipTo = .AttachedParent` from media_image_float leaves
-// the image command outside any scissor pair, and the second half of this test fails.
+// The image lands at media_fit_rect's answer, inside the pane's clip group: what used to be an
+// image_push and a flush_pane is now one element and one config field. Dropping
+// `clipTo = .AttachedParent` leaves the image command outside any scissor pair.
 @(test)
 test_media_declares_the_image_at_its_fit_rect :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
@@ -111,10 +102,9 @@ test_media_declares_the_image_at_its_fit_rect :: proc(t: ^testing.T) {
     testing.expect_value(t, depth, 0) // balanced, or the bridge latches a scissor
 }
 
-// Nothing loaded is a placeholder and no image command at all. Clay skips an Image element
-// whose imageData is null (clay.h:3023) and a GL texture name of 0 IS null, so "no image"
-// needs no branch in the bridge — but it does need one here, because a placeholder is a
-// different thing to say than an empty picture.
+// A placeholder and no image command. Clay skips an Image whose imageData is null and a GL
+// texture name of 0 IS null, so "no image" needs no branch in the bridge — but it needs one
+// here, because a placeholder says something an empty picture does not.
 @(test)
 test_media_declares_a_placeholder_when_empty :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
@@ -141,18 +131,15 @@ test_media_declares_a_placeholder_when_empty :: proc(t: ^testing.T) {
 
     testing.expect_value(t, images, 0)
     testing.expect_value(t, texts, 1)
-    // Vertically centred in the content area, one 8px margin in — the placement the hand
-    // painter computed as `area.y + (area.h - line_height) / 2`, by the solver now.
+    // Centred in the content area, one 8px margin in: the hand painter's arithmetic, by the
+    // solver now.
     testing.expect_value(t, label.x, AREA.x + 8)
     testing.expect_value(t, label.y, AREA.y + (AREA.h - 16) / 2)
 }
 
-// A press on the surface captures, and the pan is a RE-DERIVATION from the press-time view
-// rather than an accumulation of per-frame deltas — so a frame the loop happened not to run
-// costs nothing, and a wheel zoom mid-drag composes instead of fighting.
-//
-// The mutation this pins: panning from the CURRENT pan each frame instead of from
-// origin_pan makes the second drag frame land at the sum of both deltas.
+// The pan is a RE-DERIVATION from the press-time view rather than an accumulation of per-frame
+// deltas, so a dropped frame costs nothing and a wheel zoom mid-drag composes. Panning from the
+// CURRENT pan each frame makes the second drag frame land at the sum of both deltas.
 @(test)
 test_media_click_captures_and_drag_pans :: proc(t: ^testing.T) {
     a := media_app(100, 100)
@@ -168,20 +155,19 @@ test_media_click_captures_and_drag_pans :: proc(t: ^testing.T) {
     app.media_drag(&a)
     testing.expect_value(t, a.media.pan, [2]f32{12 + 40, -4 + 30})
 
-    // A second frame at a NEW position is measured from the press, not from the last frame.
+    // A second frame at a new position is measured from the press, not the last frame.
     a.mouse.x, a.mouse.y = 110, 90
     app.media_drag(&a)
     testing.expect_value(t, a.media.pan, [2]f32{12 + 10, -4 - 10})
 
-    // And back exactly where it started: a drag returned to the press point is the identity.
+    // Back where it started: a drag returned to the press point is the identity.
     a.mouse.x, a.mouse.y = 100, 100
     app.media_drag(&a)
     testing.expect_value(t, a.media.pan, [2]f32{12, -4})
 }
 
-// A double click resets to fit — the mouse twin of the `0` / `f` key — and it runs BEFORE the
-// capture, so a double-click-and-drag pans from the view the reset just established rather
-// than from the one it replaced.
+// The mouse twin of `0` / `f`, running BEFORE the capture so a double-click-and-drag pans from
+// the view the reset just established.
 @(test)
 test_media_double_click_fits_then_captures :: proc(t: ^testing.T) {
     a := media_app(100, 100)
@@ -198,10 +184,8 @@ test_media_double_click_fits_then_captures :: proc(t: ^testing.T) {
     testing.expect_value(t, a.media.pan, [2]f32{20, 0})
 }
 
-// A press that is not this surface's is left alone. Three ways to not be it: outside the
-// content area (the focus ring is not the picture), the mouse switched off, and the main
-// surface showing TEXT — the last one matters because the editor and the media viewer share
-// a pane rect and exactly one of them is on screen.
+// Three ways not to be this surface's: outside the content area, the mouse switched off, and the
+// main surface showing TEXT — which matters because the editor and the viewer share a pane rect.
 @(test)
 test_media_refuses_presses_that_are_not_its_own :: proc(t: ^testing.T) {
     outside := media_app(300, 100) // over the aux side of the window
@@ -224,8 +208,8 @@ test_media_refuses_presses_that_are_not_its_own :: proc(t: ^testing.T) {
     testing.expect_value(t, text.drag.kind, app.Drag_Kind.None)
 }
 
-// Capture is kind AND target here too: a pan does not write while some other gesture holds
-// the button, and switching the main surface to text mid-drag leaves it held but inert.
+// Kind AND target here too: a pan does not write while another gesture holds the button, and
+// switching to text mid-drag leaves it held but inert.
 @(test)
 test_media_drag_only_writes_its_own_capture :: proc(t: ^testing.T) {
     a := media_app(100, 100)

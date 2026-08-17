@@ -4,55 +4,45 @@ import "core:slice"
 import "core:strings"
 import "core:unicode/utf8"
 
-// Doc — the shared multi-cursor editing core beneath the command line and the editor buffer. A
-// Piece_Table holding the bytes plus a list of Cursors; single-cursor is just N == 1, and the
-// command line is the one-line instance (Enter submits instead of splitting). Pure: no rendering
-// and no GL.
+// The shared multi-cursor editing core under the command line and the editor buffer: a
+// Piece_Table plus a list of Cursors. Single-cursor is N == 1. Pure — no rendering, no GL.
 //
-// **A Pos is a line and a BYTE column**, matching the storage and tree-sitter's Point exactly, so
-// nothing on the edit or parse path converts. The cell grid the monospace painter draws on is a
-// different thing, and doc_cells / doc_cell_col are the only bridge to it. A column always lands
-// on a rune boundary — doc_clamp_pos is the one gate that guarantees it, and every Pos built from
-// arithmetic passes through it.
+// A Pos is a line and a BYTE column, matching the storage and tree-sitter's Point, so nothing on
+// the edit or parse path converts. The painter's cell grid is a different thing, and doc_cells /
+// doc_cell_col are the only bridge. doc_clamp_pos is the one gate guaranteeing a column lands on
+// a rune boundary, and every Pos built from arithmetic passes through it.
 //
-// Invariants, held by every op: >= 1 line, >= 1 cursor, cursors sorted by head ascending and
-// non-overlapping (merged). `primary` indexes the cursor that drives scroll-follow and the gutter
-// — for the drop-mode trail it tracks the painting end; after an edit it falls back to the
-// topmost cursor.
+// Invariants: >= 1 line, >= 1 cursor, cursors sorted by head and non-overlapping. `primary` is
+// the cursor driving scroll-follow and the gutter; after an edit it falls back to the topmost.
 Doc :: struct {
     pt:      Piece_Table,
     cursors: [dynamic]Cursor,
     primary: int,
-    undo:    Undo, // patch journal (see undo.odin)
+    undo:    Undo, // patch journal (undo.odin)
     version: u64, // bumped on every content change; lets the highlighter cache its tree
-    // The change log: what happened, in the order it was applied. More than one part of the
-    // editor has to follow it (see Doc_Reader), so it is NOT drained by whoever reads it first
-    // — each reader keeps a sequence number and the log drops what every reader has passed.
+    // The change log, in apply order. Several readers follow it (Doc_Reader), so it is not
+    // drained by the first: each keeps a sequence number and the log drops what all have passed.
     changes:      [dynamic]Doc_Change,
     changes_base: u64, // sequence number of changes[0]
     changes_next: u64, // one past the last recorded
     seen:         [Doc_Reader]u64, // how far each reader has got
 }
 
-// The parts that follow the change log. A fixed set rather than a registration list: there are
-// two of them, they live for as long as the Doc does, and a slot each is the whole mechanism.
+// Fixed rather than a registration list: two of them, both living as long as the Doc.
 Doc_Reader :: enum {
     Highlight, // folds each change into the cached parse tree (highlight.odin)
     Folds,     // shifts collapsed ranges so an edit elsewhere does not drop them (fold.odin)
 }
 
-// One content change, as both byte offsets and line/column points, because tree-sitter's
-// Input_Edit wants both. The offsets are in the document as it stood when this change was
-// applied, so a reader must replay the list IN ORDER and never out of it.
+// Both byte offsets and points, because tree-sitter's Input_Edit wants both. Offsets are in the
+// document as it stood when the change was applied, so a reader must replay the list in order.
 Doc_Change :: struct {
     start, old_end, new_end:          int,
     start_pt, old_end_pt, new_end_pt: Pos,
 }
 
 // How far the log may run ahead of its slowest reader. Past it the log is dropped and everyone
-// behind is told they lost it — a rebuild costs less than an unbounded list, and a document
-// nobody is looking at (a buffer edited off-screen) should not grow one. Readers that keep up
-// never reach this: the log trims to the slowest on every ack.
+// behind is told they lost it — a rebuild costs less than an unbounded list.
 DOC_CHANGE_MAX :: 256
 
 Pos :: struct {
@@ -60,9 +50,8 @@ Pos :: struct {
     col:  int, // BYTES into the line
 }
 
-// A cursor is a selection: anchor..head. anchor == head means no selection; head is the moving
-// caret. goal is the sticky column carried through vertical motion, in CELLS — a byte column
-// would drift sideways stepping through lines that hold multi-byte runes.
+// anchor == head means no selection; head is the moving caret. goal is the sticky column for
+// vertical motion, in CELLS — a byte column would drift through multi-byte lines.
 Cursor :: struct {
     anchor: Pos,
     head:   Pos,
@@ -83,25 +72,21 @@ doc_destroy :: proc(d: ^Doc) {
     undo_destroy(d)
 }
 
-// Replaces all content; collapses to a single cursor at the origin (file load), and discards undo
-// history (you can't undo past a fresh load). CRLF collapses to LF and one trailing newline is
-// dropped — Buffer remembers it as final_newline and puts it back on save.
+// Replaces all content, collapses to one cursor at the origin, and discards undo history. CRLF
+// collapses to LF and one trailing newline is dropped — Buffer puts it back on save.
 doc_set_text :: proc(d: ^Doc, text: string) {
     undo_destroy(d)
     pt_load(&d.pt, doc_normalize(text))
     doc_reset_cursor(d, {})
-    // A wholesale replacement is not an edit anything can track through, so every reader is put
-    // behind the log's base and rebuilds from scratch rather than from nonsense.
+    // Nothing can track a wholesale replacement, so every reader rebuilds from scratch.
     doc_changes_reset(d)
     d.version += 1
 }
 
-// Empties the document back to one blank line with a single cursor at the origin.
 doc_clear :: proc(d: ^Doc) {
     doc_set_text(d, "")
 }
 
-// Collapses to a single cursor at p.
 doc_reset_cursor :: proc(d: ^Doc, p: Pos) {
     q := doc_clamp_pos(d, p)
     clear(&d.cursors)
@@ -109,7 +94,7 @@ doc_reset_cursor :: proc(d: ^Doc, p: Pos) {
     d.primary = 0
 }
 
-// Drops the rest of the cursors, keeping only the primary (Esc out of a trail).
+// Esc out of a trail: keep only the primary.
 doc_collapse_to_primary :: proc(d: ^Doc) {
     p := d.cursors[d.primary]
     clear(&d.cursors)
@@ -117,9 +102,8 @@ doc_collapse_to_primary :: proc(d: ^Doc) {
     d.primary = 0
 }
 
-// Leaves a fixed cursor at the free caret's position (the Alt+A drop); the caret (primary)
-// keeps roaming via the movement ops. The two sit coincident until the caret steps off, and
-// a coincident pair collapses to one when an edit is applied.
+// Alt+A: leave a fixed cursor where the free caret is, which keeps roaming. The coincident pair
+// collapses to one at the next edit.
 doc_drop_anchor :: proc(d: ^Doc) {
     c := d.cursors[d.primary]
     append(&d.cursors, Cursor{anchor = c.head, head = c.head, goal = c.goal})
@@ -131,20 +115,17 @@ doc_line_count :: proc(d: ^Doc) -> int {
     return pt_line_count(&d.pt)
 }
 
-// A line's length in BYTES.
 doc_line_len :: proc(d: ^Doc, line: int) -> int {
     return pt_line_len(&d.pt, line)
 }
 
-// A line's bytes, without its newline. Borrowed straight out of the piece table when the line
-// sits in one piece and copied into `alloc` when an edit has split it — READ ONLY either way,
-// and dead after the next edit.
+// Without the newline. Borrowed from the piece table when the line is one piece, copied into
+// `alloc` when an edit split it. Read only, and dead after the next edit.
 doc_line :: proc(d: ^Doc, line: int, alloc := context.temp_allocator) -> []u8 {
     return pt_line(&d.pt, line, alloc)
 }
 
-// A Pos as a document byte offset, and back. The pair every edit crosses; both clamp, so neither
-// can be handed an offset that indexes off the end.
+// The pair every edit crosses. Both clamp.
 doc_off :: proc(d: ^Doc, p: Pos) -> int {
     q := doc_clamp_pos(d, p)
     return d.pt.lines[q.line] + q.col
@@ -164,9 +145,8 @@ cursor_has_selection :: proc(c: Cursor) -> bool {
     return c.anchor != c.head
 }
 
-// The line of the FIRST (topmost) cursor. The primary drives the gutter, but "the cursor" is
-// a SET, so a centred viewport should hold the top of it rather than the primary. Cursors
-// aren't kept globally sorted, so scan.
+// The primary drives the gutter, but a centred viewport should hold the top of the SET. Cursors
+// are not kept globally sorted, so scan.
 doc_top_cursor_line :: proc(d: ^Doc) -> int {
     line := d.cursors[0].head.line
     for c in d.cursors[1:] {
@@ -175,7 +155,6 @@ doc_top_cursor_line :: proc(d: ^Doc) -> int {
     return line
 }
 
-// The cursor's selection as an ordered (low, high) position pair.
 cursor_range :: proc(c: Cursor) -> (lo, hi: Pos) {
     if pos_less(c.head, c.anchor) {
         return c.head, c.anchor
@@ -187,15 +166,12 @@ pos_less :: proc(a, b: Pos) -> bool {
     return a.line < b.line || (a.line == b.line && a.col < b.col)
 }
 
-// --- the cell grid ---
-//
-// The painter draws a monospace grid of CELLS, one per rune; the document counts BYTES. The two
-// agree until a line holds a multi-byte rune, and everything below is the bridge. An ASCII line
-// costs one scan and no allocation, which is the case that has to stay free.
+// --- the cell grid --- The painter draws CELLS, one per rune; the document counts BYTES. The
+// two agree until a line holds a multi-byte rune, and this is the bridge. An ASCII line costs
+// one scan and no allocation.
 
-// One line's runes with the byte offset each begins at. `offs` has one entry more than `runes`,
-// the last being the line's byte length, so a cell RANGE converts to a byte range with no
-// special case at the end. Temp-allocated: valid for the frame.
+// `offs` has one entry more than `runes`, the last being the line's byte length, so a cell range
+// converts with no special case at the end. Temp-allocated: valid for the frame.
 Cells :: struct {
     runes: []rune,
     offs:  []int,
@@ -219,9 +195,8 @@ cells_count :: proc(c: Cells) -> int {
     return len(c.runes)
 }
 
-// How wide a line is in cells, WITHOUT building the table — the sizing question on its own,
-// which the column bound and the highlighter's row both ask once per drawn row and neither
-// needs an allocation for.
+// Without building the table: the column bound and the highlighter's row ask once per drawn row
+// and need no allocation for it.
 doc_cell_count :: proc(d: ^Doc, line: int) -> int {
     src := doc_line(d, line)
     n := 0
@@ -232,9 +207,8 @@ doc_cell_count :: proc(d: ^Doc, line: int) -> int {
     return n
 }
 
-// The cell a byte column sits at (rounded up onto the next rune boundary), and the byte column a
-// cell starts at. Both clamp to the line. A binary search rather than a walk because the
-// highlighter asks twice per capture per row, and a long line carries a lot of captures.
+// The cell a byte column sits at (rounded up onto a rune boundary), and the byte column a cell
+// starts at. A binary search because the highlighter asks twice per capture per row.
 cells_col :: proc(c: Cells, byte_col: int) -> int {
     lo, hi := 0, len(c.offs)
     for lo < hi {
@@ -252,8 +226,7 @@ cells_off :: proc(c: Cells, cell: int) -> int {
     return c.offs[clamp(cell, 0, len(c.runes))]
 }
 
-// The cell column of a Pos, and the byte column of a cell — the two conversions that do not need
-// the whole table, so they walk the line instead of building one.
+// The two conversions that do not need the whole table, so they walk instead of building one.
 doc_cell_col :: proc(d: ^Doc, p: Pos) -> int {
     src := doc_line(d, p.line)
     n := 0
@@ -275,26 +248,23 @@ doc_byte_col :: proc(d: ^Doc, line, cell: int) -> int {
     return i
 }
 
-// --- pointer-placed cursors ---
-// Keyboard ops are motions; a pointer names an absolute position, so these are new verbs
-// mirroring the keyboard shapes. All clamp — a stale layout must never index out of bounds.
+// --- pointer-placed cursors --- Keyboard ops are motions; a pointer names an absolute
+// position. All clamp — a stale layout must never index out of bounds.
 
-// Clamp a position onto a real line, a real column, and a RUNE BOUNDARY. The single gate every
-// derived Pos passes through — the procs below take arbitrary Pos values and none may trust one,
-// and a column landing mid-rune would split a character on the next edit.
+// Onto a real line, a real column, and a rune boundary. The one gate every derived Pos passes
+// through: a column landing mid-rune would split a character on the next edit.
 doc_clamp_pos :: proc(d: ^Doc, p: Pos) -> Pos {
     line := clamp(p.line, 0, doc_line_count(d) - 1)
     src := doc_line(d, line)
     col := clamp(p.col, 0, len(src))
     for col > 0 && col < len(src) && src[col] & 0xC0 == 0x80 {
-        col -= 1 // a continuation byte: back onto the start of the rune it belongs to
+        col -= 1 // continuation byte: back to the rune's start
     }
     return Pos{line, col}
 }
 
-// Move the primary cursor's head to `p`. select=true keeps the anchor, growing the selection
-// (shift-click); false collapses onto the new position. The same `cursor_place` a keyboard
-// motion uses, reached with a destination instead of a direction.
+// select=true keeps the anchor (shift-click); false collapses onto the new position. The same
+// `cursor_place` a keyboard motion uses, with a destination instead of a direction.
 doc_set_head :: proc(d: ^Doc, p: Pos, select: bool) {
     q := doc_clamp_pos(d, p)
     c := &d.cursors[d.primary]
@@ -302,18 +272,16 @@ doc_set_head :: proc(d: ^Doc, p: Pos, select: bool) {
     c.goal = doc_cell_col(d, q)
 }
 
-// Add a cursor AT `p` and make it the roaming one (Alt+click) — a pointer names the
-// destination, so unlike `doc_drop_anchor` the NEW cursor is the one that goes on to move.
-// Deliberately no merge: a coincident drop stays a coincident pair, collapsing at the next edit.
+// Alt+click. Unlike doc_drop_anchor the NEW cursor is the one that goes on to move. No merge: a
+// coincident drop stays a pair, collapsing at the next edit.
 doc_add_cursor :: proc(d: ^Doc, p: Pos) {
     q := doc_clamp_pos(d, p)
     append(&d.cursors, Cursor{anchor = q, head = q, goal = doc_cell_col(d, q)})
     d.primary = len(d.cursors) - 1
 }
 
-// Collapse to one cursor spanning anchor..head — the verb a DRAG needs, since a word-grade
-// drag re-derives BOTH ends every frame. The order is the gesture's and deliberately not
-// normalised: the head stays the end the eye is at, and `cursor_range` orders it on READ.
+// What a drag needs, since a word-grade drag re-derives both ends every frame. The order is the
+// gesture's and not normalised: the head stays where the eye is, and cursor_range orders on read.
 doc_select_span :: proc(d: ^Doc, anchor, head: Pos) {
     a := doc_clamp_pos(d, anchor)
     h := doc_clamp_pos(d, head)
@@ -322,32 +290,28 @@ doc_select_span :: proc(d: ^Doc, anchor, head: Pos) {
     d.primary = 0
 }
 
-// Collapse to one cursor selecting the run of one character class around `p` — the
-// double-click. The head is the run's END, so a following shift-click or Shift+Right
-// extends forward from where the eye is.
+// The double-click. The head is the run's END, so a following Shift+Right extends forward.
 doc_select_word :: proc(d: ^Doc, p: Pos) {
     q := doc_clamp_pos(d, p)
     lo, hi := word_span(doc_line(d, q.line), q.col)
     doc_select_span(d, Pos{q.line, lo}, Pos{q.line, hi})
 }
 
-// Collapse to one cursor selecting all of `line` — the triple-click. The span is the line's
-// TEXT, not the line plus its break: it is exactly what Home then Shift+End selects, so a
-// copy from either path yields the same string.
+// The triple-click. The span is the line's TEXT, not the line plus its break — exactly what
+// Home then Shift+End selects.
 doc_select_line :: proc(d: ^Doc, line: int) {
     l := clamp(line, 0, doc_line_count(d) - 1)
     doc_select_span(d, Pos{l, 0}, Pos{l, doc_line_len(d, l)})
 }
 
-// The span a drag covers at its fixed GRADE — word (2) or line (3+); grade 1 is `doc_set_head`.
-// `press` and `at` carry GLYPH positions, not caret boundaries: the boundary off the same pixel
-// sits one past the run's end. Expanded per frame, so a double-click-drag grows by whole words.
+// Word (2) or line (3+); grade 1 is doc_set_head. `press` and `at` carry glyph positions, not
+// caret boundaries. Expanded per frame, so a double-click-drag grows by whole words.
 doc_drag_span :: proc(d: ^Doc, grade: int, press, at: Pos) -> (anchor, head: Pos) {
     p := doc_clamp_pos(d, press)
     q := doc_clamp_pos(d, at)
     if grade >= 3 {
-        // Line grade compares LINES, not positions: dragging left within the pressed line
-        // has not reversed the gesture, it has not left the line.
+        // Compare LINES, not positions: dragging left within the pressed line has not
+        // reversed the gesture.
         if q.line >= p.line {
             return Pos{p.line, 0}, Pos{q.line, doc_line_len(d, q.line)}
         }
@@ -361,23 +325,20 @@ doc_drag_span :: proc(d: ^Doc, grade: int, press, at: Pos) -> (anchor, head: Pos
     return Pos{p.line, phi}, Pos{q.line, qlo}
 }
 
-// Collapses to a single cursor at the very end of the document (history recall,
-// inject) — the command line's "park at end" after a text swap.
+// The command line's "park at end" after a text swap.
 doc_cursor_to_end :: proc(d: ^Doc) {
     last := doc_line_count(d) - 1
     doc_reset_cursor(d, Pos{last, doc_line_len(d, last)})
 }
 
-// --- editing ---
-// Every edit funnels through doc_apply: a list of non-overlapping replacements, one per cursor,
-// applied back-to-front so the earlier ones keep valid offsets.
+// --- editing --- Every edit funnels through doc_apply: non-overlapping replacements, one per
+// cursor, applied back-to-front so the earlier ones keep valid offsets.
 
 doc_insert_rune :: proc(d: ^Doc, r: rune) -> bool {
     return doc_insert_text(d, utf8.runes_to_string({r}, context.temp_allocator))
 }
 
-// Replaces each cursor's selection (or inserts at the caret) with `text`, which may contain
-// '\n'. Shared by typing, indent, newline, and paste.
+// `text` may contain '\n'. Shared by typing, indent, newline and paste.
 doc_insert_text :: proc(d: ^Doc, text: string) -> bool {
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
     for c in d.cursors {
@@ -391,16 +352,15 @@ doc_newline :: proc(d: ^Doc) -> bool {
     return doc_insert_text(d, "\n")
 }
 
-// --- clipboard (text gather/apply; GLFW I/O lives in input.odin) ---
+// --- clipboard (GLFW I/O lives in input.odin) ---
 
-// The text in [lo, hi). Newlines are stored bytes, so a span across lines carries them already.
+// Newlines are stored bytes, so a span across lines carries them already.
 doc_text :: proc(d: ^Doc, lo, hi: Pos, alloc := context.allocator) -> string {
     return string(pt_read(&d.pt, doc_off(d, lo), doc_off(d, hi), alloc))
 }
 
-// Gathers copy text in document order: each cursor's selection, or — nothing selected — each
-// cursor's whole line plus a newline. Both results use `alloc`; `pieces` is an exact-length
-// CLONE, because the caller frees it with `delete`, which sizes by len, not a dynamic's cap.
+// Each cursor's selection, or with nothing selected each cursor's whole line plus a newline.
+// `pieces` is an exact-length clone, because the caller frees it with `delete`.
 doc_copy :: proc(d: ^Doc, alloc := context.allocator) -> (joined: string, pieces: []string) {
     order := cursor_order(d, context.temp_allocator)
     any_sel := false
@@ -429,13 +389,12 @@ doc_copy :: proc(d: ^Doc, alloc := context.allocator) -> (joined: string, pieces
     return strings.join(out[:], sep, alloc), slice.clone(out[:], alloc)
 }
 
-// Inserts the same text at every cursor (replacing selections) — a plain paste.
+// A plain paste: the same text at every cursor, replacing selections.
 doc_paste :: proc(d: ^Doc, text: string) -> bool {
     return doc_insert_text(d, text)
 }
 
-// Distributes one piece per cursor in document order (multi-cursor paste of an
-// equal-count multi-cursor copy). Caller guarantees len(pieces) == cursor count.
+// One piece per cursor in document order. Caller guarantees len(pieces) == cursor count.
 doc_paste_pieces :: proc(d: ^Doc, pieces: []string) -> bool {
     order := cursor_order(d, context.temp_allocator)
     edits := make([dynamic]Edit, 0, len(order), context.temp_allocator)
@@ -446,8 +405,7 @@ doc_paste_pieces :: proc(d: ^Doc, pieces: []string) -> bool {
     return doc_commit(d, edits[:])
 }
 
-// Cut: delete each cursor's selection, or — when nothing is selected — its whole
-// line. (Pair the deletion with doc_copy in the caller to fill the clipboard.)
+// Each cursor's selection, or its whole line when nothing is selected. Pair with doc_copy.
 doc_cut :: proc(d: ^Doc) -> bool {
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
     for c in d.cursors {
@@ -462,8 +420,7 @@ doc_cut :: proc(d: ^Doc) -> bool {
     return doc_commit(d, edits[:])
 }
 
-// The rune at p, or 0 at end of line. Its twin reads the rune BEFORE p, with the byte size that
-// steps back over it.
+// 0 at end of line. The twin below reads the rune BEFORE p, with the size to step back over it.
 doc_rune_at :: proc(d: ^Doc, p: Pos) -> rune {
     src := doc_line(d, p.line)
     if p.col >= len(src) {
@@ -482,8 +439,7 @@ doc_rune_before :: proc(d: ^Doc, p: Pos) -> (r: rune, size: int) {
     return r, max(size, 1)
 }
 
-// Backspace: delete the selection, else the rune to the left, else join with the
-// previous line (delete the newline before the caret).
+// The selection, else the rune to the left, else join with the previous line.
 doc_backspace :: proc(d: ^Doc) -> bool {
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
     for c in d.cursors {
@@ -493,7 +449,7 @@ doc_backspace :: proc(d: ^Doc) -> bool {
         } else if c.head.col > 0 {
             prev, size := doc_rune_before(d, c.head)
             at := Pos{c.head.line, c.head.col - size}
-            // Backspace inside an empty auto-pair "()" removes both halves.
+            // Inside an empty auto-pair "()" both halves go.
             if close, ok := pair_close(prev); ok && doc_rune_at(d, c.head) == close {
                 _, csz := utf8.encode_rune(close)
                 append(&edits, Edit{doc_off(d, at), doc_off(d, c.head) + csz, "", 0})
@@ -508,8 +464,7 @@ doc_backspace :: proc(d: ^Doc) -> bool {
     return doc_commit(d, edits[:])
 }
 
-// Delete: delete the selection, else the rune to the right, else pull the next
-// line up (delete the newline after the caret).
+// The selection, else the rune to the right, else pull the next line up.
 doc_delete :: proc(d: ^Doc) -> bool {
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
     for c in d.cursors {
@@ -561,9 +516,8 @@ doc_delete_word_forward :: proc(d: ^Doc) -> bool {
     return doc_commit(d, edits[:])
 }
 
-// --- movement ---
-// select=true keeps the anchor to extend a selection; a plain move with a selection collapses
-// to the edge it moves toward, GUI-style. Vertical motion keeps the goal column.
+// --- movement --- select=true extends; a plain move with a selection collapses to the edge it
+// moves toward, GUI-style. Vertical motion keeps the goal column.
 
 Motion :: enum {
     Left,
@@ -576,13 +530,12 @@ Motion :: enum {
     Down,
 }
 
-// Moves ONLY the free caret (the primary), leaving dropped cursors put — bare-arrow
-// behaviour, the basis of cursor placement. `count` applies only to Up/Down (lines to jump).
+// Bare-arrow behaviour: only the primary moves. `count` applies to Up/Down only.
 doc_move :: proc(d: ^Doc, motion: Motion, select := false, count := 1) {
     move_cursor(d, &d.cursors[d.primary], motion, select, count)
 }
 
-// Moves every cursor together (the Alt+M one-shot prefix).
+// The Alt+M one-shot prefix: every cursor together.
 doc_move_all :: proc(d: ^Doc, motion: Motion, select := false, count := 1) {
     for &c in d.cursors {
         move_cursor(d, &c, motion, select, count)
@@ -636,20 +589,18 @@ move_cursor :: proc(d: ^Doc, c: ^Cursor, motion: Motion, select: bool, count := 
 
 // --- internals ---
 
-// One replacement: the bytes in [lo, hi) become `text` (which may span lines). caret_delta nudges
-// the resulting caret left of the inserted text's end, in bytes and on that line only: 1 lands it
-// inside a fresh ASCII pair, -1 steps one past an existing close, 0 for ordinary edits.
+// The bytes in [lo, hi) become `text`. caret_delta nudges the resulting caret left of the
+// inserted text's end, in bytes and on that line only: 1 lands inside a fresh ASCII pair, -1
+// steps one past an existing close, 0 for ordinary edits.
 Edit :: struct {
     lo, hi:      int,
     text:        string,
     caret_delta: int,
 }
 
-// Applies non-overlapping edits (one per cursor) back-to-front, then rebuilds the cursors
-// collapsed onto each new end. Back-to-front is what makes the offsets self-consistent: every
-// edit sits after the ones still to be applied, so none of their offsets move and there is
-// nothing to shift. Non-nil `rec` collects reversible patches for the undo journal. `edits_in`
-// is READ ONLY — sort/dedup a copy.
+// Back-to-front, then the cursors are rebuilt collapsed onto each new end. Back-to-front keeps
+// the offsets self-consistent: every edit sits after the ones still to be applied. Non-nil `rec`
+// collects reversible patches for the undo journal. `edits_in` is read only.
 doc_apply :: proc(d: ^Doc, edits_in: []Edit, rec: ^Batch = nil) -> bool {
     if len(edits_in) == 0 {
         return false
@@ -659,8 +610,7 @@ doc_apply :: proc(d: ^Doc, edits_in: []Edit, rec: ^Batch = nil) -> bool {
         return a.lo < b.lo
     })
 
-    // Drop coincident edits: a free caret resting on a dropped cursor produces the
-    // same range twice, and one position must be edited once, not N times.
+    // A free caret resting on a dropped cursor produces the same range twice.
     w := 0
     for r in 1 ..< len(edits) {
         if edits[r].lo != edits[w].lo || edits[r].hi != edits[w].hi {
@@ -670,11 +620,9 @@ doc_apply :: proc(d: ^Doc, edits_in: []Edit, rec: ^Batch = nil) -> bool {
     }
     edits = edits[:w + 1]
 
-    // Where each edit's text ends up ONCE THE BATCH IS DONE. An edit's own `lo` is valid while
-    // it is applied — everything before it is still untouched — but the edits before it land
-    // afterwards and each moves what follows, so the final home is `lo` plus their size change.
-    // The cursors and the journal's inverse both read the document after all of this, and both
-    // want this number rather than `lo`.
+    // Where each edit's text ends up once the batch is done: `lo` is valid while it is applied,
+    // but the edits before it land afterwards and move what follows. The cursors and the
+    // journal's inverse both read the finished document, so both want this rather than `lo`.
     landed := make([]int, len(edits), context.temp_allocator)
     cum := 0
     for e, i in edits {
@@ -690,9 +638,8 @@ doc_apply :: proc(d: ^Doc, edits_in: []Edit, rec: ^Batch = nil) -> bool {
             changed = true
         }
         removed[i] = string(pt_read(&d.pt, e.lo, e.hi, context.temp_allocator))
-        // Recorded either side of the splice, because two of the three points are read from the
-        // document before it and the third from the document after. Back-to-front is the order
-        // these are APPLIED in, so it is the order a consumer must replay them in.
+        // Either side of the splice: two of the three points read the document before it, the
+        // third after. Back-to-front is the apply order, so it is the replay order too.
         ch := Doc_Change {
             start      = e.lo,
             old_end    = e.hi,
@@ -710,7 +657,7 @@ doc_apply :: proc(d: ^Doc, edits_in: []Edit, rec: ^Batch = nil) -> bool {
     if rec != nil {
         for e, i in edits {
             if removed[i] == "" && e.text == "" {
-                continue // pure no-op (e.g. backspace at the document origin)
+                continue // no-op, e.g. backspace at the document origin
             }
             append(
                 &rec.ops,
@@ -727,7 +674,7 @@ doc_apply :: proc(d: ^Doc, edits_in: []Edit, rec: ^Batch = nil) -> bool {
     clear(&d.cursors)
     for e, i in edits {
         p := doc_pos(d, landed[i] + len(e.text))
-        p.col = clamp(p.col - e.caret_delta, 0, doc_line_len(d, p.line)) // same line only, by contract
+        p.col = clamp(p.col - e.caret_delta, 0, doc_line_len(d, p.line)) // same line, by contract
         q := doc_clamp_pos(d, p)
         append(&d.cursors, Cursor{anchor = q, head = q, goal = doc_cell_col(d, q)})
     }
@@ -739,9 +686,8 @@ doc_apply :: proc(d: ^Doc, edits_in: []Edit, rec: ^Batch = nil) -> bool {
     return changed
 }
 
-// What `who` has not seen yet, oldest first. `lost` means the log no longer reaches back that
-// far and the reader has to rebuild from the document instead of from the changes; the changes
-// returned with it are still valid, they are simply not the whole story.
+// Oldest first. `lost` means the log no longer reaches back that far, so the reader rebuilds
+// from the document; the changes returned with it are valid but not the whole story.
 doc_changes_since :: proc(d: ^Doc, who: Doc_Reader) -> (changes: []Doc_Change, lost: bool) {
     if d.seen[who] < d.changes_base {
         return nil, true
@@ -749,8 +695,7 @@ doc_changes_since :: proc(d: ^Doc, who: Doc_Reader) -> (changes: []Doc_Change, l
     return d.changes[d.seen[who] - d.changes_base:], false
 }
 
-// `who` is now in step with the document. Trims the log to the SLOWEST reader, which is what
-// keeps it a handful of entries in the ordinary case where everyone keeps up.
+// Trims the log to the slowest reader, which keeps it short while everyone keeps up.
 doc_changes_ack :: proc(d: ^Doc, who: Doc_Reader) {
     d.seen[who] = d.changes_next
     slowest := d.changes_next
@@ -763,21 +708,18 @@ doc_changes_ack :: proc(d: ^Doc, who: Doc_Reader) {
     }
 }
 
-// Drop the log because it outran its slowest reader. Anyone BEHIND is told they lost it; anyone
-// who had caught up is untouched, and that distinction matters — a buffer whose language has no
-// grammar installed has a highlighter that never acks, and it must not cost the fold set its
-// ranges every DOC_CHANGE_MAX edits.
+// Anyone behind is told they lost it; anyone caught up is untouched. That matters: a buffer with
+// no grammar has a highlighter that never acks, and the fold set must not lose its ranges for it.
 @(private = "file")
 doc_changes_drop :: proc(d: ^Doc) {
     clear(&d.changes)
     d.changes_base = d.changes_next
 }
 
-// Put EVERY reader behind the log — a wholesale load, where there is no edit to track through
-// and a reader that happened to be current is as out of date as one that was not.
+// A wholesale load: no edit to track through, so a current reader is as out of date as any.
 @(private = "file")
 doc_changes_reset :: proc(d: ^Doc) {
-    d.changes_next += 1 // past every reader's `seen`, so none of them can still be in step
+    d.changes_next += 1 // past every reader's `seen`
     doc_changes_drop(d)
 }
 
@@ -791,17 +733,16 @@ doc_record_change :: proc(d: ^Doc, c: Doc_Change) {
     d.changes_next += 1
 }
 
-// The bytes a document stores for `text`: CRLF collapsed to LF, and one trailing newline
-// dropped. Both are the load's business and nothing below it needs to know — a line is a run
-// between newlines, and Buffer puts the trailing one back on save. Temp-allocated; returns the
-// input untouched when there is nothing to strip, which is the common case.
+// CRLF collapsed to LF and one trailing newline dropped — both the load's business; Buffer puts
+// the newline back on save. Temp-allocated, and returns the input untouched when there is
+// nothing to strip.
 @(private = "file")
 doc_normalize :: proc(text: string) -> []u8 {
     if !strings.contains(text, "\r") {
         return transmute([]u8)(strings.has_suffix(text, "\n") ? text[:len(text) - 1] : text)
     }
-    // The CR goes first and the trailing newline after it, in that order: a CRLF file ends in
-    // "\r\n", and trimming the '\n' first would leave the '\r' hanging on the last line.
+    // CR first, then the trailing newline: a CRLF file ends "\r\n", and trimming the '\n' first
+    // would leave the '\r' on the last line.
     out := make([dynamic]u8, 0, len(text), context.temp_allocator)
     for i in 0 ..< len(text) {
         if text[i] == '\r' && i + 1 < len(text) && text[i + 1] == '\n' {
@@ -815,8 +756,7 @@ doc_normalize :: proc(text: string) -> []u8 {
     return out[:]
 }
 
-// Cursor indices in document order (cursors aren't kept globally sorted, only
-// merged). Used by clipboard ops that need a stable left-to-right ordering.
+// Cursor indices in document order, for clipboard ops that need a stable left-to-right one.
 @(private = "file")
 Keyed_Cursor :: struct {
     lo:  Pos,
@@ -848,7 +788,7 @@ cursor_place :: proc(c: ^Cursor, to: Pos, select: bool) {
     }
 }
 
-// One rune left / right, wrapping across the line break at either end.
+// One rune left / right, wrapping across the line break.
 @(private = "file")
 pos_left :: proc(d: ^Doc, p: Pos) -> Pos {
     if p.col > 0 {
@@ -874,8 +814,7 @@ pos_right :: proc(d: ^Doc, p: Pos) -> Pos {
     return p
 }
 
-// Sorts cursors by selection start and fuses any that overlap or touch, keeping
-// the multi-cursor set canonical. Single-cursor docs short-circuit.
+// Sort by selection start and fuse any that overlap or touch.
 @(private)
 doc_merge_cursors :: proc(d: ^Doc) {
     if len(d.cursors) <= 1 {
@@ -890,10 +829,10 @@ doc_merge_cursors :: proc(d: ^Doc) {
     for r in 1 ..< len(d.cursors) {
         alo, ahi := cursor_range(d.cursors[w])
         blo, bhi := cursor_range(d.cursors[r])
-        if pos_less(ahi, blo) { // disjoint: keep both
+        if pos_less(ahi, blo) { // disjoint
             w += 1
             d.cursors[w] = d.cursors[r]
-        } else if pos_less(ahi, bhi) { // overlap: fuse into the union span
+        } else if pos_less(ahi, bhi) { // overlap: fuse into the union
             d.cursors[w] = Cursor{anchor = alo, head = bhi, goal = doc_cell_col(d, bhi)}
         }
     }

@@ -2,37 +2,31 @@ package main
 
 import "core:slice"
 
-// Piece_Table — the byte storage under Doc. A document is an ordered list of Pieces, each
-// naming a span of one immutable byte Block; reading walks the pieces, editing splices the
-// list. Nothing is copied on an edit and nothing already written is ever moved, which is what
-// buys the two properties the editor needs:
+// The byte storage under Doc: an ordered list of Pieces, each naming a span of one immutable
+// Block. Reading walks the pieces, editing splices the list; nothing already written is ever
+// copied or moved, which buys two things:
+//   - parsing needs no flat copy — tree-sitter's read callback is handed a piece's span
+//   - a snapshot is cheap — a worker clones only `pieces` and `lines`, both small
 //
-//   parsing needs no flat copy — tree-sitter's Input read callback is handed a piece's span
-//   directly (see pt_span), so a keystroke never rebuilds the whole buffer as a string;
-//
-//   a snapshot is cheap — the blocks are append-only and shared by reference, so a worker
-//   thread reads a document by cloning only `pieces` and `lines` (both small).
-//
-// Block 0 is the file as loaded. Every later block is an append chunk holding the bytes typed
-// or pasted since. Blocks are only ever discarded together, by pt_compact.
+// Block 0 is the file as loaded; every later block is an append chunk. Blocks are only ever
+// discarded together, by pt_compact.
 //
 // Invariants, held by every op:
 //   - pieces are in document order, none empty, and `doc_off` is the running byte total
-//   - `lines` holds the byte offset of every line start, is ascending, and lines[0] == 0
-//   - a document always has at least one line (an empty one), so `lines` is never empty
+//   - `lines` is ascending, lines[0] == 0, and never empty (an empty document is one line)
 //   - `size` is the sum of the piece lengths
 Piece_Table :: struct {
-    blocks:    [dynamic][]u8, // owned; block 0 is the loaded file, the rest are append chunks
+    blocks:    [dynamic][]u8, // owned; block 0 is the loaded file
     pieces:    [dynamic]Piece,
     lines:     [dynamic]int, // byte offset of each line start; len == line count
-    size:      int, // total document bytes
-    tail:      int, // the block appends go into, -1 before the first one
-    tail_used: int, // bytes of that block already written
+    size:      int,
+    tail:      int, // the block appends go into, -1 before the first
+    tail_used: int, // bytes of it already written
 }
 
-// One run of bytes: [off, off+len) of blocks[block], sitting at [doc_off, doc_off+len) of the
-// document. `doc_off` is derived — it is what makes an offset resolvable by binary search
-// instead of by walking — and every op that changes a piece's length repairs the pieces after it.
+// [off, off+len) of blocks[block], sitting at [doc_off, doc_off+len) of the document. `doc_off`
+// is what makes an offset resolvable by binary search, so every op that changes a piece's
+// length repairs the pieces after it.
 Piece :: struct {
     block:   int,
     off:     int,
@@ -40,14 +34,12 @@ Piece :: struct {
     doc_off: int,
 }
 
-// Size of a fresh append chunk. Big enough that ordinary typing allocates about once a session,
-// small enough that an abandoned tail wastes nothing worth counting. A single append larger than
+// Big enough that ordinary typing allocates about once a session. A single append larger than
 // this gets a block of its own, so one append is always one piece.
 PT_CHUNK :: 64 * 1024
 
-// Piece count that makes compaction worth doing. Reached only by scattered editing — typing runs
-// coalesce into one piece (see pt_splice) — and pt_compact is NOT called from the edit path, so
-// crossing it costs nothing until a save or a worker gets round to it.
+// Reached only by scattered editing — typing runs coalesce into one piece — and pt_compact is
+// never called from the edit path, so crossing it costs nothing until a save.
 PT_COMPACT_PIECES :: 2048
 
 // --- lifecycle ---
@@ -67,8 +59,8 @@ pt_destroy :: proc(pt: ^Piece_Table) {
     pt^ = {}
 }
 
-// Replaces the whole document with `src` (a file load). The bytes are cloned into block 0 and
-// every earlier block is dropped, so a load leaves the table as compact as it can be.
+// The bytes are cloned into block 0 and every earlier block is dropped, so a load leaves the
+// table as compact as it can be.
 pt_load :: proc(pt: ^Piece_Table, src: []u8) {
     for b in pt.blocks {
         delete(b)
@@ -96,12 +88,11 @@ pt_line_count :: proc(pt: ^Piece_Table) -> int {
     return len(pt.lines)
 }
 
-// The byte range of `line`, EXCLUDING its terminating newline — the line's text and nothing
-// else, so a caller never has to remember to trim one. Assumes a real line index.
+// Excluding the terminating newline, so no caller has to trim one. Assumes a real line index.
 pt_line_range :: proc(pt: ^Piece_Table, line: int) -> (lo, hi: int) {
     lo = pt.lines[line]
     if line + 1 < len(pt.lines) {
-        return lo, pt.lines[line + 1] - 1 // one back off the next start: the '\n' itself
+        return lo, pt.lines[line + 1] - 1 // one back off the next start: the '\n'
     }
     return lo, pt.size
 }
@@ -111,8 +102,8 @@ pt_line_len :: proc(pt: ^Piece_Table, line: int) -> int {
     return hi - lo
 }
 
-// The line containing `off` — the largest line whose start is at or before it. Clamped, so an
-// offset past the end answers the last line rather than reading off the index.
+// The largest line whose start is at or before `off`. Clamped, so an offset past the end
+// answers the last line.
 pt_line_at_off :: proc(pt: ^Piece_Table, off: int) -> int {
     lo, hi := 0, len(pt.lines)
     for lo < hi {
@@ -126,9 +117,8 @@ pt_line_at_off :: proc(pt: ^Piece_Table, off: int) -> int {
     return max(0, lo - 1)
 }
 
-// The CONTIGUOUS run of bytes beginning at `off` — as much of the document as lives in one
-// piece, which is all tree-sitter's read callback wants and is usually a whole line. Empty at
-// or past the end of the document. Borrowed: valid until the next edit.
+// As much of the document from `off` as lives in one piece — all tree-sitter's read callback
+// wants, and usually a whole line. Borrowed: valid until the next edit.
 pt_span :: proc(pt: ^Piece_Table, off: int) -> []u8 {
     i := piece_at(pt.pieces[:], off)
     if i < 0 {
@@ -138,8 +128,7 @@ pt_span :: proc(pt: ^Piece_Table, off: int) -> []u8 {
     return pt.blocks[p.block][p.off + off - p.doc_off:p.off + p.len]
 }
 
-// The bytes in [lo, hi), copied. `alloc` owns the result — the only read that costs a copy, so
-// prefer pt_span or pt_line where a borrow will do.
+// The only read that costs a copy; prefer pt_span or pt_line where a borrow will do.
 pt_read :: proc(pt: ^Piece_Table, lo, hi: int, alloc := context.allocator) -> []u8 {
     a := clamp(lo, 0, pt.size)
     b := clamp(hi, a, pt.size)
@@ -148,16 +137,15 @@ pt_read :: proc(pt: ^Piece_Table, lo, hi: int, alloc := context.allocator) -> []
     for n < len(out) {
         src := pt_span(pt, a + n)
         if len(src) == 0 {
-            break // defensive: a truncated span would otherwise spin
+            break // a truncated span would otherwise spin
         }
         n += copy(out[n:], src)
     }
     return out
 }
 
-// One line's bytes. Borrowed straight out of the block when the line sits inside a single piece
-// — the common case, and free — and copied into `alloc` only when an edit has left it split.
-// Either way it is READ ONLY and dead after the next edit.
+// Borrowed out of the block when the line sits inside one piece — the common case, and free —
+// and copied into `alloc` only when an edit has split it. Read only, dead after the next edit.
 pt_line :: proc(pt: ^Piece_Table, line: int, alloc := context.allocator) -> []u8 {
     lo, hi := pt_line_range(pt, line)
     if hi <= lo {
@@ -171,12 +159,9 @@ pt_line :: proc(pt: ^Piece_Table, line: int, alloc := context.allocator) -> []u8
 
 // --- editing ---
 
-// Replace the bytes in [lo, hi) with `text` — the one mutator, and what a Patch lowers to.
-// Returns the byte delta, which is what the callers' own indices (cursors, folds) shift by.
-//
-// The fast path is typing: an insert at the very end of the newest piece, when that piece runs
-// to the end of the append tail, simply extends it. Without that a piece would be pushed per
-// keystroke and the list would grow into the thing the binary search exists to avoid.
+// The one mutator, and what a Patch lowers to. Returns the byte delta the callers' own indices
+// shift by. The fast path is typing: an insert at the end of a piece that runs to the end of
+// the append tail extends it, rather than pushing a piece per keystroke.
 pt_splice :: proc(pt: ^Piece_Table, lo, hi: int, text: []u8) -> (delta: int) {
     a := clamp(lo, 0, pt.size)
     b := clamp(hi, a, pt.size)
@@ -192,8 +177,8 @@ pt_splice :: proc(pt: ^Piece_Table, lo, hi: int, text: []u8) -> (delta: int) {
         return
     }
 
-    // Cut the list at both ends so the replaced region is whole pieces, drop them, and put the
-    // new text in their place. `at` is where the removed run began.
+    // Cut at both ends so the replaced region is whole pieces, drop them, and put the new text
+    // in their place. `at` is where the removed run began.
     at := pt_split_at(pt, a)
     end := pt_split_at(pt, b)
     remove_range(&pt.pieces, at, end)
@@ -209,15 +194,13 @@ pt_splice :: proc(pt: ^Piece_Table, lo, hi: int, text: []u8) -> (delta: int) {
     return
 }
 
-// Whether the table has fragmented enough to be worth flattening. Asked by the save path and by
-// the derivation worker; deliberately never asked by an edit.
+// Asked by the save path and the derivation worker, never by an edit.
 pt_should_compact :: proc(pt: ^Piece_Table) -> bool {
     return len(pt.pieces) > PT_COMPACT_PIECES
 }
 
-// Flatten to a single block holding the document as it now reads, discarding every old block.
-// Byte-identical by construction, and the line index is untouched — compaction moves bytes
-// between blocks, never within the document.
+// Flatten to a single block, discarding every old one. The line index is untouched: compaction
+// moves bytes between blocks, never within the document.
 pt_compact :: proc(pt: ^Piece_Table) {
     flat := pt_read(pt, 0, pt.size)
     for b in pt.blocks {
@@ -234,8 +217,8 @@ pt_compact :: proc(pt: ^Piece_Table) {
 
 // --- internals ---
 
-// The piece holding `off`, or -1 at/past the end. Binary search on doc_off, which is why every
-// op that resizes a piece repairs the ones after it.
+// -1 at or past the end. Binary search on doc_off, which is why every op that resizes a piece
+// repairs the ones after it.
 @(private = "file")
 piece_at :: proc(pieces: []Piece, off: int) -> int {
     lo, hi := 0, len(pieces)
@@ -250,9 +233,8 @@ piece_at :: proc(pieces: []Piece, off: int) -> int {
     return lo < len(pieces) ? lo : -1
 }
 
-// Make `off` a piece boundary and return the index of the piece starting there (len(pieces) at
-// the end of the document). Splits the piece that straddles it; a no-op when one already ends
-// there, so the two calls a splice makes cost nothing on an aligned edit.
+// Returns the index of the piece starting at `off` (len(pieces) at the end of the document).
+// A no-op when one already ends there, so an aligned edit's two calls cost nothing.
 @(private = "file")
 pt_split_at :: proc(pt: ^Piece_Table, off: int) -> int {
     i := piece_at(pt.pieces[:], off)
@@ -273,14 +255,12 @@ pt_split_at :: proc(pt: ^Piece_Table, off: int) -> int {
     return i + 1
 }
 
-// The typing fast path: `text` inserted at `at` extends the piece ENDING there, when that
-// piece's block bytes also end exactly at the append cursor. Both halves matter — the first says
-// the insert continues a run this piece already holds, the second that nothing else has been
-// written into the chunk since, so the bytes can simply follow on.
+// `text` at `at` extends the piece ENDING there, when that piece's block bytes also end at the
+// append cursor: the first says the insert continues a run this piece holds, the second that
+// nothing else was written into the chunk since.
 //
-// It is the piece ending at `at`, not the last piece in the list, and that is the whole point:
-// typing mid-file splits once on the first keystroke, and every keystroke after it lands on the
-// end of the piece that split made. Without that, a piece would be pushed per keystroke.
+// The piece ending at `at`, not the last in the list: typing mid-file splits once on the first
+// keystroke, and every keystroke after lands on the end of the piece that split made.
 @(private = "file")
 pt_extend_tail :: proc(pt: ^Piece_Table, at: int, text: []u8) -> bool {
     if at == 0 || pt.tail < 0 {
@@ -295,7 +275,7 @@ pt_extend_tail :: proc(pt: ^Piece_Table, at: int, text: []u8) -> bool {
         return false
     }
     if pt.tail_used + len(text) > len(pt.blocks[pt.tail]) {
-        return false // the chunk is full; take the ordinary path and start a new one
+        return false // the chunk is full; take the ordinary path
     }
     copy(pt.blocks[pt.tail][pt.tail_used:], text)
     pt.tail_used += len(text)
@@ -306,10 +286,8 @@ pt_extend_tail :: proc(pt: ^Piece_Table, at: int, text: []u8) -> bool {
     return true
 }
 
-// Write `text` into the append pool, returning where it landed. A chunk is never grown or moved
-// once written — a worker may be reading it — so text that will not fit in the current one opens
-// a fresh chunk, sized to the text when the text is the larger. One append is therefore always
-// one contiguous span, and no piece straddles a block.
+// A chunk is never grown or moved once written, since a worker may be reading it, so text that
+// will not fit opens a fresh one sized to the text. One append is always one contiguous span.
 @(private = "file")
 pt_append :: proc(pt: ^Piece_Table, text: []u8) -> (block, off: int) {
     if pt.tail < 0 || pt.tail_used + len(text) > len(pt.blocks[pt.tail]) {
@@ -322,10 +300,9 @@ pt_append :: proc(pt: ^Piece_Table, text: []u8) -> (block, off: int) {
     return pt.tail, off
 }
 
-// Splice the line index for a replacement of [a, b) by `text`. The lines the replacement
-// straddles are the only ones rebuilt — one scan of `text` for its newlines — and every start
-// after them just shifts by the byte delta. Called BEFORE the pieces move, while a, b and the
-// old index still describe the same document.
+// Only the lines the replacement straddles are rebuilt, from one scan of `text`; every start
+// after them shifts by the byte delta. Called BEFORE the pieces move, while a, b and the old
+// index still describe the same document.
 @(private = "file")
 pt_splice_lines :: proc(pt: ^Piece_Table, a, b: int, text: []u8, delta: int) {
     first := pt_line_at_off(pt, a)

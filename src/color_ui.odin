@@ -3,15 +3,13 @@ package main
 import "core:fmt"
 import clay "../bindings/clay"
 
-// The colour picker's UI half: a preview swatch over one rail per HSV(A) channel.
+// A preview swatch over one rail per HSV(A) channel.
 //
-// **Every phase reads `color_row`.** The hit test, the drag and the paint all take their rects
-// from that one proc, so the rail you grab is the rail you see — a second copy of the layout
-// (which is what this pane had) drifts the moment either side gains a line, as the live format
-// line under the preview did.
+// Every phase reads `color_row`: the hit test, the drag and the paint take their rects from that
+// one proc, so the rail you grab is the rail you see.
 //
-// The rows are FONT-SIZED, not a fixed 28px: a row is a label line with its rail under it, so
-// its height has to follow the line height or the labels grow into the rails.
+// The rows are font-sized rather than a fixed 28px: a row is a label line with its rail under
+// it, so its height has to follow the line height or the labels grow into the rails.
 
 COLOR_PAD :: 8 // pane margin
 COLOR_GAP :: 10 // preview -> format line -> rails
@@ -30,8 +28,7 @@ color_slider_count :: proc(a: ^App) -> int {
     return a.color.style.has_alpha ? 4 : 3
 }
 
-// HSV's V, under the name the rest of the world uses for it: value and brightness are one
-// quantity and HSB is the same model. Not HSL's lightness, which is a different curve.
+// HSV's V, under the commoner name: HSB is the same model. Not HSL's lightness.
 color_slider_label :: proc(i: int) -> string {
     switch i {
     case 0:
@@ -46,7 +43,7 @@ color_slider_label :: proc(i: int) -> string {
     return ""
 }
 
-// Every channel as 0..1, so one rail geometry and one drag serve all four.
+// 0..1, so one rail geometry and one drag serve all four.
 color_slider_value :: proc(a: ^App, i: int) -> f32 {
     if i == 0 {
         return a.color.hsva[0] / 360
@@ -68,17 +65,17 @@ color_preview_rect :: proc(a: ^App, pane: Rect) -> Rect {
     return Rect{area.x + pad, area.y + pad, max(0, area.w - 2 * pad), i32(COLOR_PREVIEW_H * a.scale)}
 }
 
-// A label line plus the gap under its rail — the strip one channel owns.
+// The strip one channel owns: a label line plus the gap under its rail.
 color_row_h :: proc(lh, scale: f32) -> i32 {
     return i32(lh) + i32((COLOR_LABEL_GAP + COLOR_TRACK_H + COLOR_ROW_GAP) * scale)
 }
 
-// Channel `idx`'s row and the rail inside it. `row` is the hit target — a press anywhere on the
-// row grabs the rail, which is 6px tall and would otherwise be a pixel hunt.
+// `row` is the hit target: a press anywhere on it grabs the rail, which is 6px tall and would
+// otherwise be a pixel hunt.
 color_row :: proc(a: ^App, pane: Rect, idx: int, lh: f32) -> (row, track: Rect) {
     pr := color_preview_rect(a, pane)
     y := pr.y + pr.h + i32(COLOR_GAP * a.scale)
-    if a.color.live { // the live format line sits between the swatch and the rails
+    if a.color.live { // the format line sits between the swatch and the rails
         y += i32(lh) + i32(COLOR_GAP * a.scale)
     }
     row = Rect{pr.x, y + i32(idx) * color_row_h(lh, a.scale), pr.w, color_row_h(lh, a.scale)}
@@ -114,8 +111,7 @@ color_click :: proc(a: ^App, pane: Rect, lh: f32) {
     color_grab(a, pane, hit, lh)
 }
 
-// Drop the grabbed channel wherever the pointer is along its rail. Shared by the press and
-// every frame of the drag, so a click and a drag cannot disagree about what x means.
+// Shared by the press and every frame of the drag, so the two cannot disagree about x.
 color_grab :: proc(a: ^App, pane: Rect, idx: int, lh: f32) {
     _, track := color_row(a, pane, idx, lh)
     if track.w <= 0 {
@@ -124,8 +120,7 @@ color_grab :: proc(a: ^App, pane: Rect, idx: int, lh: f32) {
     color_set_slider(a, idx, clampf(f32(a.mouse.x - track.x) / f32(track.w), 0, 1))
 }
 
-// The drag machinery holds the grabbed channel in `target`, so the release's last motion still
-// lands (drag.odin parks it) — the pane's own `dragging` flag dropped that frame.
+// The grabbed channel is drag.odin's `target`, so the release's last motion still lands.
 color_drag :: proc(a: ^App, pane: Rect, lh: f32) {
     if a.drag.kind != .Color_Slider || a.drag.target >= color_slider_count(a) {
         return
@@ -163,9 +158,8 @@ color_declare :: proc(a: ^App, f: ^Font, pane: Rect) {
     }
 }
 
-// Painted from the pane rect rather than from `r`, the box the solver resolved: the two are the
-// same box (co_body grows to fill a pane sized at color_geom's answer), and taking the pane is
-// what keeps the paint and the hit test on ONE geometry.
+// From the pane rect rather than `r`, the box the solver resolved. The two are the same box, and
+// taking the pane keeps the paint and the hit test on one geometry.
 color_paint :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
     b := (^Color_Body)(user)
     if b == nil {
@@ -179,8 +173,8 @@ color_paint :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: r
     flush_pane(t, clip, win_w, win_h)
 }
 
-// The swatch: the colour, its hex over it in whichever of black/white reads on it, and the
-// live token's own text under it when the picker is writing back into a buffer.
+// The colour, its hex in whichever of black/white reads on it, and the live token's own text
+// under it when the picker is writing back into a buffer.
 @(private = "file")
 color_paint_preview :: proc(t: ^Text, a: ^App, pane: Rect, cw, lh: f32) {
     th := &a.theme
@@ -212,7 +206,6 @@ color_paint_preview :: proc(t: ^Text, a: ^App, pane: Rect, cw, lh: f32) {
     }
 }
 
-// One channel: its name left, its value right, its rail under both.
 @(private = "file")
 color_paint_row :: proc(t: ^Text, a: ^App, pane: Rect, i: int, cw, lh: f32) {
     th := &a.theme
@@ -230,17 +223,17 @@ color_paint_row :: proc(t: ^Text, a: ^App, pane: Rect, i: int, cw, lh: f32) {
     text_draw(t, vtext, f32(row.x + row.w) - text_w(vtext, cw), f32(row.y), th.muted)
     color_paint_track(t, a, track, i)
 
-    // The thumb, centred on the value and kept whole inside the rail's ends, on a bg ring so
-    // it stays visible where it matches the gradient under it.
+    // Centred on the value, kept whole inside the rail's ends, on a bg ring so it stays visible
+    // where it matches the gradient under it.
     w := i32(COLOR_THUMB_W * a.scale)
     x := clamp(track.x + i32(f32(track.w) * val) - w / 2, track.x, track.x + track.w - w)
     thumb := Rect{x, track.y - i32(3 * a.scale), w, track.h + i32(6 * a.scale)}
     fill(t, inset(thumb, -i32(max(1, a.scale))), th.bg)
-    fill(t, thumb, held ? th.accent : th.fg) // always solid: a dim thumb is a lost thumb
+    fill(t, thumb, held ? th.accent : th.fg) // always solid: a dim thumb is a lost one
 }
 
-// The rail, in slices: it shows the colour you would get by dropping the thumb at each point,
-// so the bar is its own legend rather than a bar of the colour you already have.
+// In slices: it shows the colour you would get by dropping the thumb at each point, so the bar
+// is its own legend.
 @(private = "file")
 color_paint_track :: proc(t: ^Text, a: ^App, track: Rect, i: int) {
     step := max(1, i32(3 * a.scale))
@@ -250,8 +243,8 @@ color_paint_track :: proc(t: ^Text, a: ^App, track: Rect, i: int) {
     }
 }
 
-// Hue runs at full saturation and value: at v = 0 the honest gradient is a black bar, which
-// names nothing. The other three show the real result, alpha included for the alpha rail.
+// Hue runs at full saturation and value: at v = 0 the honest gradient is a black bar, naming
+// nothing. The other three show the real result.
 color_track_at :: proc(a: ^App, i: int, u: f32) -> [3]f32 {
     h := a.color.hsva
     switch i {
@@ -267,14 +260,12 @@ color_track_at :: proc(a: ^App, i: int, u: f32) -> [3]f32 {
     return color_over(color_hsva_to_rgba(h), a.theme.bg)
 }
 
-// A translucent colour composited over an opaque background. `fill` takes no alpha, so every
-// translucent thing here is blended before it is queued.
+// `fill` takes no alpha, so every translucent thing here is blended before it is queued.
 color_over :: proc(c: [4]f32, bg: [3]f32) -> [3]f32 {
     return bg * (1 - c[3]) + c.rgb * c[3]
 }
 
-// The classic two-tone board under a translucent swatch — each square blended separately, so
-// alpha reads as alpha rather than as a darker shade of the pane.
+// Each square blended separately, so alpha reads as alpha rather than a darker pane.
 @(private = "file")
 color_checker :: proc(t: ^Text, r: Rect, sz: i32, over: [4]f32, lo, hi: [3]f32) {
     for y := r.y; y < r.y + r.h; y += sz {
@@ -286,8 +277,7 @@ color_checker :: proc(t: ^Text, r: Rect, sz: i32, over: [4]f32, lo, hi: [3]f32) 
     }
 }
 
-// The colour picker: swatch, one rail per channel. Input runs before the declaration so a drag
-// lands in the frame it happened, as every other pane does.
+// Input runs before the declaration, so a drag lands in the frame it happened.
 color_frame :: proc(t: ^Text, a: ^App, pane: Rect) {
     if pane.w <= 0 || pane.h <= 0 {
         return

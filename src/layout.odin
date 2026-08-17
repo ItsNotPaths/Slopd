@@ -1,34 +1,30 @@
 package main
 
-// Layout is the producer: window pixel size + app state -> pane rectangles.
-// It knows nothing about fonts, cells, or rendering. Views that host a glyph
-// grid snap these rects to whole cells themselves.
+// Window pixel size + app state -> pane rectangles. Knows nothing about fonts, cells or
+// rendering; a view hosting a glyph grid snaps these rects to whole cells itself.
 //
-// The status strip always spans the bottom; above it the editor and aux panes are split
-// vertically. A pane hidden by the view (Zen's retracted aux, Full's other surface) gets a
-// zero rect rather than any stored hidden state — see panes_visible.
+// The strip spans the bottom; the editor and aux panes split the space above. A hidden pane
+// gets a zero rect rather than any stored state — see panes_visible.
 
-// How far the editor/aux split may be pushed either way. Named here because there are two
-// writers — Alt+`[` / Alt+`]` (input.odin) and the divider drag (window_ui.odin) — and a
-// pointer must not be able to reach a width the keyboard cannot.
+// Named here because there are two writers — Alt+[ / Alt+] and the divider drag — and a
+// pointer must not reach a width the keyboard cannot.
 SPLIT_MIN :: 0.15
 SPLIT_MAX :: 0.85
 
 Layout :: struct {
-    editor: Rect, // the text editor pane (zero rect when hidden: Full on the aux surface)
-    aux:    Rect, // the aux pane (zero rect when hidden: Zen while editing)
-    strip:  Rect, // bottom status / command strip
+    editor: Rect, // zero rect when hidden (Full on the aux surface)
+    aux:    Rect, // zero rect when hidden (Zen while editing)
+    strip:  Rect,
     gutter: i32,
-    vis:    Pane_Vis, // which panes these rects are for — computed once, here
+    vis:    Pane_Vis, // which panes these rects are for; computed once, here
 }
 
 compute_layout :: proc(win_w, win_h: i32, a: ^App, now: f64) -> Layout {
     out: Layout
     out.gutter = i32(2 * a.scale)
 
-    // Status strip spans the full width along the bottom; the panes fill above. Its
-    // height tracks the font zoom (the command line lives here) so big text doesn't
-    // clip, on top of the DPI scale.
+    // The strip's height tracks the font zoom as well as the DPI, since the command line
+    // lives in it.
     strip_h := i32(24 * a.scale * font_zoom_ratio(a))
     if strip_h > win_h {
         strip_h = win_h
@@ -37,21 +33,19 @@ compute_layout :: proc(win_w, win_h: i32, a: ^App, now: f64) -> Layout {
     out.strip = Rect{0, content_h, win_w, strip_h}
     content := Rect{0, 0, win_w, content_h}
 
-    // The editor's width fraction, eased rather than snapped when Alt+[ / Alt+] adjust
-    // it. Re-aimed on change like smooth scroll (anim.odin) so it self-corrects each
-    // frame; read in the Split arrangement below.
+    // Eased rather than snapped when Alt+[ / Alt+] adjust it, re-aimed on change like smooth
+    // scroll so it self-corrects each frame.
     if a.split != a.split_anim.to {
         anim_start(&a.split_anim, now, anim_value(&a.split_anim, now), a.split, SPLIT_DUR)
     }
     split := anim_value(&a.split_anim, now)
 
     // Zen: the editor keeps the full width and the aux pane slides in over its right edge
-    // while it holds focus (zen_anim, driven by set_focus). The editor rect shrinks to the
-    // uncovered strip — with no soft-wrap its glyphs are clipped at that edge, never reflowed.
+    // while focused. The editor rect shrinks to the uncovered strip — with no soft wrap its
+    // glyphs are clipped there, never reflowed.
     if a.view == .Zen {
         r := anim_value(&a.zen_anim, now) // 0 hidden .. 1 docked
-        // Use the animated `split` rather than the raw a.split so an adjustment EASES
-        // in Zen too rather than snapping.
+        // The animated `split`, so an adjustment eases in Zen too.
         aux_w := max(0, win_w - i32(f32(win_w) * split))
         aux_x := win_w - i32(f32(aux_w) * r)
         if r > 0.001 {
@@ -65,9 +59,8 @@ compute_layout :: proc(win_w, win_h: i32, a: ^App, now: f64) -> Layout {
         return out
     }
 
-    // Pane visibility is derived (see panes_visible), so the layout has no hidden
-    // state to track: two panes split by a.split; a lone visible pane fills the
-    // content area; a hidden pane is left a zero rect (render's guards skip it).
+    // Visibility is derived (panes_visible), so there is no hidden state here: two panes split
+    // by a.split, a lone one filling the content area, a hidden one left a zero rect.
     out.vis = panes_visible(a)
     vis := out.vis
     switch {

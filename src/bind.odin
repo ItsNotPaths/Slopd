@@ -2,19 +2,19 @@ package main
 
 import "vendor:glfw"
 
-// Binds — the one place a chord is written down. ACTIONS says what a verb is called and where it
-// is reachable; BIND_DEFAULTS says which key reaches it, and is the half a config file overrides.
+// The one place a chord is written down. ACTIONS says what a verb is called and where it is
+// reachable; BIND_DEFAULTS says which key reaches it, and is the half a config file overrides.
 //
-// A chord is looked up in two tables: Global, plus the context of the surface with the keys.
+// A chord is looked up in Global plus the context of the surface with the keys:
 //   Global    the Alt chords, the font zoom, Escape. Searched first, always.
 //   Text      an editable has the keys, so a bare key TYPES and only chords live here.
 //   Surface   a list, a browser or an image. Bare keys are free.
-//   Terminal  a live session: a MISS here reaches the job. Every bind steals a key from it.
+//   Terminal  a live session: a MISS here reaches the job.
 //   Shell     no table at all — an alt-screen program's plain keys.
 
 CHORD_MODS :: glfw.MOD_SHIFT | glfw.MOD_CONTROL | glfw.MOD_ALT
 
-// A PHYSICAL key plus its modifiers: `alt+;` is KEY_SEMICOLON, a different glyph on another layout.
+// A PHYSICAL key plus its modifiers: `alt+;` is KEY_SEMICOLON, another glyph on another layout.
 Chord :: struct {
     key:  i32,
     mods: i32,
@@ -52,8 +52,8 @@ Action_Info :: struct {
     run:  i32, // extra keys past the first: Alt+1..9 is one bind with run 8
 }
 
-// An enumerated array, so Odin refuses the literal with a member left out. The name's prefix is
-// the SUBJECT; `ctx` is where the chord works, and they differ where a verb drives a pane from
+// An enumerated array, so Odin refuses a literal with a member left out. The name's prefix is
+// the SUBJECT and `ctx` is where the chord works; they differ where a verb drives a pane from
 // outside it (`term.goto` anywhere, `term.sel_up` only inside).
 @(rodata)
 ACTIONS := [Action]Action_Info {
@@ -126,11 +126,11 @@ ACTIONS := [Action]Action_Info {
     .Media_Fit           = {"image.fit", SF, 0},
 }
 
-// First match wins, so a chord may not appear twice in one context (bind_clash; the suite checks).
+// First match wins, so a chord may not appear twice in one context (bind_clash).
 //
-// SHIFT IS NOT WRITTEN HERE. A Shift-qualified chord matching nothing exactly retries without it
-// and the action runs `extend` — so Shift+Down sweeps marks, ^Shift+D takes the marked set,
-// Shift+Enter opens in the desktop app, ^Shift+C copies. Written out only for a DIFFERENT verb.
+// Shift is not written here: a Shift-qualified chord matching nothing exactly retries without it
+// and the action runs `extend`, so Shift+Down sweeps marks and Shift+Enter opens in the desktop
+// app. It is written out only for a DIFFERENT verb.
 @(rodata)
 BIND_DEFAULTS := [?]Bind {
     // global: focus, panes, the command line
@@ -244,14 +244,13 @@ bind_run :: proc(act: Action) -> i32 {
     return ACTIONS[act].run
 }
 
-// Which table a keystroke is looked up in, alongside Global. A question about the surface with
-// the keys, asked fresh on every press.
+// Alongside Global. A question about the surface with the keys, asked fresh on every press.
 bind_ctx :: proc(a: ^App, chord: Chord) -> Bind_Ctx {
     if kind, _ := active_editable(a); kind != .None {
         return .Text
     }
     if ts := term_sel_target(a); ts != nil {
-        // On the alt screen a full-screen program owns the plain keys — PageUp pages ITS buffer.
+        // On the alt screen a full-screen program owns the plain keys.
         if ts.on_altscreen && chord.mods & ~i32(MS) == 0 {
             return .Shell
         }
@@ -260,8 +259,8 @@ bind_ctx :: proc(a: ^App, chord: Chord) -> Bind_Ctx {
     return .Surface
 }
 
-// Exact match first; failing that, a Shift-qualified chord retries without Shift and the action
-// runs extending. An exact Shift row therefore always beats the fallback.
+// Exact match first; failing that, a Shift-qualified chord retries without Shift and runs
+// extending. An exact Shift row therefore beats the fallback.
 bind_find :: proc(binds: []Bind, chord: Chord, ctx: Bind_Ctx) -> (Bind, bool) {
     if b, ok := bind_scan(binds, chord, ctx); ok {
         return b, true
@@ -286,7 +285,7 @@ bind_scan :: proc(binds: []Bind, chord: Chord, ctx: Bind_Ctx) -> (Bind, bool) {
 }
 
 // Same modifiers, overlapping key runs, a context in common. First match wins, so the loader
-// refuses the second and the suite holds the defaults to it.
+// refuses the second.
 bind_clash :: proc(x, y: Bind) -> bool {
     if bind_ctxs(x.act) & bind_ctxs(y.act) == {} || x.chord.mods != y.chord.mods {
         return false
@@ -297,8 +296,7 @@ bind_clash :: proc(x, y: Bind) -> bool {
     )
 }
 
-// Who already holds `c` in a context `act` would reach. `act`'s own rows do not count: rebinding
-// a chord onto the action that has it is a no-op, not a theft.
+// `act`'s own rows do not count: rebinding a chord onto the action that has it is a no-op.
 bind_holder :: proc(binds: []Bind, c: Chord, act: Action) -> (Action, bool) {
     want := Bind{c, act}
     for b in binds {

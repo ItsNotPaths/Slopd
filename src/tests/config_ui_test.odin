@@ -5,15 +5,13 @@ import clay "../../bindings/clay"
 import "core:os"
 import "core:testing"
 
-// C5b: the config / syntax pane declared in Clay. The filetree proved a flat list of
-// one-row items and grep proved one item spanning several rows; this pane adds the two
-// things neither had — rows that select NOTHING (section rules and titles) and rows that
-// carry a second coordinate (a choice inside an open dropdown) — so those are what the
-// assertions here are about, plus the Custom the live search field needs.
+// The config / syntax pane declared in Clay. The filetree proved a flat list of one-row items
+// and grep one item spanning several rows; this pane adds rows that select NOTHING (section
+// rules and titles) and rows carrying a second coordinate (a choice inside an open dropdown),
+// plus the Custom the live search field needs.
 //
-// The pane used throughout is {100, 50, 300, 200} at scale 1 with the synthetic 10x16
-// font: a content area of {102, 52, 296, 196}, an 18px row (16px line + 2px
-// CONFIG_ROW_PAD), 10 rows fitting in it, and 29 whole cells across.
+// The pane is {100, 50, 300, 200} at scale 1 with the synthetic 10x16 font: a content area of
+// {102, 52, 296, 196}, an 18px row, 10 rows fitting, and 29 whole cells across.
 
 @(private = "file")
 PANE :: app.Rect{100, 50, 300, 200}
@@ -26,25 +24,22 @@ MAX_ROWS :: 10
 @(private = "file")
 COLS :: 29
 
-// The install block that opens the pane: a rule, the "slopd" title, a rule, and Slopd's own
-// row. It is chrome plus one row and never changes size, so every DISPLAY row number below
-// counts from past it — and the ones that frame a specific block scroll past it first.
+// A rule, the "slopd" title, a rule, and Slopd's own row. Chrome plus one row, never changing
+// size, so every DISPLAY row number below counts from past it.
 @(private = "file")
 INSTALL_ROWS :: 4
 
-// The bindings row, between the settings block and the syntax section.
 @(private = "file")
 BINDS_ROWS :: 1
 
-// The shared value column, in cells: the widest setting key ("conflict_stage", 14) plus
-// ": ". Derived by hand and pinned, because every column assertion below multiplies it
-// out — if a longer key is ever added, exactly this assertion fails rather than a dozen
-// mysterious pixel ones.
+// In cells: the widest setting key ("conflict_stage", 14) plus ": ". Pinned, because every
+// column assertion below multiplies it out — a longer key fails exactly this assertion rather
+// than a dozen pixel ones.
 @(private = "file")
 VAL_OFF :: 16
 
-// Three settings-independent columns, in framebuffer pixels: chrome sits at the one-cell
-// margin, an indent-1 row one cell further in, an indent-4 option row three past that.
+// In framebuffer pixels: chrome at the one-cell margin, an indent-1 row one cell further in, an
+// indent-4 option row three past that.
 @(private = "file")
 X_FLUSH :: AREA.x + 10
 @(private = "file")
@@ -54,13 +49,13 @@ X_VALUE :: X_ROW + VAL_OFF * 10
 @(private = "file")
 X_OPT :: AREA.x + 50
 
-// A pane with three synthetic languages, so the row maths does not depend on the generated
-// `languages` registry being present on the machine running the tests.
+// Three synthetic languages, so the row maths does not depend on the generated `languages`
+// registry being on the machine.
 @(private = "file")
 fixture :: proc(a: ^app.App) {
     app.config_pane_init(&a.config_pane, nil)
     a.scale = 1
-    a.theme = app.default_theme() // a zero App's palette is all black, which hides colour bugs
+    a.theme = app.default_theme() // a zero palette is all black, which hides colour bugs
     clear(&a.config_pane.langs)
     append(
         &a.config_pane.langs,
@@ -76,8 +71,8 @@ test_config_geom :: proc(t: ^testing.T) {
     area, row_h, rows, cols := app.config_geom(PANE, 1, 16, 10)
     testing.expect_value(t, area, AREA)
     testing.expect_value(t, row_h, i32(ROW_H))
-    // No row is reserved for a header here — the pane's first row is already a section
-    // rule — which is the one geometry difference from the filetree and grep.
+    // No row is reserved for a header: the first row is already a section rule, which is the
+    // one geometry difference from the filetree and grep.
     testing.expect_value(t, rows, MAX_ROWS) // 196 / 18
     testing.expect_value(t, cols, COLS) // 296 / 10
 
@@ -87,8 +82,8 @@ test_config_geom :: proc(t: ^testing.T) {
     testing.expect_value(t, app.config_val_off(), f32(VAL_OFF))
 }
 
-// The flattening that used to be a local `Row` struct inside draw_config. Every later
-// assertion rests on this shape, and `item` is the field that makes a click possible.
+// Every later assertion rests on this shape, and `item` is the field that makes a click
+// possible.
 @(test)
 test_config_rows_flatten :: proc(t: ^testing.T) {
     a: app.App
@@ -98,12 +93,11 @@ test_config_rows_flatten :: proc(t: ^testing.T) {
     sc := app.SETTING_COUNT
 
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
-    // 3 chrome rows per section, Slopd's own row, one row per setting, the search row, one
-    // row per language.
+    // Three chrome rows per section, Slopd's row, one per setting, the search row, one per
+    // language.
     testing.expect_value(t, len(rows), sc + 10 + INSTALL_ROWS + BINDS_ROWS)
 
-    // Chrome selects nothing: a press on a rule or a section title is dead space, the way
-    // grep's spacers are.
+    // Chrome selects nothing: a rule or a title is dead space, as grep's spacers are.
     testing.expect_value(t, rows[0].kind, app.Config_Row_Kind.Rule)
     testing.expect_value(t, rows[0].item, -1)
     testing.expect_value(t, len(rows[0].text), COLS - 1) // the rule spans the pane
@@ -121,7 +115,7 @@ test_config_rows_flatten :: proc(t: ^testing.T) {
     testing.expect_value(t, rows[INSTALL_ROWS + 1].kind, app.Config_Row_Kind.Header)
     testing.expect_value(t, rows[INSTALL_ROWS + 1].text, "settings")
 
-    // Settings map row -> Setting index, and carry their value for the shared column.
+    // Settings map row -> Setting index and carry their value for the shared column.
     first := INSTALL_ROWS + 3
     testing.expect_value(t, rows[first].kind, app.Config_Row_Kind.Setting)
     testing.expect_value(t, rows[first].item, app.ROW_SETTINGS)
@@ -148,9 +142,9 @@ test_config_rows_flatten :: proc(t: ^testing.T) {
     testing.expect(t, rows[search + 2].present, "an installed grammar is not marked present")
 }
 
-// Slopd's own row is a dropdown like any other, and its options are the mode's: an installed
-// copy can be replaced or removed, anything else can be installed. `where` is always there,
-// and always first, so the harmless option is the one Enter lands on.
+// A dropdown like any other, with the mode's options: an installed copy can be replaced or
+// removed, anything else installed. `where` is always first, so Enter lands on the harmless
+// option.
 @(test)
 test_install_options :: proc(t: ^testing.T) {
     buf: [len(app.Install_Option)]app.Install_Option
@@ -168,9 +162,8 @@ test_install_options :: proc(t: ^testing.T) {
     testing.expect_value(t, installed[1], app.Install_Option.Reinstall)
     testing.expect_value(t, installed[2], app.Install_Option.Uninstall)
 
-    // The launcher pair is LAST and is exactly one option: whichever of add / remove the
-    // machine does not already have. It does not vary with the install mode — a portable
-    // build can be in the application list, and an installed copy can be absent from it.
+    // The launcher pair is last, and exactly one option: whichever of add / remove the machine
+    // does not have. It does not vary with the install mode.
     for m in app.Install_Mode {
         without := app.install_options(m, false, buf[:])
         testing.expect_value(t, without[len(without) - 1], app.Install_Option.DesktopAdd)
@@ -184,19 +177,18 @@ test_install_options :: proc(t: ^testing.T) {
     }
 }
 
-// The mode rule, asked about paths this machine need not have. The binary's own location
-// decides it — being the installed copy first, then whether the folder it sits in can be
-// written — and a machine with no $HOME (installed == "") can still be portable.
+// Asked about paths this machine need not have. The binary's own location decides: being the
+// installed copy first, then whether its folder can be written.
 @(test)
 test_install_classify :: proc(t: ^testing.T) {
     home := "/home/me/.local/bin/slopd"
     testing.expect_value(t, app.install_classify(home, home, false), app.Install_Mode.Installed)
     testing.expect_value(t, app.install_classify(home, home, true), app.Install_Mode.Installed)
 
-    // A release folder you unzipped: not the installed copy, and writable.
+    // An unzipped release folder: not the installed copy, and writable.
     testing.expect_value(t, app.install_classify("/home/me/slopd/Slopd", home, true), app.Install_Mode.Portable)
 
-    // Copied into a system bin folder by hand: writes would fail, so nothing is attempted.
+    // Copied into a system bin folder: writes would fail, so nothing is attempted.
     testing.expect_value(t, app.install_classify("/usr/bin/slopd", home, false), app.Install_Mode.ReadOnly)
 
     // No $HOME: there is no installed path to be, so only writability answers.
@@ -208,8 +200,8 @@ test_install_classify :: proc(t: ^testing.T) {
     }
 }
 
-// An open dropdown SPLICES its options into the row list rather than floating over it —
-// which is what makes this pane's dropdown not an occlusion case at all (see config_ui.odin).
+// An open dropdown splices its options into the row list rather than floating over it, which is
+// what makes it not an occlusion case.
 @(test)
 test_config_rows_dropdown_splices :: proc(t: ^testing.T) {
     a: app.App
@@ -223,10 +215,10 @@ test_config_rows_dropdown_splices :: proc(t: ^testing.T) {
     app.config_pane_open_setting(&a, .LineNumbers) // 2 options: global / relative
 
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
-    testing.expect_value(t, len(rows), sc + 12 + INSTALL_ROWS + BINDS_ROWS) // two rows longer than closed
+    testing.expect_value(t, len(rows), sc + 12 + INSTALL_ROWS + BINDS_ROWS) // two rows longer
 
-    // The options sit directly under the row that owns them, carrying its item plus their
-    // own index — the second coordinate a click needs.
+    // Directly under the row that owns them, carrying its item plus their own index: the second
+    // coordinate a click needs.
     own := INSTALL_ROWS + 3 + ln
     testing.expect_value(t, rows[own].item, app.ROW_SETTINGS + ln)
     testing.expect_value(t, rows[own + 1].kind, app.Config_Row_Kind.Option)
@@ -235,7 +227,7 @@ test_config_rows_dropdown_splices :: proc(t: ^testing.T) {
     testing.expect_value(t, rows[own + 1].text, "global")
     testing.expect_value(t, rows[own + 2].opt, 1)
     testing.expect_value(t, rows[own + 2].text, "relative")
-    // The row AFTER the dropdown is the next setting, pushed down by two.
+    // The row after the dropdown is the next setting, pushed down by two.
     testing.expect_value(t, rows[own + 3].item, app.ROW_SETTINGS + ln + 1)
 
     // The install row splices the same way, above the settings block.
@@ -250,9 +242,8 @@ test_config_rows_dropdown_splices :: proc(t: ^testing.T) {
     testing.expect_value(t, rows[4].text, app.install_option_label(.Where))
 }
 
-// The highlight moves INTO an open dropdown, and the scroll anchor follows it there. This
-// is the rule that stops a dropdown opening off the bottom of the pane with its chosen
-// option invisible.
+// The highlight moves INTO an open dropdown and the scroll anchor follows, which is what stops
+// one opening off the bottom of the pane with its chosen option invisible.
 @(test)
 test_config_selected_and_anchor :: proc(t: ^testing.T) {
     a: app.App
@@ -260,14 +251,14 @@ test_config_selected_and_anchor :: proc(t: ^testing.T) {
     defer app.config_pane_destroy(&a.config_pane)
     cp := &a.config_pane
 
-    // Closed: the selected setting row carries the highlight, and anchors the scroll.
+    // Closed: the selected setting row carries the highlight and anchors the scroll.
     cp.sel = app.ROW_SETTINGS
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
     first := INSTALL_ROWS + 3
     testing.expect(t, app.config_row_selected(cp, rows[first]), "the selected setting row is not lit")
     testing.expect_value(t, app.pane_anchor(app.config_draw_rows(&a, rows, context.temp_allocator)), first)
 
-    // Open: the setting row goes dark and the chosen OPTION lights instead.
+    // Open: the setting row goes dark and the chosen option lights.
     ln := int(app.Setting.LineNumbers)
     cp.sel = app.ROW_SETTINGS + ln
     app.config_pane_open_setting(&a, .LineNumbers)
@@ -278,7 +269,7 @@ test_config_selected_and_anchor :: proc(t: ^testing.T) {
     testing.expect(t, app.config_row_selected(cp, rows[own + 2]), "the chosen option is not lit")
     testing.expect_value(t, app.pane_anchor(app.config_draw_rows(&a, rows, context.temp_allocator)), own + 2)
 
-    // The install row behaves as a setting row does: open, the highlight moves to the choice.
+    // The install row behaves as a setting row does.
     cp.open = .None
     cp.sel = app.ROW_INSTALL
     rows = app.config_rows(cp, &a, COLS, context.temp_allocator)
@@ -288,8 +279,8 @@ test_config_selected_and_anchor :: proc(t: ^testing.T) {
     testing.expect(t, !app.config_row_selected(cp, rows[3]), "an open install row kept the highlight")
     testing.expect(t, app.config_row_selected(cp, rows[4]), "the chosen install option is not lit")
 
-    // A language dropdown keeps the highlight on its ROOT until opt_sel leaves it (-1 is
-    // the root; 0.. are the options), which is what makes Up out of the list work.
+    // A language dropdown keeps the highlight on its ROOT until opt_sel leaves it, which is
+    // what makes Up out of the list work.
     cp.open = .None
     sc := app.SETTING_COUNT
     cp.sel = app.ROW_LANGS // the first language
@@ -301,10 +292,9 @@ test_config_selected_and_anchor :: proc(t: ^testing.T) {
     testing.expect_value(t, app.pane_anchor(app.config_draw_rows(&a, rows, context.temp_allocator)), root)
 }
 
-// The end-to-end claim: the declared tree resolves to the columns the hand-drawn pane used
-// — a one-cell margin, each row indented by its own depth, and every value on one column
-// regardless of key length. Text is asserted in EMISSION order, which is row order, so a
-// value and an identically-named option cannot be confused for each other.
+// The declared tree resolves to the columns the hand-drawn pane used: a one-cell margin, each
+// row indented by its depth, every value on one column. Text is asserted in emission order,
+// which is row order, so a value and an identically-named option cannot be confused.
 @(test)
 test_config_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
@@ -321,7 +311,7 @@ test_config_command_list :: proc(t: ^testing.T) {
     cp.sel = app.ROW_SETTINGS + ln
     app.config_pane_open_setting(&a, .LineNumbers)
     cp.opt_sel = 1 // "relative"
-    cp.scroll = INSTALL_ROWS // frame the settings block, so the columns below are its own
+    cp.scroll = INSTALL_ROWS // frame the settings block
 
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
     cmds := app.config_layout(&a, &f, PANE, rows, 500, 300)
@@ -351,18 +341,17 @@ test_config_command_list :: proc(t: ^testing.T) {
         }
     }
 
-    // The clip group is the whole content area: this pane has no header outside it.
+    // The clip group is the whole content area: no header outside it.
     testing.expect_value(t, scissor, AREA)
 
-    // Exactly one band, on the chosen OPTION (display row 5 — three chrome rows, the theme
-    // row, the line_numbers row, then its first option) — not on the open setting row.
+    // Exactly one band, on the chosen OPTION at display row 5, not on the open setting row.
     testing.expect_value(t, rects, 1)
     testing.expect_value(t, band, app.Rect{AREA.x, AREA.y + 6 * ROW_H, AREA.w, ROW_H})
 
-    // Ten rows fit, and the search row is far below them, so nothing is Custom here.
+    // Ten rows fit and the search row is far below, so nothing is Custom here.
     testing.expect_value(t, customs, 0)
 
-    // Row order, with each string's column. The two "global"s are the point: one is the
+    // Row order, with each string's column. The two "global"s are the point: one the
     // line_numbers VALUE at the shared column, the other its first OPTION, indented.
     testing.expect_value(t, len(texts), 15)
     testing.expect_value(t, texts[1].text, "settings")
@@ -372,9 +361,9 @@ test_config_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, texts[4].text, "(default)")
     testing.expect_value(t, texts[4].x, i32(X_VALUE))
     testing.expect_value(t, texts[5].text, "line_numbers:")
-    testing.expect_value(t, texts[5].x, i32(X_ROW)) // the longest key still starts at the margin
+    testing.expect_value(t, texts[5].x, i32(X_ROW)) // the longest key starts at the margin
     testing.expect_value(t, texts[6].text, "global")
-    testing.expect_value(t, texts[6].x, i32(X_VALUE)) // ...and its value shares the column
+    testing.expect_value(t, texts[6].x, i32(X_VALUE)) // …and its value shares the column
     testing.expect_value(t, texts[7].text, "global")
     testing.expect_value(t, texts[7].x, i32(X_OPT)) // the option, nested under it
     testing.expect_value(t, texts[8].text, "relative")
@@ -383,9 +372,8 @@ test_config_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, texts[9].x, i32(X_ROW))
 }
 
-// The live language filter is a Custom, because a caret is an over-quad and Clay's
-// rectangles are under-quads (see config_ui.odin's header). It occupies the value column
-// and the rest of the row.
+// A Custom, because a caret is an over-quad and Clay's rectangles are under-quads. It occupies
+// the value column and the rest of the row.
 @(test)
 test_config_search_is_custom :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
@@ -399,7 +387,7 @@ test_config_search_is_custom :: proc(t: ^testing.T) {
     cp := &a.config_pane
     sc := app.SETTING_COUNT
 
-    // Scroll the syntax section into view: the search row is the fourth visible row.
+    // Scroll the syntax section into view: the search row is the fourth visible.
     cp.scroll = INSTALL_ROWS + 3 + sc + BINDS_ROWS
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
     cmds := app.config_layout(&a, &f, PANE, rows, 500, 300)
@@ -414,7 +402,7 @@ test_config_search_is_custom :: proc(t: ^testing.T) {
         }
     }
     testing.expect_value(t, customs, 1)
-    // Starts at the shared value column, runs to the pane's right edge, one row tall.
+    // From the shared value column to the pane's right edge, one row tall.
     testing.expect_value(
         t,
         box,
@@ -422,11 +410,9 @@ test_config_search_is_custom :: proc(t: ^testing.T) {
     )
 }
 
-// The free-text setting is an editor only while it is HIGHLIGHTED: selected, it declares the
-// same Custom the search box does (the live Doc, with a caret); unselected, it is the stored
-// value as ordinary text. That split is decided at declaration time rather than in the
-// flattening, because a click moves the selection mid-frame — so this is the assertion that
-// the row list stayed selection-free while the pane still paints two different things.
+// An editor only while HIGHLIGHTED: selected it declares the search box's Custom, unselected it
+// is the stored value as text. Decided at declaration time rather than in the flattening,
+// because a click moves the selection mid-frame.
 @(test)
 test_config_text_setting_is_custom_when_selected :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
@@ -440,17 +426,16 @@ test_config_text_setting_is_custom_when_selected :: proc(t: ^testing.T) {
     cp := &a.config_pane
     a.git_tool = "lazygit"
 
-    // Frame the git_tool row (the install block, three chrome rows, then one per setting)
-    // with the selection elsewhere. The search row is far below the fold, so any Custom seen
-    // here is this row's.
+    // Frame the git_tool row with the selection elsewhere. The search row is far below the
+    // fold, so any Custom seen here is this row's.
     cp.scroll = INSTALL_ROWS + 5
     cp.sel = app.ROW_SETTINGS
     customs, x := text_field_probe(&a, &f, "lazygit")
     testing.expect_value(t, customs, 0)
     testing.expect_value(t, x, i32(X_VALUE)) // the stored value, at the shared column
 
-    // Select it and the same row becomes the live field instead: one Custom, and the value
-    // is no longer drawn as text (the Doc holds it now).
+    // Selected, the same row becomes the live field: one Custom, and the value is no longer
+    // drawn as text.
     cp.sel = app.ROW_SETTINGS + int(app.Setting.GitTool)
     app.config_edit_sync(&a)
     customs, x = text_field_probe(&a, &f, "lazygit")
@@ -480,8 +465,8 @@ text_field_probe :: proc(a: ^app.App, f: ^app.Font, want: string) -> (customs: i
     return
 }
 
-// Hover is a config toggle (open decision 5, settled here): off, the pointer changes
-// nothing; on, the row under it takes a band that is NOT the selection's.
+// Off, the pointer changes nothing; on, the row under it takes a band that is not the
+// selection's.
 @(test)
 test_config_hover_is_toggleable :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
@@ -494,7 +479,7 @@ test_config_hover_is_toggleable :: proc(t: ^testing.T) {
     defer app.config_pane_destroy(&a.config_pane)
     cp := &a.config_pane
     cp.sel = app.ROW_INSTALL
-    cp.hover = INSTALL_ROWS + 5 // a settings row, well below the selected one
+    cp.hover = INSTALL_ROWS + 5 // a settings row, below the selected one
 
     count_rects :: proc(cmds: ^clay.ClayArray(clay.RenderCommand)) -> int {
         n := 0
@@ -521,14 +506,14 @@ test_config_hover_is_toggleable :: proc(t: ^testing.T) {
     only_sel := app.config_layout(&a, &f, PANE, rows, 500, 300)
     testing.expect_value(t, count_rects(&only_sel), 1)
 
-    // And the tint is a hint, not a second selection — strictly between the pane
-    // background and the selection bar.
+    // The tint is a hint, not a second selection: strictly between the pane background and
+    // the selection bar.
     th := &a.theme
     testing.expect(t, app.hover_bg(th) != th.bg && app.hover_bg(th) != th.separator)
 }
 
-// A hit resolves to a DISPLAY row, WITH THE LIST SCROLLED — the case that separates a real
-// row index from a visible-row index, which agree only at the top.
+// To a DISPLAY row, with the list SCROLLED: the case that separates a real row index from a
+// visible-row index, which agree only at the top.
 @(test)
 test_config_hit_with_scroll :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
@@ -541,9 +526,9 @@ test_config_hit_with_scroll :: proc(t: ^testing.T) {
     defer app.config_pane_destroy(&a.config_pane)
     cp := &a.config_pane
 
-    cp.scroll = INSTALL_ROWS + 1 // visible: the "settings" title, a rule, then the settings rows
+    cp.scroll = INSTALL_ROWS + 1 // the "settings" title, a rule, then the settings rows
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
-    _ = app.config_layout(&a, &f, PANE, rows, 500, 300) // frame 1: gives Clay boxes to hit
+    _ = app.config_layout(&a, &f, PANE, rows, 500, 300) // frame 1: boxes to hit
 
     hit_at :: proc(a: ^app.App, f: ^app.Font, rows: []app.ConfigRow, visible_row: int) -> int {
         clay.SetPointerState({f32(AREA.x + 30), f32(AREA.y + i32(visible_row) * ROW_H + 4)}, false)
@@ -552,11 +537,11 @@ test_config_hit_with_scroll :: proc(t: ^testing.T) {
         return app.pane_hit(app.CONFIG_IDS, ui, a.config_pane.scroll, MAX_ROWS)
     }
 
-    // The third visible row is the first setting — a display row, not a visible-row index.
+    // The third visible row is the first setting: a display row, not a visible-row index.
     testing.expect_value(t, hit_at(&a, &f, rows, 2), INSTALL_ROWS + 3)
     testing.expect_value(t, hit_at(&a, &f, rows, 3), INSTALL_ROWS + 4)
 
-    // The section title and the rule under it are chrome: dead space.
+    // The section title and the rule under it are chrome.
     testing.expect_value(t, hit_at(&a, &f, rows, 0), -1)
     testing.expect_value(t, hit_at(&a, &f, rows, 1), -1)
 
@@ -567,8 +552,8 @@ test_config_hit_with_scroll :: proc(t: ^testing.T) {
     testing.expect_value(t, app.pane_hit(app.CONFIG_IDS, ui, cp.scroll, MAX_ROWS), -1)
 }
 
-// The verb half. Single click selects a row, double click opens its dropdown, and a press
-// that hit nothing is left for whoever else is drawing.
+// Single click selects a row, double click opens its dropdown, and a press that hit nothing is
+// left for whoever else is drawing.
 @(test)
 test_config_click_selects_and_opens :: proc(t: ^testing.T) {
     a: app.App
@@ -582,7 +567,7 @@ test_config_click_selects_and_opens :: proc(t: ^testing.T) {
 
     lang2 := INSTALL_ROWS + 3 + sc + BINDS_ROWS + 3 + 2 // the second language
 
-    // A single click on a language row selects it, and claims the press.
+    // A single click on a language row selects it and claims the press.
     a.mouse.click, a.mouse.click_count = true, 1
     app.config_click(&a, rows, lang2)
     testing.expect_value(t, cp.sel, app.ROW_LANGS + 1)
@@ -595,21 +580,20 @@ test_config_click_selects_and_opens :: proc(t: ^testing.T) {
     testing.expect_value(t, cp.open, app.Open_Kind.Lang)
     testing.expect_value(t, cp.opt_sel, -1) // the highlight stays on the root
 
-    // A press on chrome hits nothing and must NOT be claimed — the one-noun rule.
+    // A press on chrome hits nothing and must not be claimed: the one-noun rule.
     a.mouse.click, a.mouse.click_count = true, 1
     app.config_click(&a, rows, 1) // the "slopd" title
     testing.expect(t, a.mouse.click, "a click on chrome must not be claimed")
     testing.expect_value(t, cp.open, app.Open_Kind.Lang) // and changes nothing
 
-    // Clicking a DIFFERENT row closes the open dropdown — the one thing the keyboard
-    // cannot express, since its Up/Down are captured while a dropdown is open.
+    // Clicking a different row closes the open dropdown — the one thing the keyboard cannot
+    // express, since Up/Down are captured while one is open.
     a.mouse.click, a.mouse.click_count = true, 1
     app.config_click(&a, rows, INSTALL_ROWS + 3) // the first setting row
     testing.expect_value(t, cp.sel, app.ROW_SETTINGS)
     testing.expect_value(t, cp.open, app.Open_Kind.None)
 
-    // Slopd's own row opens on a double click too, and a second one minimises it — the
-    // language root's rule, because the row means the same kind of thing.
+    // Slopd's own row opens on a double click too, and a second minimises it.
     a.mouse.click, a.mouse.click_count = true, 2
     app.config_click(&a, rows, 3)
     testing.expect_value(t, cp.sel, app.ROW_INSTALL)
@@ -619,7 +603,7 @@ test_config_click_selects_and_opens :: proc(t: ^testing.T) {
     app.config_click(&a, rows, 3)
     testing.expect_value(t, cp.open, app.Open_Kind.None)
 
-    // With the mouse configured off, nothing is claimed and nothing moves.
+    // With the mouse off, nothing is claimed and nothing moves.
     cp.sel = app.ROW_SETTINGS
     a.mouse_on = false
     a.mouse.click = true
@@ -627,9 +611,9 @@ test_config_click_selects_and_opens :: proc(t: ^testing.T) {
     testing.expect_value(t, cp.sel, app.ROW_SETTINGS)
 }
 
-// A click on an option CHOOSES it — the deliberate departure from single-selects /
-// double-activates, since an option list is already the second half of a gesture. The
-// commit is real, so the config write is pointed at a scratch file.
+// A click on an option chooses it: a departure from single-selects / double-activates, since an
+// option list is already the second half of a gesture. The commit is real, so the config write
+// is pointed at a scratch file.
 @(test)
 test_config_click_chooses_option :: proc(t: ^testing.T) {
     path := "/tmp/slopd_config_ui_test.config"
@@ -656,9 +640,8 @@ test_config_click_chooses_option :: proc(t: ^testing.T) {
     testing.expect_value(t, cp.open, app.Open_Kind.None) // and closed behind it
     testing.expect(t, !a.mouse.click, "a click on an option must be claimed")
 
-    // The second press of a double click is SWALLOWED. Without this, it would land on
-    // whatever row slid up into that spot once the dropdown collapsed and open ITS
-    // dropdown — a grammar install one impatient double click away.
+    // The second press of a double click is swallowed: without it, it would land on whatever
+    // row slid up into that spot and open ITS dropdown.
     cp.sel = app.ROW_SETTINGS + ln
     app.config_pane_open_setting(&a, .LineNumbers)
     rows = app.config_rows(cp, &a, COLS, context.temp_allocator)
@@ -670,8 +653,7 @@ test_config_click_chooses_option :: proc(t: ^testing.T) {
     testing.expect(t, !a.mouse.click, "the swallowed press is still consumed")
 }
 
-// One proc drives Up/Down AND the wheel, so a notch over this pane means what the arrows
-// mean. The refusal that used to sit in wheel_apply's .Config branch is gone.
+// One proc drives Up/Down and the wheel, so a notch over this pane means what the arrows do.
 @(test)
 test_config_dropdown_move :: proc(t: ^testing.T) {
     a: app.App
@@ -679,15 +661,15 @@ test_config_dropdown_move :: proc(t: ^testing.T) {
     defer app.config_pane_destroy(&a.config_pane)
     cp := &a.config_pane
 
-    // Nothing open: it moves the row selection, clamped to the list.
+    // Nothing open: it moves the row selection, clamped.
     cp.sel = app.ROW_INSTALL
     app.config_dropdown_move(&a, 3)
     testing.expect_value(t, cp.sel, 3)
     app.config_dropdown_move(&a, -99)
     testing.expect_value(t, cp.sel, app.ROW_INSTALL)
 
-    // A settings dropdown CLAMPS at both ends: its options are a closed choice, and you
-    // leave it with Left or Enter rather than by walking off it.
+    // A settings dropdown clamps at both ends: its options are a closed choice, and you leave
+    // with Left or Enter rather than by walking off.
     ln := int(app.Setting.LineNumbers)
     cp.sel = app.ROW_SETTINGS + ln
     app.config_pane_open_setting(&a, .LineNumbers) // 2 options
@@ -698,8 +680,8 @@ test_config_dropdown_move :: proc(t: ^testing.T) {
     testing.expect_value(t, cp.opt_sel, 0)
     testing.expect_value(t, cp.sel, app.ROW_SETTINGS + ln) // and the row never moved
 
-    // The install dropdown clamps the same way. It has a section rule above it and one
-    // below, so there is nothing on either side to step out onto.
+    // The install dropdown clamps the same way: a section rule above and one below, so there
+    // is nothing to step out onto.
     cp.open = .None
     cp.sel = app.ROW_INSTALL
     app.config_pane_open_install(&a)
@@ -710,10 +692,9 @@ test_config_dropdown_move :: proc(t: ^testing.T) {
     testing.expect_value(t, cp.opt_sel, 0)
     testing.expect_value(t, cp.open, app.Open_Kind.Install)
 
-    // A language dropdown STEPS OUT instead, because its options are just more rows: down
-    // off the last one lands on the next language, up off the root on the previous row.
+    // A language dropdown steps out instead, because its options are just more rows.
     cp.open = .None
-    cp.sel = app.ROW_LANGS + 1 // language "b", which is present -> 3 options
+    cp.sel = app.ROW_LANGS + 1 // language "b", present, so 3 options
     app.config_pane_open_lang(&a)
     app.config_dropdown_move(&a, 3) // root -> 0 -> 1 -> 2
     testing.expect_value(t, cp.opt_sel, 2)

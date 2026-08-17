@@ -5,40 +5,32 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 
-// The launcher entry, and the two files it is: slopd.desktop and the icon it names.
+// The launcher entry: slopd.desktop and the icon it names.
 //
-// This is SEPARATE from install (install.odin). Installing puts a binary where a shell can
-// find it; this puts an entry where a LAUNCHER can find it, and one does not imply the other
-// — a portable build can have an entry, and an installed copy can go without one. So the
-// Config pane offers it as its own add/remove pair, and install.sh asks before calling it.
-//
-// Both files are #load-ed, like the README, the licence and the default theme: a single
-// binary carries everything it writes, so there is no data folder to lose track of.
+// Separate from install.odin. Installing puts a binary where a shell finds it; this puts an
+// entry where a LAUNCHER finds it, and neither implies the other — so the Config pane offers it
+// as its own add/remove pair. Both files are #load-ed, so the binary carries what it writes.
 
 DESKTOP_ENTRY_SRC := string(#load("../slopd.desktop"))
 DESKTOP_ICON_SRC := string(#load("../slopd.svg"))
 
-// The entry's file name — <app-id>.desktop, which is what ties a window back to its entry.
+// <app-id>.desktop, which is what ties a window back to its entry.
 DESKTOP_ENTRY_NAME :: INSTALL_BIN + ".desktop"
 
-// Both paths hang off $XDG_DATA_HOME (~/.local/share), but NOT off Slopd's own folder in it:
-// applications/ and icons/ are SHARED trees that every launcher reads, so an entry filed
-// under slopd/ would be invisible. hicolor is the fallback theme every icon theme inherits
-// from, and scalable/ is where an SVG goes.
+// Off $XDG_DATA_HOME, but not off Slopd's own folder in it: applications/ and icons/ are shared
+// trees every launcher reads, so an entry under slopd/ would be invisible. hicolor is the
+// fallback theme every icon theme inherits from, and scalable/ is where an SVG goes.
 DESKTOP_APPS_REL :: "applications"
 DESKTOP_ICON_REL :: "icons/hicolor/scalable/apps"
 
-// ~/.local/share/applications, or "" without a $HOME.
 desktop_apps_dir :: proc(allocator := context.allocator) -> string {
     return desktop_join({DESKTOP_APPS_REL}, allocator)
 }
 
-// ~/.local/share/applications/slopd.desktop, or "" without a $HOME.
 desktop_entry_path :: proc(allocator := context.allocator) -> string {
     return desktop_join({DESKTOP_APPS_REL, DESKTOP_ENTRY_NAME}, allocator)
 }
 
-// ~/.local/share/icons/hicolor/scalable/apps/slopd.svg, or "" without a $HOME.
 desktop_icon_path :: proc(allocator := context.allocator) -> string {
     return desktop_join({DESKTOP_ICON_REL, INSTALL_BIN + ".svg"}, allocator)
 }
@@ -55,8 +47,7 @@ desktop_join :: proc(parts: []string, allocator := context.allocator) -> string 
     return filepath.join(all[:], allocator) or_else strings.clone("", allocator)
 }
 
-// Whether the entry is filed. The ENTRY decides, not the icon: the entry is what a launcher
-// lists, and a missing icon degrades to a generic one rather than to nothing.
+// The ENTRY decides, not the icon: a missing icon degrades to a generic one, not to nothing.
 desktop_present :: proc() -> bool {
     path := desktop_entry_path(context.temp_allocator)
     return path != "" && os.exists(path)
@@ -64,9 +55,8 @@ desktop_present :: proc() -> bool {
 
 // --- add / remove ---
 
-// Write the entry and its icon, replacing whatever is there. Unlike the config, this file is
-// not yours to edit: it is generated from the binary you are running, so a re-add after a
-// move refreshes the path inside it. Both directories are created.
+// Replacing whatever is there. Unlike the config, this file is not yours to edit: it is
+// generated from the binary you are running, so a re-add after a move refreshes its path.
 desktop_add :: proc() -> (ok: bool, msg: string) {
     entry := desktop_entry_path(context.temp_allocator)
     icon := desktop_icon_path(context.temp_allocator)
@@ -86,8 +76,8 @@ desktop_add :: proc() -> (ok: bool, msg: string) {
     fmt.sbprintfln(&b, "  %s", entry)
     fmt.sbprintfln(&b, "  Exec=%s", exec)
 
-    // The icon is best-effort: an entry with no icon still launches, and reporting a failed
-    // icon write as a failed add would hide the entry that DID land.
+    // Best-effort: an entry with no icon still launches, and reporting a failed icon write as
+    // a failed add would hide the entry that DID land.
     if icon != "" {
         ensure_parent(icon)
         if err := os.write_entire_file(icon, transmute([]byte)DESKTOP_ICON_SRC); err == nil {
@@ -98,8 +88,7 @@ desktop_add :: proc() -> (ok: bool, msg: string) {
     return true, fmt.tprintf("added to the application list\n%s", strings.trim_right_space(strings.to_string(b)))
 }
 
-// Remove the entry and its icon. Both are ours — generated, never edited — so unlike the
-// uninstall this takes them with it rather than naming them and leaving them behind.
+// Both are ours, generated and never edited, so unlike the uninstall this takes them with it.
 desktop_remove :: proc() -> (ok: bool, msg: string) {
     entry := desktop_entry_path(context.temp_allocator)
     if entry == "" {
@@ -122,12 +111,9 @@ desktop_remove :: proc() -> (ok: bool, msg: string) {
     return true, fmt.tprintf("removed from the application list\n%s", strings.trim_right_space(strings.to_string(b)))
 }
 
-// The binary the entry should launch. The INSTALLED copy when there is one, because that is
-// the path that survives this folder being deleted; otherwise the binary running now, which
-// is honest about a portable build pointing at itself.
-//
-// It matters that this is not simply the running binary: install.sh downloads to a temp
-// folder, and an entry pointing there would break the moment the script cleaned up.
+// The INSTALLED copy when there is one, since that path survives this folder being deleted;
+// otherwise the binary running now. Not simply the running binary, because install.sh downloads
+// to a temp folder and an entry pointing there would break when the script cleaned up.
 desktop_exec_target :: proc(allocator := context.allocator) -> string {
     if p := install_bin_path(context.temp_allocator); p != "" && os.exists(p) {
         return strings.clone(p, allocator)
@@ -135,9 +121,8 @@ desktop_exec_target :: proc(allocator := context.allocator) -> string {
     return exe_path(allocator)
 }
 
-// The entry's text with `Exec=` and `TryExec=` pointed at `exec`. Kept pure so the suite can
-// check the substitution without a $HOME or a launcher: everything else in the template —
-// its comments included — is copied through verbatim.
+// Pure, so the suite can check the substitution without a $HOME or a launcher. Everything else
+// in the template is copied through verbatim.
 desktop_entry_text :: proc(src, exec: string, allocator := context.allocator) -> string {
     b := strings.builder_make(0, len(src) + len(exec) * 2, allocator)
     rest := src
@@ -155,26 +140,24 @@ desktop_entry_text :: proc(src, exec: string, allocator := context.allocator) ->
     return strings.to_string(b)
 }
 
-// Nudge the desktop's entry index, where the machine keeps one. Most launchers read the
-// directory itself and need nothing; the ones that cache miss a new entry until this runs.
-// The result is DISCARDED on purpose: the command is absent on plenty of systems, and its
-// absence is not a failure of the write that already succeeded.
+// Where the machine keeps one. Most launchers read the directory itself; the ones that cache
+// miss a new entry until this runs. The result is discarded: the command is absent on plenty of
+// systems, and that is not a failure of the write that already succeeded.
 @(private = "file")
 desktop_reindex :: proc() {
     dir := desktop_apps_dir(context.temp_allocator)
     if dir == "" {
         return
     }
-    // The directory travels as $1, never re-parsed as shell syntax — as in desktop_open.
+    // The directory travels as $1, never re-parsed as shell syntax.
     argv := []string{"sh", "-c", `command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$1"`, "sh", dir}
     _, _, _, _ = os.process_exec(os.Process_Desc{command = argv}, context.temp_allocator)
 }
 
 // --- CLI (`slopd --desktop [add|remove]`) ---
 
-// Bare `--desktop` adds, because that is what the flag is asked for; `remove` is spelled out,
-// like `--grammar uninstall`. Handled before the window opens, so the Config pane's rows can
-// run it in t1 and see its output.
+// Bare `--desktop` adds; `remove` is spelled out, like `--grammar uninstall`. Before the window
+// opens, so the Config pane's rows can run it in t1 and see the output.
 desktop_cli :: proc(args: []string) -> (handled: bool) {
     for arg, i in args {
         if arg != "--desktop" {

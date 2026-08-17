@@ -7,11 +7,8 @@ import "core:unicode/utf8"
 import clay "../bindings/clay"
 
 // The file browser pane's UI half — the same six procs every pane has (filetree_ui.odin is the
-// short example), grown by the one thing this pane has that the others do not: **four kinds of
-// thing to point at.** A press can land on a top-bar button, a path segment, a places row or an
-// entry, so the hit test returns a TAGGED STRUCT rather than an index, exactly as the plan's
-// rule for a pane with several kinds of target says (and never a sentinel scheme layered on an
-// int, which is how the four would eventually disagree about what -2 meant).
+// short example), plus four kinds of thing to point at: a top-bar button, a path segment, a
+// places row or an entry. So the hit test returns a tagged struct rather than an index.
 //
 // The pane is a fixed frame around one scrolling region:
 //
@@ -22,37 +19,30 @@ import clay "../bindings/clay"
 //   │ Documents   │  scrolled by ft.scroll       │ │  fb_content
 //   └─────────────┴──────────────────────────────┴─┘
 //
-// **The model underneath is `FileTree`.** The entries, the selection, the marks, the clipboard
-// and every file op are the aux pane's, unchanged — this file decides how they LOOK and what a
-// pointer can reach. That is what makes `file_pane: ls | browser` a presentation switch rather
-// than a second file manager, and what keeps one set of chords true in both.
+// The model underneath is `FileTree` — entries, selection, marks, clipboard and every file op
+// are the aux pane's. This file only decides how they look and what a pointer can reach, which
+// makes `file_pane: ls | browser` a presentation switch rather than a second file manager.
 
-// The list row's extra height and the top bar's, in logical pixels. The bar is taller than a row
-// because its buttons are SQUARE: the height is also their width, so a cramped bar would give
-// three cramped buttons.
+// Logical pixels. The bar is taller than a row because its buttons are square — the height is
+// also their width.
 FB_ROW_PAD :: 2
 FB_BAR_PAD :: 5
 
-// A tile's padding and the gap between tiles, in logical pixels. The tile's WIDTH is in cells
-// (FB_TILE_CELLS, filebrowser.odin) so it scales with the font zoom; these are chrome, and
-// chrome scales with the DPI only.
+// Logical pixels. The tile's width is in cells (FB_TILE_CELLS) so it follows the font zoom;
+// chrome follows the DPI only.
 FB_TILE_PAD :: 4
 FB_TILE_GAP :: 6
 
-// The top bar's glyphs. Box-drawing and arrows are in the bundled subset (download-deps.sh keeps
-// U+2190-21FF, U+25A0-25FF and U+27F0-27FF), so these are real glyphs rather than ASCII stand-ins.
+// In the bundled font subset (download-deps.sh keeps U+2190-21FF, U+25A0-25FF, U+27F0-27FF).
 FB_ICON_BACK :: "◀"
 FB_ICON_FWD :: "▶"
 FB_ICON_RELOAD :: "⟳"
 FB_ICON_GRID :: "▦"
 FB_ICON_LIST :: "▤"
 
-// What the pointer is over. `index` means whichever list `kind` names — an ENTRY index for a
-// row, a place index, a segment index — and is -1 for a button, whose identity is `btn`.
-//
-// `PathBar` is the path region itself and NOT one of its segment buttons: the whitespace after
-// the last segment, which is the gesture that turns the bar into a text line (and, once it is
-// one, the whole line).
+// `index` means whichever list `kind` names, and is -1 for a button, whose identity is `btn`.
+// `PathBar` is the region itself, not a segment button: the whitespace after the last segment
+// (and, once the bar is a text line, the whole line).
 FB_Hit_Kind :: enum {
     None,
     Button,
@@ -68,12 +58,11 @@ FB_Hit :: struct {
     btn:   Browse_Btn,
 }
 
-// The pane's fixed geometry: the content area inside the focus ring, then the three regions it
-// splits into, then the row metrics. Pure, and the single source every phase sizes itself from —
-// the reason the four hit tests, the scroll and the declaration cannot drift apart.
+// The content area inside the focus ring, the three regions it splits into, and the row
+// metrics. Pure, and the one source every phase sizes itself from.
 //
-// The sidebar is capped at half the pane: at a narrow split a fixed 16-cell sidebar would leave
-// the contents narrower than one tile, and a places list you cannot browse FROM is furniture.
+// The sidebar caps at half the pane: at a narrow split a fixed 16-cell sidebar would leave the
+// contents narrower than one tile.
 filebrowser_geom :: proc(
     pane: Rect,
     scale, line_h, cell_w: f32,
@@ -97,14 +86,11 @@ filebrowser_geom :: proc(
     return
 }
 
-// A grid tile's size in pixels: the icon band, the caption row, and the padding either side.
-// Both bands are ROUNDED to whole pixels — a fractional tile height would put every row of the
-// grid on a fractional boundary, which is the same reason the cell advance is rounded at bake.
+// The icon band, the caption row, and the padding either side. Both bands round to whole
+// pixels, or every grid row lands on a fractional boundary.
 //
-// **Capped at the content width (rule 8).** At a narrow split 14 cells is wider than the region
-// the tiles are in, and a fixed box that outgrows its parent is still a HIT box — it would be
-// clickable from beyond the pane's edge while the clip group quietly hid the overflow. Capping
-// leaves one usable column at any width instead.
+// Capped at the content width (rule 8): a fixed box that outgrows its parent is still a hit box,
+// clickable beyond the pane's edge while the clip group hides the overflow.
 filebrowser_tile :: proc(scale, line_h, cell_w: f32, max_w: i32) -> (w, h: f32) {
     w = min(f32(FB_TILE_CELLS) * cell_w, f32(max(0, max_w)))
     icon_h, name_h := filebrowser_tile_bands(line_h)
@@ -112,27 +98,23 @@ filebrowser_tile :: proc(scale, line_h, cell_w: f32, max_w: i32) -> (w, h: f32) 
     return
 }
 
-// The two bands inside a tile: the icon's, and the caption's at its reduced size.
 filebrowser_tile_bands :: proc(line_h: f32) -> (icon_h, name_h: f32) {
     return math.round(line_h * FB_TILE_ICON_ROWS), math.round(line_h * FB_TILE_NAME_SCALE)
 }
 
-// The gap BETWEEN tiles, both ways. Whole pixels, and asked for here rather than inlined at each
-// use: the column count, the scroll unit and the declaration all have to space the grid by the
-// same number or the tween would land a few pixels off the row it is easing to.
+// Whole pixels, in one place: the column count, the scroll unit and the declaration must agree
+// or the tween lands a few pixels off the row it is easing to.
 filebrowser_tile_gap :: proc(scale: f32) -> f32 {
     return math.round(max(0, FB_TILE_GAP * scale))
 }
 
-// How many runes of a caption fit across a tile at the caption's size. Smaller text means MORE
-// characters in the same width, which is the one thing shrinking it buys back.
+// Runes of a caption across a tile at the caption's reduced size.
 filebrowser_tile_name_cells :: proc() -> int {
     return int(math.floor(f32(FB_TILE_CELLS) / f32(FB_TILE_NAME_SCALE))) - 1
 }
 
-// How many content rows fit and, in Grid, how many tiles fit across. One call answers both
-// because the two are the same question asked of the two presentations, and a caller that had to
-// pick which proc to ask would be the place the two answers drifted.
+// Rows that fit, and in Grid the tiles across. One call for both, so a caller never has to pick
+// which proc to ask.
 filebrowser_rows :: proc(
     content: Rect,
     view: Browse_View,
@@ -152,29 +134,22 @@ filebrowser_rows :: proc(
     if th <= 0 {
         return 0, 1
     }
-    // In PITCH, not in tile heights: a row of tiles occupies its own height plus the gap under
-    // it, and counting bare tiles would claim room for one more row than the grid has.
+    // In pitch, not tile heights: bare tiles would claim room for one row more than there is.
     return max(0, int(f32(content.h) / (th + gap))), filebrowser_grid_cols(content.w, tw, gap)
 }
 
-// The height of one CONTENT ROW — a list row, or a row of tiles — which is the unit both the
-// viewport and its tween count in. One proc so the scroll policy, the animation and the
-// declaration cannot disagree about what "a row" is in the presentation that is up.
+// A list row, or a row of tiles: the unit the viewport and its tween both count in.
 filebrowser_row_h :: proc(view: Browse_View, row_h: i32, scale, line_h, cell_w: f32) -> i32 {
     if view == .List {
         return row_h
     }
-    // A tile's HEIGHT does not depend on the width cap, so the cap passed here is immaterial —
-    // the caller's content width is not in scope at every call site, and asking for it would
-    // make three procs take a parameter one of them ignores.
+    // A tile's height does not depend on the width cap, so the cap here is immaterial.
     _, tile_h := filebrowser_tile(scale, line_h, cell_w, max(i32))
-    return i32(tile_h + filebrowser_tile_gap(scale)) // the PITCH: the tile and the gap under it
+    return i32(tile_h + filebrowser_tile_gap(scale)) // pitch: the tile plus the gap under it
 }
 
-// Move the viewport to follow the selection, under the shared `scroll_mode` policy. The unit is
-// the CONTENT ROW — an entry in List, a row of tiles in Grid — which is why the anchor and the
-// total both go through filebrowser_anchor / filebrowser_grid_rows rather than being taken as
-// entry counts here.
+// Follow the selection under the shared `scroll_mode` policy. The unit is the content row, so
+// the anchor and the total go through filebrowser_anchor / filebrowser_grid_rows.
 filebrowser_scroll_apply :: proc(a: ^App, rows, cols: int, center: bool) {
     ft := &a.tree
     view := a.filebrowser.view
@@ -183,23 +158,20 @@ filebrowser_scroll_apply :: proc(a: ^App, rows, cols: int, center: bool) {
     list_scroll_apply(&ft.scroll, &ft.scroll_detached, anchor, rows, total, center, pane_input_at(a))
 }
 
-// The path region's box: the bar less its four square buttons. The declaration lays it out by
-// the solver, so this is for the phases the solver cannot answer — the press that puts a caret
-// on the column it landed on.
+// The bar less its four square buttons. For the phases the solver cannot answer — the press
+// that puts a caret on the column it landed on.
 filebrowser_path_rect :: proc(bar: Rect, bar_h: i32) -> Rect {
     return Rect{bar.x + 3 * bar_h, bar.y, max(0, bar.w - 4 * bar_h), bar_h}
 }
 
-// How many cells the segments may use — the path region's, which is also what the LINE scrolls
-// inside (field_cells, on the same rect), so both states of the bar cut the path at the same
-// character. Pure, and asked by both the hit test and the declaration.
+// Cells the segments may use, which is also what the line scrolls inside, so both states of the
+// bar cut the path at the same character.
 filebrowser_path_cells :: proc(bar: Rect, bar_h: i32, cell_w: f32) -> int {
     return field_cells(filebrowser_path_rect(bar, bar_h), cell_w)
 }
 
-// Which of the four kinds of target the pointer is over. Probed in the order a press should be
-// offered them — chrome first, contents last — though the boxes do not overlap, so the order is
-// documentation rather than precedence. Resolves against the tree the LAST frame declared.
+// Chrome first, contents last, though the boxes do not overlap so the order is documentation.
+// Resolves against the tree the last frame declared.
 filebrowser_hit :: proc(a: ^App, segs: []Path_Seg, first_seg, top, visible, cols: int) -> FB_Hit {
     for b in Browse_Btn {
         if b != .None && clay.PointerOver(clay.ID("fb_btn", u32(b))) {
@@ -211,8 +183,7 @@ filebrowser_hit :: proc(a: ^App, segs: []Path_Seg, first_seg, top, visible, cols
             return FB_Hit{kind = .Segment, index = i}
         }
     }
-    // The path region minus its buttons: the whitespace AFTER the last segment, and the whole of
-    // the line while it is being edited (no segment is declared then, so this is all that is left).
+    // Whitespace after the last segment, and the whole of the line while it is being edited.
     if clay.PointerOver(clay.ID("fb_path")) {
         return FB_Hit{kind = .PathBar, index = -1}
     }
@@ -221,8 +192,7 @@ filebrowser_hit :: proc(a: ^App, segs: []Path_Seg, first_seg, top, visible, cols
             return FB_Hit{kind = .Place, index = i}
         }
     }
-    // Over the window that was PAINTED (`top`, the animated position) rather than the target,
-    // and over as many rows as are ON SCREEN — see filetree_hit and list_visible_rows.
+    // Over the painted window (`top`, animated) rather than the target — see filetree_hit.
     ft := &a.tree
     first := clamp(top, 0, max(0, len(ft.entries)))
     lo := a.filebrowser.view == .List ? first : first * max(1, cols)
@@ -236,16 +206,12 @@ filebrowser_hit :: proc(a: ^App, segs: []Path_Seg, first_seg, top, visible, cols
     return FB_Hit{kind = .None, index = -1}
 }
 
-// Apply a pending LEFT press. Chrome activates on a single press (a button is not a list row —
-// there is nothing to select first), an entry selects on one and opens on two, and a press that
-// hit nothing is left for whoever else is drawing.
-//
-// `path` and `cw` are the path region and the cell width, for the one press that needs a COLUMN
-// rather than a box: a press inside the open text line puts the caret where it landed.
+// Chrome activates on a single press, an entry selects on one and opens on two, and a press
+// that hit nothing is left for whoever else is drawing. `path` and `cw` are for the one press
+// needing a column rather than a box: inside the open text line, the caret goes where it landed.
 filebrowser_click :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit, path: Rect, cw: f32) {
     br := &a.filebrowser
-    // A press anywhere else abandons the line, as every desktop's does — and does NOT consume
-    // the press, which still means whatever it landed on.
+    // A press elsewhere abandons the line without consuming the press.
     if br.path_edit && hit.kind != .PathBar && a.mouse_on && a.mouse.click {
         filebrowser_path_cancel(a)
     }
@@ -265,9 +231,8 @@ filebrowser_click :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit, path: Rect, cw
             filebrowser_navigate(br, &a.tree, segs[hit.index].path)
         }
     case .PathBar:
-        // The empty space after the last segment TURNS THE BAR INTO A LINE (Dolphin's gesture);
-        // a press inside a line that is already open is the field's own — caret, word, value,
-        // and the capture a drag-select extends from.
+        // Empty space after the last segment turns the bar into a line; a press inside an open
+        // line is the field's own.
         if br.path_edit {
             field_press(a, filebrowser_path_box(a, path, cw), count)
         } else {
@@ -289,21 +254,19 @@ filebrowser_click :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit, path: Rect, cw
     }
 }
 
-// Apply a pending RIGHT press: work out WHAT it landed on, select it if it is a row, then open
-// the menu for that. **All four kinds of target get a menu of their own** — a segment's and a
-// place's name a directory, and a press on the contents' empty space is not a miss but the
-// DIRECTORY's menu (paste, add to places, reload), the gesture every file manager gives you for
-// "act on where I am".
+// Work out what it landed on, select it if it is a row, then open that target's menu. All four
+// kinds get one: a segment and a place name a directory, and empty space is the browsed
+// directory's menu (paste, add to places, reload).
 filebrowser_rclick :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit) {
     if !rect_hit(a.lay.aux, a.mouse.rclick_x, a.mouse.rclick_y) {
-        return // not our pane; whoever owns that region may claim it
+        return
     }
     if !mouse_take_rclick(a) {
         return
     }
     br := &a.filebrowser
     ft := &a.tree
-    on := Menu_Target{ft.dir, .Dir} // a button's press, and a miss, both act on where you are
+    on := Menu_Target{ft.dir, .Dir} // a button press and a miss both act on where you are
     switch hit.kind {
     case .None, .Button, .PathBar:
     case .Row:
@@ -326,9 +289,8 @@ filebrowser_rclick :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit) {
     ctxmenu_open(a, .FileOps, items, a.mouse.rclick_x, a.mouse.rclick_y, on)
 }
 
-// The top bar's verbs. Package-level and switch-shaped because both the pointer and the keyboard
-// reach every one of them (`^Left`, `^Right`, `^r`, `^g`), which is the pane's whole keyboard-
-// parity obligation in one proc.
+// The top bar's verbs. Package-level because the pointer and the keyboard (`^Left`, `^Right`,
+// `^r`, `^g`) both reach every one.
 filebrowser_button :: proc(a: ^App, b: Browse_Btn) {
     br := &a.filebrowser
     switch b {
@@ -345,13 +307,12 @@ filebrowser_button :: proc(a: ^App, b: Browse_Btn) {
     }
 }
 
-// --- the path bar's two states ---
-// A row of BUTTONS, until you press the whitespace after them: then it is a text line on the same
-// path, which is the one gesture that lets you TYPE a destination instead of walking to it. Enter
-// goes there; Esc, and a press anywhere else, put the buttons back. Transient, never a mode.
+// --- the path bar's two states --- A row of buttons, until you press the whitespace after them:
+// then it is a text line on the same path, so you can type a destination. Enter goes there; Esc,
+// or a press elsewhere, puts the buttons back.
 
-// Whether the line is open AND owns the keyboard. One predicate, so the char callback, the key
-// routing and the blink cannot disagree about who is being typed into.
+// Open AND owning the keyboard. One predicate for the char callback, the key routing and the
+// blink.
 filebrowser_path_live :: proc(a: ^App) -> bool {
     if !a.filebrowser.path_edit || a.focus != .Aux {
         return false
@@ -359,7 +320,6 @@ filebrowser_path_live :: proc(a: ^App) -> bool {
     return a.aux_mode == .FileTree && a.file_pane == .Browser
 }
 
-// Open the line on the browsed directory, caret at the end — the end is the part you edit.
 filebrowser_path_open :: proc(a: ^App) {
     br := &a.filebrowser
     br.path_edit = true
@@ -373,9 +333,8 @@ filebrowser_path_cancel :: proc(a: ^App) {
     a.filebrowser.path_off = 0
 }
 
-// Enter: go where the line says. A path that is not a directory KEEPS THE LINE OPEN with the
-// text still in it — the typo is on screen and one keystroke from being fixed, where closing
-// would throw away what was typed and leave nothing to correct.
+// Enter: go where the line says. A path that is not a directory keeps the line open with the
+// text in it, so the typo stays on screen to fix.
 filebrowser_path_commit :: proc(a: ^App) {
     br := &a.filebrowser
     typed := doc_string(&br.path, context.temp_allocator)
@@ -387,16 +346,15 @@ filebrowser_path_commit :: proc(a: ^App) {
     filebrowser_navigate(br, &a.tree, dir)
 }
 
-// The open line as the pointer sees it — the box the press, the drag and the window all resolve
-// against. `path` is filebrowser_path_rect's, which is the box the field was declared into.
+// The box the press, the drag and the window resolve against. `path` is the rect the field was
+// declared into.
 filebrowser_path_box :: proc(a: ^App, path: Rect, cw: f32) -> Field_Box {
     br := &a.filebrowser
     return {doc = &br.path, target = FIELD_PATH, r = path, off = br.path_off, cw = cw}
 }
 
-// Open the selection: descend into a directory THROUGH THE HISTORY (which is the whole
-// difference from filetree_activate — a browser that forgets where you came from has no [◀]),
-// or open the file in Slopd's own editor.
+// Descend into a directory through the history (the difference from filetree_activate), or open
+// the file in the editor.
 filebrowser_activate :: proc(a: ^App) {
     e := filetree_selected(&a.tree)
     if e == nil {
@@ -409,9 +367,8 @@ filebrowser_activate :: proc(a: ^App) {
     open_or_run(a, e.path, e.exec)
 }
 
-// Up to the parent directory, through the history. `filepath.dir` slices ft.dir, which the load
-// inside navigate frees — navigate clones before loading, so this is safe as written and is the
-// reason that clone is there.
+// `filepath.dir` slices ft.dir, which the load inside navigate frees — navigate clones first,
+// which is why that clone is there.
 filebrowser_parent :: proc(a: ^App) {
     ft := &a.tree
     if parent := filepath.dir(ft.dir); parent != ft.dir {
@@ -419,8 +376,7 @@ filebrowser_parent :: proc(a: ^App) {
     }
 }
 
-// Jump to place N (the `^1`..`^9` chords — the sidebar's keyboard twin). One-based, as the
-// terminal's Alt+1..9 is.
+// The `^1`..`^9` chords, the sidebar's keyboard twin. One-based, like Alt+1..9.
 filebrowser_place_open :: proc(a: ^App, n: int) {
     br := &a.filebrowser
     if n >= 1 && n <= len(br.places) {
@@ -430,19 +386,19 @@ filebrowser_place_open :: proc(a: ^App, n: int) {
 
 // Declare the pane into the window's tree. Reads App, writes only Clay.
 //
-//   fb_pane        the content area inside the focus ring, clipping its own content
-//     fb_bar       the top bar: three square buttons, the path, then the view toggle
-//       fb_btn/b     one per Browse_Btn, square (its side IS the bar's height)
-//       fb_path      the path, clipped: longer than the bar and it elides from the LEFT
-//         fb_ell       the "…" marking an elision, when there is one
-//         fb_seg/i     one per shown segment, keyed by SEGMENT index
-//         fb_edit      instead of the two above while the line is open: the text field's Custom
+//   fb_pane        content area inside the focus ring, clipping its own content
+//     fb_bar       three square buttons, the path, then the view toggle
+//       fb_btn/b     one per Browse_Btn, square (its side is the bar's height)
+//       fb_path      the path, clipped; too long and it elides from the LEFT
+//         fb_ell       the "…" marking an elision
+//         fb_seg/i     one per shown segment, keyed by segment index
+//         fb_edit      replaces the two above while the line is open
 //     fb_body      the two scrolling regions, side by side
-//       fb_side      the places column, with a single-edge border as the rail between them
-//         fb_place/i one per shortcut, the one matching the browsed dir in the accent colour
+//       fb_side      the places column, single-edge border as the rail
+//         fb_place/i one per shortcut; the browsed dir's is in the accent colour
 //       fb_content   the clip group the contents scroll inside
-//         fb_item/i    List: one row per visible entry, keyed by ENTRY index
-//         fb_grow/r    Grid: one row of tiles, holding fb_item/i tiles keyed the same way
+//         fb_item/i    List: one row per visible entry, keyed by entry index
+//         fb_grow/r    Grid: one row of tiles, holding fb_item/i tiles keyed the same
 filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now: f64 = 0) {
     br := &a.filebrowser
     ft := &a.tree
@@ -454,9 +410,8 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, n
     cw := f.cell_w
     lh := i32(f.line_height)
     _, cols := filebrowser_rows(content, br.view, row_h, a.scale, f.line_height, cw)
-    // The rows the content region TOUCHES, which is one more than fit whenever the region does
-    // not divide evenly or a scroll is in progress. Counting the whole rows that fit leaves the
-    // bottom row of tiles undeclared with 46px of it on screen (see list_visible_rows).
+    // Rows the region TOUCHES, one more than fit whenever it does not divide evenly or a scroll
+    // is in progress. Whole rows alone leaves the bottom tile row undeclared but on screen.
     unit := filebrowser_row_h(br.view, row_h, a.scale, f.line_height, cw)
     visible := list_visible_rows(content.h, off, unit)
 
@@ -471,8 +426,7 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, n
                 },
             },
         ) {
-            // The sidebar's rail is a single-edge border rather than a drawn line (rule 5), and
-            // the sidebar declares no background: the pane's panel() has already painted it.
+            // Rail as a single-edge border (rule 5); the pane's panel() painted the background.
             if clay.UI(clay.ID("fb_side"))(
                 {
                     layout = {
@@ -507,22 +461,20 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, n
                 }
             }
 
-            // The prompt's rows take the contents' region, leaving the bar and the sidebar
-            // standing: what it covers is the LISTING, not the pane.
+            // The prompt covers the listing, not the pane: the bar and sidebar stay.
             if wsfind_shown(a) {
                 wsfind_declare_body(a, content, row_h, lh, cw, now)
             } else if clay.UI(clay.ID("fb_content"))(
                 {
                     layout = {
-                        // Fixed, not Grow, for the sidebar's reason: the row easing into view
-                        // must not stretch the clip group it is inside (rule 8).
+                        // Fixed, not Grow: the row easing into view must not stretch the clip
+                        // group it is inside (rule 8).
                         sizing          = {clay.SizingGrow(), clay.SizingFixed(f32(max(0, content.h)))},
                         layoutDirection = .TopToBottom,
-                        // The grid's rows are spaced by the solver, which is what makes the
-                        // PITCH filebrowser_row_h reports the real one. A list has no gap.
+                        // Solver-spaced, which is what makes filebrowser_row_h's pitch real.
                         childGap        = br.view == .Grid ? u16(filebrowser_tile_gap(a.scale)) : 0,
                     },
-                    // The tween's remainder rides on the clip, not on each row's y (rule 9).
+                    // The tween's remainder rides on the clip, not each row's y (rule 9).
                     clip = {horizontal = true, vertical = true, childOffset = {0, -f32(off)}},
                 },
             ) {
@@ -535,17 +487,16 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, n
             }
         }
 
-        // The chord bar goes LAST and inside the pane — the same overlay the listing face puts
-        // up, over the same chords, because the ops under them are the same ops (rule: one
-        // model, two presentations). See filetree_declare.
+        // Last and inside the pane — the same overlay the listing face puts up, over the same
+        // chords. See filetree_declare.
         if chord_shown(a) {
             chord_declare(a, f, area, now)
         }
     }
 }
 
-// The top bar. Every button is SQUARE — `SizingFixed(bar_h)` on both axes — which is what the
-// design asks for and also what keeps the three icons on a common baseline whatever the zoom.
+// Every button is square — `SizingFixed(bar_h)` on both axes — which keeps the icons on a
+// common baseline at any zoom.
 @(private = "file")
 filebrowser_declare_bar :: proc(a: ^App, bar: Rect, bar_h, lh: i32, cw: f32, now: f64) {
     br := &a.filebrowser
@@ -577,10 +528,8 @@ filebrowser_declare_bar :: proc(a: ^App, bar: Rect, bar_h, lh: i32, cw: f32, now
                 clip = {horizontal = true},
             },
         ) {
-            // The bar's states. The line is the shared one-line Field (field_ui.odin), the
-            // config pane's text rows being the other instance — with a WINDOW, since a path is
-            // read from its end. The workspace prompt is a third: the `ls` face gives it that
-            // face's one line of chrome, and this is the same trade one box along.
+            // The line is the shared one-line Field (field_ui.odin), with a window since a
+            // path is read from its end. The workspace prompt takes the same box.
             if wsfind_shown(a) {
                 wsfind_declare_bar(a, lh, now)
             } else if br.path_edit {
@@ -593,15 +542,14 @@ filebrowser_declare_bar :: proc(a: ^App, bar: Rect, bar_h, lh: i32, cw: f32, now
             }
         }
 
-        // The view toggle shows the view it would GIVE you, not the one you are in: a button is
-        // a verb, and a grid icon that means "you are in grid" is the same pixels meaning the
-        // opposite thing.
+        // The toggle shows the view it would give you, not the one you are in: a button is a
+        // verb.
         icon := br.view == .List ? FB_ICON_GRID : FB_ICON_LIST
         filebrowser_declare_btn(a, .View, icon, true, bar_h, lh)
     }
 }
 
-// The path as BUTTONS: one per segment from `first` on, behind a '…' when the head is cut.
+// One button per segment from `first` on, behind a '…' when the head is cut.
 @(private = "file")
 filebrowser_declare_segs :: proc(a: ^App, segs: []Path_Seg, first: int, lh: i32, cw: f32) {
     th := &a.theme
@@ -631,8 +579,8 @@ filebrowser_declare_segs :: proc(a: ^App, segs: []Path_Seg, first: int, lh: i32,
     }
 }
 
-// One square top-bar button. A disabled one (no history behind [◀]) draws its icon in the border
-// colour and takes no hover tint — it is still THERE, so the bar does not reflow as you navigate.
+// A disabled button (no history behind [◀]) draws in the border colour and takes no hover tint,
+// but stays in place so the bar does not reflow as you navigate.
 @(private = "file")
 filebrowser_declare_btn :: proc(a: ^App, b: Browse_Btn, icon: string, enabled: bool, bar_h, lh: i32) {
     th := &a.theme
@@ -653,9 +601,8 @@ filebrowser_declare_btn :: proc(a: ^App, b: Browse_Btn, icon: string, enabled: b
     }
 }
 
-// List contents: the filetree's row with a type icon in front of it. The icon is ONE CELL and
-// is a glyph like any other (font.odin bakes the icon face into the same atlas), so the row is
-// still text on the cell grid — no image, no second texture, nothing to cache.
+// The filetree's row with a type icon in front. The icon is one cell and a glyph like any other
+// (font.odin bakes the icon face into the same atlas) — no image, no second texture.
 @(private = "file")
 filebrowser_declare_list :: proc(a: ^App, f: ^Font, top, visible: int, row_h, lh: i32, cw: f32) {
     ft := &a.tree
@@ -697,10 +644,8 @@ filebrowser_declare_list :: proc(a: ^App, f: ^Font, top, visible: int, row_h, lh
     }
 }
 
-// An entry's icon as a one-rune string, or ok=false when icons are off or no icon face was
-// vendored — the pane then draws exactly what it drew before them. Temp-allocated, like every
-// other formatted label in the chrome: Clay's command list points at it and the frame's arena
-// outlives EndLayout.
+// ok=false when icons are off or no icon face was vendored. Temp-allocated: Clay's command list
+// points at it, and the frame's arena outlives EndLayout.
 filebrowser_icon :: proc(a: ^App, f: ^Font, e: ^FileEntry) -> (s: string, ok: bool) {
     if !a.file_icons || !f.icons_ok {
         return "", false
@@ -709,8 +654,7 @@ filebrowser_icon :: proc(a: ^App, f: ^Font, e: ^FileEntry) -> (s: string, ok: bo
     return utf8.runes_to_string({r}, context.temp_allocator), true
 }
 
-// What a tile's painters need. Handed to the bridge as `customData`, so these live in the
-// frame's temp arena and outlive EndLayout.
+// Handed to the bridge as `customData`, so these live in the frame's temp arena.
 FB_Icon :: struct {
     icon:  rune,
     px:    f32,
@@ -723,21 +667,19 @@ FB_Name :: struct {
     color: [3]f32,
 }
 
-// A tile's icon, baked at the tile's own size. A `Custom` because this is the one thing in the
-// chrome that is not text at the text size — a glyph can only be drawn at the size it was baked
-// (there is no per-quad scale), and Clay's Text command is the atlas's one size.
+// Baked at the tile's own size. A Custom because a glyph can only be drawn at the size it was
+// baked, and Clay's Text command is the atlas's one size.
 filebrowser_paint_icon :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
     ic := (^FB_Icon)(user)
     if ic != nil {
         icon_draw(t, ic.icon, r, ic.px, ic.color)
     }
-    // The painter owns its region and ends with its own flush (the ClayCustom contract).
+    // The ClayCustom contract: the painter ends with its own flush.
     flush_pane(t, clip, win_w, win_h)
 }
 
-// A tile's caption, at the reduced size — a Custom for the icon's reason, from the other side:
-// Clay lays text out at the atlas size, and this is deliberately smaller than that. Centred
-// from the rune count, which a fixed advance makes exact (text_sized_cell).
+// A Custom for the icon's reason, from the other side: Clay lays text out at the atlas size and
+// this is smaller. Centred from the rune count, which a fixed advance makes exact.
 filebrowser_paint_name :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
     nm := (^FB_Name)(user)
     if nm != nil && nm.text != "" {
@@ -750,9 +692,8 @@ filebrowser_paint_name :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^A
     flush_pane(t, clip, win_w, win_h)
 }
 
-// Grid contents: rows of tiles, each a coloured swatch over an elided name. The swatch is a
-// Rectangle rather than a glyph because it is the one thing here that is not text — there are no
-// thumbnails to decode, and a filled block says "directory / program / file" at any zoom.
+// Rows of tiles, each a coloured swatch over an elided name. No thumbnails to decode: a filled
+// block says "directory / program / file" at any zoom.
 @(private = "file")
 filebrowser_declare_grid :: proc(a: ^App, f: ^Font, top, visible, cols: int, lh: i32, cw: f32, max_w: i32) {
     ft := &a.tree
@@ -796,9 +737,8 @@ filebrowser_declare_grid :: proc(a: ^App, f: ^Font, top, visible, cols: int, lh:
                         backgroundColor = bg,
                     },
                 ) {
-                    // The tile's picture: the type icon where there is an icon face, and the
-                    // plain coloured swatch where there is not (download-deps.sh can vendor no
-                    // icons at all). Same box either way, so the grid does not reflow.
+                    // The type icon where there is an icon face, a plain swatch where there is
+                    // not. Same box either way, so the grid does not reflow.
                     icon_h, name_h := filebrowser_tile_bands(f.line_height)
                     icon_w := min(cw * f32(FB_TILE_CELLS - 6), tw)
                     col := filebrowser_entry_color(a, e)
@@ -819,8 +759,7 @@ filebrowser_declare_grid :: proc(a: ^App, f: ^Font, top, visible, cols: int, lh:
                             backgroundColor = clay_rgb(col),
                         },
                     ) {}
-                    // The caption, at FB_TILE_NAME_SCALE of the text size — its own Custom,
-                    // since Clay only lays text out at the atlas's one size.
+                    // At FB_TILE_NAME_SCALE of the text size, so its own Custom.
                     nm := new(FB_Name, context.temp_allocator)
                     ncu := new(ClayCustom, context.temp_allocator)
                     nm^ = {
@@ -841,10 +780,8 @@ filebrowser_declare_grid :: proc(a: ^App, f: ^Font, top, visible, cols: int, lh:
     }
 }
 
-// An entry's colour, which is also its tile swatch's: directories read as directories in both
-// presentations, a file in the unsaved ring keeps the urgent tint the filetree gives it, and
-// anything with the execute bit is called out — the browser's answer to the filetree's mode
-// column, which a tile has no room for.
+// Also the tile swatch's. The execute bit is called out here because a tile has no room for the
+// filetree's mode column.
 filebrowser_entry_color :: proc(a: ^App, e: ^FileEntry) -> [3]f32 {
     th := &a.theme
     switch {
@@ -876,9 +813,8 @@ filebrowser_layout :: proc(
     return clay.EndLayout(0)
 }
 
-// The pane's per-frame entry point: the template's four phases, with the hover written per KIND
-// of target from the one hit the click consumes, and `cols` published for the keyboard (Up/Down
-// move by a grid row, and only the geometry knows how wide one is).
+// The template's four phases, with the hover written per kind of target from the one hit the
+// click consumes. `cols` is published for the keyboard, since only the geometry knows it.
 filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     br := &a.filebrowser
     area, bar, _, content, row_h, bar_h := filebrowser_geom(pane, a.scale, t.font.line_height, t.font.cell_w)
@@ -890,10 +826,10 @@ filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     wsfind_sync(a)
     cw := t.font.cell_w
     path := filebrowser_path_rect(bar, bar_h)
-    top, off := a.tree.scroll, i32(0) // the listing's window; the prompt's is its own (wsfind_ui)
+    top, off := a.tree.scroll, i32(0) // the listing's window; the prompt's is its own
 
-    // The prompt takes the WHOLE pane's input while it is up — the chrome around it stays on
-    // screen but inert, for filetree_frame's reason: the listing it acts on is not declared.
+    // The prompt takes the whole pane's input; the chrome stays on screen but inert, for
+    // filetree_frame's reason — the listing it acts on is not declared.
     if wsfind_shown(a) {
         br.hover_row, br.hover_place, br.hover_seg, br.hover_btn = -1, -1, -1, .None
         wsfind_frame(a, wsfind_field_rect(path, cw), content, row_h, cw, now)
@@ -901,14 +837,12 @@ filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
         return
     }
 
-    // The window the LAST frame painted is what the pointer is over, so the hit resolves
-    // against the ANIMATED top; smooth_scroll re-aims the tween, and app_next_wake schedules
-    // the next frame off it. The view is read twice for the editor's reason (editor_frame).
+    // The pointer is over what the LAST frame painted, so the hit resolves against the animated
+    // top. Read twice for the editor's reason (editor_frame).
     unit := filebrowser_row_h(br.view, row_h, a.scale, t.font.line_height, cw)
     top0, off0 := smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
 
-    // The open line is the pane's, not the program's: whatever took the keyboard away from this
-    // pane also closed the line, or it would be waiting for keys that go somewhere else now.
+    // The line belongs to the pane: losing the keyboard closes it.
     if br.path_edit && !filebrowser_path_live(a) {
         filebrowser_path_cancel(a)
     }
@@ -925,14 +859,12 @@ filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     filebrowser_rclick(a, segs, hit)
     filebrowser_scroll_apply(a, rows, cols, a.scroll_mode == .Middle)
 
-    // A live drag extends the line's selection, beside the click for editor_drag's reason — the
-    // gesture that walks the caret off the end must move the window in the frame that moved it,
-    // which is the next two statements in order.
+    // Beside the click for editor_drag's reason: a drag walking the caret off the end must move
+    // the window in the same frame — the next two statements, in order.
     if br.path_edit {
         field_drag(a, filebrowser_path_box(a, path, cw), now)
     }
-    // The window follows the caret the way the listing's follows the selection, and for the same
-    // reason: an edit that put the caret off the end must not leave you typing blind.
+    // The window follows the caret, as the listing's follows the selection.
     if br.path_edit && doc_line_count(&br.path) > 0 {
         cells := doc_cells(&br.path, 0)
         cur := cells_col(cells, br.path.cursors[br.path.primary].head.col)

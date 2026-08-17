@@ -5,19 +5,18 @@ import clay "../../bindings/clay"
 import "core:strings"
 import "core:testing"
 
-// C8b: the status strip declared in Clay. The strip has no list, no viewport and no click, so
-// what is left to test is the whole of it — WHICH of the three things it shows, and WHERE each
-// piece lands.
+// The status strip declared in Clay. It has no list, no viewport and no click, so what is left
+// is the whole of it: which of the things it shows, and where each piece lands.
 //
-// Every expected box below is derived from the arithmetic the hand-drawn painters used, not
-// from what Clay printed. The strip is {0, 280, 500, 20} at scale 1 with the synthetic 10x16
-// font, so: pad 8, text top 280 + (20 - 16) / 2 = 282, and a cell is 10 wide.
+// Every expected box is derived from the arithmetic the hand-drawn painters used, not from what
+// Clay printed. The strip is {0, 280, 500, 20} at scale 1 with the synthetic 10x16 font: pad 8,
+// text top 282, a 10-wide cell.
 //
-//   draw_command_line:   prompt at strip.x + pad; text origin one prompt (2 cells) further;
-//                        hint at origin + cw * (len + 1)
-//   draw_status:         left at strip.x + pad; right ending at strip.x + strip.w - pad;
-//                        root at strip.x + (strip.w - cw * len) / 2   <- centred in the STRIP,
-//                        which is why it is a floating slot and not a row cell
+//   command line:  prompt at strip.x + pad, text origin two cells further, hint at
+//                  origin + cw * (len + 1)
+//   status:        left at strip.x + pad, right ending at strip.x + strip.w - pad, root at
+//                  strip.x + (strip.w - cw * len) / 2 — centred in the STRIP, which is why it
+//                  is a floating slot and not a row cell
 
 @(private = "file")
 STRIP :: app.Rect{0, 280, 500, 20}
@@ -46,8 +45,7 @@ teardown :: proc(a: ^app.App) {
     app.doc_destroy(&a.cl.doc)
 }
 
-// Find a Text command by the string it carries. Returns a zero rect when absent, which every
-// caller distinguishes from a real box (nothing in the strip is at the origin).
+// A zero rect when absent, which every caller can tell from a real box.
 @(private = "file")
 text_box :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), want: string) -> app.Rect {
     for i in 0 ..< cmds.length {
@@ -74,9 +72,9 @@ count_of :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), kind: clay.RenderCom
     return n
 }
 
-// The two-way choice: the command line while it is open, the modeline otherwise. A pending disk
-// conflict is NOT a third thing down here — its answer is typed into the command line, which the
-// conflict itself stages, so the strip reports it in the modeline's marker column instead.
+// The command line while it is open, the modeline otherwise. A pending disk conflict is not a
+// third thing: its answer is typed into the command line, so the strip reports it in the
+// modeline's marker column.
 @(test)
 test_strip_mode :: proc(t: ^testing.T) {
     a: app.App
@@ -93,7 +91,7 @@ test_strip_mode :: proc(t: ^testing.T) {
     testing.expect_value(t, app.strip_mode(&a), app.Strip_Mode.Command)
 }
 
-// The modeline: three labels at three anchors, each on the pixel the hand-drawn version put it.
+// Three labels at three anchors, each on the pixel the hand-drawn version put it.
 @(test)
 test_strip_status_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
@@ -107,7 +105,7 @@ test_strip_status_command_list :: proc(t: ^testing.T) {
 
     cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
 
-    // Left: the modified marker, a space, then the name. Unnamed buffers read "untitled".
+    // Left: the modified marker, a space, then the name.
     left := text_box(&cmds, "  untitled")
     testing.expect_value(t, left, app.Rect{PAD, TEXT_Y, 100, 16})
 
@@ -117,19 +115,18 @@ test_strip_status_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, right.x + right.w, i32(STRIP.w - PAD))
     testing.expect_value(t, right.y, i32(TEXT_Y))
 
-    // Centre: the project root, centred in the STRIP rather than between its neighbours.
+    // Centre: the project root, centred in the STRIP, not between its neighbours.
     root := text_box(&cmds, "/zz/proj")
     testing.expect_value(t, root, app.Rect{(STRIP.w - 80) / 2, TEXT_Y, 80, 16})
 
-    // The strip paints its own background — there is no panel() down here — and rings itself
-    // only when it is holding something that wants an answer, which the idle modeline is not.
+    // The strip paints its own background, and rings itself only when holding something that
+    // wants an answer.
     testing.expect_value(t, count_of(&cmds, .Rectangle), 1)
     testing.expect_value(t, count_of(&cmds, .Border), 0)
 
-    // EVERY label is inside a clip group, and that is not decoration. A floating child is
-    // hoisted out of its parent and clipped by nothing unless it says `clipTo`, so without it
-    // the three anchored labels are emitted AFTER the strip's ScissorEnd — free to paint over
-    // the panes above them on a narrow window, with every box in this list still correct.
+    // Every label is inside a clip group. A floating child is hoisted out of its parent and
+    // clipped by nothing unless it says `clipTo`, so without it the three anchored labels are
+    // emitted after the strip's ScissorEnd, free to paint over the panes on a narrow window.
     // Depth is the only thing that shows it.
     depth := 0
     for i in 0 ..< cmds.length {
@@ -147,17 +144,13 @@ test_strip_status_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, depth, 0)
 }
 
-// The three labels are ANCHORED, not laid out — each holds its place whatever the other two
-// are doing. This is the assertion that rules out the obvious alternative declaration, a
-// left-to-right row, and the label it has to be written about is the RIGHT one: a row gives a
-// grown left cell its content width when the content is too big for its share (SizingGrow
-// means "at least fit", C5c's rule 8), which shoves the readout off the end of the strip where
-// the clip eats it. Under anchors it does not move.
+// Anchored, not laid out: each holds its place whatever the other two do. This rules out the
+// obvious alternative, a left-to-right row, and the label it has to be written about is the
+// RIGHT one — a row gives a grown left cell its content width when the content outgrows its
+// share (rule 8), shoving the readout off the end where the clip eats it.
 //
-// The FIRST version of this test asserted the same thing about the root and passed against the
-// row design, because a symmetrically padded content box has the same centre as the strip —
-// C7c's "right assertion, wrong setup" recurring. The root is pinned here too, but it is the
-// right-hand box that carries the claim.
+// The first version of this test asserted the same about the root and passed against the row
+// design, because a symmetrically padded content box has the same centre as the strip.
 @(test)
 test_strip_labels_are_anchored_not_a_row :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
@@ -169,9 +162,9 @@ test_strip_labels_are_anchored_not_a_row :: proc(t: ^testing.T) {
     fixture(&a, "alpha\nbravo")
     defer teardown(&a)
 
-    // A file name far wider than its share of the strip: 45 characters, in a 50-cell window.
+    // A file name far wider than its share: 45 characters in a 50-cell window.
     b := app.editor_current(&a.editor)
-    b.path = strings.clone("/tmp/a-very-long-file-name-that-eats-the-strip.odin") // owned: buffer_destroy frees it
+    b.path = strings.clone("/tmp/a-very-long-file-name-that-eats-the-strip.odin") // owned
     cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
 
     left := text_box(&cmds, "  a-very-long-file-name-that-eats-the-strip.odin")
@@ -182,14 +175,13 @@ test_strip_labels_are_anchored_not_a_row :: proc(t: ^testing.T) {
     testing.expect_value(t, right.x + right.w, i32(STRIP.w - PAD)) // still on the far pad
     testing.expect_value(t, root.x, i32((STRIP.w - 80) / 2)) // still on the strip's centre
 
-    // They now OVERLAP, and that is the pre-existing behaviour being preserved rather than a
-    // property being claimed: three independent text_draw calls have always been free to run
-    // into each other on a narrow window. Stated here so the port is not later "fixed" into
-    // the row that loses the readout entirely.
+    // They now OVERLAP, which is pre-existing behaviour being preserved rather than a property
+    // claimed: three independent draws have always been free to run into each other. Stated so
+    // the port is not later "fixed" into the row that loses the readout.
     testing.expect(t, left.x + left.w > right.x, "premise changed: the labels no longer overlap")
 }
 
-// The command line: prompt, field, hint, touching, left to right.
+// Prompt, field, hint, touching, left to right.
 @(test)
 test_strip_command_line_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
@@ -207,10 +199,8 @@ test_strip_command_line_command_list :: proc(t: ^testing.T) {
 
     testing.expect_value(t, text_box(&cmds, "> "), app.Rect{PAD, TEXT_Y, 20, 16})
 
-    // The field is a Custom — a caret is an over-quad, so it cannot be Clay's to paint — and
-    // it is sized to the runes PLUS ONE CELL. That cell is the caret column: typing at the end
-    // of the line puts the caret at col == len, one cell past the last glyph, and a box sized
-    // to the runes alone would clip it away exactly when it matters.
+    // A Custom, since a caret is an over-quad, sized to the runes PLUS ONE CELL — the caret
+    // column, one cell past the last glyph, which a box sized to the runes alone would clip.
     custom: app.Rect
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
@@ -220,20 +210,18 @@ test_strip_command_line_command_list :: proc(t: ^testing.T) {
     }
     testing.expect_value(t, custom, app.Rect{PAD + 20, STRIP.y, 80, STRIP.h}) // 7 runes + 1
 
-    // The ghost hint starts where that extra cell ends — the same pixel the hand-drawn
-    // version put it at, `origin + cw * (len + 1)`.
+    // The ghost hint starts where that extra cell ends.
     testing.expect_value(t, text_box(&cmds, "(y/n)"), app.Rect{PAD + 20 + 80, TEXT_Y, 50, 16})
 
-    // An argument makes the hint go away, so the field grows into the space it had.
+    // An argument makes the hint go away, so the field grows into its space.
     app.doc_set_text(&a.cl.doc, ":reload y")
     cmds2 := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
     testing.expect_value(t, text_box(&cmds2, "(y/n)"), app.Rect{})
 }
 
-// A staged (injected) line the user has not touched rings the strip in the alert colour —
-// "review this before Enter". It is the element's own border now, where it used to be four
-// fills laid over the top of the strip; the ring clears itself on the first edit, because any
-// edit bumps doc.version past the mark and nothing has to hook the edit to notice.
+// An untouched injected line rings the strip in the alert colour: "review this before Enter".
+// The element's own border now, where it used to be four fills laid over the strip. The ring
+// clears itself on the first edit, since any edit bumps doc.version past the mark.
 @(test)
 test_strip_injected_ring :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
@@ -261,16 +249,13 @@ test_strip_injected_ring :: proc(t: ^testing.T) {
     }
     testing.expect(t, ring, "a pristine injected line drew no ring")
 
-    // One keystroke into it and the alert is spent.
     app.doc_insert_rune(&a.cl.doc, 'y')
     cmds2 := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
     testing.expect_value(t, count_of(&cmds2, .Border), 0)
 }
 
-// A disk conflict is reported by the modeline's marker column and nothing else: the `*` that
-// means "unsaved" becomes a `!` that means "unsaved, and the file moved under you". The strip
-// grows no extra label and no ring — the ring belongs to the staged `:reload `, which lives in
-// the command line the marker is telling you to finish.
+// Reported by the modeline's marker column and nothing else: the `*` becomes a `!`. No extra
+// label and no ring — the ring belongs to the staged `:reload ` in the command line.
 @(test)
 test_strip_conflict_marks_the_modeline :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
@@ -282,7 +267,7 @@ test_strip_conflict_marks_the_modeline :: proc(t: ^testing.T) {
     fixture(&a, "alpha")
     defer teardown(&a)
     b := app.editor_current(&a.editor)
-    b.path = strings.clone("/tmp/x.odin") // owned: buffer_destroy frees it
+    b.path = strings.clone("/tmp/x.odin") // owned
     b.dirty = true
 
     cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
@@ -292,11 +277,11 @@ test_strip_conflict_marks_the_modeline :: proc(t: ^testing.T) {
     cmds2 := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
     testing.expect_value(t, text_box(&cmds2, "! x.odin"), app.Rect{PAD, TEXT_Y, 80, 16})
     testing.expect_value(t, text_box(&cmds2, "* x.odin"), app.Rect{}) // one marker, not two
-    testing.expect_value(t, count_of(&cmds2, .Border), 0) // no ring: nothing here wants an answer
+    testing.expect_value(t, count_of(&cmds2, .Border), 0) // no ring: nothing wants an answer
 }
 
-// No editor on screen (Full on the aux surface): the strip names the aux pane and reports
-// nothing else, because the root and the right-hand readout are both about a document.
+// No editor on screen: the strip names the aux pane and nothing else, since the root and the
+// right-hand readout are both about a document.
 @(test)
 test_strip_status_without_an_editor :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
@@ -317,8 +302,7 @@ test_strip_status_without_an_editor :: proc(t: ^testing.T) {
     testing.expect_value(t, count_of(&cmds, .Text), 1)
 }
 
-// A degenerate strip declares nothing at all, rather than a zero-sized element the bridge
-// would then flush around. Same guard every pane's frame opens with.
+// Nothing at all, rather than a zero-sized element the bridge would flush around.
 @(test)
 test_strip_degenerate :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)

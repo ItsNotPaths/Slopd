@@ -4,15 +4,12 @@ import app ".."
 import clay "../../bindings/clay"
 import "core:testing"
 
-// C0's whole acceptance surface: Clay links, its ABI answers, and the static arena we
-// size for it is still big enough. Everything here is pure — no window, no GL — which
-// is exactly why the arena question belongs in a test rather than at startup.
+// Clay links, its ABI answers, and the static arena we size for it is still big enough. Pure —
+// no window, no GL — which is why the arena question belongs in a test rather than at startup.
 
-// Clay bump-allocates its internal arrays at 64-byte offsets from the arena base and
-// places its context AT that base, so a misaligned base misaligns the entire library.
-// This is not hypothetical: a plain [N]u8 global (align_of 1) was measured landing at
-// base % 64 == 16, which is why clay_ui.odin expresses the alignment through the buffer's
-// element type instead of trusting where the linker puts it.
+// Clay bump-allocates its internal arrays at 64-byte offsets from the arena base and puts its
+// context AT that base, so a misaligned base misaligns the library. Not hypothetical: a plain
+// [N]u8 global was measured landing at base % 64 == 16.
 @(test)
 test_clay_arena_aligned :: proc(t: ^testing.T) {
     base := uintptr(raw_data(app.clay_arena_bytes()))
@@ -26,14 +23,9 @@ test_clay_arena_aligned :: proc(t: ^testing.T) {
     testing.expect_value(t, len(app.clay_arena_bytes()), app.CLAY_ARENA_BYTES)
 }
 
-// Clay is handed one arena up front and never allocates again, so if MinMemorySize
-// outgrows CLAY_ARENA_BYTES (a Clay bump, or raising its max element count) the app
-// refuses to start. Catch that here instead. MinMemorySize is legal before Initialize
-// precisely because it only reads Clay's configured limits.
-//
-// It reads them off the CURRENT CONTEXT when one exists, though, so this test is a reader
-// of the same library global every pane test writes — and takes the same lock for it. See
-// clay_harness.odin.
+// If MinMemorySize outgrows CLAY_ARENA_BYTES the app refuses to start; catch that here instead.
+// The call is legal before Initialize, but it reads the CURRENT CONTEXT when one exists, so this
+// is a reader of the same library global every pane test writes, and takes the same lock.
 @(test)
 test_clay_arena_fits :: proc(t: ^testing.T) {
     clay_test_lock()
@@ -55,27 +47,23 @@ test_clay_arena_fits :: proc(t: ^testing.T) {
     )
 }
 
-// The binding in bindings/clay is a verbatim copy of upstream's, pinned to the same
-// commit download-deps.sh builds clay.h from — so a mismatched pair shows up as struct
-// layouts disagreeing with the archive. These sizes are the cheap canary for that: they
-// are ABI, not API, and a silent divergence here would corrupt every bounding box we
-// read back. Every number below was cross-checked against sizeof() in C over the same
-// clay.h, not merely copied out of what Odin reported. When bumping CLAY_REV, re-check
-// them the same way rather than just pasting in the new values.
+// The binding is a verbatim copy of upstream's, pinned to the commit download-deps.sh builds
+// clay.h from, so a mismatched pair shows up as struct layouts disagreeing with the archive.
+// Every number below was cross-checked against sizeof() in C over the same clay.h; when bumping
+// CLAY_REV, re-check them the same way rather than pasting in what Odin reports.
 @(test)
 test_clay_abi_shape :: proc(t: ^testing.T) {
     testing.expect_value(t, size_of(clay.Vector2), 8) // [2]f32
     testing.expect_value(t, size_of(clay.Color), 16) // [4]f32
     testing.expect_value(t, size_of(clay.BoundingBox), 16) // 4 x f32
-    testing.expect_value(t, size_of(clay.String), 16) // bool + i32 + ptr, packed into 16
+    testing.expect_value(t, size_of(clay.String), 16) // bool + i32 + ptr, packed
     testing.expect_value(t, size_of(clay.Arena), 24) // uintptr + size_t + ptr
     testing.expect_value(t, size_of(clay.ElementId), 32) // 3 x u32 + String, padded
-    // The command struct itself: what the C1 bridge walks per frame, and the one whose
-    // layout drifting would silently misplace everything we draw.
+    // What the bridge walks per frame, and the one whose layout drifting would misplace
+    // everything we draw.
     testing.expect_value(t, size_of(clay.RenderCommand), 80)
 
-    // The render-command enum is what C1's bridge switches over; its backing type is
-    // u8 off Windows and the variant order is the wire format between Clay and us.
+    // What the bridge switches over: u8 off Windows, and the variant order is the wire format.
     testing.expect_value(t, size_of(clay.RenderCommandType), 1)
     testing.expect_value(t, int(clay.RenderCommandType.Rectangle), 1)
     testing.expect_value(t, int(clay.RenderCommandType.Border), 2)
@@ -86,11 +74,9 @@ test_clay_abi_shape :: proc(t: ^testing.T) {
     testing.expect_value(t, int(clay.RenderCommandType.Custom), 9)
 }
 
-// The one call C0 cannot make from a test: Initialize writes into the package-level
-// static arena, and `odin test` runs every test in one process, so initialising here
-// would leave a live Clay context behind for whatever runs next. Instead assert the
-// arena constructor is sane on memory we own — same call clay_init makes, no global
-// state touched.
+// The one call a test cannot make: Initialize writes into the package-level static arena, and
+// `odin test` runs every test in one process, so it would leave a live context behind. Instead
+// assert the arena constructor on memory we own.
 @(test)
 test_clay_arena_ctor :: proc(t: ^testing.T) {
     mem := make([]u8, 1024)

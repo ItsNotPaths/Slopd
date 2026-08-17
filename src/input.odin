@@ -4,19 +4,17 @@ import "base:runtime"
 import "vendor:glfw"
 import "wake"
 
-// Input — GLFW events in, one Action out. No verbs here and no chord: this tracks what is held,
-// asks bind.odin which Action a keystroke names, and hands it to action.odin.
+// GLFW events in, one Action out. No verbs and no chords here: this tracks what is held, asks
+// bind.odin which Action a keystroke names, and hands it to action.odin.
 //
 // The route: bookkeeping, held keys, an open context menu, then the lookup (Global plus the
-// surface's own context). Whatever nothing claims reaches a live terminal — the only thing that
-// separates the terminal from a pane. An Alt chord is never the job's.
+// surface's own context). Whatever nothing claims reaches a live terminal, which is the only
+// thing separating the terminal from a pane. An Alt chord is never the job's.
 //
-// Non-modal, Alt-rooted: bare keys stay free for typing, navigation is the ARROW KEYS only
-// (hjkl have to type), and pane / terminal navigation lives under Alt. Pointer input is
-// additive and lives in mouse.odin.
+// Non-modal and Alt-rooted: bare keys stay free for typing, navigation is the arrow keys only,
+// and pane / terminal navigation lives under Alt.
 
-// A key that qualifies the next keystroke rather than being one. Super and CapsLock count: the
-// question is "did the user ask for something".
+// A key that qualifies the next keystroke rather than being one. Super and CapsLock count.
 key_is_modifier :: proc(key: i32) -> bool {
     switch key {
     case glfw.KEY_LEFT_ALT, glfw.KEY_RIGHT_ALT,
@@ -35,12 +33,12 @@ key_callback :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods
     if a == nil {
         return
     }
-    wake.mark() // a keystroke earns a frame, even one handle_key ignores (chord bars, modifiers)
+    wake.mark() // a keystroke earns a frame, even one handle_key ignores
     handle_key(a, key, action, mods)
 }
 
-// Text input. The focused editable owns it — the same one the Text binds act on, so typing and
-// editing cannot disagree about which box they are in. Alt+C must not leak its letter in.
+// The focused editable owns it — the same one the Text binds act on, so typing and editing
+// cannot disagree about which box they are in.
 char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     context = runtime.default_context()
     a := (^App)(glfw.GetWindowUserPointer(window))
@@ -49,31 +47,30 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     }
     wake.mark()
     a.last_input_at = glfw.GetTime()
-    a.blink_base = a.last_input_at // typing: caret solid, then resumes blinking
-    a.move_all_armed = false // typing isn't a motion; cancel a pending move-all
-    mouse_stand_down(a) // typing hides the pointer, exactly as a bound key does
+    a.blink_base = a.last_input_at // caret solid, then blinking
+    a.move_all_armed = false // typing is not a motion
+    mouse_stand_down(a)
 
-    // A live terminal is not an editable: characters go to the job, not to a Doc.
+    // A live terminal is not an editable: characters go to the job, not a Doc.
     if tf := term_focused(a); tf != nil {
         terminal_input_rune(tf, codepoint)
         return
     }
-    config_edit_sync(a) // the highlighted config row owns the Doc before it owns the keystroke
+    config_edit_sync(a) // the highlighted row owns the Doc before the keystroke
     kind, d := active_editable(a)
     switch kind {
     case .None:
         return
     case .Buffer:
-        b := editor_current(&a.editor) // the one editable that closes a bracket for you
+        b := editor_current(&a.editor) // the one editable that closes a bracket
         if !buffer_autopair(b, codepoint) {
             buffer_insert_rune(b, codepoint)
         }
     case .Config_Search:
         doc_insert_rune(d, codepoint)
-        config_pane_filter(&a.config_pane) // live filter as you type
+        config_pane_filter(&a.config_pane) // live as you type
     case .Command_Line, .Browse_Path, .Workspace_Find, .Config_Value:
-        // The prompt's rows follow its line on a version compare (wsfind_sync), so typing into
-        // it is the plain insert every other field's is.
+        // Its rows follow the line on a version compare, so this is the plain insert.
         doc_insert_rune(d, codepoint)
     }
 }
@@ -81,17 +78,17 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
 handle_key :: proc(a: ^App, key, action, mods: i32) {
     if action == glfw.PRESS || action == glfw.REPEAT {
         now := glfw.GetTime()
-        a.blink_base = now // any keypress holds the caret solid, then blinks
-        a.last_input_at = now // perf log: timestamp for keystroke->present latency
+        a.blink_base = now
+        a.last_input_at = now // the perf log's keystroke->present timestamp
 
-        // The keyboard stands the pointer down — but a BARE MODIFIER does not: Alt+click needs
-        // the cursor on screen to aim with, and Ctrl held is the filetree's chord bar.
+        // A bare modifier does not stand the pointer down: Alt+click needs the cursor on screen
+        // to aim with, and Ctrl held is the filetree's chord bar.
         if !key_is_modifier(key) {
             mouse_stand_down(a)
         }
     }
 
-    // Held keys — not binds: each qualifies the NEXT keystroke and drives an overlay while down.
+    // Not binds: each qualifies the NEXT keystroke and drives an overlay while down.
     switch key {
     case glfw.KEY_LEFT_ALT, glfw.KEY_RIGHT_ALT:
         a.alt_held = action != glfw.RELEASE
@@ -102,25 +99,25 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     case glfw.KEY_LEFT_CONTROL, glfw.KEY_RIGHT_CONTROL:
         a.ctrl_held = action != glfw.RELEASE
         if action == glfw.PRESS {
-            anim_start(&a.chord_anim, glfw.GetTime(), 0, 1, SWITCHER_DUR) // fade the chord bar in
+            anim_start(&a.chord_anim, glfw.GetTime(), 0, 1, SWITCHER_DUR)
         }
     case glfw.KEY_LEFT_SHIFT, glfw.KEY_RIGHT_SHIFT:
         a.shift_held = action != glfw.RELEASE
     case glfw.KEY_A:
-        a.a_held = action != glfw.RELEASE // Alt+A held + an arrow lays a multi-cursor trail
+        a.a_held = action != glfw.RELEASE // held with an arrow, it lays a cursor trail
     }
 
     if action != glfw.PRESS && action != glfw.REPEAT {
         return
     }
 
-    // A mid-frame click may have left a text row: settle it before anything reads it.
+    // A mid-frame click may have left a text row; settle it before anything reads it.
     if a.focus == .Aux && a.aux_mode == .Config {
         config_edit_sync(a)
     }
 
-    // The menu owns four keys and nothing else: any other closes it and is then handled normally,
-    // so a menu opened by a stray press never swallows the keystroke you meant.
+    // The menu owns four keys; any other closes it and is then handled normally, so a menu
+    // opened by a stray press never swallows the keystroke you meant.
     if ctxmenu_shown(a) && !key_is_modifier(key) {
         switch key {
         case glfw.KEY_ESCAPE:
@@ -139,7 +136,7 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         ctxmenu_close(a)
     }
 
-    // The move-all prefix is spent by the next real key — a bare modifier must not eat it.
+    // The move-all prefix is spent by the next real key, never by a bare modifier.
     all := false
     if !key_is_modifier(key) {
         all = a.move_all_armed
@@ -160,7 +157,7 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
         }
     }
 
-    // Unclaimed keys reach a live terminal. An Alt chord never does: it was ours, bound or not.
+    // Unclaimed keys reach a live terminal; an Alt chord never does, bound or not.
     if mods & glfw.MOD_ALT != 0 {
         return
     }
@@ -169,8 +166,8 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     }
 }
 
-// An open command line owns the keyboard: a pane chord under it would move focus out from under
-// the line, and Alt+C would clear it outright. Only the window-level verbs reach past.
+// A pane chord under an open line would move focus out from under it, and Alt+C would clear it.
+// Only the window-level verbs reach past.
 @(private = "file")
 cl_swallows :: proc(a: ^App, b: Bind) -> bool {
     if !a.cl_active || .Global not_in bind_ctxs(b.act) {
@@ -183,12 +180,10 @@ cl_swallows :: proc(a: ^App, b: Bind) -> bool {
     return true
 }
 
-// The binds pane's own keys, claimed before the table it edits — unbinding `nav.down` must not
-// lock you out of the pane that fixes it, and `edit.save` is a Text bind a Surface pane would
-// never see. It takes eight chords and declines the rest, so Alt+E and the zoom still get you out.
-//
-// While CAPTURING it takes everything: to bind Alt+F you have to press Alt+F. The one exception
-// is Escape, which cancels — so Escape is the one chord that can never be bound.
+// Claimed before the table it edits: unbinding `nav.down` must not lock you out of the pane that
+// fixes it. Eight chords, declining the rest, so Alt+E and the zoom still get you out. While
+// CAPTURING it takes everything — to bind Alt+F you have to press Alt+F — bar Escape, which
+// cancels, and is therefore the one chord that can never be bound.
 @(private = "file")
 binds_pane_key :: proc(a: ^App, c: Chord) -> bool {
     if a.cl_active || a.focus != .Aux || a.aux_mode != .Binds {
@@ -197,7 +192,7 @@ binds_pane_key :: proc(a: ^App, c: Chord) -> bool {
     bp := &a.binds_pane
     if bp.capture == .Add || bp.capture == .Rebind {
         if key_is_modifier(c.key) {
-            return true // a held Ctrl is not the chord; wait for the key it qualifies
+            return true // a held Ctrl is not the chord; wait for what it qualifies
         }
         if c.key == glfw.KEY_ESCAPE {
             bp.capture = .None
@@ -209,7 +204,7 @@ binds_pane_key :: proc(a: ^App, c: Chord) -> bool {
     switch c.key {
     case glfw.KEY_ESCAPE:
         if bp.capture != .Confirm {
-            return false // nothing pending: Escape is the view's, as everywhere else
+            return false // nothing pending: Escape is the view's
         }
         bp.capture = .None
     case glfw.KEY_UP:
@@ -245,8 +240,7 @@ binds_pane_key :: proc(a: ^App, c: Chord) -> bool {
     return true
 }
 
-// Alt+A held + an arrow lays a multi-cursor trail; Esc collapses it. A held-key chord rather than
-// a bind: what you hold is a modifier for as long as you hold it.
+// Esc collapses it. A held-key chord rather than a bind: what you hold is a modifier.
 @(private = "file")
 cursor_trail :: proc(a: ^App, key: i32) -> bool {
     kind, d := active_editable(a)

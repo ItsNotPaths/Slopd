@@ -13,39 +13,30 @@ import "../wake"
 // PARKED — WIP, not part of the editor.
 //
 // The device panes this was built for were shelved, so nothing in the running app touches
-// sysbus, dbus.odin or dbus_om.odin: the App owns no Sysbus, the main loop drains nothing,
-// and a normal session never opens a socket. What is left is a complete, tested stack kept
-// alive on purpose rather than deleted — it still compiles with the binary, its tests still
-// run (src/tests/{dbus,dbus_om,sysbus}_test.odin), and `slopd --sysbus` still drives it
-// against the real daemons. Picking it back up means writing panes on top of `sysbus_drain`
-// + `sysbus_request`; nothing below this line needs to change first.
+// sysbus, dbus.odin or dbus_om.odin. What is left is a complete, tested stack kept alive on
+// purpose: it compiles with the binary, its tests run, and `slopd --sysbus` drives it against
+// the real daemons. Picking it up means writing panes on `sysbus_drain` + `sysbus_request`.
 //
-// Sysbus — ONE worker thread behind all four device panes (see "Threading" in plan.txt).
-// It owns both bus connections and every ObjectManager tree, and the main thread never
-// touches a socket.
+// One worker thread behind all four device panes. It owns both bus connections and every
+// ObjectManager tree, and the main thread never touches a socket.
 //
-// Threading model:
 //   - The worker blocks in poll() on [wake pipe, system fd, session fd]. D-Bus is
-//     signal-driven, so there is NO sampling loop. The only timer is a 1s tick, armed only
-//     while a pane wanting a live graph is on screen (`sysbus_set_ticking`).
+//     signal-driven, so there is no sampling loop; the only timer is a 1s tick, armed while
+//     a pane wanting a live graph is on screen.
 //   - Incoming signals update the worker's authoritative trees. Anything that moves is
-//     snapshotted heap-owned, handed off as `pending` under `lock`, and PostEmptyEvent
-//     wakes the main loop. `sysbus_drain` installs it into `cur` each frame. `cur` is
-//     MAIN-THREAD-ONLY, so draw needs no lock.
-//   - A REQUEST QUEUE runs the other way: the main thread pushes a request and a wake byte,
-//     the worker performs the call and reports the outcome in the next snapshot. Requests
-//     run one at a time, in order, so a hung daemon delays those behind it (bounded by
-//     DBUS_CALL_TIMEOUT) but never the UI.
+//     snapshotted heap-owned, handed off as `pending` under `lock`, and PostEmptyEvent wakes
+//     the main loop. `sysbus_drain` installs it into `cur`, which is main-thread-only.
+//   - A request queue runs the other way: the main thread pushes a request and a wake byte,
+//     the worker performs the call and reports the outcome in the next snapshot. Requests run
+//     one at a time, so a hung daemon delays those behind it but never the UI.
 //
-// Testing: `sysbus_open` and `sysbus_step` are the whole worker minus the blocking poll,
-// and both are synchronous. Attach scripted connections with `sysbus_attach`
-// (src/tests/sysbus_test.odin).
+// `sysbus_open` and `sysbus_step` are the whole worker minus the blocking poll, and both are
+// synchronous, so a test attaches scripted connections with `sysbus_attach`.
 
 SYS_TICK_MS :: 1000 // the graph beat, armed only while a pane wants it
 SYS_RESULTS_KEEP :: 32 // finished results retained for the panes to read back
 
-// What a pane asks sysbus to track: one ObjectManager, on one bus, filtered to the
-// interfaces that pane actually reads.
+// One ObjectManager, on one bus, filtered to the interfaces that pane reads.
 Sys_Watch :: struct {
     bus:     Dbus_Bus,
     service: string, // owned
@@ -54,13 +45,13 @@ Sys_Watch :: struct {
 }
 
 Sys_Req_State :: enum {
-    In_Flight, // picked up by the worker; the call has not answered yet
+    In_Flight, // picked up by the worker; the call has not answered
     Ok,
     Failed,
 }
 
-// A queued action. Strings and args are OWNED clones — the main thread builds these from
-// borrowed row data, and the worker reads them after that data is long gone.
+// Strings and args are OWNED clones: the main thread builds these from borrowed row data, and
+// the worker reads them long after that data is gone.
 Sys_Request :: struct {
     id:          u64,
     bus:         Dbus_Bus,
@@ -72,8 +63,7 @@ Sys_Request :: struct {
     args:        []Dbus_Value,
 }
 
-// How a request ended, as the row draws it. `error_name` is the dotted D-Bus name
-// (org.freedesktop.DBus.Error.AccessDenied and friends); `error_msg` its human text.
+// As the row draws it. `error_name` is the dotted D-Bus name, `error_msg` its human text.
 Sys_Result :: struct {
     id:         u64,
     state:      Sys_Req_State,
@@ -81,20 +71,18 @@ Sys_Result :: struct {
     error_msg:  string, // owned
 }
 
-// One tracked service as the main thread sees it. `tree` is a private copy, owned by the
-// snapshot and freed with it.
+// `tree` is a private copy, owned by the snapshot and freed with it.
 Sys_Service :: struct {
     service: string, // owned
     present: bool,
     tree:    ^Dbus_Om, // owned
 }
 
-// The drawn state, swapped wholesale. Everything here is heap-owned and freed by
-// sys_snapshot_free.
+// Swapped wholesale. Heap-owned, and freed by sys_snapshot_free.
 Sys_Snapshot :: struct {
     services: []Sys_Service,
     results:  []Sys_Result,
-    ticks:    u64, // 1s beats since start; the heartbeat a live graph samples on
+    ticks:    u64, // 1s beats since start, which a live graph samples on
 }
 
 @(private = "file")
@@ -108,7 +96,7 @@ Sysbus :: struct {
     worker:  ^thread.Thread,
     running: bool,
     next_id: u64,
-    cur:     Sys_Snapshot, // main-thread-only (drawn without a lock)
+    cur:     Sys_Snapshot, // main-thread-only, drawn without a lock
 
     // shared, lock-guarded
     lock:        sync.Mutex,
@@ -117,8 +105,8 @@ Sysbus :: struct {
     queue:       [dynamic]Sys_Request, // main -> worker
     ticking:     bool,
 
-    // The wake pipe: writing one byte breaks the worker out of poll(), which is how a
-    // request is delivered promptly and how stopping is not a wait for the next timeout.
+    // Writing one byte breaks the worker out of poll(), which is how a request is delivered
+    // promptly and how stopping is not a wait for the next timeout.
     wake_r: posix.FD,
     wake_w: posix.FD,
 
@@ -134,8 +122,8 @@ Sysbus :: struct {
 
 // --- lifecycle (main thread) ---
 
-// ok=false only if the wake pipe can't be made, in which case the worker is never started
-// and every pane reads an empty snapshot — "unavailable", not a hang.
+// ok=false only if the wake pipe cannot be made, in which case the worker never starts and
+// every pane reads an empty snapshot: "unavailable", not a hang.
 sysbus_init :: proc(sb: ^Sysbus) -> bool {
     sb.wake_r, sb.wake_w = -1, -1
     fds: [2]posix.FD
@@ -146,9 +134,8 @@ sysbus_init :: proc(sb: ^Sysbus) -> bool {
     return true
 }
 
-// Registers a tree to track. Call before sysbus_start: the worker reads `watches` once, at
-// startup, since connecting and taking the first snapshot is exactly the blocking work
-// that must not happen on the main thread.
+// Before sysbus_start: the worker reads `watches` once, at startup, since connecting and
+// taking the first snapshot is the blocking work that must not be on the main thread.
 sysbus_watch :: proc(sb: ^Sysbus, bus: Dbus_Bus, service, root: string, filter: []string = nil) {
     w := Sys_Watch {
         bus     = bus,
@@ -176,15 +163,15 @@ sysbus_start :: proc(sb: ^Sysbus) {
         return
     }
     sb.worker.data = sb
-    // The worker allocates every snapshot and the main thread frees it, so the two must
-    // agree on the allocator. Its TEMP allocator is a different matter and is replaced with
-    // a private arena inside the worker proc, since that one must not be shared.
+    // The worker allocates every snapshot and the main thread frees it, so the two must agree
+    // on the allocator. Its TEMP allocator is replaced with a private arena inside the worker
+    // proc, since that one must not be shared.
     sb.worker.init_context = context
     thread.start(sb.worker)
 }
 
-// Stops the worker and joins it. The wake byte is the whole reason this returns promptly:
-// the worker is parked in a poll() with no timeout whenever nothing is ticking.
+// The wake byte is why this returns promptly: the worker is parked in a poll() with no
+// timeout whenever nothing is ticking.
 sysbus_stop :: proc(sb: ^Sysbus) {
     if !sb.running {
         return
@@ -199,7 +186,7 @@ sysbus_stop :: proc(sb: ^Sysbus) {
 }
 
 sysbus_destroy :: proc(sb: ^Sysbus) {
-    sysbus_stop(sb) // after this the worker is gone, so its private state is ours to free
+    sysbus_stop(sb) // the worker is gone, so its private state is ours to free
 
     for &t in sb.trees {
         dbus_om_destroy(t.om)
@@ -271,9 +258,8 @@ sys_request_free :: proc(r: ^Sys_Request) {
 
 // --- main-thread API ---
 
-// Each frame: move a freshly published snapshot into `cur`. Returns whether anything
-// changed, so a pane can rebuild its rows only when it must. Cheap (an early return) the
-// rest of the time.
+// Each frame. Returns whether anything changed, so a pane rebuilds its rows only when it must;
+// an early return the rest of the time.
 sysbus_drain :: proc(sb: ^Sysbus) -> bool {
     sync.mutex_lock(&sb.lock)
     if !sb.has_pending {
@@ -289,8 +275,7 @@ sysbus_drain :: proc(sb: ^Sysbus) -> bool {
     return true
 }
 
-// Queues an action and returns its id. The row keeps that id and reads the outcome back
-// out of later snapshots with sysbus_result; nothing here blocks.
+// The row keeps the id and reads the outcome out of later snapshots. Nothing here blocks.
 sysbus_request :: proc(
     sb: ^Sysbus,
     bus: Dbus_Bus,
@@ -323,8 +308,7 @@ sysbus_request :: proc(
     return sb.next_id
 }
 
-// The outcome of a request as of the current snapshot. Absent means the worker hasn't
-// picked it up yet — still queued, which a row draws the same as in-flight.
+// Absent means the worker has not picked it up: still queued, which a row draws as in-flight.
 sysbus_result :: proc(sb: ^Sysbus, id: u64) -> (res: Sys_Result, ok: bool) {
     for r in sb.cur.results {
         if r.id == id {
@@ -334,8 +318,7 @@ sysbus_result :: proc(sb: ^Sysbus, id: u64) -> (res: Sys_Result, ok: bool) {
     return {}, false
 }
 
-// A tracked service out of the current snapshot. present=false is the pane's cue to draw
-// "unavailable" rather than an empty list.
+// present=false is the pane's cue to draw "unavailable" rather than an empty list.
 sysbus_service :: proc(sb: ^Sysbus, service: string) -> (svc: Sys_Service, ok: bool) {
     for s in sb.cur.services {
         if s.service == service {
@@ -345,15 +328,15 @@ sysbus_service :: proc(sb: ^Sysbus, service: string) -> (svc: Sys_Service, ok: b
     return {}, false
 }
 
-// Arms or disarms the 1s tick. On only while a pane wanting a live graph is visible — the
-// reason an idle Slopd stays at 0% with four live panes registered.
+// On only while a pane wanting a live graph is visible, which is why an idle Slopd stays at 0%
+// with four panes registered.
 sysbus_set_ticking :: proc(sb: ^Sysbus, on: bool) {
     sync.mutex_lock(&sb.lock)
     changed := sb.ticking != on
     sb.ticking = on
     sync.mutex_unlock(&sb.lock)
     if changed {
-        sysbus_wake(sb) // re-enter poll() with the new timeout instead of waiting one out
+        sysbus_wake(sb) // re-enter poll() with the new timeout
     }
 }
 
@@ -371,8 +354,8 @@ sysbus_wake :: proc(sb: ^Sysbus) {
 @(private = "file")
 sysbus_worker_proc :: proc(th: ^thread.Thread) {
     sb := (^Sysbus)(th.data)
-    // A private growing arena: the default temp allocator is not safe to share with the
-    // main thread, and everything under dbus_call marshals through temp.
+    // A private growing arena: the default temp allocator is not safe to share, and everything
+    // under dbus_call marshals through temp.
     arena: virtual.Arena
     if virtual.arena_init_growing(&arena) != nil {
         return
@@ -380,7 +363,7 @@ sysbus_worker_proc :: proc(th: ^thread.Thread) {
     defer virtual.arena_destroy(&arena)
     context.temp_allocator = virtual.arena_allocator(&arena)
 
-    sysbus_open(sb) // connect + first snapshot; the blocking work, off the main thread
+    sysbus_open(sb) // connect and take the first snapshot: the blocking work
     wake.post()
     free_all(context.temp_allocator)
 
@@ -389,8 +372,8 @@ sysbus_worker_proc :: proc(th: ^thread.Thread) {
         if !sb.running {
             break
         }
-        // A tick is news in itself — it is the beat a live graph samples on, and without
-        // passing it through, an armed timer would advance a counter nobody ever sees.
+        // A tick is news in itself: without passing it through, an armed timer would advance
+        // a counter nobody sees.
         if sysbus_step(sb, ticked) {
             wake.post()
         }
@@ -398,9 +381,8 @@ sysbus_worker_proc :: proc(th: ^thread.Thread) {
     }
 }
 
-// Opens the connections the watches need, starts their trees, and publishes the first
-// snapshot. Runs once, on the worker: `dbus_open` plus a GetManagedObjects round trip is
-// the blocking work the main thread must never do. An unreachable bus is not an error.
+// Once, on the worker: `dbus_open` plus a GetManagedObjects round trip is the blocking work the
+// main thread must never do. An unreachable bus is not an error.
 sysbus_open :: proc(sb: ^Sysbus) {
     for w in sb.watches {
         om := dbus_om_make(w.service, w.root, w.filter)
@@ -412,12 +394,9 @@ sysbus_open :: proc(sb: ^Sysbus) {
     sysbus_publish(sb)
 }
 
-// One pass of the worker's work, minus the blocking wait: run the queue, drain the buses,
-// re-fetch anything that came back, publish what moved. `ticked` says the wait ended on
-// the 1s beat, which counts as something moving. Returns whether a snapshot was published.
-//
-// Public and synchronous on purpose — this IS the worker, and a test drives it directly
-// against scripted connections with no thread involved.
+// One pass minus the blocking wait: run the queue, drain the buses, re-fetch anything that came
+// back, publish what moved. `ticked` says the wait ended on the 1s beat, which counts as
+// movement. Public and synchronous on purpose: a test drives it against scripted connections.
 sysbus_step :: proc(sb: ^Sysbus, ticked: bool = false) -> bool {
     sync.mutex_lock(&sb.lock)
     reqs := slice.clone(sb.queue[:], context.temp_allocator) // ownership moves to us
@@ -429,8 +408,8 @@ sysbus_step :: proc(sb: ^Sysbus, ticked: bool = false) -> bool {
         sb.ticks += 1
     }
 
-    // Picked up: publish BEFORE performing, so the row renders in-flight rather than
-    // looking untouched for as long as the daemon takes to answer.
+    // Publish BEFORE performing, so the row renders in-flight rather than looking untouched
+    // for as long as the daemon takes.
     if len(reqs) > 0 {
         for r in reqs {
             sysbus_result_set(sb, r.id, .In_Flight, "", "")
@@ -457,9 +436,8 @@ sysbus_step :: proc(sb: ^Sysbus, ticked: bool = false) -> bool {
     return published
 }
 
-// Blocks until something happens: a signal on either bus, a wake byte (a new request, a
-// ticking change, or a stop), or the 1s beat when it is armed. Returns whether it was the
-// beat that ended the wait.
+// A signal on either bus, a wake byte, or the 1s beat when armed. Returns whether the beat
+// ended the wait.
 @(private = "file")
 sysbus_wait :: proc(sb: ^Sysbus) -> (ticked: bool) {
     if sb.wake_r < 0 {
@@ -492,14 +470,13 @@ sysbus_wait :: proc(sb: ^Sysbus) -> (ticked: bool) {
         return true // a timeout IS the beat; sysbus_step counts it
     }
     if .IN in fds[0].revents {
-        drain: [64]u8 // however many wakes coalesced, one read clears them
+        drain: [64]u8 // one read clears however many wakes coalesced
         posix.read(sb.wake_r, raw_data(drain[:]), len(drain))
     }
     return false
 }
 
-// Reads everything waiting on both buses into the trees. Messages parked by dbus_call
-// while it waited for a reply come first — they arrived first.
+// Messages parked by dbus_call while it waited for a reply come first: they arrived first.
 @(private = "file")
 sysbus_read :: proc(sb: ^Sysbus) -> bool {
     changed := false
@@ -519,7 +496,7 @@ sysbus_read :: proc(sb: ^Sysbus) -> bool {
         for dbus_readable(conn) {
             m, ok := dbus_read_msg(conn)
             if !ok {
-                break // a dead socket or a malformed frame; the trees keep what they have
+                break // a dead socket or a malformed frame
             }
             if sysbus_dispatch(sb, bus, &m) {
                 changed = true
@@ -530,13 +507,11 @@ sysbus_read :: proc(sb: ^Sysbus) -> bool {
     return changed
 }
 
-// Offers one message to every tree on that bus. A tree that doesn't recognise the sender,
-// the path or the shape ignores it (dbus_om_apply checks all three), so this stays a plain
-// broadcast no matter how many services share a connection.
+// A tree that does not recognise the sender, the path or the shape ignores it, so this stays a
+// plain broadcast however many services share a connection.
 //
-// Phase 3 seam: a Method_Call addressed to one of OUR exported objects (the wifi
-// passphrase and BlueZ pairing agents) gets parked here as a pending request instead —
-// same queue, running the other way. Nothing exports an object yet, so nothing does.
+// Phase 3 seam: a Method_Call addressed to one of OUR exported objects would be parked here as
+// a pending request instead, on the same queue running the other way.
 @(private = "file")
 sysbus_dispatch :: proc(sb: ^Sysbus, bus: Dbus_Bus, m: ^Dbus_Message) -> bool {
     changed := false
@@ -551,9 +526,8 @@ sysbus_dispatch :: proc(sb: ^Sysbus, bus: Dbus_Bus, m: ^Dbus_Message) -> bool {
     return changed
 }
 
-// A service that just (re)appeared has an empty tree and a `refetch` flag; this is where the
-// new snapshot is taken. ONE attempt per appearance — the flag is cleared either way, since
-// retrying on every later message would mean a call per signal. Its next restart re-sets it.
+// A service that just reappeared has an empty tree and a `refetch` flag. One attempt per
+// appearance: the flag is cleared either way, since retrying would mean a call per signal.
 @(private = "file")
 sysbus_refetch :: proc(sb: ^Sysbus) -> bool {
     changed := false
@@ -573,8 +547,8 @@ sysbus_refetch :: proc(sb: ^Sysbus) -> bool {
     return changed
 }
 
-// Performs one queued call and records how it ended. A failure is kept, not swallowed:
-// polkit refusing a connect is the answer to something the user asked for.
+// A failure is kept, not swallowed: polkit refusing a connect is the answer to something the
+// user asked for.
 @(private = "file")
 sysbus_perform :: proc(sb: ^Sysbus, req: ^Sys_Request) {
     conn := sb.conns[req.bus]
@@ -602,8 +576,7 @@ sysbus_perform :: proc(sb: ^Sysbus, req: ^Sys_Request) {
         sysbus_result_set(sb, req.id, .Ok, "", "")
         return
     }
-    // No reply at all is its own failure; an error reply names itself and usually carries
-    // one string of human text.
+    // No reply is its own failure; an error reply names itself and usually carries text.
     name, text := "org.freedesktop.DBus.Error.NoReply", "no reply from the daemon"
     if reply.type == .Error {
         name = reply.error_name
@@ -619,9 +592,8 @@ sysbus_perform :: proc(sb: ^Sysbus, req: ^Sys_Request) {
     }
 }
 
-// Records or updates a result, keeping the list bounded: once it is full the oldest
-// FINISHED entry is dropped, never an in-flight one — that would lose a row's only handle
-// on a call still running.
+// Keeps the list bounded: once full, the oldest FINISHED entry is dropped, never an in-flight
+// one, which would lose a row's only handle on a call still running.
 @(private = "file")
 sysbus_result_set :: proc(sb: ^Sysbus, id: u64, state: Sys_Req_State, name, text: string) {
     for &r in sb.results {
@@ -660,8 +632,7 @@ sysbus_result_set :: proc(sb: ^Sysbus, id: u64, state: Sys_Req_State, name, text
     }
 }
 
-// Clones the worker's state into a fresh snapshot and hands it off, dropping any the main
-// thread hasn't consumed yet (the newer one supersedes it).
+// Drops any the main thread has not consumed: the newer one supersedes it.
 @(private = "file")
 sysbus_publish :: proc(sb: ^Sysbus) {
     snap: Sys_Snapshot
@@ -698,8 +669,7 @@ sysbus_publish :: proc(sb: ^Sysbus) {
     sync.mutex_unlock(&sb.lock)
 }
 
-// Opens a bus on demand, once. Returns nil when the bus isn't reachable at all (a
-// container with no system bus, a session with no DBUS_SESSION_BUS_ADDRESS).
+// Once, on demand. nil when the bus is not reachable at all.
 @(private = "file")
 sysbus_conn :: proc(sb: ^Sysbus, bus: Dbus_Bus) -> ^Dbus_Conn {
     if sb.conns[bus] == nil {
@@ -710,17 +680,15 @@ sysbus_conn :: proc(sb: ^Sysbus, bus: Dbus_Bus) -> ^Dbus_Conn {
     return sb.conns[bus]
 }
 
-// Installs a connection the worker would otherwise open itself. The scripted-transport
-// hook (dbus_conn_fake): with one attached, sysbus_open finds a connection already in
-// place and never touches a socket.
+// The scripted-transport hook: with one attached, sysbus_open finds a connection in place and
+// never touches a socket.
 sysbus_attach :: proc(sb: ^Sysbus, bus: Dbus_Bus, conn: ^Dbus_Conn) {
     dbus_close(sb.conns[bus])
     sb.conns[bus] = conn
 }
 
-// The services the panes were going to read, and the interfaces each would keep.
-// Registering is two string clones per watch and touches no bus; only `--sysbus` calls it
-// now, and it is the list a pane would start from.
+// The services the panes were going to read, and the interfaces each would keep. Registering
+// is two string clones per watch and touches no bus; only `--sysbus` calls it now.
 sysbus_watches :: proc(sb: ^Sysbus) {
     sysbus_watch(sb, .System, "org.bluez", "/", []string{"org.bluez.Adapter1", "org.bluez.Device1"})
     sysbus_watch(
@@ -738,13 +706,10 @@ sysbus_watches :: proc(sb: ^Sysbus) {
     )
 }
 
-// --- `slopd --sysbus` ---
-//
-// Connects for real, takes one snapshot of every registered watch, prints it, exits. No
-// window and NO WORKER THREAD: sysbus_open + sysbus_step are the worker minus its blocking
-// wait, so this drives the whole stack against live daemons exactly as the tests drive it
-// against scripted ones. Read-only, and it is how the panes' property names get checked
-// against the machine rather than against documentation.
+// --- `slopd --sysbus` --- Connects for real, takes one snapshot of every registered watch,
+// prints it, exits. No window and no worker thread: sysbus_open + sysbus_step are the worker
+// minus its blocking wait. Read-only, and how the panes' property names get checked against
+// the machine rather than documentation.
 sysbus_cli :: proc(args: []string) -> (handled: bool) {
     if !slice.contains(args, "--sysbus") {
         return false
@@ -783,7 +748,7 @@ sysbus_cli :: proc(args: []string) -> (handled: bool) {
     return true
 }
 
-// Map order is arbitrary and a diagnostic that reshuffles between runs can't be diffed.
+// Map order is arbitrary, and a diagnostic that reshuffles between runs cannot be diffed.
 @(private = "file")
 sys_sorted_keys :: proc(m: $M/map[string]$V) -> []string {
     out := make([dynamic]string, 0, len(m), context.temp_allocator)
@@ -794,8 +759,8 @@ sys_sorted_keys :: proc(m: $M/map[string]$V) -> []string {
     return out[:]
 }
 
-// One property as a line of text. Containers print their shape, not their contents — the
-// point is to see WHICH properties a daemon publishes, not to dump a UUID list.
+// Containers print their shape, not their contents: the point is which properties a daemon
+// publishes, not a UUID dump.
 @(private = "file")
 sys_show :: proc(v: Dbus_Value) -> string {
     if s, ok := dbus_as_string(v); ok {

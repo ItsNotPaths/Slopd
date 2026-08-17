@@ -3,16 +3,14 @@ package main
 import "core:fmt"
 import "core:strings"
 
-// The binds pane — one row per Action, its chords beside it. **Its own keys are hardcoded**
-// (binds_pane_key, input.odin) and never come from the table it edits: unbinding `nav.down` must
-// not lock you out of the pane that fixes it, and `ctrl+s` is a Text bind a Surface pane would
-// never see.
+// One row per Action, its chords beside it. Its own keys are hardcoded (binds_pane_key) and
+// never come from the table it edits: unbinding `nav.down` must not lock you out of the pane
+// that fixes it.
 //
-// TWO WAYS TO EDIT, on the pane's top toggle:
-//   Fill     Enter stages `:rebind 0 nav.down ` in the command line for you to finish and read.
-//            The staged line is the confirm, as with every other command Slopd puts up.
-//   Capture  Enter waits, and the next keystroke IS the chord. A chord already held asks first,
-//            since there is no line to read here.
+// Two ways to edit, on the pane's top toggle:
+//   Fill     Enter stages `:rebind 0 nav.down ` for you to finish and read; the staged line is
+//            the confirm, as with every other command.
+//   Capture  Enter waits, and the next keystroke IS the chord. A chord already held asks first.
 //
 // Edits land in `working`, not the live table, so rebinding an arrow does not change the pane
 // under your fingers. Ctrl+S writes the block and applies them.
@@ -22,30 +20,30 @@ Bind_Edit :: enum {
     Capture,
 }
 
-// Capture's own state; `.None` throughout in Fill mode.
+// `.None` throughout in Fill mode.
 Bind_Capture :: enum {
     None,
     Add, // a new chord for the selected action
     Rebind, // replace the highlighted one
-    Confirm, // the captured chord is taken; Enter steals it, Esc backs out
+    Confirm, // the chord is taken; Enter steals it, Esc backs out
     Rejected, // the chord cannot hold this action; `fault` says why
 }
 
 BindsPane :: struct {
-    sel:             int, // selected navigable row
-    chord:           int, // which of the row's chords is highlighted (Left/Right)
+    sel:             int,
+    chord:           int, // which of the row's chords Left/Right landed on
     scroll:          int,
     scroll_detached: f64,
     hover:           int, // display row under the pointer, or -1
     mode:            Bind_Edit,
     capture:         Bind_Capture,
     pending:         Chord, // the captured chord, waiting on a steal confirm
-    pending_add:     bool, // ...and whether it was an add
+    pending_add:     bool, // …and whether it was an add
     steal:           Action, // who holds it
     fault:           Bind_Fault, // why a Rejected capture was refused
-    note:            string, // what `:rebind` last did, owned; shown until you move off
+    note:            string, // what `:rebind` last did (owned), shown until you move off
     working:         [dynamic]Bind, // the edit copy; Ctrl+S applies it
-    errs:            [dynamic]Bind_Error, // refused lines, owned; save is blocked while any stand
+    errs:            [dynamic]Bind_Error, // refused lines (owned); they block a save
     dirty:           bool,
 }
 
@@ -55,8 +53,8 @@ ROW_BINDS_OPEN :: 1
 ROW_BINDS_SAVE :: 2
 ROW_BINDS_ERRS :: 3
 
-// Its own copy of the live table and of whatever the loader refused, so the pane never edits
-// state somebody else owns.
+// Its own copy of the live table and of what the loader refused, so the pane never edits state
+// somebody else owns.
 binds_pane_init :: proc(bp: ^BindsPane, binds: []Bind, errs: []Bind_Error) {
     bp.hover = -1
     append(&bp.working, ..binds)
@@ -78,7 +76,6 @@ binds_pane_rows :: proc(bp: ^BindsPane) -> int {
     return ROW_BINDS_ERRS + len(bp.errs) + len(Action) - 1 // every action but .None
 }
 
-// The Action at row r, or (_, false) for a button or an error row.
 binds_pane_action :: proc(bp: ^BindsPane, r: int) -> (Action, bool) {
     i := r - (ROW_BINDS_ERRS + len(bp.errs))
     if i < 0 || i >= len(Action) - 1 {
@@ -95,7 +92,7 @@ binds_pane_err :: proc(bp: ^BindsPane, r: int) -> (^Bind_Error, bool) {
     return &bp.errs[i], true
 }
 
-// Where `act`'s chords sit in `working`, in table order. Temp-allocated.
+// In table order. Temp-allocated.
 binds_of :: proc(bp: ^BindsPane, act: Action, alloc := context.temp_allocator) -> []int {
     out := make([dynamic]int, 0, 4, alloc)
     for b, i in bp.working {
@@ -113,15 +110,15 @@ binds_pane_move :: proc(bp: ^BindsPane, delta: int) {
     binds_note(bp, "")
 }
 
-// What `:rebind` last did, said on the pane's own status row. **Not a t1 echo**: that surfaces
-// the terminal, and a command you ran from this pane must not throw you out of it.
+// On the pane's own status row, not a t1 echo: that surfaces the terminal, and a command run
+// from this pane must not throw you out of it.
 binds_note :: proc(bp: ^BindsPane, msg: string) {
     delete(bp.note)
     bp.note = strings.clone(msg)
 }
 
-// Left/Right walk the chords ON the selected action's row — with ^C and ^Y both on clip.copy,
-// this is what picks which of the two a delete or a rebind acts on.
+// Walks the chords ON the selected row: with ^C and ^Y both on clip.copy, this picks which of
+// the two a delete or a rebind acts on.
 binds_pane_cycle :: proc(bp: ^BindsPane, delta: int) {
     act, ok := binds_pane_action(bp, bp.sel)
     if !ok {
@@ -134,10 +131,8 @@ binds_pane_cycle :: proc(bp: ^BindsPane, delta: int) {
 
 // --- the edits, shared by the pane and the `:rebind` builtin ---
 
-// Put `c` on `act` at slot `n`, or past the end when adding. **A slot one past the end is an
-// APPEND**, which is what makes an action you unbound to nothing bindable again: replacing its
-// first chord and giving it a first chord are the same gesture. Whoever else held the chord in a
-// context they share loses it, and is named back.
+// A slot one past the end is an APPEND, which is what makes an action you unbound to nothing
+// bindable again. Whoever else held the chord in a shared context loses it, and is named back.
 bind_set :: proc(
     bp: ^BindsPane,
     act: Action,
@@ -158,7 +153,7 @@ bind_set :: proc(
         return .None, .No_Slot, false
     }
     took, _ = bind_holder(bp.working[:], c, act)
-    // Only OTHER actions lose rows here, so `slot` stays in range; the indices shift under it.
+    // Only OTHER actions lose rows, so `slot` stays in range as the indices shift.
     for i := len(bp.working) - 1; i >= 0; i -= 1 {
         if bp.working[i].act != act && bind_clash(bp.working[i], Bind{c, act}) {
             ordered_remove(&bp.working, i)
@@ -175,7 +170,7 @@ bind_set :: proc(
     return took, {}, true
 }
 
-// Drop `act`'s nth chord. An action may end up with none, which leaves it keyboard-unreachable.
+// An action may end up with none, which leaves it keyboard-unreachable.
 bind_clear :: proc(bp: ^BindsPane, act: Action, n: int) -> bool {
     at := binds_of(bp, act)
     if n < 0 || n >= len(at) {
@@ -187,7 +182,7 @@ bind_clear :: proc(bp: ^BindsPane, act: Action, n: int) -> bool {
     return true
 }
 
-// --- capture --- The direct path: the pane waits, and the next keystroke is the chord.
+// --- capture --- The pane waits, and the next keystroke is the chord.
 
 binds_pane_capture :: proc(bp: ^BindsPane, add: bool) {
     if _, ok := binds_pane_action(bp, bp.sel); ok {
@@ -195,8 +190,8 @@ binds_pane_capture :: proc(bp: ^BindsPane, add: bool) {
     }
 }
 
-// A captured chord. Applies it, or — when something else in a shared context holds it — asks
-// first, since capture has no staged line to read before it happens.
+// Applies it, or asks first when something in a shared context holds it: capture has no staged
+// line to read beforehand.
 binds_pane_take :: proc(bp: ^BindsPane, c: Chord) {
     act, ok := binds_pane_action(bp, bp.sel)
     if !ok || (bp.capture != .Add && bp.capture != .Rebind) {
@@ -205,7 +200,7 @@ binds_pane_take :: proc(bp: ^BindsPane, c: Chord) {
     add := bp.capture == .Add
     for i in binds_of(bp, act) {
         if bp.working[i].chord == c {
-            bp.capture = .None // already on this action: nothing to do, and no duplicate row
+            bp.capture = .None // already on this action; no duplicate row
             return
         }
     }
@@ -221,7 +216,6 @@ binds_pane_take :: proc(bp: ^BindsPane, c: Chord) {
     bp.capture = .None
 }
 
-// Enter at the confirm: take the chord from whoever had it.
 binds_pane_confirm :: proc(bp: ^BindsPane) {
     if bp.capture != .Confirm {
         return
@@ -232,7 +226,7 @@ binds_pane_confirm :: proc(bp: ^BindsPane) {
     bp.capture = .None
 }
 
-// The line Enter stages: the highlighted slot, ready for a chord typed onto the end.
+// The highlighted slot, ready for a chord typed onto the end.
 rebind_line :: proc(bp: ^BindsPane, act: Action, add: bool, alloc := context.allocator) -> string {
     if add {
         return fmt.aprintf(":rebind + %s ", action_name(act), allocator = alloc)
@@ -240,8 +234,8 @@ rebind_line :: proc(bp: ^BindsPane, act: Action, add: bool, alloc := context.all
     return fmt.aprintf(":rebind %d %s ", bp.chord, action_name(act), allocator = alloc)
 }
 
-// Backspace / Alt+-: drop the highlighted chord, or acknowledge a refused line. A line dropped
-// here is gone from the file on the next save, which is what unblocks the save at all.
+// Drop the highlighted chord, or acknowledge a refused line. A line dropped here is gone from
+// the file on the next save, which is what unblocks the save.
 binds_pane_delete :: proc(bp: ^BindsPane) {
     if e, ok := binds_pane_err(bp, bp.sel); ok {
         delete(e.text)
@@ -255,8 +249,8 @@ binds_pane_delete :: proc(bp: ^BindsPane) {
     }
 }
 
-// Ctrl+S. Refused while a line is still in error — the block is rewritten wholesale, so an
-// unacknowledged line would vanish without you having read it.
+// Refused while a line is still in error: the block is rewritten wholesale, so an unacknowledged
+// line would vanish unread.
 binds_pane_save :: proc(a: ^App) -> bool {
     bp := &a.binds_pane
     if !config_binds_write(bp.working[:], bp.errs[:]) {
@@ -270,8 +264,7 @@ binds_pane_save :: proc(a: ^App) -> bool {
     return true
 }
 
-// Enter / a double click. On an action row it stages the command, or waits for a keystroke —
-// whichever the top toggle says.
+// On an action row it stages the command, or waits for a keystroke, per the top toggle.
 binds_pane_activate :: proc(a: ^App, add := false) {
     bp := &a.binds_pane
     switch {
