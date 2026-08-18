@@ -96,3 +96,47 @@ test_quoted_arg_round_trips :: proc(t: ^testing.T) {
         )
     }
 }
+
+// `:tu` types `cd <root>` straight into every unlocked terminal, and a project root is a
+// directory NAME. Inside DOUBLE quotes a shell still expands `$( )`, a backtick and a `$var`,
+// so the quoting has to be the kind that expands nothing. `^h` on a folder is `:cd` plus `:tu`
+// in one keystroke, which is how a browsed folder reaches a live shell.
+@(private = "file")
+HOSTILE_ROOTS :: []string {
+    "slopd_root_$(touch pwned)", // command substitution
+    "slopd_root_`touch pwned`", // …and its older spelling
+    "slopd_root_$HOME", // a bare variable
+    `slopd_root_a"b`, // a double quote, which ends the quoting that carries it
+    "slopd_root_a'b", // a single quote, which ends the OTHER kind
+    "slopd_root_x && touch pwned",
+}
+
+// Run the line a real shell, because the question is what a shell does with it. The answer must
+// be: change to exactly that directory, print nothing else, create nothing.
+@(test)
+test_tu_cd_line_survives_a_real_shell :: proc(t: ^testing.T) {
+    cwd, _ := os.get_working_directory(context.temp_allocator)
+    for name in HOSTILE_ROOTS {
+        dir := filepath.join({cwd, name}, context.temp_allocator) or_else ""
+        testing.expect(t, os.make_directory(dir) == nil)
+        defer os.remove(dir)
+
+        cmd := app.cd_command(dir, context.temp_allocator)
+        script := strings.concatenate({cmd, "pwd"}, context.temp_allocator)
+        _, out, _, err := os.process_exec(
+            os.Process_Desc{command = {"sh", "-c", script}},
+            context.temp_allocator,
+        )
+        testing.expectf(t, err == nil, "sh could not run %q", script)
+        testing.expectf(
+            t,
+            strings.trim_space(string(out)) == dir,
+            "`:tu` landed on %q, not %q — from %q",
+            strings.trim_space(string(out)),
+            dir,
+            script,
+        )
+    }
+    // Nothing the names asked for actually ran.
+    testing.expect(t, !os.exists("pwned"), "a folder name ran a command in the terminal")
+}
