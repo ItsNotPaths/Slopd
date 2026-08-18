@@ -246,6 +246,11 @@ buffer_save :: proc(b: ^Buffer) -> Save_Result {
     res := file_write_atomic(b.path, buffer_bytes(b))
     if res == .Ok {
         buffer_mark_saved(b)
+        // Scattered editing splinters the table, and nothing else flattens it. Here, because a
+        // save has just read the whole document anyway and holds no borrowed span across it.
+        if pt_should_compact(&b.doc.pt) {
+            pt_compact(&b.doc.pt)
+        }
     }
     return res
 }
@@ -463,7 +468,7 @@ buffer_enter :: proc(a: ^App, b: ^Buffer) {
 
     // Each cursor gets a newline plus its own computed indent.
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
-    for c in d.cursors {
+    for c in edit_cursors(d) {
         lo, hi := cursor_range(c)
         text := strings.concatenate({"\n", enter_indent(a, b, lo)}, context.temp_allocator)
         append(&edits, Edit{doc_off(d, lo), doc_off(d, hi), text, 0})
