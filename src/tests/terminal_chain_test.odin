@@ -1,6 +1,8 @@
 package tests
 
 import app ".."
+import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:testing"
 import "core:time"
@@ -116,6 +118,12 @@ test_sh_chain_pager_neutralized :: proc(t: ^testing.T) {
     defer teardown(&a)
     // git status forced to page through a BLOCKING pager. The runner neutralizes the
     // pager for waited steps, so this must finish (and reach :ls) rather than hang.
+    // Outside a work tree git exits non-zero and the `&&` stops the chain, which would fail
+    // this for the wrong reason: the pager is what is under test, not the checkout.
+    if !inside_git_work_tree() {
+        fmt.println("[skip] not inside a git work tree; `git status` cannot page")
+        return
+    }
     line := "git -c pager.status=true -c core.pager='less -+F' status && :ls"
     testing.expect(t, run_cl(&a, line), "pager-neutralized chain must not hang")
     testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree)
@@ -129,4 +137,13 @@ test_sh_plain_command_executes :: proc(t: ^testing.T) {
     // echoed input, so finding it proves the shell actually ran the command.
     app.cl_exec(&a, "echo R$((6 * 7))X")
     testing.expect(t, wait_grid(&a, "R42X"), "arithmetic output proves execution")
+}
+
+@(private = "file")
+inside_git_work_tree :: proc() -> bool {
+    st, _, _, err := os.process_exec(
+        os.Process_Desc{command = {"git", "rev-parse", "--is-inside-work-tree"}},
+        context.temp_allocator,
+    )
+    return err == nil && st.exit_code == 0
 }

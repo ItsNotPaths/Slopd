@@ -450,17 +450,13 @@ save_tmp_dir :: proc() -> string {
 
 // `:saved`: drop the dirty flag because the disk already holds these bytes. Safe as a plain
 // builtin because it verifies rather than trusts — it is a no-op when the disk disagrees.
+// Every unsaved buffer, not just the one on screen: the staged line carries no name to say
+// which it was for, and a buffer whose bytes equal its own file is saved either way.
 @(private = "file")
 cl_saved :: proc(a: ^App) {
-    if a.main != .Text || len(a.editor.buffers) == 0 {
-        return
+    if ring_mark_saved_matching(&a.editor) == 0 {
+        cl_echo_t1(a, ":saved: no unsaved buffer holds what its file holds — nothing changed")
     }
-    b := editor_current(&a.editor)
-    if !buffer_matches_disk(b) {
-        cl_echo_t1(a, ":saved: the file on disk is not what this buffer holds — nothing changed")
-        return
-    }
-    buffer_mark_saved(b)
 }
 
 // Flip this buffer's line endings. The load detects them and the save restores them, so this is

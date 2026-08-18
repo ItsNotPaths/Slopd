@@ -129,6 +129,19 @@ ring_dirty_count :: proc(e: ^Editor) -> int {
     return n
 }
 
+// Every unsaved buffer whose file already holds its bytes is marked clean. Returns how many,
+// so a caller can tell "nothing matched" from "nothing to do". What `:saved` is.
+ring_mark_saved_matching :: proc(e: ^Editor) -> int {
+    n := 0
+    for &b in e.buffers {
+        if b.dirty && buffer_matches_disk(&b) {
+            buffer_mark_saved(&b)
+            n += 1
+        }
+    }
+    return n
+}
+
 // Lights up its '*' in the filetree.
 ring_contains :: proc(a: ^App, path: string) -> bool {
     return ring_dirty_buffer(a, path) != nil
@@ -410,16 +423,16 @@ buffer_reload_keep_view :: proc(b: ^Buffer) -> bool {
 }
 
 // Throw the unsaved edits away and take the disk version back, so the file leaves the unsaved
-// ring. The staged sudo copy goes with them — it holds the bytes being discarded. False when
-// there is no file to come back from (a scratch buffer, an embedded doc).
+// ring. The staged sudo copy goes with them — it holds the bytes being discarded. Reload
+// first: until it lands, the edits in hand are the only copy there is.
 buffer_discard :: proc(b: ^Buffer) -> bool {
-    if !buffer_on_disk(b) {
+    if !buffer_on_disk(b) || !buffer_reload_keep_view(b) {
         return false
     }
     b.dirty = false
     b.conflict = false // the disk is what we hold now, so there is nothing left to settle
     buffer_drop_save_tmp(b)
-    return buffer_reload_keep_view(b)
+    return true
 }
 
 // reload=true takes the disk version; false keeps the edits and adopts the current stamp, so

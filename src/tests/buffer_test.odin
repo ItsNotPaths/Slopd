@@ -660,3 +660,46 @@ test_save_compacts_a_splintered_table :: proc(t: ^testing.T) {
     testing.expect(t, !app.pt_should_compact(&b.doc.pt), "a save must flatten the table")
     testing.expect_value(t, app.doc_string(&b.doc, context.temp_allocator), want)
 }
+
+// A discard that cannot reload must not claim the buffer is clean. Marking it clean first —
+// then failing — drops the file out of the unsaved ring while the edits are still in hand and
+// still the only copy of themselves, so `:q` would quit over them without a word.
+@(test)
+test_discard_that_cannot_reload_keeps_the_edits :: proc(t: ^testing.T) {
+    path := "slopd_discard_gone.tmp"
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("disk\n")) == nil)
+
+    b: app.Buffer
+    defer app.buffer_destroy(&b)
+    testing.expect(t, app.buffer_load(&b, path))
+    app.doc_insert_text(&b.doc, "MINE")
+    b.dirty = true
+
+    os.remove(path) // the file goes while the edits are unsaved: nothing to come back from
+    testing.expect(t, !app.buffer_discard(&b))
+    testing.expect(t, b.dirty, "a failed discard must leave the buffer in the unsaved ring")
+    testing.expect(
+        t,
+        strings.contains(app.doc_string(&b.doc, context.temp_allocator), "MINE"),
+        "a failed discard must not lose the edits it could not replace",
+    )
+}
+
+// The same guarantee through `:reload y`, which is the path a disk conflict offers.
+@(test)
+test_conflict_reload_that_fails_keeps_the_edits :: proc(t: ^testing.T) {
+    path := "slopd_conflict_gone.tmp"
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("disk\n")) == nil)
+
+    b: app.Buffer
+    defer app.buffer_destroy(&b)
+    testing.expect(t, app.buffer_load(&b, path))
+    app.doc_insert_text(&b.doc, "MINE")
+    b.dirty = true
+    b.conflict = true
+
+    os.remove(path)
+    app.buffer_conflict_resolve(&b, true)
+    testing.expect(t, b.dirty, "an unanswerable reload must not mark the buffer clean")
+    testing.expect(t, strings.contains(app.doc_string(&b.doc, context.temp_allocator), "MINE"))
+}
