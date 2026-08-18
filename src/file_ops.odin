@@ -12,7 +12,11 @@ import "core:strings"
 // Set the project root, staged for review or run at once per the `folder_cd` config.
 filetree_cd_selected :: proc(a: ^App) {
     if e := filetree_selected(&a.tree); e != nil && e.is_dir {
-        cl_dispatch(a, fmt.tprintf(":cd %s", e.path), a.folder_cd_run)
+        cl_dispatch(
+            a,
+            fmt.tprintf(":cd %s", cl_quote_arg(e.path, context.temp_allocator)),
+            a.folder_cd_run,
+        )
     }
 }
 
