@@ -1062,6 +1062,43 @@ test_cl_saved_verifies :: proc(t: ^testing.T) {
     testing.expect(t, b.dirty)
 }
 
+// The staged `sudo cp` line carries no buffer name, and it can sit in the command line while
+// you look at something else. Run there, its `:saved` tail must still reach the buffer whose
+// file was written -- otherwise the write lands and the buffer stays marked unsaved with no
+// way back but another save. Every unsaved buffer is verified against its own file, so the
+// one that matches is the one that gets marked.
+@(test)
+test_cl_saved_reaches_the_buffer_that_was_written :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    defer {app.editor_destroy(&a.editor);app.cl_chain_clear(&a)}
+
+    written := "slopd_cl_saved_bg.tmp"
+    testing.expect(t, os.write_entire_file(written, transmute([]u8)string("theirs\n")) == nil)
+    defer os.remove(written)
+
+    // A second buffer joins the ring first: appending would move the first one's storage.
+    extra: app.Buffer
+    app.buffer_set_text(&extra, "unsaved work")
+    extra.dirty = true
+    append(&a.editor.buffers, extra)
+    a.editor.active = 1
+
+    // The buffer the sudo line was staged for: its file already holds its bytes.
+    bg := &a.editor.buffers[0]
+    app.buffer_set_text(bg, "theirs")
+    bg.final_newline = true
+    bg.path = strings.clone(written) // freed by editor_destroy
+    bg.dirty = true
+
+    front := &a.editor.buffers[1] // …and the one we are looking at instead
+    testing.expect(t, app.editor_current(&a.editor) == front)
+
+    app.cl_exec(&a, ":saved")
+    testing.expect(t, !bg.dirty, ":saved must reach the buffer whose file was written")
+    testing.expect(t, front.dirty, "a buffer the disk does not hold stays unsaved")
+}
+
 // --- the sudo open --- The mirror of the sudo save: a file we may not READ is the one open
 // failure with a way forward, so it stages the line that unlocks it and opens it again.
 

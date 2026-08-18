@@ -129,6 +129,19 @@ ring_dirty_count :: proc(e: ^Editor) -> int {
     return n
 }
 
+// Every unsaved buffer whose file already holds its bytes is marked clean. Returns how many,
+// so a caller can tell "nothing matched" from "nothing to do". What `:saved` is.
+ring_mark_saved_matching :: proc(e: ^Editor) -> int {
+    n := 0
+    for &b in e.buffers {
+        if b.dirty && buffer_matches_disk(&b) {
+            buffer_mark_saved(&b)
+            n += 1
+        }
+    }
+    return n
+}
+
 // Lights up its '*' in the filetree.
 ring_contains :: proc(a: ^App, path: string) -> bool {
     return ring_dirty_buffer(a, path) != nil
