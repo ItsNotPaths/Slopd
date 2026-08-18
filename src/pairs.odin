@@ -58,7 +58,7 @@ buffer_autopair :: proc(b: ^Buffer, r: rune) -> bool {
     close, _ := pair_close(r)
     self := text(r)
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
-    for c in d.cursors {
+    for c in edit_cursors(d) {
         if cursor_has_selection(c) {
             lo, hi := cursor_range(c)
             at, to := doc_off(d, lo), doc_off(d, hi)
@@ -92,7 +92,7 @@ buffer_autopair :: proc(b: ^Buffer, r: rune) -> bool {
 buffer_tab :: proc(b: ^Buffer, indent: Indent) {
     d := &b.doc
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
-    for c in d.cursors {
+    for c in edit_cursors(d) {
         at := doc_off(d, c.head)
         if j, ok := skip_target(doc_line(d, c.head.line), c.head.col); ok {
             // An empty edit; caret_delta jumps the caret past the close.

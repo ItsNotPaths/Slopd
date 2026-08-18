@@ -109,6 +109,23 @@ doc_drop_anchor :: proc(d: ^Doc) {
     append(&d.cursors, Cursor{anchor = c.head, head = c.head, goal = c.goal})
 }
 
+// The cursors an edit fans out over. Alt+A leaves a fixed cursor exactly under the free caret,
+// and that pair names one range, not two — an edit per copy would apply it twice. Only the
+// selection matters here, so a stale goal column does not split a coincident pair.
+@(private)
+edit_cursors :: proc(d: ^Doc) -> []Cursor {
+    out := make([dynamic]Cursor, 0, len(d.cursors), context.temp_allocator)
+    next: for c in d.cursors {
+        for k in out {
+            if k.anchor == c.anchor && k.head == c.head {
+                continue next
+            }
+        }
+        append(&out, c)
+    }
+    return out[:]
+}
+
 // --- reading ---
 
 doc_line_count :: proc(d: ^Doc) -> int {
@@ -364,7 +381,7 @@ doc_insert_rune :: proc(d: ^Doc, r: rune) -> bool {
 // `text` may contain '\n'. Shared by typing, indent, newline and paste.
 doc_insert_text :: proc(d: ^Doc, text: string) -> bool {
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
-    for c in d.cursors {
+    for c in edit_cursors(d) {
         lo, hi := cursor_range(c)
         append(&edits, Edit{doc_off(d, lo), doc_off(d, hi), text, 0})
     }
@@ -431,7 +448,7 @@ doc_paste_pieces :: proc(d: ^Doc, pieces: []string) -> bool {
 // Each cursor's selection, or its whole line when nothing is selected. Pair with doc_copy.
 doc_cut :: proc(d: ^Doc) -> bool {
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
-    for c in d.cursors {
+    for c in edit_cursors(d) {
         lo, hi := cursor_range(c)
         if !cursor_has_selection(c) {
             line := c.head.line
@@ -465,7 +482,7 @@ doc_rune_before :: proc(d: ^Doc, p: Pos) -> (r: rune, size: int) {
 // The selection, else the rune to the left, else join with the previous line.
 doc_backspace :: proc(d: ^Doc) -> bool {
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
-    for c in d.cursors {
+    for c in edit_cursors(d) {
         if cursor_has_selection(c) {
             lo, hi := cursor_range(c)
             append(&edits, Edit{doc_off(d, lo), doc_off(d, hi), "", 0})
@@ -490,7 +507,7 @@ doc_backspace :: proc(d: ^Doc) -> bool {
 // The selection, else the rune to the right, else pull the next line up.
 doc_delete :: proc(d: ^Doc) -> bool {
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
-    for c in d.cursors {
+    for c in edit_cursors(d) {
         if cursor_has_selection(c) {
             lo, hi := cursor_range(c)
             append(&edits, Edit{doc_off(d, lo), doc_off(d, hi), "", 0})
@@ -507,7 +524,7 @@ doc_delete :: proc(d: ^Doc) -> bool {
 // Delete the word to the left, or join with the previous line at column 0.
 doc_delete_word_back :: proc(d: ^Doc) -> bool {
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
-    for c in d.cursors {
+    for c in edit_cursors(d) {
         if cursor_has_selection(c) {
             lo, hi := cursor_range(c)
             append(&edits, Edit{doc_off(d, lo), doc_off(d, hi), "", 0})
@@ -525,7 +542,7 @@ doc_delete_word_back :: proc(d: ^Doc) -> bool {
 // Delete the word to the right, or pull the next line up at end of line.
 doc_delete_word_forward :: proc(d: ^Doc) -> bool {
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
-    for c in d.cursors {
+    for c in edit_cursors(d) {
         if cursor_has_selection(c) {
             lo, hi := cursor_range(c)
             append(&edits, Edit{doc_off(d, lo), doc_off(d, hi), "", 0})
@@ -630,16 +647,23 @@ doc_apply :: proc(d: ^Doc, edits_in: []Edit, rec: ^Batch = nil) -> bool {
     }
     edits := slice.clone(edits_in, context.temp_allocator)
     slice.sort_by(edits, proc(a, b: Edit) -> bool {
-        return a.lo < b.lo
+        return a.lo != b.lo ? a.lo < b.lo : a.hi < b.hi
     })
 
-    // A free caret resting on a dropped cursor produces the same range twice.
+    // Back-to-front only keeps the offsets valid while the ranges stay apart, and two carets
+    // inside one word reach the same word start, so overlaps fuse into the union: the region is
+    // replaced once, by both texts in document order. Insertions are points and never fuse.
     w := 0
     for r in 1 ..< len(edits) {
-        if edits[r].lo != edits[w].lo || edits[r].hi != edits[w].hi {
-            w += 1
-            edits[w] = edits[r]
+        cur, e := &edits[w], edits[r]
+        if e.lo < cur.hi {
+            cur.hi = max(cur.hi, e.hi)
+            cur.text = strings.concatenate({cur.text, e.text}, context.temp_allocator)
+            cur.caret_delta = e.caret_delta
+            continue
         }
+        w += 1
+        edits[w] = e
     }
     edits = edits[:w + 1]
 

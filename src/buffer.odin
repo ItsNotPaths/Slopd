@@ -463,7 +463,7 @@ buffer_enter :: proc(a: ^App, b: ^Buffer) {
 
     // Each cursor gets a newline plus its own computed indent.
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
-    for c in d.cursors {
+    for c in edit_cursors(d) {
         lo, hi := cursor_range(c)
         text := strings.concatenate({"\n", enter_indent(a, b, lo)}, context.temp_allocator)
         append(&edits, Edit{doc_off(d, lo), doc_off(d, hi), text, 0})
