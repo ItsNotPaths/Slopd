@@ -22,7 +22,9 @@ Terminal :: struct {
     cols:   int,
 
     // PTY + child shell. pty is the master fd (-1 when there is no child, e.g. a
-    // headless test Terminal); alive drops to false when the shell exits (read EOF).
+    // headless test Terminal); alive drops to false when the shell exits (read EOF). It is the
+    // one field the reader thread writes that is not `inbuf`, so it is touched atomically --
+    // see terminal_alive.
     pty:   posix.FD,
     pid:   posix.pid_t,
     alive: bool,
@@ -571,7 +573,7 @@ terminal_spawn :: proc(t: ^Terminal, rows, cols: int, cwd := "") -> bool {
 
     t.pty = master
     t.pid = pid
-    t.alive = true
+    sync.atomic_store(&t.alive, true)
     terminal_set_winsize(t, rows, cols)
     t.reader = thread.create(term_reader_proc)
     if t.reader == nil {
@@ -692,9 +694,7 @@ term_reader_proc :: proc(th: ^thread.Thread) {
         }
         break // n == 0 (EOF) or a real error
     }
-    sync.mutex_lock(&t.lock)
-    t.alive = false
-    sync.mutex_unlock(&t.lock)
+    sync.atomic_store(&t.alive, false)
     wake.post()
 }
 
@@ -938,6 +938,13 @@ term_new :: proc(a: ^App) {
     a.term_active = len(a.terminals) - 1
 }
 
+// The reader thread clears this at EOF while everyone else reads it per frame, so it crosses
+// threads atomically rather than under t.lock: live-or-dead is the whole answer, and taking the
+// lock for it would put the paint behind the shell's output.
+terminal_alive :: proc(t: ^Terminal) -> bool {
+    return sync.atomic_load(&t.alive)
+}
+
 // Close the active session (Alt+Q), keeping at least one alive.
 term_close_active :: proc(a: ^App) {
     if len(a.terminals) <= 1 {
@@ -976,7 +983,7 @@ term_focused :: proc(a: ^App) -> ^Terminal {
         return nil
     }
     t := term_current(a)
-    if t == nil || !t.alive {
+    if t == nil || !terminal_alive(t) {
         return nil
     }
     return t

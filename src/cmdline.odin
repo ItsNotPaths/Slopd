@@ -245,7 +245,7 @@ cl_chain_pump :: proc(a: ^App) {
     }
     if ch.waiting {
         t := ch.wait_term
-        if t == nil || !t.alive {
+        if t == nil || !terminal_alive(t) {
             cl_chain_clear(a)
             return
         }
@@ -624,7 +624,7 @@ cl_tu :: proc(a: ^App) {
     }
     line := cd_command(a.project_root, context.temp_allocator)
     for t in a.terminals {
-        if t.alive && !t.locked {
+        if terminal_alive(t) && !t.locked {
             terminal_write(t, transmute([]u8)line)
         }
     }
