@@ -102,6 +102,7 @@ gesture renders in the alert colour until you touch it.
 | `:w <path>` | write a COPY there and stay on this file, as vim does; `:w! <path>` overwrites an existing one |
 | `:discard [file]` | throw a buffer's unsaved edits away and take the disk version back |
 | `:saved` | the tail of the staged sudo save: mark clean IF the disk already holds this buffer |
+| `:crlf` | flip this buffer between CRLF and LF line endings; the modeline says `CRLF` |
 
 **Saving a file you do not own.** `Ctrl+S` (or `:w`) on a file the filesystem refuses does not
 fail quietly: the buffer is written to a private copy under `$XDG_RUNTIME_DIR`, and the line that
@@ -115,6 +116,26 @@ The shell half runs in a real terminal (t1 by default, configurable), which is w
 `&&` gates the rest: a wrong password stops the chain, so the buffer stays dirty and nothing
 claims a save that did not happen. `:saved` then checks the file against the buffer before it
 marks it clean.
+
+**Opening a file you may not read.** The same answer, the other way round: an open the
+filesystem refuses stages the line that unlocks the file and opens it again —
+
+```
+sudo chmod a+r '/etc/shadow' && :j /etc/shadow
+```
+
+`a+r`, because the file is someone else's and the owner's bits are not the ones locking you out.
+This one changes the file for everybody, which is why it is staged and not run: read it, edit it,
+then press Enter.
+
+**A save never truncates the file.** The bytes go to a temp file beside the target, reach the
+disk, and one rename swings the name over. A crash, a kill or a full disk in the middle costs
+the save, not the file. The file keeps its own permissions, and a symlinked file is written
+through to what it points at.
+
+**Line endings survive.** A file that breaks its lines with `\r\n` is edited as if it did not,
+and saved back the way it came, so a one-line edit is a one-line diff. `:crlf` flips a buffer
+either way — for converting a file, or for saying what a new one gets.
 
 **The two `cd`s.** `:cd src` moves Slopd's project root — what `:grep` searches, what the file
 panes list, where a new terminal starts. A bare `cd src` is the shell's own, moving that one

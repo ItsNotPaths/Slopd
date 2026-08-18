@@ -1,7 +1,10 @@
 package main
 
+import "core:fmt"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
+import "core:sync"
 import "core:time"
 
 // A list of open Buffers (the ring) with one active. Each is a Doc plus file/view state, so
@@ -20,6 +23,7 @@ Buffer :: struct {
     hscroll_detached: f64,
     dirty:           bool,
     final_newline:   bool, // did the file end in '\n'? preserved on save
+    crlf:            bool, // did the file break its lines with "\r\n"? restored on save
     folds:           [dynamic]Fold, // collapsed blocks (fold.odin)
     disk_mtime:      time.Time, // mtime at our last load/save; detects external rewrites
     conflict:        bool, // the file changed on disk under unsaved edits; a decision is pending
@@ -83,6 +87,8 @@ open_file :: proc(a: ^App, path: string) {
             media_destroy(&a.media)
             a.media = m
             a.main = .Image
+        } else {
+            open_stage_sudo(a, path)
         }
         return
     }
@@ -97,7 +103,9 @@ open_file :: proc(a: ^App, path: string) {
     }
     cur := editor_current(e)
     if cur.path == "" && !cur.dirty && doc_line_count(&cur.doc) == 1 && doc_line_len(&cur.doc, 0) == 0 {
-        buffer_load(cur, path)
+        if !buffer_load(cur, path) {
+            open_stage_sudo(a, path)
+        }
         return
     }
     b: Buffer
@@ -106,6 +114,7 @@ open_file :: proc(a: ^App, path: string) {
         e.active = len(e.buffers) - 1
     } else {
         buffer_destroy(&b)
+        open_stage_sudo(a, path)
     }
 }
 
@@ -172,8 +181,20 @@ buffer_load :: proc(b: ^Buffer, path: string) -> bool {
     b.dirty = false
     b.embedded = false // a real file, whatever this buffer held before
     b.final_newline = strings.has_suffix(content, "\n")
+    b.crlf = crlf_file(content)
     b.disk_mtime = mtime
     return true
+}
+
+// A load fails for many reasons; only a permission denial has a way forward (the staged
+// `sudo chmod`), so it is the only one worth telling apart. Asked of the path directly, since
+// the failed read gave the reason away and dropped it.
+path_read_denied :: proc(path: string) -> bool {
+    f, err := os.open(path, {.Read})
+    if err == nil {
+        os.close(f)
+    }
+    return err == .Permission_Denied
 }
 
 // The precondition every disk op shares. False for a scratch buffer and an embedded doc.
@@ -190,30 +211,118 @@ Save_Result :: enum {
     Failed, // a full disk, a vanished folder, an I/O error
 }
 
-// Lines joined by '\n', plus the trailing newline back if the loaded file had one. Three
-// callers must agree byte for byte: the save, the sudo line's private copy, and `:saved`.
+// Lines joined by '\n', the trailing newline back if the loaded file had one, and every break
+// back to "\r\n" if that is how the file wrote them. Three callers must agree byte for byte:
+// the save, the sudo line's private copy, and `:saved`.
 buffer_bytes :: proc(b: ^Buffer, allocator := context.temp_allocator) -> string {
     data := doc_string(&b.doc, allocator)
-    if !b.final_newline {
+    if b.final_newline {
+        with_nl := strings.concatenate({data, "\n"}, allocator)
+        delete(data, allocator)
+        data = with_nl
+    }
+    if !b.crlf {
         return data
     }
-    out := strings.concatenate({data, "\n"}, allocator)
-    delete(data, allocator)
+    out, replaced := strings.replace_all(data, "\n", "\r\n", allocator)
+    if replaced { // a one-line file with no break returns `data` itself
+        delete(data, allocator)
+    }
     return out
+}
+
+// A file breaks its lines the way its FIRST break does; a mixed file is saved the one way, which
+// is the point of holding the flag per buffer. The load strips every '\r' (doc_normalize), so
+// this is the only chance to see them.
+crlf_file :: proc(text: string) -> bool {
+    i := strings.index_byte(text, '\n')
+    return i > 0 && text[i - 1] == '\r'
 }
 
 buffer_save :: proc(b: ^Buffer) -> Save_Result {
     if !buffer_on_disk(b) {
         return .No_Path // unnamed (no save-as yet), or embedded
     }
-    data := buffer_bytes(b)
-    if err := os.write_entire_file(b.path, transmute([]u8)data); err != nil {
+    res := file_write_atomic(b.path, buffer_bytes(b))
+    if res == .Ok {
+        buffer_mark_saved(b)
+    }
+    return res
+}
+
+// THE FILE IS NEVER TRUNCATED: the bytes go to a sibling temp file, reach the platter, and the
+// rename swings the name over in one step. A crash, a full disk or a kill loses the save, never
+// the file. Sibling because rename is only atomic inside one filesystem.
+file_write_atomic :: proc(path: string, data: string) -> Save_Result {
+    target := file_link_target(path) // save THROUGH a symlink; a rename would replace the link
+    // The temp file is written in the folder, so the folder's rights are all the write tests.
+    // A read-only FILE has to be asked about directly, or `chmod 444` would not hold.
+    if f, err := os.open(target, {.Write}); err == nil {
+        os.close(f)
+    } else if err == .Permission_Denied {
+        return .Denied
+    }
+    perm := os.Permissions_Read_All + {.Write_User}
+    if fi, err := os.stat(target, context.temp_allocator); err == nil {
+        perm = fi.mode // the file keeps its own bits, not a fresh file's defaults
+    }
+    // pid + a counter, in the target's folder: short, because a name built from the file's own
+    // would run past NAME_MAX on a long one, and unique, so two saves cannot take each other's.
+    seq := sync.atomic_add(&save_tmp_seq, 1)
+    name := fmt.tprintf(".slopd-%d-%d.tmp", os.get_pid(), seq)
+    tmp := filepath.join({filepath.dir(target), name}, context.temp_allocator) or_else ""
+    if tmp == "" {
+        return .Failed
+    }
+    err := file_write_synced(tmp, data, perm)
+    if err == nil {
+        err = os.rename(tmp, target)
+    }
+    if err != nil {
+        os.remove(tmp) // nothing half-written is left behind
         // EACCES and EPERM both arrive as Permission_Denied. EROFS does not: a read-only mount
         // is not a door sudo can open.
         return err == .Permission_Denied ? .Denied : .Failed
     }
-    buffer_mark_saved(b)
     return .Ok
+}
+
+@(private = "file")
+save_tmp_seq: int
+
+// Written AND flushed to stable storage, so the rename cannot publish a name whose bytes are
+// still in flight.
+@(private = "file")
+file_write_synced :: proc(path: string, data: string, perm: os.Permissions) -> os.Error {
+    f, err := os.open(path, {.Write, .Create, .Trunc}, perm)
+    if err != nil {
+        return err
+    }
+    defer os.close(f)
+    n := os.write(f, transmute([]u8)data) or_return
+    if n != len(data) {
+        return .Short_Write
+    }
+    return os.sync(f)
+}
+
+// What `path` finally points at, so the save lands on the file rather than on the link. Returns
+// `path` itself when it is not a link, and gives up after a few hops rather than chase a loop.
+@(private = "file")
+file_link_target :: proc(path: string) -> string {
+    out := path
+    for _ in 0 ..< 8 {
+        dst, err := os.read_link(out, context.temp_allocator)
+        if err != nil {
+            break
+        }
+        if filepath.is_abs(dst) {
+            out = dst
+        } else {
+            out = filepath.join({filepath.dir(out), dst}, context.temp_allocator) or_else out
+        }
+    }
+    return out
 }
 
 // Clean, unconflicted, stamped with the file's current mtime so the staleness poll does not

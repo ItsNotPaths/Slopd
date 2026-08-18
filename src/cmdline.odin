@@ -359,6 +359,8 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         cl_reload(a, args)
     case "saved":
         cl_saved(a)
+    case "crlf":
+        cl_crlf(a)
     case "discard":
         cl_discard(a, args)
     case "tu":
@@ -415,6 +417,20 @@ save_stage_sudo :: proc(a: ^App, b: ^Buffer) -> bool {
     return true
 }
 
+// --- opening --- A file we may not READ is the other half of the sudo save: one gesture that
+// cannot get through, and one line that can. Staged by open_file, so every gesture that opens
+// (the filetree, `:j`, the fuzzy finder, a link) reports it the same way.
+
+// Stage the line that unlocks `path` and opens it again. False when the open failed for any
+// other reason, which is not ours to answer.
+open_stage_sudo :: proc(a: ^App, path: string) -> bool {
+    if !path_read_denied(path) {
+        return false
+    }
+    cl_inject(a, sudo_open_command(path, context.temp_allocator))
+    return true
+}
+
 // $XDG_RUNTIME_DIR, else ~/.cache, else "" and nothing is staged.
 //
 // /tmp is excluded deliberately: root is about to read this file, and a shared /tmp lets another
@@ -445,6 +461,20 @@ cl_saved :: proc(a: ^App) {
         return
     }
     buffer_mark_saved(b)
+}
+
+// Flip this buffer's line endings. The load detects them and the save restores them, so this is
+// only for converting a file, or for saying what a new one gets. Dirty either way: the disk
+// still holds the other ending until a `:w`.
+@(private = "file")
+cl_crlf :: proc(a: ^App) {
+    b := main_text_buffer(a)
+    if b == nil {
+        return
+    }
+    b.crlf = !b.crlf
+    b.dirty = true
+    cl_echo_t1(a, fmt.tprintf(":crlf: line endings are %s now — `:w` writes them", b.crlf ? "CRLF" : "LF"))
 }
 
 // The only way to close Slopd (Esc never quits), guarded by the unsaved ring. Refusals echo into
@@ -502,7 +532,7 @@ cl_write_copy :: proc(a: ^App, b: ^Buffer, args: string, force: bool) {
         cl_echo_t1(a, why)
         return
     }
-    if os.write_entire_file(path, transmute([]u8)buffer_bytes(b)) != nil {
+    if file_write_atomic(path, buffer_bytes(b)) != .Ok {
         cl_echo_t1(a, fmt.tprintf(":w: could not write %s", path))
     }
 }
@@ -828,6 +858,28 @@ sudo_save_command :: proc(tmp, path: string, alloc := context.allocator) -> stri
             " ",
             sh_quote(path, context.temp_allocator),
             " && :saved",
+        },
+        alloc,
+    )
+}
+
+// `sudo chmod a+r '<path>' && :j '<path>'`.
+//
+// a+r, not u+r: the file is someone else's (root's, usually), so the owner's bits are not the
+// ones locking us out. It is a lasting change to the file, which is why it is STAGED — the line
+// is there to be read and edited before Enter.
+//
+// The `&& :j` waits on the exit code, so a wrong password opens nothing.
+sudo_open_command :: proc(path: string, alloc := context.allocator) -> string {
+    if path == "" {
+        return ""
+    }
+    return strings.concatenate(
+        {
+            "sudo chmod a+r ",
+            sh_quote(path, context.temp_allocator),
+            " && :j ",
+            cl_quote_arg(path, context.temp_allocator),
         },
         alloc,
     )

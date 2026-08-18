@@ -75,6 +75,100 @@ test_buffer_save_preserves_final_newline :: proc(t: ^testing.T) {
     }
 }
 
+// A CRLF file is edited as if it were LF and written back the way it came, so one changed line
+// is one changed line on disk. `crlf` is per buffer, so flipping it converts the file.
+@(test)
+test_buffer_crlf_roundtrip :: proc(t: ^testing.T) {
+    path := "slopd_crlf.tmp"
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("a\r\nb\r\n")) == nil)
+    defer os.remove(path)
+
+    b: app.Buffer
+    defer app.buffer_destroy(&b)
+    testing.expect(t, app.buffer_load(&b, path))
+    testing.expect(t, b.crlf)
+    testing.expect_value(t, app.doc_line_count(&b.doc), 2)
+    testing.expect_value(t, lstr(&b, 1), "b") // no '\r' in the document itself
+
+    testing.expect_value(t, app.buffer_save(&b), app.Save_Result.Ok)
+    out, err := os.read_entire_file_from_path(path, context.temp_allocator)
+    testing.expect(t, err == nil)
+    testing.expect_value(t, string(out), "a\r\nb\r\n")
+
+    // `:crlf` converts: the same document, the other ending.
+    b.crlf = false
+    testing.expect_value(t, app.buffer_save(&b), app.Save_Result.Ok)
+    out2, err2 := os.read_entire_file_from_path(path, context.temp_allocator)
+    testing.expect(t, err2 == nil)
+    testing.expect_value(t, string(out2), "a\nb\n")
+
+    // An LF file is not promoted, and a lone '\r' is content, not a break.
+    testing.expect(t, !app.crlf_file("a\nb\r\n"))
+    testing.expect(t, !app.crlf_file("a\rb"))
+    testing.expect(t, app.crlf_file("a\r\nb\n"))
+}
+
+// The save writes a sibling temp file and renames it over the target: the file keeps its
+// permissions, no temp file is left behind, and a read-only file still refuses. Its own folder,
+// so the leftover check sees this save alone.
+@(test)
+test_buffer_save_is_atomic :: proc(t: ^testing.T) {
+    dir := "slopd_atomic_dir"
+    testing.expect(t, os.make_directory(dir) == nil)
+    defer os.remove_all(dir)
+    path := fmt.tprintf("%s/slopd_atomic.tmp", dir)
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("one\n")) == nil)
+    mode := os.Permissions{.Read_User, .Write_User, .Execute_User}
+    testing.expect(t, os.chmod(path, mode) == nil)
+
+    b: app.Buffer
+    defer app.buffer_destroy(&b)
+    testing.expect(t, app.buffer_load(&b, path))
+    app.doc_insert_text(&b.doc, "X")
+    testing.expect_value(t, app.buffer_save(&b), app.Save_Result.Ok)
+
+    fi, err := os.stat(path, context.temp_allocator)
+    testing.expect(t, err == nil)
+    testing.expect(t, fi.mode == mode) // the target's own bits, not a fresh file's defaults
+
+    left, derr := os.read_all_directory_by_path(dir, context.temp_allocator)
+    testing.expect(t, derr == nil)
+    testing.expect_value(t, len(left), 1) // the file alone: the temp one is gone
+
+    // Read-only: refused before anything is written, so the sudo staging still has its case.
+    if os.get_euid() != 0 { // root is refused nothing
+        testing.expect(t, os.chmod(path, {.Read_User}) == nil)
+        testing.expect_value(t, app.buffer_save(&b), app.Save_Result.Denied)
+        testing.expect(t, os.chmod(path, mode) == nil)
+    }
+}
+
+// A symlinked file is saved THROUGH the link: the rename lands on the target, so the link is
+// still a link afterwards.
+@(test)
+test_buffer_save_follows_symlink :: proc(t: ^testing.T) {
+    target := "slopd_symlink_target.tmp"
+    link := "slopd_symlink.tmp"
+    testing.expect(t, os.write_entire_file(target, transmute([]u8)string("one\n")) == nil)
+    defer os.remove(target)
+    os.remove(link)
+    testing.expect(t, os.symlink(target, link) == nil)
+    defer os.remove(link)
+
+    b: app.Buffer
+    defer app.buffer_destroy(&b)
+    testing.expect(t, app.buffer_load(&b, link))
+    app.doc_insert_text(&b.doc, "X")
+    testing.expect_value(t, app.buffer_save(&b), app.Save_Result.Ok)
+
+    fi, err := os.lstat(link, context.temp_allocator)
+    testing.expect(t, err == nil)
+    testing.expect(t, fi.type == .Symlink, "the save replaced the link with a regular file")
+    out, rerr := os.read_entire_file_from_path(target, context.temp_allocator)
+    testing.expect(t, rerr == nil)
+    testing.expect_value(t, string(out), "Xone\n")
+}
+
 // External edits flow into a CLEAN buffer, so a later save cannot clobber them; an unchanged
 // file is a no-op and a DIRTY buffer keeps the user's work. The forced-stale stamp dodges
 // filesystem mtime granularity.

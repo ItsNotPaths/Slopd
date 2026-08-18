@@ -209,10 +209,11 @@ strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
         head := b.cursors[b.primary].head
         nlines := doc_line_count(&b.doc)
         cursors := len(b.cursors) > 1 ? fmt.tprintf("   %d cursors", len(b.cursors)) : ""
+        eol := b.crlf ? "   CRLF" : "" // LF is the norm and says nothing; CRLF has to be visible
         right = fmt.tprintf(
-            "%s   L%d:%d   %d lines%s   %s",
-            status_lang(a, b.path), head.line + 1, doc_cell_col(&b.doc, head) + 1, nlines, cursors,
-            scroll_label(head.line, nlines),
+            "%s%s   L%d:%d   %d lines%s   %s",
+            status_lang(a, b.path), eol, head.line + 1, doc_cell_col(&b.doc, head) + 1, nlines,
+            cursors, scroll_label(head.line, nlines),
         )
     }
 

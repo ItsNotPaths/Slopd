@@ -1061,3 +1061,66 @@ test_cl_saved_verifies :: proc(t: ^testing.T) {
     testing.expect(t, !app.buffer_matches_disk(b))
     testing.expect(t, b.dirty)
 }
+
+// --- the sudo open --- The mirror of the sudo save: a file we may not READ is the one open
+// failure with a way forward, so it stages the line that unlocks it and opens it again.
+
+@(test)
+test_sudo_open_command :: proc(t: ^testing.T) {
+    line := app.sudo_open_command("/etc/shadow", context.temp_allocator)
+    testing.expect_value(t, line, "sudo chmod a+r '/etc/shadow' && :j /etc/shadow")
+
+    // Each half is quoted for the reader it has: the shell for the chmod, `:j`'s own argument
+    // form for the tail. A metacharacter is text to both.
+    odd := app.sudo_open_command("/etc/x'y && rm -rf ~", context.temp_allocator)
+    testing.expect_value(t, odd, `sudo chmod a+r '/etc/x'\''y && rm -rf ~' && :j "/etc/x'y && rm -rf ~"`)
+
+    testing.expect_value(t, app.sudo_open_command("", context.temp_allocator), "")
+}
+
+// A gated chain, like the save's: the open waits on the chmod's exit code, so a wrong password
+// opens nothing.
+@(test)
+test_sudo_open_line_is_a_gated_chain :: proc(t: ^testing.T) {
+    a: app.App
+    defer app.cl_chain_clear(&a)
+
+    app.cl_parse(&a, app.sudo_open_command("/etc/shadow", context.temp_allocator))
+    steps := a.cl_chain.steps[:]
+    testing.expect_value(t, len(steps), 2)
+    testing.expect(t, steps[0].shell, "the chmod is the shell's, and needs a TTY for the password")
+    testing.expect_value(t, steps[0].text, "sudo chmod a+r '/etc/shadow'")
+    testing.expect(t, !steps[1].shell, "the tail is our builtin")
+    testing.expect_value(t, steps[1].text, "j /etc/shadow")
+}
+
+// Every gesture that opens goes through open_file, so the staging lives there: a refused read
+// leaves the ring alone and puts the line up for review.
+@(test)
+test_open_stage_sudo :: proc(t: ^testing.T) {
+    path := "slopd_unreadable.tmp"
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("secret\n")) == nil)
+    defer os.remove(path)
+    testing.expect(t, os.chmod(path, os.Permissions{}) == nil)
+
+    // As root an unreadable mode is not unreadable, so the case cannot be produced.
+    if _, err := os.read_entire_file_from_path(path, context.temp_allocator); err == nil {
+        return
+    }
+
+    a: app.App
+    app.editor_init(&a.editor)
+    app.cl_init(&a.cl)
+    defer {app.editor_destroy(&a.editor);app.cl_destroy(&a)}
+
+    app.open_file(&a, path)
+    testing.expect_value(t, len(a.editor.buffers), 1) // the scratch buffer alone: nothing opened
+    testing.expect_value(t, app.editor_current(&a.editor).path, "")
+
+    testing.expect(t, a.cl_active)
+    testing.expect(t, a.cl.injected, "the line must be staged, not run")
+    testing.expect_value(t, val(&a), app.sudo_open_command(path, context.temp_allocator))
+
+    // The other failures are not ours to answer: a missing file stages nothing.
+    testing.expect(t, !app.open_stage_sudo(&a, "slopd-no-such-file.tmp"))
+}
