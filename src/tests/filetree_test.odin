@@ -1,19 +1,22 @@
 package tests
 
 import app ".."
+import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-// Navigation runs against the real working directory; skips if not launched from
-// the project root (so it stays deterministic without a fixture).
+// Navigation runs against the real working directory, so what is asserted is the ROUND TRIP:
+// descend into a folder and come back, and you are where you started. Naming the folder we
+// expect to land in would test the checkout's directory name instead of the navigation.
 @(test)
 test_filetree_nav :: proc(t: ^testing.T) {
     ft: app.FileTree
     app.filetree_init(&ft)
     defer app.filetree_destroy(&ft)
 
+    start := strings.clone(ft.dir, context.temp_allocator)
     src := -1
     for e, i in ft.entries {
         if e.name == "src" {
@@ -22,6 +25,7 @@ test_filetree_nav :: proc(t: ^testing.T) {
         }
     }
     if src < 0 {
+        fmt.println("[skip] no src/ under the working directory; run from the project root")
         return
     }
 
@@ -30,7 +34,7 @@ test_filetree_nav :: proc(t: ^testing.T) {
     testing.expect(t, strings.has_suffix(ft.dir, "src"))
 
     app.filetree_parent(&ft)
-    testing.expect(t, strings.has_suffix(ft.dir, "Slopd"))
+    testing.expect_value(t, ft.dir, start)
 }
 
 // --- file-op fixtures ---------------------------------------------------------
