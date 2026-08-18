@@ -634,3 +634,29 @@ test_hscroll_reset_on_set_text :: proc(t: ^testing.T) {
     testing.expect_value(t, b.hscroll_detached, f64(0))
     testing.expect_value(t, b.hscroll_anim.to, f32(0))
 }
+
+// pt_compact is the only thing that flattens a splintered table, and a save is where it runs.
+// Without the call the piece count only ever grows, and every line an edit split costs a copy
+// to read from then on.
+@(test)
+test_save_compacts_a_splintered_table :: proc(t: ^testing.T) {
+    path := "slopd_compact.tmp"
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("hello world\n")) == nil)
+    defer os.remove(path)
+
+    b: app.Buffer
+    defer app.buffer_destroy(&b)
+    testing.expect(t, app.buffer_load(&b, path))
+
+    // Scattered single-rune inserts: each one splits a piece, and none of them coalesce.
+    for i in 0 ..< app.PT_COMPACT_PIECES {
+        app.doc_reset_cursor(&b.doc, {0, i % 2 == 0 ? 0 : 3})
+        app.doc_insert_rune(&b.doc, 'z')
+    }
+    testing.expect(t, app.pt_should_compact(&b.doc.pt))
+    want := app.doc_string(&b.doc, context.temp_allocator)
+
+    testing.expect_value(t, app.buffer_save(&b), app.Save_Result.Ok)
+    testing.expect(t, !app.pt_should_compact(&b.doc.pt), "a save must flatten the table")
+    testing.expect_value(t, app.doc_string(&b.doc, context.temp_allocator), want)
+}
