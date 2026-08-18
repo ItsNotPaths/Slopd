@@ -68,6 +68,8 @@ Action :: enum {
     Delete_Word_Back,
     Delete_Word_Forward,
     Indent,
+    Select_All,
+    Select_Line,
     Fold_Toggle,
     Save,
     Undo,
@@ -81,6 +83,7 @@ Action :: enum {
     File_Props,
     File_Workspace,
     File_Edit,
+    File_Discard,
     Parent,
 
     // --- the browser's top bar and sidebar ---
@@ -302,6 +305,8 @@ action_run :: proc(a: ^App, act: Action, n: int, extend, all: bool) -> (handled:
         return nav_run(a, up ? .Up : .Down, extend, all)
     case .Delete_Back, .Delete_Forward, .Delete_Word_Back, .Delete_Word_Forward:
         return delete_run(a, act)
+    case .Select_All, .Select_Line:
+        return select_run(a, act)
     case .Indent, .Fold_Toggle, .Save, .Undo, .Redo:
         return buffer_run(a, act)
 
@@ -313,6 +318,7 @@ action_run :: proc(a: ^App, act: Action, n: int, extend, all: bool) -> (handled:
          .File_Props,
          .File_Workspace,
          .File_Edit,
+         .File_Discard,
          .Parent:
         return file_run(a, act, extend)
     case .Browse_Back, .Browse_Forward, .Browse_Reload, .Browse_View, .Browse_Place:
@@ -344,6 +350,22 @@ term_pane_run :: proc(a: ^App, act: Action) -> bool {
         if n := term_count(a); n > 0 {
             a.term_active = (a.term_active + (act == .Term_Prev ? -1 : 1) + n) % n
         }
+    }
+    return true
+}
+
+// Whatever editable has the keys answers these, the command line and a field included: taking
+// a whole line or a whole document means the same thing everywhere.
+@(private = "file")
+select_run :: proc(a: ^App, act: Action) -> bool {
+    kind, d := active_editable(a)
+    if kind == .None {
+        return false
+    }
+    if act == .Select_All {
+        doc_select_all(d)
+    } else {
+        doc_select_lines(d) // every cursor takes its own line
     }
     return true
 }
@@ -397,6 +419,8 @@ file_run :: proc(a: ^App, act: Action, extend: bool) -> bool {
         cl_workspace(a, ft.dir) // the browsed dir becomes the root; terminals follow
     case .File_Edit:
         filetree_edit_selected(a) // even when Enter would run it
+    case .File_Discard:
+        filetree_discard_selected(a) // only ever the entry, never the marked set
     case .Parent:
         // The only way out of a grid, where Left/Right step a tile.
         if browse_target(a) != nil {filebrowser_parent(a)} else {filetree_parent(ft)}
@@ -564,7 +588,10 @@ activate_run :: proc(a: ^App, extend: bool) -> bool {
     kind, _ := active_editable(a)
     switch kind {
     case .Command_Line:
-        cl_submit(a)
+        // Shift over a `:f` preview takes every hit; it declines and Enter submits as usual.
+        if !extend || !cl_submit_all(a) {
+            cl_submit(a)
+        }
         return true
     case .Browse_Path:
         filebrowser_path_commit(a)

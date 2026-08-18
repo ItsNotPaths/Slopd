@@ -161,7 +161,7 @@ CHORD_GAP :: 2
 // The file ops come first and are the same in both presentations; the rest are the browser's,
 // and chord_hints drops them for the dired listing.
 @(rodata)
-CHORD_HINTS := [18][2]string {
+CHORD_HINTS := [19][2]string {
     {"^y", "mark"},
     {"^u", "unmark"},
     {"^c", "copy"},
@@ -175,6 +175,7 @@ CHORD_HINTS := [18][2]string {
     {"^i", "props"},
     {"^I", "dir-props"},
     {"^h", "workspace"},
+    {"^k", "discard"},
     {"^←", "back"},
     {"^→", "fwd"},
     {"^r", "reload"},
@@ -183,7 +184,7 @@ CHORD_HINTS := [18][2]string {
 }
 
 // The hints that apply to the dired listing: the file ops, no navigation.
-CHORD_OPS :: 13
+CHORD_OPS :: 14
 
 chord_hints :: proc(a: ^App) -> [][2]string {
     return a.file_pane == .Browser ? CHORD_HINTS[:] : CHORD_HINTS[:CHORD_OPS]

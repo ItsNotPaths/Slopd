@@ -1,5 +1,6 @@
 package main
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:strconv"
@@ -137,46 +138,80 @@ grep_parse :: proc(raw, query: string) -> (GrepHit, bool) {
 }
 
 // Deep-clones `hits`, since callers pass temp-allocated scans, and frees the previous set.
-// Context blocks are read from disk here so the pane owns them, at most once per run of
-// same-file hits.
 grep_set :: proc(g: ^GrepPane, query: string, hits: []GrepHit) {
     grep_clear(g)
     g.query = strings.clone(query)
-    cur_path := ""
-    cur_lines: []string // the current file split into lines, reused across its hits
-    for h in hits {
-        if h.path != cur_path {
-            cur_path = h.path
-            cur_lines = grep_file_lines(h.path)
-        }
-        ctx, first := grep_read_context(cur_lines, h.line)
-        append(
-            &g.hits,
-            GrepHit {
-                path      = strings.clone(h.path),
-                line      = h.line,
-                col       = h.col,
-                text      = strings.clone(h.text),
-                ctx       = ctx,
-                ctx_first = first,
-            },
-        )
-    }
+    owned := grep_hits_clone(hits)
+    append(&g.hits, ..owned)
+    delete(owned)
     g.selected = 0
     g.scroll = 0
     g.hover = -1
+}
+
+// A deep copy, with the context block read from disk for any hit arriving without one — at most
+// one file read per run of same-file hits. The worker clones this way on its own thread, so what
+// reaches grep_set is whole and this second pass only copies.
+grep_hits_clone :: proc(hits: []GrepHit, alloc := context.allocator) -> []GrepHit {
+    out := make([]GrepHit, len(hits), alloc)
+    cur_path := ""
+    cur_lines: []string // the current file split into lines, reused across its hits
+    for h, i in hits {
+        ctx, first := h.ctx, h.ctx_first
+        if len(ctx) == 0 {
+            if h.path != cur_path {
+                cur_path = h.path
+                cur_lines = grep_file_lines(h.path)
+            }
+            ctx, first = grep_read_context(cur_lines, h.line)
+        }
+        out[i] = GrepHit {
+            path      = strings.clone(h.path, alloc),
+            line      = h.line,
+            col       = h.col,
+            text      = strings.clone(h.text, alloc),
+            ctx       = grep_clone_lines(ctx, alloc),
+            ctx_first = first,
+        }
+    }
+    return out
+}
+
+// For a set the pane never took: the worker's answer, once it has been copied in or dropped.
+grep_hits_destroy :: proc(hits: []GrepHit, alloc := context.allocator) {
+    for h in hits {
+        grep_hit_destroy(h, alloc)
+    }
+    delete(hits, alloc)
+}
+
+@(private = "file")
+grep_hit_destroy :: proc(h: GrepHit, alloc := context.allocator) {
+    delete(h.path, alloc)
+    delete(h.text, alloc)
+    for c in h.ctx {
+        delete(c, alloc)
+    }
+    delete(h.ctx, alloc)
+}
+
+@(private = "file")
+grep_clone_lines :: proc(lines: []string, alloc: runtime.Allocator) -> []string {
+    if len(lines) == 0 {
+        return nil
+    }
+    out := make([]string, len(lines), alloc)
+    for l, i in lines {
+        out[i] = strings.clone(l, alloc)
+    }
+    return out
 }
 
 grep_clear :: proc(g: ^GrepPane) {
     delete(g.query)
     g.query = ""
     for h in g.hits {
-        delete(h.path)
-        delete(h.text)
-        for c in h.ctx {
-            delete(c)
-        }
-        delete(h.ctx)
+        grep_hit_destroy(h)
     }
     clear(&g.hits)
     g.selected = 0
@@ -196,7 +231,8 @@ grep_file_lines :: proc(path: string) -> []string {
 }
 
 // GREP_CONTEXT lines either side of 1-based `line`, clamped to the file, with the 1-based
-// number of the first. Empty when the file could not be read, and the pane falls back.
+// number of the first. Borrows `lines`; the caller clones. Empty when the file could not be
+// read, and the pane falls back.
 @(private = "file")
 grep_read_context :: proc(lines: []string, line: int) -> (ctx: []string, first: int) {
     if len(lines) == 0 {
@@ -207,11 +243,7 @@ grep_read_context :: proc(lines: []string, line: int) -> (ctx: []string, first: 
     if hi < lo {
         return nil, 0
     }
-    ctx = make([]string, hi - lo + 1)
-    for i in lo ..= hi {
-        ctx[i - lo] = strings.clone(lines[i - 1])
-    }
-    return ctx, lo
+    return lines[lo - 1:hi], lo
 }
 
 grep_destroy :: proc(g: ^GrepPane) {

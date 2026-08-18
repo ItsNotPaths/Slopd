@@ -37,6 +37,18 @@ test_text_and_surface_split_the_colliding_chords :: proc(t: ^testing.T) {
     testing.expect_value(t, act_of(glfw.KEY_F, 0, .Text), app.Action.None)
 }
 
+// ^a and ^l are the editable's: they take a document and a line. A terminal has no table entry
+// for either, so both reach the job — ^l still clears a shell, ^a still leads a tmux prefix.
+@(test)
+test_select_chords_are_the_editables :: proc(t: ^testing.T) {
+    testing.expect_value(t, act_of(glfw.KEY_A, CTRL, .Text), app.Action.Select_All)
+    testing.expect_value(t, act_of(glfw.KEY_L, CTRL, .Text), app.Action.Select_Line)
+    testing.expect_value(t, act_of(glfw.KEY_A, CTRL, .Terminal), app.Action.None)
+    testing.expect_value(t, act_of(glfw.KEY_L, CTRL, .Terminal), app.Action.None)
+    // Alt+A is the cursor trail, unmoved: the two never shared a chord.
+    testing.expect_value(t, act_of(glfw.KEY_A, ALT, .Text), app.Action.Cursor_Drop)
+}
+
 // The arrows, Enter and the clipboard are one bind each, answered by whichever surface has the
 // keys. ^C reaches the terminal too, which is what lets it decline and interrupt instead.
 @(test)

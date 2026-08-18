@@ -30,6 +30,7 @@ Menu_Action :: enum {
     Delete,
     CopyPath,
     OpenInEditor,
+    Discard,
     Properties,
     AddPlace,
     RemovePlace,
@@ -226,6 +227,8 @@ ctxmenu_file_action :: proc(a: ^App, action: Menu_Action, on: Menu_Target) {
         }
     case .OpenInEditor:
         filetree_edit_selected(a) // the entry the right press selected
+    case .Discard:
+        filetree_discard_selected(a)
     case .Properties:
         filetree_props(a, on.path) // the target's, for all three kinds; t1 prints it
     case .AddPlace:
@@ -276,6 +279,10 @@ ctxmenu_file_items :: proc(
         append(&out, Menu_Item{"Delete", "^d", .Delete, row || len(ft.marks) > 0})
         append(&out, Menu_Item{"Copy path", "^w", .CopyPath, row})
         append(&out, Menu_Item{"Properties", "^i", .Properties, row})
+        // Left out rather than disabled: a file with nothing unsaved has no edits to discard.
+        if row && ring_contains(a, e.path) {
+            append(&out, Menu_Item{"Discard changes", "^k", .Discard, true})
+        }
     case .Path:
         // A chrome-named directory can be gone to, staged for a paste and quoted, and that is
         // the whole of what a segment or a places row is. No hints: ^c and ^w are the same verbs

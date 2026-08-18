@@ -172,7 +172,8 @@ preview_grep :: proc(a: ^App, args: string) {
     set_aux(a, .Grep)
     a.cl_preview.saved.grep = a.grep
     a.grep = {}
-    grep_set(&a.grep, query, grep_project(a, query))
+    grep_set(&a.grep, query, nil) // the query now; the worker fills the hits in
+    grep_async(a, query, .Preview)
 }
 
 // Step through a find preview's hits, wrapping. False when there is nothing to cycle, and the
@@ -188,6 +189,27 @@ cl_preview_step :: proc(a: ^App, dir: int) -> bool {
     if pos, ok := find_pos(&a.find); ok {
         doc_reset_cursor(&b.doc, pos)
     }
+    return true
+}
+
+// Shift+Enter over a find preview: take every hit at once, one selected cursor per match with
+// the head at its end. The primary stays on the hit the preview was showing, so the view does
+// not jump. False when there is nothing to take, and plain Enter stands.
+cl_preview_select_all :: proc(a: ^App) -> bool {
+    b := main_text_buffer(a)
+    if a.cl_preview.kind != .Find || b == nil || len(a.find.matches) == 0 {
+        return false
+    }
+    clear(&b.cursors)
+    for m in a.find.matches {
+        head := doc_clamp_pos(&b.doc, Pos{m.line, m.col + m.n})
+        append(&b.cursors, Cursor{
+            anchor = doc_clamp_pos(&b.doc, Pos{m.line, m.col}),
+            head   = head,
+            goal   = doc_cell_col(&b.doc, head),
+        })
+    }
+    b.primary = clamp(a.find.cur, 0, len(b.cursors) - 1)
     return true
 }
 

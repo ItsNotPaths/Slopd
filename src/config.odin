@@ -53,6 +53,7 @@ Config :: struct {
     show_guides:      bool, // draw indent guides + the active-scope rail
     folding:          bool, // allow Ctrl+Enter block folding
     folder_cd_run:    bool, // filetree Alt+Enter: run the `cd` at once vs stage it in the CL
+    discard_run:      bool, // file pane ^k: discard the edits at once vs stage `:discard`
     git_tool:         string, // external tool Alt+G hands the project root to (owned); "" = none
     git_term:         int, // which terminal session to run it in; 0 = spawn it detached
     run_term:         int, // which terminal session an activated executable runs in
@@ -119,6 +120,7 @@ load_config :: proc() -> Config {
         show_guides     = true,
         folding         = true,
         folder_cd_run   = false, // stage the cd, reviewable
+        discard_run     = false, // stage the discard: unsaved work is not thrown away unread
         git_term        = 0, // detached: a GUI tool wants its own window, not a PTY
         run_term        = 1, // t1, the master CL terminal
         grep_pane_always = true, // no auto-jump on a lone hit
@@ -195,6 +197,8 @@ config_parse :: proc(src: string, cfg: ^Config) {
             if v, ok := parse_on_off(val); ok {cfg.folding = v}
         case "folder_cd":
             if v, ok := parse_stage_run(val); ok {cfg.folder_cd_run = v}
+        case "discard":
+            if v, ok := parse_stage_run(val); ok {cfg.discard_run = v}
         case "git_tool":
             delete(cfg.git_tool)
             cfg.git_tool = strings.clone(val)
@@ -319,7 +323,7 @@ setting_options :: proc(a: ^App, s: Setting) -> []string {
         return ON_OFF_OPTS[:]
     case .FilePane:
         return FILE_PANE_OPTS[:]
-    case .FolderCd:
+    case .FolderCd, .Discard:
         return STAGE_RUN_OPTS[:]
     case .DiskConflict:
         return PROMPT_KEEP_OPTS[:]
@@ -402,6 +406,7 @@ Setting :: enum {
     IndentGuides,
     Whitespace,
     FolderCd,
+    Discard,
     RunTerm,
     GitTool,
     GitTerm,
@@ -432,6 +437,7 @@ setting_key :: proc(s: Setting) -> string {
     case .IndentGuides: return "indent_guides"
     case .Whitespace:   return "whitespace"
     case .FolderCd:     return "folder_cd"
+    case .Discard:      return "discard"
     case .RunTerm:      return "run_term"
     case .GitTool:      return "git_tool"
     case .GitTerm:      return "git_term"
@@ -460,6 +466,7 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
     case .IndentGuides: return on_off(a.show_guides)
     case .Whitespace:   return on_off(a.show_whitespace)
     case .FolderCd:     return a.folder_cd_run ? "run" : "stage"
+    case .Discard:      return a.discard_run ? "run" : "stage"
     case .RunTerm:      return fmt.tprintf("%d", max(1, a.run_term))
     case .GitTool:      return a.git_tool // "" is unset (Alt+G opens a shell)
     case .GitTerm:      return a.git_term <= 0 ? GIT_TERM_DETACHED : fmt.tprintf("%d", a.git_term)
@@ -504,6 +511,8 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
         a.show_whitespace = parse_on_off(val) or_return
     case .FolderCd:
         a.folder_cd_run = parse_stage_run(val) or_return
+    case .Discard:
+        a.discard_run = parse_stage_run(val) or_return
     case .RunTerm:
         n := strconv.parse_int(val) or_return
         if n < 1 {

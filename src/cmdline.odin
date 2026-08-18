@@ -72,15 +72,34 @@ cl_cancel :: proc(a: ^App) {
 }
 
 cl_submit :: proc(a: ^App) {
+    if input := cl_close_kept(a); input != "" {
+        cl_exec(a, input)
+    }
+}
+
+// Shift+Enter over a `:f` preview: every hit takes a cursor and the line closes WITHOUT running
+// — the search already did the work, and re-running it would collapse the set back to one.
+// False when there is no find preview, and plain Enter stands.
+cl_submit_all :: proc(a: ^App) -> bool {
+    if !cl_preview_select_all(a) {
+        return false
+    }
+    cl_close_kept(a)
+    return true
+}
+
+// Both Enter paths share this: the preview's landing stays, the line closes, and what you typed
+// goes to history. Returns it, or "" for an empty line.
+@(private = "file")
+cl_close_kept :: proc(a: ^App) -> string {
     input := strings.trim_space(doc_string(&a.cl.doc, context.temp_allocator))
     cl_preview_commit(a) // keep what the preview landed on
     a.cl_active = false
     doc_clear(&a.cl.doc)
-    if input == "" {
-        return
+    if input != "" {
+        append(&a.cl.history, strings.clone(input))
     }
-    append(&a.cl.history, strings.clone(input))
-    cl_exec(a, input)
+    return input
 }
 
 cl_history_prev :: proc(a: ^App) {
@@ -340,12 +359,14 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         cl_reload(a, args)
     case "saved":
         cl_saved(a)
+    case "discard":
+        cl_discard(a, args)
     case "tu":
         cl_tu(a)
     case "color", "colour", "colors", "colours":
         cl_color(a)
-    case "w", "wa", "q", "q!", "wq", "wqa", "waq":
-        cl_quit(a, name)
+    case "w", "w!", "wa", "q", "q!", "wq", "wqa", "waq":
+        cl_quit(a, name, args)
     case:
         cl_echo_t1(a, fmt.tprintf("%s: not a builtin (drop the : to run it in the shell)", name))
         return false
@@ -429,12 +450,16 @@ cl_saved :: proc(a: ^App) {
 // The only way to close Slopd (Esc never quits), guarded by the unsaved ring. Refusals echo into
 // t1 naming the sigilled line that would work.
 @(private = "file")
-cl_quit :: proc(a: ^App, cmd: string) {
+cl_quit :: proc(a: ^App, cmd: string, args: string) {
     switch cmd {
-    case "w":
+    case "w", "w!":
+        if strings.trim_space(args) != "" {
+            cl_write_copy(a, editor_current(&a.editor), args, cmd == "w!")
+            return
+        }
         // A denial stages its own `sudo cp` line, which is the message.
         switch cl_save(a, editor_current(&a.editor)) {
-        case .No_Path: cl_echo_t1(a, ":w: no filename (save-as not yet supported)")
+        case .No_Path: cl_echo_t1(a, ":w: no filename — `:w <path>` writes a copy there")
         case .Failed:  cl_echo_t1(a, ":w: could not write the file")
         case .Ok, .Denied:
         }
@@ -462,6 +487,62 @@ cl_quit :: proc(a: ^App, cmd: string) {
         } else {
             glfw.SetWindowShouldClose(a.window, true)
         }
+    }
+}
+
+// `:w <path>`: write these bytes THERE and stay on this file, as vim does — a copy, not a
+// save-as, so the buffer keeps its name and its unsaved mark. `:w! <path>` overwrites an
+// existing file; plain `:w` refuses one, since a mistyped name must not eat what is already
+// there. Silent on success, like every other write.
+@(private = "file")
+cl_write_copy :: proc(a: ^App, b: ^Buffer, args: string, force: bool) {
+    path := cl_resolve_path(a, unquote_arg(strings.trim_space(args)))
+    defer delete(path)
+    if why := cl_write_refusal(path, force); why != "" {
+        cl_echo_t1(a, why)
+        return
+    }
+    if os.write_entire_file(path, transmute([]u8)buffer_bytes(b)) != nil {
+        cl_echo_t1(a, fmt.tprintf(":w: could not write %s", path))
+    }
+}
+
+// Why `path` may not be written, or "" when it may. Split from the write and pure, so what the
+// bang is FOR is assertable without a terminal to echo into. Temp-allocated.
+cl_write_refusal :: proc(path: string, force: bool) -> string {
+    dir := filepath.dir(path) // slices into path; not owned
+    switch {
+    case path == "" || os.is_dir(path):
+        return ":w: that is a directory, not a file"
+    case !os.is_dir(dir):
+        return fmt.tprintf(":w: no such folder: %s", dir)
+    case !force && os.exists(path):
+        return fmt.tprintf(":w: %s exists — `:w! <path>` overwrites it", path)
+    }
+    return ""
+}
+
+// `:discard [file]`: throw a buffer's unsaved edits away and take the disk version back, so the
+// file leaves the unsaved ring. Bare, the current buffer; with a path, whichever buffer holds
+// that file — which is how the file panes' gesture reaches a buffer you are not looking at.
+//
+// A file with nothing unsaved is a no-op that says so, so a line left staged past a save cannot
+// undo it.
+@(private = "file")
+cl_discard :: proc(a: ^App, args: string) {
+    arg := unquote_arg(strings.trim_space(args))
+    b := main_text_buffer(a)
+    if arg != "" {
+        path := cl_resolve_path(a, arg)
+        defer delete(path)
+        b = ring_dirty_buffer(a, path)
+        if b == nil {
+            cl_echo_t1(a, fmt.tprintf(":discard: %s has no unsaved changes", arg))
+            return
+        }
+    }
+    if b == nil || !buffer_discard(b) {
+        cl_echo_t1(a, ":discard: nothing to take back — this buffer has no file on disk")
     }
 }
 
@@ -666,13 +747,7 @@ cl_grep :: proc(a: ^App, args: string) {
     if query == "" {
         return
     }
-    hits := grep_project(a, query)
-    grep_set(&a.grep, query, hits)
-    if len(hits) == 1 && !a.grep_pane_always {
-        grep_open_hit(a, hits[0]) // sole match, shortcut enabled
-    } else {
-        set_aux(a, .Grep)
-    }
+    grep_async(a, query, .Open) // the pane fills when the worker answers
 }
 
 // Leading `-flags` are discarded (grep_run forces its own); the rest is kept whole as a regex.
@@ -853,6 +928,15 @@ first_arg :: proc(s: string) -> (raw, value: string) {
     return f, f
 }
 
+// The inverse, for a line being staged: a path with a space in it goes back quoted, so what is
+// staged reads back as ONE argument. The form `:j "my notes.md"` documents.
+cl_quote_arg :: proc(s: string, alloc := context.allocator) -> string {
+    if !strings.contains(s, " ") {
+        return s // borrowed: nothing to escape
+    }
+    return fmt.aprintf("\"%s\"", s, allocator = alloc)
+}
+
 // Strip one matched pair of quotes from an argument that is the whole rest of the line
 // (`:cd "my dir"`). Those builtins never needed them, but honouring the habit beats failing.
 @(private = "file")
@@ -924,6 +1008,9 @@ cl_find_hint :: proc(a: ^App) -> string {
 cl_grep_hint :: proc(a: ^App) -> string {
     if a.cl_preview.kind != .Grep {
         return ""
+    }
+    if grep_searching(a) {
+        return "(searching…)"
     }
     if n := len(a.grep.hits); n > 0 {
         return fmt.tprintf("(%d match%s)", n, n == 1 ? "" : "es")

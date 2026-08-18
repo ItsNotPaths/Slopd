@@ -300,8 +300,31 @@ doc_select_word :: proc(d: ^Doc, p: Pos) {
 // The triple-click. The span is the line's TEXT, not the line plus its break — exactly what
 // Home then Shift+End selects.
 doc_select_line :: proc(d: ^Doc, line: int) {
+    anchor, head := line_span(d, line)
+    doc_select_span(d, anchor, head)
+}
+
+// Ctrl+L, which is the triple-click at every cursor: the trail is kept, since collapsing it
+// would undo an Alt+A this verb has nothing to do with. Two cursors on one line fuse.
+doc_select_lines :: proc(d: ^Doc) {
+    for &c in d.cursors {
+        c.anchor, c.head = line_span(d, c.head.line)
+        c.goal = doc_cell_col(d, c.head)
+    }
+    doc_merge_cursors(d)
+}
+
+// Ctrl+A. One selection over everything, the head at the end so a following Shift+motion grows
+// from where the eye is.
+doc_select_all :: proc(d: ^Doc) {
+    last := doc_line_count(d) - 1
+    doc_select_span(d, Pos{0, 0}, Pos{last, doc_line_len(d, last)})
+}
+
+@(private = "file")
+line_span :: proc(d: ^Doc, line: int) -> (anchor, head: Pos) {
     l := clamp(line, 0, doc_line_count(d) - 1)
-    doc_select_span(d, Pos{l, 0}, Pos{l, doc_line_len(d, l)})
+    return Pos{l, 0}, Pos{l, doc_line_len(d, l)}
 }
 
 // Word (2) or line (3+); grade 1 is doc_set_head. `press` and `at` carry glyph positions, not

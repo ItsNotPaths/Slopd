@@ -104,6 +104,8 @@ ACTIONS := [Action]Action_Info {
     .Delete_Word_Back    = {"edit.delete_word_back", TX, 0},
     .Delete_Word_Forward = {"edit.delete_word_forward", TX, 0},
     .Indent              = {"edit.indent", TX, 0},
+    .Select_All          = {"edit.select_all", TX, 0},
+    .Select_Line         = {"edit.select_line", TX, 0},
     .Fold_Toggle         = {"edit.fold", TX, 0},
     .Save                = {"edit.save", TX, 0},
     .Undo                = {"edit.undo", TX, 0},
@@ -115,6 +117,7 @@ ACTIONS := [Action]Action_Info {
     .File_Props          = {"file.props", SF, 0},
     .File_Workspace      = {"file.workspace", SF, 0},
     .File_Edit           = {"file.edit", SF, 0},
+    .File_Discard        = {"file.discard", SF, 0},
     .Parent              = {"file.parent", SF, 0},
     .Browse_Back         = {"browse.back", SF, 0},
     .Browse_Forward      = {"browse.forward", SF, 0},
@@ -185,8 +188,9 @@ BIND_DEFAULTS := [?]Bind {
     {{glfw.KEY_RIGHT, MC}, .Move_Word_Right},
     {{glfw.KEY_HOME, 0}, .Move_Home},
     {{glfw.KEY_END, 0}, .Move_End},
-    {{glfw.KEY_A, MC}, .Move_Home}, // readline
-    {{glfw.KEY_E, MC}, .Move_End},
+    {{glfw.KEY_E, MC}, .Move_End}, // readline
+    {{glfw.KEY_A, MC}, .Select_All},
+    {{glfw.KEY_L, MC}, .Select_Line},
     {{glfw.KEY_UP, MC}, .Jump_Up},
     {{glfw.KEY_DOWN, MC}, .Jump_Down},
     {{glfw.KEY_BACKSPACE, 0}, .Delete_Back},
@@ -209,6 +213,7 @@ BIND_DEFAULTS := [?]Bind {
     {{glfw.KEY_I, MC}, .File_Props},
     {{glfw.KEY_H, MC}, .File_Workspace},
     {{glfw.KEY_O, MC}, .File_Edit},
+    {{glfw.KEY_K, MC}, .File_Discard},
     {{glfw.KEY_BACKSPACE, 0}, .Parent},
 
     // surface: the browser's top bar and sidebar

@@ -195,6 +195,42 @@ test_preview_step_declines_without_a_find :: proc(t: ^testing.T) {
     testing.expect(t, !app.cl_preview_step(&a, 1))
 }
 
+// Shift+Enter over a find preview takes the whole file at once: one cursor per hit, each
+// selecting it with the caret at its end, and the primary stays on the hit that was showing.
+// The line closes without running — the builtin would collapse the set back to one.
+@(test)
+test_preview_find_takes_every_hit :: proc(t: ^testing.T) {
+    a := mkapp("l0\nhit\nl2\nhit\nl4")
+    defer freeapp(&a)
+
+    typeln(&a, ":f hit")
+    testing.expect(t, app.cl_preview_step(&a, 1)) // showing the second hit
+    testing.expect(t, app.cl_submit_all(&a))
+    testing.expect(t, !a.cl_active)
+    testing.expect_value(t, len(a.cl.history), 1) // a line you typed, kept either way
+
+    b := app.editor_current(&a.editor)
+    testing.expect_value(t, len(b.cursors), 2)
+    testing.expect_value(t, b.cursors[0].anchor, app.Pos{line = 1, col = 0})
+    testing.expect_value(t, b.cursors[0].head, app.Pos{line = 1, col = 3})
+    testing.expect_value(t, b.cursors[1].anchor, app.Pos{line = 3, col = 0})
+    testing.expect_value(t, b.cursors[1].head, app.Pos{line = 3, col = 3})
+    testing.expect_value(t, b.primary, 1)
+    testing.expect(t, !a.find.show) // the marks come down: the cursors say it now
+}
+
+// Only a find preview answers it. With none up, Shift+Enter is the plain Enter it has always
+// been — cl_submit_all says so by returning false.
+@(test)
+test_submit_all_declines_without_a_find :: proc(t: ^testing.T) {
+    a := mkapp(PREVIEW_PAGE)
+    defer freeapp(&a)
+
+    testing.expect(t, !app.cl_submit_all(&a))
+    typeln(&a, ":j 3")
+    testing.expect(t, !app.cl_submit_all(&a))
+}
+
 @(test)
 test_preview_find_reports_a_miss :: proc(t: ^testing.T) {
     a := mkapp(PREVIEW_PAGE)

@@ -91,6 +91,7 @@ main :: proc() {
     app.show_guides = cfg.show_guides
     app.folding = cfg.folding
     app.folder_cd_run = cfg.folder_cd_run
+    app.discard_run = cfg.discard_run
     app.git_tool = strings.clone(cfg.git_tool) // owned: the Config pane can rewrite it
     app.exclude = strings.clone(cfg.exclude) // likewise
     app.git_term = cfg.git_term
@@ -194,6 +195,7 @@ main :: proc() {
 
         now := glfw.GetTime()
         view_poll_disk(&app, now) // re-read an externally-changed file
+        grep_poll(&app) // a finished project search into the pane
         cl_preview_sync(&app, now) // after the reload: a changed file invalidates what a
         // preview found in it
         w, h := glfw.GetFramebufferSize(window)

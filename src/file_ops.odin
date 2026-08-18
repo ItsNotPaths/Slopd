@@ -44,6 +44,19 @@ filetree_edit_selected :: proc(a: ^App) {
     }
 }
 
+// Throw away a file's unsaved edits: it leaves the unsaved ring and its buffer holds the disk
+// again. Staged for review or run at once per the `discard` config, like the folder cd — the
+// staged line IS the confirm, as it is for the delete.
+//
+// A file with nothing unsaved has nothing to discard, so this is a no-op on one.
+filetree_discard_selected :: proc(a: ^App) {
+    e := filetree_selected(&a.tree)
+    if e == nil || e.is_dir || !ring_contains(a, e.path) {
+        return
+    }
+    cl_dispatch(a, fmt.tprintf(":discard %s", cl_quote_arg(e.path, context.temp_allocator)), a.discard_run)
+}
+
 // xdg-open, except for anything RUNNABLE: that stages its command instead, since running with
 // arguments is a decision worth reading first.
 filetree_open_selected :: proc(a: ^App) {

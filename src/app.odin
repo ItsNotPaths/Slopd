@@ -129,6 +129,12 @@ App :: struct {
     // straight into the editor. Default on.
     grep_pane_always: bool,
 
+    // The project search runs off the main thread (grep_worker.odin). grep_seq tickets each
+    // request, so an answer to a query already typed past is dropped.
+    grep_worker: Grep_Worker,
+    grep_seq:    u64, // the newest request
+    grep_seen:   u64, // the newest answer applied; behind grep_seq while a search is out
+
     grammars: []Grammar, // language registry (owned; loaded in main)
     gram_ext: map[string]string, // ext -> language name over `grammars`; borrows its strings
     hl:       Highlighter,
@@ -168,6 +174,7 @@ App :: struct {
     // Filetree Alt+Enter on a folder makes a `cd <path>` line: run it at once, or stage it in
     // the CL to review (the default). See cl_dispatch.
     folder_cd_run:   bool,
+    discard_run:     bool, // the file panes' discard: run it at once vs stage `:discard`
 
     // Directories every project-wide tool skips (config `exclude`), comma separated. Owned;
     // split at each use by exclude_dirs (exclude.odin), where a pattern's meaning is written.
@@ -347,6 +354,7 @@ app_init :: proc(a: ^App) {
     a.project_root = err == nil ? cwd : strings.clone(".")
     cl_init(&a.cl)
     wsfind_init(&a.wsfind) // its file list is scanned when it opens
+    grep_worker_start(&a.grep_worker)
     // No sysbus: the D-Bus stack is parked (src/system/sysbus.odin) and the App owns none of it.
 }
 
@@ -381,6 +389,7 @@ font_zoom_ratio :: proc(a: ^App) -> f32 {
 // The editor, filetree and config are initialised in main and torn down by their own defers.
 app_destroy :: proc(a: ^App) {
     term_destroy_all(a) // kill child shells and join readers before GLFW shuts down
+    grep_worker_stop(&a.grep_worker)
     media_destroy(&a.media)
     cl_chain_clear(a)
     cl_destroy(a)

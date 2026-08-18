@@ -54,6 +54,73 @@ test_cl_write_ring :: proc(t: ^testing.T) {
     os.remove(path)
 }
 
+// `:w <path>` writes a COPY and stays on this file, as vim does: the bytes land there, the
+// buffer keeps its own name and its unsaved mark, and the ring is unchanged.
+@(test)
+test_cl_write_copy :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    defer app.editor_destroy(&a.editor)
+
+    b := app.editor_current(&a.editor)
+    app.buffer_set_text(b, "mine")
+    b.final_newline = false
+    b.path = strings.clone("/tmp/slopd_wcopy_src.txt")
+    b.dirty = true
+
+    copy_path := "/tmp/slopd_wcopy.txt"
+    defer os.remove(copy_path)
+    app.cl_exec(&a, strings.concatenate({":w ", copy_path}, context.temp_allocator))
+
+    data, err := os.read_entire_file_from_path(copy_path, context.temp_allocator)
+    testing.expect(t, err == nil, "the copy was not written")
+    testing.expect_value(t, string(data), "mine")
+
+    testing.expect_value(t, b.path, "/tmp/slopd_wcopy_src.txt") // still its own file
+    testing.expect(t, b.dirty, "a copy is not a save: the buffer is still unsaved")
+    testing.expect_value(t, app.ring_dirty_count(&a.editor), 1)
+}
+
+// What the bang is for: an existing file is refused until `:w!` names it, so a mistyped name
+// cannot eat what is already there. A folder that is not there is named rather than guessed at.
+@(test)
+test_cl_write_refusals :: proc(t: ^testing.T) {
+    path := "/tmp/slopd_wrefuse.txt"
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("theirs")) == nil)
+    defer os.remove(path)
+
+    testing.expect(t, strings.contains(app.cl_write_refusal(path, false), "exists"))
+    testing.expect_value(t, app.cl_write_refusal(path, true), "") // `:w!` goes through
+    testing.expect_value(t, app.cl_write_refusal("/tmp", false), ":w: that is a directory, not a file")
+    testing.expect(t, strings.has_prefix(app.cl_write_refusal("/tmp/slopd_no_dir/x.txt", false), ":w: no such folder"))
+    testing.expect_value(t, app.cl_write_refusal("/tmp/slopd_wfresh.txt", false), "") // a free name
+}
+
+// `:discard <file>` takes the disk version back for whichever buffer holds that file — not only
+// the one on screen — and the file leaves the unsaved ring. The file panes' ^k stages this line.
+@(test)
+test_cl_discard :: proc(t: ^testing.T) {
+    path := "/tmp/slopd_discard.txt"
+    testing.expect(t, os.write_entire_file(path, transmute([]u8)string("on disk\n")) == nil)
+    defer os.remove(path)
+
+    a: app.App
+    app.editor_init(&a.editor)
+    defer app.editor_destroy(&a.editor)
+
+    b := app.editor_current(&a.editor)
+    testing.expect(t, app.buffer_load(b, path))
+    app.buffer_set_text(b, "my edits")
+    b.dirty = true
+    testing.expect_value(t, app.ring_dirty_count(&a.editor), 1)
+    testing.expect(t, app.ring_contains(&a, path))
+
+    app.cl_exec(&a, strings.concatenate({":discard ", path}, context.temp_allocator))
+    testing.expect_value(t, app.ring_dirty_count(&a.editor), 0)
+    testing.expect_value(t, app.doc_string(&b.doc, context.temp_allocator), "on disk")
+    testing.expect(t, !app.ring_contains(&a, path))
+}
+
 @(test)
 test_cl_goto :: proc(t: ^testing.T) {
     a: app.App
@@ -436,6 +503,32 @@ test_cl_dispatch_stage_vs_run :: proc(t: ^testing.T) {
     app.cl_dispatch(&a, ":cd /tmp", true) // run
     testing.expect(t, !a.cl_active, "run leaves the command line closed")
     testing.expect_value(t, a.project_root, "/tmp") // executed
+}
+
+// The file panes' ^k stages the line rather than acting, so unsaved work is never thrown away
+// unread — the `discard: run` config is the way to skip the reading. An entry with nothing
+// unsaved stages nothing at all.
+@(test)
+test_filetree_discard_stages :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    a.tree.dir = "/tmp/ft"
+    append(&a.tree.entries, app.FileEntry{name = "f.txt", path = "/tmp/ft/f.txt"})
+    defer {
+        delete(a.tree.entries)
+        app.editor_destroy(&a.editor)
+        app.cl_destroy(&a)
+    }
+
+    app.filetree_discard_selected(&a)
+    testing.expect(t, !a.cl_active, "a file with nothing unsaved has nothing to discard")
+
+    b := app.editor_current(&a.editor)
+    b.path = strings.clone("/tmp/ft/f.txt")
+    b.dirty = true
+    app.filetree_discard_selected(&a)
+    testing.expect(t, a.cl_active, "the staged line is the confirm")
+    testing.expect_value(t, val(&a), ":discard /tmp/ft/f.txt")
 }
 
 // --- chain runner (&& honours exit status; exit codes simulated, no shell) ---

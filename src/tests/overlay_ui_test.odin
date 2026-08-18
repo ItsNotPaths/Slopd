@@ -29,8 +29,9 @@ ROW_H :: 22 // the bar's own: a 16px line plus CHORD_ROW_PAD
 @(private = "file")
 PAD :: 8
 @(private = "file")
-// Thirteen chords plus a clipboard-empty "[0 marked]" readout, packed into 28 cells. The
-// packing test below feeds a longer readout and gets the same rows.
+// Fourteen chords plus a clipboard-empty "[0 marked]" readout, packed into 28 cells — the
+// readout still fits beside the last chord, so the rows are the same six. The packing test
+// below feeds a longer readout, which does not.
 NROWS :: 6
 @(private = "file")
 BAR_H :: NROWS * ROW_H // 132
@@ -183,7 +184,7 @@ test_chord_bar_in_both_faces :: proc(t: ^testing.T) {
 // The chord bar
 // ---------------------------------------------------------------------------------------
 
-// The only interesting thing the bar does: thirteen chords of known width plus the state
+// The only interesting thing the bar does: fourteen chords of known width plus the state
 // readout, left-flowing with a two-cell gap.
 //
 // The second half is the byte-versus-rune assertion. The hand-drawn packing measured the readout
@@ -194,10 +195,10 @@ test_chord_pack_wraps :: proc(t: ^testing.T) {
     state := "[0 marked · copy 0]" // 19 runes, 20 bytes
 
     // 28 cells: the 296px pane less its two 8px margins. Widths are 7, 9, 7, 6, 8, 6, 10, 7, 6,
-    // 7, 8, 12, 12 with a gap of 2, so the rows break after the third, sixth, ninth and
-    // eleventh.
+    // 7, 8, 12, 12, 10 with a gap of 2, so the rows break after the third, sixth, ninth,
+    // eleventh and thirteenth.
     items, nrows := chord_items(state, 28)
-    testing.expect_value(t, nrows, 6)
+    testing.expect_value(t, nrows, 7)
     testing.expect_value(t, items[0].row, 0)
     testing.expect_value(t, items[0].col, 0)
     testing.expect_value(t, items[2].col, 20) // 7 + 2 + 9 + 2
@@ -207,18 +208,19 @@ test_chord_pack_wraps :: proc(t: ^testing.T) {
     testing.expect_value(t, items[9].row, 3) // ^o, leading the fourth row
     testing.expect_value(t, items[12].row, 4) // ^h, beside ^I on the fifth
     testing.expect_value(t, items[12].col, 14)
-    testing.expect_value(t, items[13].row, 5) // the readout, last in the flow
-    testing.expect_value(t, items[13].key, "") // and the only item with no key
+    testing.expect_value(t, items[13].row, 5) // ^k, alone on the sixth: 12 + 19 overruns
+    testing.expect_value(t, items[14].row, 6) // the readout, last in the flow
+    testing.expect_value(t, items[14].key, "") // and the only item with no key
 
-    // 150 cells is exactly the width at which the readout's last rune is the row's last cell.
+    // 162 cells is exactly the width at which the readout's last rune is the row's last cell.
     // Counted in bytes it does not fit and everything moves to a second row.
-    wide, wide_rows := chord_items(state, 150)
+    wide, wide_rows := chord_items(state, 162)
     testing.expect_value(t, wide_rows, 1)
-    testing.expect_value(t, wide[13].col, 131)
-    testing.expect_value(t, wide[13].row, 0)
+    testing.expect_value(t, wide[14].col, 143)
+    testing.expect_value(t, wide[14].row, 0)
 
     // One cell narrower and it does wrap, so the boundary above is a real one.
-    _, tight_rows := chord_items(state, 149)
+    _, tight_rows := chord_items(state, 161)
     testing.expect_value(t, tight_rows, 2)
 }
 
@@ -262,7 +264,7 @@ test_chord_bar_command_list :: proc(t: ^testing.T) {
             append(&runs, app.clay_rect(c.boundingBox))
         }
     }
-    testing.expect_value(t, len(runs), 2 * 13 + 1) // thirteen chords of two runs, plus one
+    testing.expect_value(t, len(runs), 2 * 14 + 1) // fourteen chords of two runs, plus one
 
     // "^y" on the margin, "mark" one cell past it, "^u" nine cells in (seven plus the gap),
     // "^c" at 20.
@@ -279,12 +281,14 @@ test_chord_bar_command_list :: proc(t: ^testing.T) {
 
     testing.expect_value(t, runs[18].x, AREA.x + PAD)
     testing.expect_value(t, runs[18].y, BAR_Y + 3 * ROW_H + (ROW_H - 16) / 2)
-    // The fifth row carries the two widest chords, so the readout gets a row of its own: even
-    // "[0 marked]" does not fit beside them at 28 cells.
+    // The fifth row carries the two widest chords, so ^k drops to the sixth — and a
+    // clipboard-empty "[0 marked]" is short enough to sit beside it.
     testing.expect_value(t, runs[24].x, AREA.x + PAD + 140)
     testing.expect_value(t, runs[24].y, BAR_Y + 4 * ROW_H + (ROW_H - 16) / 2)
     testing.expect_value(t, runs[26].x, AREA.x + PAD)
     testing.expect_value(t, runs[26].y, BAR_Y + 5 * ROW_H + (ROW_H - 16) / 2)
+    testing.expect_value(t, runs[28].x, AREA.x + PAD + 120)
+    testing.expect_value(t, runs[28].y, BAR_Y + 5 * ROW_H + (ROW_H - 16) / 2)
 }
 
 // The occlusion probe. clay_paint composites under-quads, images, then glyphs within one

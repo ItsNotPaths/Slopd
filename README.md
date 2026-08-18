@@ -12,7 +12,6 @@ curl -fsSL https://github.com/ItsNotPaths/Slopd/releases/latest/download/install
 
 ```sh
 ./download-deps.sh                 # vendors glfw, libvterm, tree-sitter, the font + icons
-odin build src -out:slopd -define:GLFW_SHARED=false
 ./release.sh --local               # or: stripped -o:speed build into build/
 ```
 
@@ -47,11 +46,12 @@ Non-modal / Alt-rooted: bare keys type, arrows navigate, chords live under Alt.
 | `Ctrl+Up/Down` | jump `jump_lines` lines · `Ctrl+Enter` fold/unfold the block |
 | `Alt+[` `Alt+]` | nudge the split · `Ctrl+=` `Ctrl+-` `Ctrl+0` font zoom |
 | `Ctrl+S/Z/Y/C/X/V` | save, undo, redo, clipboard — a save permissions refuse stages a `sudo` line in the CL |
+| `Ctrl+A` `Ctrl+L` | select the whole document · select the line, at every cursor (`Ctrl+E` is still end-of-line) |
 
 Filetree file ops are `Ctrl` chords (`^y` mark, `^u` unmark all, `^c` copy, `^x` cut, `^v`
-paste, `^d` delete, `^w` path, `^h` set the workspace to the browsed folder — `:cd` plus `:tu` in
-one keystroke); hold `Ctrl` for the cheat-sheet bar under EITHER face, or **right-click** for the
-same list as buttons.
+paste, `^d` delete, `^w` path, `^k` discard the selected file's unsaved edits, `^h` set the
+workspace to the browsed folder — `:cd` plus `:tu` in one keystroke); hold `Ctrl` for the
+cheat-sheet bar under EITHER face, or **right-click** for the same list as buttons.
 
 `Alt+P` puts a `WORKSPACE/` prompt in that pane's top bar, under either face. With nothing typed
 it lists the unsaved ring (red, starred); type and it lists fuzzy matches over every file under
@@ -89,7 +89,7 @@ gesture renders in the alert colour until you touch it.
 |---|---|
 | `:tN` | send this line's shell parts to session N (`:t2 make`) · alone, a goto |
 | `:j` / `:jump` | `:j 40`, `:j +5`, `:j file`, `:j file 40` |
-| `:f` / `:find` | literal search of the open buffer; smart case, `Up`/`Down` cycle the hits |
+| `:f` / `:find` | literal search of the open buffer; smart case, `Up`/`Down` cycle the hits, `Shift+Enter` takes all of them |
 | `:grep <re>` | project-wide search into the Grep pane, filled live as you type |
 | `:cd [dir]` | set the project root · `:tu` syncs unlocked terminals |
 | `:ls` `:cf` `:gs` `:bind` | filetree (also: refresh) · config · git tool · key bindings (`:binds` too) |
@@ -99,6 +99,8 @@ gesture renders in the alert colour until you touch it.
 | `:readme` `:license` | open the embedded docs |
 | `:zen` `:full` `:normal` | view arrangement |
 | `:w :wa :q :q! :wq :wqa` | write / quit, the only way out; guarded by the unsaved ring |
+| `:w <path>` | write a COPY there and stay on this file, as vim does; `:w! <path>` overwrites an existing one |
+| `:discard [file]` | throw a buffer's unsaved edits away and take the disk version back |
 | `:saved` | the tail of the staged sudo save: mark clean IF the disk already holds this buffer |
 
 **Saving a file you do not own.** `Ctrl+S` (or `:w`) on a file the filesystem refuses does not
@@ -184,6 +186,7 @@ file and this one applies again.
 | `jump_lines` | int | `Ctrl+Up/Down` step |
 | `whitespace`, `indent_guides`, `folding` | `on` \| `off` | editor reading aids |
 | `folder_cd` | `stage` \| `run` | filetree `Alt+Enter`: review the `:cd` in the CL, or run it |
+| `discard` | `stage` \| `run` | file pane `^k`: review the `:discard` in the CL, or throw the edits away at once |
 | `git_tool` | e.g. `lazygit` | what `Alt+G` / `:gs` hands the project root to |
 | `git_term` | int \| empty | terminal session to run it in; empty = spawn detached (for a GUI tool) |
 | `grep_pane` | `on` \| `off` | `:grep`: always open the results pane vs jump straight on a lone hit |

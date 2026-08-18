@@ -122,12 +122,18 @@ ring_dirty_count :: proc(e: ^Editor) -> int {
 
 // Lights up its '*' in the filetree.
 ring_contains :: proc(a: ^App, path: string) -> bool {
+    return ring_dirty_buffer(a, path) != nil
+}
+
+// The unsaved buffer holding `path`, or nil. An embedded doc is skipped: its path is a display
+// name, so no file pane can be pointing at it.
+ring_dirty_buffer :: proc(a: ^App, path: string) -> ^Buffer {
     for &b in a.editor.buffers {
-        if b.dirty && b.path == path {
-            return true
+        if b.dirty && !b.embedded && b.path == path {
+            return &b
         }
     }
-    return false
+    return nil
 }
 
 // --- buffer lifecycle ---
@@ -289,13 +295,25 @@ buffer_reload_keep_view :: proc(b: ^Buffer) -> bool {
     return true
 }
 
+// Throw the unsaved edits away and take the disk version back, so the file leaves the unsaved
+// ring. The staged sudo copy goes with them — it holds the bytes being discarded. False when
+// there is no file to come back from (a scratch buffer, an embedded doc).
+buffer_discard :: proc(b: ^Buffer) -> bool {
+    if !buffer_on_disk(b) {
+        return false
+    }
+    b.dirty = false
+    b.conflict = false // the disk is what we hold now, so there is nothing left to settle
+    buffer_drop_save_tmp(b)
+    return buffer_reload_keep_view(b)
+}
+
 // reload=true takes the disk version; false keeps the edits and adopts the current stamp, so
 // the prompt stays down until the file changes again. Either clears the conflict.
 buffer_conflict_resolve :: proc(b: ^Buffer, reload: bool) {
     b.conflict = false
     if reload {
-        b.dirty = false
-        buffer_reload_keep_view(b)
+        buffer_discard(b)
     } else {
         b.disk_mtime = file_mtime(b.path) or_else b.disk_mtime // cache "keep mine"
     }

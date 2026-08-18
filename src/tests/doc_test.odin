@@ -147,6 +147,49 @@ test_doc_drop_anchor :: proc(t: ^testing.T) {
     l, c = head(&d, 0);testing.expect_value(t, l, 2);testing.expect_value(t, c, 0)
 }
 
+// ^a: one selection over the whole document, its head at the very end so a following
+// Shift+motion grows from where the eye is.
+@(test)
+test_doc_select_all :: proc(t: ^testing.T) {
+    d := mkdoc("abc\ndefg\nhi")
+    defer app.doc_destroy(&d)
+    app.doc_reset_cursor(&d, app.Pos{1, 2})
+    app.doc_drop_anchor(&d) // a trail: select-all is one selection whatever it finds
+
+    app.doc_select_all(&d)
+    testing.expect_value(t, len(d.cursors), 1)
+    testing.expect_value(t, d.cursors[0].anchor, app.Pos{0, 0})
+    testing.expect_value(t, d.cursors[0].head, app.Pos{2, 2})
+
+    app.doc_insert_rune(&d, 'x') // the selection is what an edit replaces
+    testing.expect_value(t, app.doc_line_count(&d), 1)
+    testing.expect_value(t, dline(&d, 0), "x")
+}
+
+// ^l takes the line's TEXT, not its break — Home then Shift+End — at EVERY cursor, so a trail
+// laid with Alt+A survives it. Two cursors sharing a line fuse into one.
+@(test)
+test_doc_select_lines :: proc(t: ^testing.T) {
+    d := mkdoc("abc\ndefg\nhi")
+    defer app.doc_destroy(&d)
+    app.doc_reset_cursor(&d, app.Pos{0, 1})
+    app.doc_add_cursor(&d, app.Pos{1, 3})
+    app.doc_add_cursor(&d, app.Pos{1, 0}) // the second line twice
+
+    app.doc_select_lines(&d)
+    testing.expect_value(t, len(d.cursors), 2) // the pair on line 1 fused
+    testing.expect_value(t, d.cursors[0].anchor, app.Pos{0, 0})
+    testing.expect_value(t, d.cursors[0].head, app.Pos{0, 3})
+    testing.expect_value(t, d.cursors[1].anchor, app.Pos{1, 0})
+    testing.expect_value(t, d.cursors[1].head, app.Pos{1, 4})
+
+    app.doc_delete(&d) // both lines' text goes, the breaks stay
+    testing.expect_value(t, app.doc_line_count(&d), 3)
+    testing.expect_value(t, dline(&d, 0), "")
+    testing.expect_value(t, dline(&d, 1), "")
+    testing.expect_value(t, dline(&d, 2), "hi")
+}
+
 @(test)
 test_doc_select_delete :: proc(t: ^testing.T) {
     d := mkdoc("hello")

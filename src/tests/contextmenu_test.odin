@@ -1,6 +1,7 @@
 package tests
 
 import app ".."
+import "core:strings"
 import "core:testing"
 
 // Where a popup goes for a press, which rows the keyboard may land on, and what a press outside
@@ -100,6 +101,45 @@ test_ctxmenu_dismiss_consumes_the_press :: proc(t: ^testing.T) {
     a.mouse.click = true
     app.ctxmenu_dismiss_click(&a)
     testing.expect(t, app.ctxmenu_shown(&a))
+}
+
+// Discard is on a row only while that file has unsaved edits. A clean file has nothing to throw
+// away, so the verb is LEFT OUT rather than sitting greyed on every menu there ever is.
+@(test)
+test_ctxmenu_discard_only_for_unsaved :: proc(t: ^testing.T) {
+    a: app.App
+    a.tree.dir = "/tmp/ft"
+    append(&a.tree.entries, app.FileEntry{name = "f.txt", path = "/tmp/ft/f.txt"})
+    app.editor_init(&a.editor)
+    defer {
+        delete(a.tree.entries)
+        app.editor_destroy(&a.editor)
+    }
+
+    // The menu the right press on f.txt would build, and whether it carries the discard.
+    discard_row :: proc(a: ^app.App) -> (app.Menu_Item, bool) {
+        items := app.ctxmenu_file_items(a, {"/tmp/ft/f.txt", .Entry}, false, context.temp_allocator)
+        for it in items {
+            if it.action == .Discard {
+                return it, true
+            }
+        }
+        return {}, false
+    }
+
+    _, on_clean := discard_row(&a)
+    testing.expect(t, !on_clean, "a file with nothing unsaved must not carry a dead Discard")
+
+    b := app.editor_current(&a.editor)
+    b.path = strings.clone("/tmp/ft/f.txt")
+    b.dirty = true
+    it, on_dirty := discard_row(&a)
+    testing.expect(t, on_dirty, "an unsaved file's menu must offer the discard")
+    testing.expect(t, it.enabled)
+    testing.expect_value(t, it.hint, "^k") // the chord it stands for, never a verb of its own
+
+    // The '*' in the listing and the menu row are one question asked twice.
+    testing.expect(t, app.ring_contains(&a, "/tmp/ft/f.txt"))
 }
 
 // Cut to what the TARGET can have, and only then greyed for what it cannot do yet: a verb
