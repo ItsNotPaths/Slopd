@@ -55,7 +55,7 @@ term_copy :: proc(a: ^App, t: ^Terminal) {
 
 // The shell gets literal text, and a dead session gets nothing.
 term_paste :: proc(a: ^App, t: ^Terminal) {
-    if !t.alive {
+    if !terminal_alive(t) {
         return
     }
     terminal_paste(t, glfw.GetClipboardString(a.window))
