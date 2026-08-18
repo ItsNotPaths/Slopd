@@ -205,25 +205,19 @@ cl_parse :: proc(a: ^App, input: string) {
 @(private = "file")
 cl_split_chain :: proc(s: string, alloc := context.temp_allocator) -> []string {
     out := make([dynamic]string, 0, 4, alloc)
-    quote: u8 // 0, '\'' or '"'
     depth: int // unquoted ( ) / $( ) nesting
     tick: bool // inside `...`
     start, i := 0, 0
     for i < len(s) {
         c := s[i]
         switch {
-        case quote == '\'':
-            if c == '\'' {quote = 0}
-        case quote == '"':
-            if c == '\\' && i + 1 < len(s) {
-                i += 1
-            } else if c == '"' {
-                quote = 0
-            }
+        case c == '\'' || c == '"':
+            // quoted_span knows where a quote ends; an unclosed one swallows the rest.
+            _, n, ok := quoted_span(s[i:])
+            i += ok ? n : len(s) - i
+            continue
         case c == '\\':
             i += 1 // escapes anything, `&` included
-        case c == '\'' || c == '"':
-            quote = c
         case c == '`':
             tick = !tick
         case c == '(':
@@ -952,6 +946,38 @@ editor_selection_text :: proc(a: ^App, alloc := context.temp_allocator) -> strin
     return ""
 }
 
+// Where a quoted span ends, and nothing else -- the ONE reading of a quote in this file, so the
+// chain splitter and the argument parsers cannot drift apart about where one ends. `n` covers
+// both quotes and `inner` is the text between them, raw. ok=false when `s` does not open with a
+// quote or the quote never closes, which the shell lets swallow the rest of the line.
+@(private = "file")
+quoted_span :: proc(s: string) -> (inner: string, n: int, ok: bool) {
+    if len(s) == 0 || (s[0] != '\'' && s[0] != '"') {
+        return "", 0, false
+    }
+    for i := 1; i < len(s); i += 1 {
+        if s[0] == '"' && s[i] == '\\' && i + 1 < len(s) {
+            i += 1 // an escaped quote is content, not the partner
+            continue
+        }
+        if s[i] == s[0] {
+            return s[1:i], i + 1, true
+        }
+    }
+    return "", 0, false
+}
+
+// The same span read as an ARGUMENT: cl_quote_arg's escaping comes back off. Only double quotes
+// escape, because only they have to -- a single-quoted span has no partner to hide.
+@(private = "file")
+quoted_value :: proc(s: string) -> (value: string, n: int, ok: bool) {
+    inner, span, found := quoted_span(s)
+    if !found {
+        return "", 0, false
+    }
+    return s[0] == '"' ? arg_unescape(inner) : inner, span, true
+}
+
 first_field :: proc(s: string) -> string {
     i := 0
     for i < len(s) && s[i] != ' ' && s[i] != '\t' {
@@ -963,34 +989,75 @@ first_field :: proc(s: string) -> string {
 // first_field, except a leading quote runs to its partner so a path with spaces works
 // (`:j "my file" 40`). Returns the span to skip and the value inside. An unclosed quote falls
 // back to the plain field.
-@(private = "file")
 first_arg :: proc(s: string) -> (raw, value: string) {
-    if len(s) > 0 && (s[0] == '\'' || s[0] == '"') {
-        for i in 1 ..< len(s) {
-            if s[i] == s[0] {
-                return s[:i + 1], s[1:i]
-            }
-        }
+    if v, n, ok := quoted_value(s); ok {
+        return s[:n], v
     }
     f := first_field(s)
     return f, f
 }
 
-// The inverse, for a line being staged: a path with a space in it goes back quoted, so what is
-// staged reads back as ONE argument. The form `:j "my notes.md"` documents.
+// The inverse of quoted_value. A staged argument must be quoted for the CHAIN rather than for
+// looks, because cl_split_chain re-reads the line before any builtin sees it: a file named
+// `notes && rm -rf ~` would otherwise stage as two steps.
 cl_quote_arg :: proc(s: string, alloc := context.allocator) -> string {
-    if !strings.contains(s, " ") {
+    plain := len(s) > 0
+    for i in 0 ..< len(s) {
+        if !arg_plain_byte(s[i]) {
+            plain = false
+            break
+        }
+    }
+    if plain {
         return s // borrowed: nothing to escape
     }
-    return fmt.aprintf("\"%s\"", s, allocator = alloc)
+    b := strings.builder_make(alloc)
+    strings.write_byte(&b, '"')
+    for i in 0 ..< len(s) {
+        if s[i] == '"' || s[i] == '\\' {
+            strings.write_byte(&b, '\\')
+        }
+        strings.write_byte(&b, s[i])
+    }
+    strings.write_byte(&b, '"')
+    return strings.to_string(b)
+}
+
+// A whitelist, because `&&` is not the only thing that reparses a line -- the quote states, the
+// backslash and the subshell parens do too. Bytes over 0x7f are UTF-8 text.
+@(private = "file")
+arg_plain_byte :: proc(c: u8) -> bool {
+    switch c {
+    case 'a' ..= 'z', 'A' ..= 'Z', '0' ..= '9':
+        return true
+    case '/', '.', '-', '_', '~', '+', ',', '=', '@', ':', 0x80 ..= 0xff:
+        return true
+    }
+    return false
+}
+
+// Undo cl_quote_arg's escaping. Temp-allocated only when there is an escape to strip, so the
+// common path still borrows.
+@(private = "file")
+arg_unescape :: proc(s: string) -> string {
+    if !strings.contains(s, "\\") {
+        return s
+    }
+    b := strings.builder_make(context.temp_allocator)
+    for i := 0; i < len(s); i += 1 {
+        if s[i] == '\\' && i + 1 < len(s) {
+            i += 1
+        }
+        strings.write_byte(&b, s[i])
+    }
+    return strings.to_string(b)
 }
 
 // Strip one matched pair of quotes from an argument that is the whole rest of the line
 // (`:cd "my dir"`). Those builtins never needed them, but honouring the habit beats failing.
-@(private = "file")
 unquote_arg :: proc(s: string) -> string {
-    if len(s) >= 2 && (s[0] == '\'' || s[0] == '"') && s[len(s) - 1] == s[0] {
-        return s[1:len(s) - 1]
+    if v, n, ok := quoted_value(s); ok && n == len(s) {
+        return v
     }
     return s
 }

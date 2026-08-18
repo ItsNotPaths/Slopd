@@ -181,7 +181,7 @@ bind_shadowed :: proc(binds: []Bind, d: Bind) -> bool {
 config_open_binds :: proc(a: ^App, line := 0) {
     path := config_file()
     at := line > 0 ? line : binds_line(path, a.bind_errors)
-    cl_dispatch(a, fmt.tprintf(":j \"%s\" %d", path, at), true)
+    cl_dispatch(a, fmt.tprintf(":j %s %d", cl_quote_arg(path, context.temp_allocator), at), true)
 }
 
 @(private = "file")
