@@ -183,7 +183,6 @@ desktop_open :: proc(target: string) {
 
 // Expand over the run of URL-ish characters, trim trailing sentence punctuation, then accept
 // only if it carries a known scheme.
-@(private = "file")
 link_url_at :: proc(line: []rune, col: int) -> (string, bool) {
     n := len(line)
     c := clamp(col, 0, n)
@@ -301,7 +300,6 @@ is_path_rune :: proc(r: rune) -> bool {
 
 // Expands over [A-Za-z0-9_] both ways. Rejects a token that does not START like an identifier:
 // a bare number is no symbol to jump to.
-@(private = "file")
 link_ident_at :: proc(line: []rune, col: int) -> (string, bool) {
     n := len(line)
     c := col
@@ -340,18 +338,21 @@ is_ident_start :: proc(r: rune) -> bool {
 
 // The `[[` opener at or before the caret and the `]]` closer at or after, with no nested opener
 // between. Returns the inner text.
-@(private = "file")
 link_wikilink_at :: proc(line: []rune, col: int) -> (string, bool) {
     n := len(line)
     c := clamp(col, 0, n)
     open := -1
-    for i := min(c, n - 1); i >= 1; i -= 1 {
-        if line[i] == ']' && line[i - 1] == ']' {
-            break // a closer to our left: the caret is not inside an open link
-        }
-        if line[i] == '[' && line[i - 1] == '[' {
-            open = i - 1
-            break
+    if c + 1 < n && line[c] == '[' && line[c + 1] == '[' {
+        open = c // resting ON the opener: the scan below reads pairs behind the caret only
+    } else {
+        for i := min(c, n - 1); i >= 1; i -= 1 {
+            if i < c && line[i] == ']' && line[i - 1] == ']' {
+                break // a closer BEHIND us: the caret is not inside an open link. The link's
+            } // own closer is not behind it, so resting on `]]` still follows the link.
+            if line[i] == '[' && line[i - 1] == '[' {
+                open = i - 1
+                break
+            }
         }
     }
     if open < 0 {
