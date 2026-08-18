@@ -622,7 +622,7 @@ cl_tu :: proc(a: ^App) {
     if a.project_root == "" {
         return
     }
-    line := fmt.tprintf("cd \"%s\"\n", a.project_root)
+    line := cd_command(a.project_root, context.temp_allocator)
     for t in a.terminals {
         if t.alive && !t.locked {
             terminal_write(t, transmute([]u8)line)
@@ -812,6 +812,16 @@ sh_quote :: proc(s: string, alloc := context.allocator) -> string {
     }
     strings.write_byte(&b, '\'')
     return strings.to_string(b)
+}
+
+// The line `:tu` types into a terminal. Single-quoted, because a project root is a directory
+// NAME: a shell expands `$( )`, a backtick and a `$var` inside DOUBLE quotes, so a folder called
+// `$(id)` would run it. "" when there is no root.
+cd_command :: proc(root: string, alloc := context.allocator) -> string {
+    if root == "" {
+        return ""
+    }
+    return strings.concatenate({"cd ", sh_quote(root, context.temp_allocator), "\n"}, alloc)
 }
 
 // `rm -rf '<path>' ... && :ls` — once the rm exits 0 the chain re-reads the listing. "" when

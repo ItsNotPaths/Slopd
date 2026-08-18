@@ -572,18 +572,19 @@ config_dropdown_move :: proc(a: ^App, delta: int) {
 // line's shell path uses. The pointer reaches these too, hence the verb living beside the
 // choice.
 config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
-    // By absolute path, single-quoted, so these work where slopd is not on PATH.
-    self := exe_path(context.temp_allocator)
+    // By absolute path, quoted, so these work where slopd is not on PATH — and where the path
+    // to it carries a quote of its own.
+    self := sh_quote(exe_path(context.temp_allocator), context.temp_allocator)
     cmd: string
     switch opt {
     case .Health:
-        cmd = fmt.tprintf("'%s' --health %s", self, lang)
+        cmd = fmt.tprintf("%s --health %s", self, sh_quote(lang, context.temp_allocator))
     case .Install:
-        cmd = fmt.tprintf("'%s' --grammar install %s", self, lang)
+        cmd = fmt.tprintf("%s --grammar install %s", self, sh_quote(lang, context.temp_allocator))
     case .Update:
-        cmd = fmt.tprintf("'%s' --grammar update %s", self, lang)
+        cmd = fmt.tprintf("%s --grammar update %s", self, sh_quote(lang, context.temp_allocator))
     case .Uninstall:
-        cmd = fmt.tprintf("'%s' --grammar uninstall %s", self, lang)
+        cmd = fmt.tprintf("%s --grammar uninstall %s", self, sh_quote(lang, context.temp_allocator))
     }
     run_in_t1(a, cmd)
 }
@@ -591,19 +592,19 @@ config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
 // Run the same way a language's are. Installing moves the binary Slopd is running from, which
 // no editor should do behind its own back, so it happens in a terminal you are looking at.
 config_run_install :: proc(a: ^App, opt: Install_Option) {
-    self := exe_path(context.temp_allocator)
+    self := sh_quote(exe_path(context.temp_allocator), context.temp_allocator)
     cmd: string
     switch opt {
     case .Where:
-        cmd = fmt.tprintf("'%s' --where", self)
+        cmd = fmt.tprintf("%s --where", self)
     case .Install, .Reinstall:
-        cmd = fmt.tprintf("'%s' --install", self)
+        cmd = fmt.tprintf("%s --install", self)
     case .Uninstall:
-        cmd = fmt.tprintf("'%s' --uninstall", self)
+        cmd = fmt.tprintf("%s --uninstall", self)
     case .DesktopAdd:
-        cmd = fmt.tprintf("'%s' --desktop add", self)
+        cmd = fmt.tprintf("%s --desktop add", self)
     case .DesktopRemove:
-        cmd = fmt.tprintf("'%s' --desktop remove", self)
+        cmd = fmt.tprintf("%s --desktop remove", self)
     }
     run_in_t1(a, cmd)
 }
