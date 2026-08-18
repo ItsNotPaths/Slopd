@@ -19,28 +19,36 @@ import "wake"
 // The thread is an optimisation, not a requirement: with none started, grep_async searches on
 // the spot and applies the answer before returning.
 
-// What the answer is for. The preview only lists; the builtin may jump straight into a lone hit.
+// What the answer is for. The preview only lists; `:grep` may jump straight into a lone hit;
+// `:rep` lists and never jumps, since the pane IS what it is asking you to read.
 Grep_Want :: enum {
     Preview,
     Open,
+    List,
 }
 
 // Owned by the worker once handed over, and freed there. Allocated from the process heap
 // explicitly, so neither side frees the other thread's allocator.
 Grep_Job :: struct {
-    root:    string,
-    query:   string,
-    exclude: []string,
-    want:    Grep_Want,
-    seq:     u64,
+    root:      string,
+    query:     string,
+    exclude:   []string,
+    want:      Grep_Want,
+    seq:       u64,
+    // `:rep`, carried through so the answer can restate it: the pane is rebuilt from scratch on
+    // arrival, and a search is literal exactly when it is a replace.
+    replace:   string,
+    replacing: bool,
 }
 
 // The finished search, heap-allocated the same way and freed by whoever takes it.
 Grep_Answer :: struct {
-    query: string,
-    hits:  []GrepHit, // context blocks already filled
-    want:  Grep_Want,
-    seq:   u64,
+    query:     string,
+    hits:      []GrepHit, // context blocks already filled
+    want:      Grep_Want,
+    seq:       u64,
+    replace:   string,
+    replacing: bool,
 }
 
 Grep_Worker :: struct {
@@ -89,20 +97,29 @@ grep_worker_stop :: proc(w: ^Grep_Worker) {
 
 // Ask for a search. The ticket is bumped first, which is also how anything already out is
 // disowned — a cancelled preview needs no more than this.
-grep_async :: proc(a: ^App, query: string, want: Grep_Want) {
+grep_async :: proc(a: ^App, query: string, want: Grep_Want, replace := "", replacing := false) {
     a.grep_seq += 1
     w := &a.grep_worker
     if w.thread == nil {
-        ans := Grep_Answer{query = query, hits = grep_project(a, query), want = want, seq = a.grep_seq}
+        ans := Grep_Answer {
+            query     = query,
+            hits      = grep_project(a, query, false, replacing),
+            want      = want,
+            seq       = a.grep_seq,
+            replace   = replace,
+            replacing = replacing,
+        }
         grep_apply(a, ans)
         return
     }
     alloc := grep_job_allocator()
     job := Grep_Job {
-        root  = strings.clone(a.project_root, alloc),
-        query = strings.clone(query, alloc),
-        want  = want,
-        seq   = a.grep_seq,
+        root      = strings.clone(a.project_root, alloc),
+        query     = strings.clone(query, alloc),
+        want      = want,
+        seq       = a.grep_seq,
+        replace   = strings.clone(replace, alloc),
+        replacing = replacing,
     }
     pats := exclude_dirs(a)
     job.exclude = make([]string, len(pats), alloc)
@@ -142,11 +159,14 @@ grep_apply :: proc(a: ^App, ans: Grep_Answer) {
     a.grep_seen = ans.seq
     switch ans.want {
     case .Preview:
-        if a.cl_preview.kind == .Grep { // still up: an Esc took the pane back otherwise
-            grep_set(&a.grep, ans.query, ans.hits)
+        if preview_owns_grep(a) { // still up: an Esc took the pane back otherwise
+            grep_set(&a.grep, ans.query, ans.hits, ans.replace, ans.replacing)
         }
+    case .List:
+        grep_set(&a.grep, ans.query, ans.hits, ans.replace, ans.replacing)
+        set_aux(a, .Grep)
     case .Open:
-        grep_set(&a.grep, ans.query, ans.hits)
+        grep_set(&a.grep, ans.query, ans.hits, ans.replace, ans.replacing)
         if len(ans.hits) == 1 && !a.grep_pane_always {
             grep_open_hit(a, ans.hits[0]) // sole match, shortcut enabled
         } else {
@@ -180,12 +200,14 @@ grep_worker_proc :: proc(th: ^thread.Thread) {
         sync.mutex_unlock(&w.lock)
 
         alloc := grep_job_allocator()
-        hits := grep_run(job.root, job.query, job.exclude)
+        hits := grep_run(job.root, job.query, job.exclude, false, job.replacing)
         ans := Grep_Answer {
-            query = strings.clone(job.query, alloc),
-            hits  = grep_hits_clone(hits, alloc), // the disk reads, off the main thread too
-            want  = job.want,
-            seq   = job.seq,
+            query     = strings.clone(job.query, alloc),
+            hits      = grep_hits_clone(hits, alloc), // the disk reads, off the main thread too
+            want      = job.want,
+            seq       = job.seq,
+            replace   = strings.clone(job.replace, alloc),
+            replacing = job.replacing,
         }
 
         sync.mutex_lock(&w.lock)
@@ -207,6 +229,7 @@ grep_job_destroy :: proc(j: ^Grep_Job) {
     alloc := grep_job_allocator()
     delete(j.root, alloc)
     delete(j.query, alloc)
+    delete(j.replace, alloc)
     for p in j.exclude {
         delete(p, alloc)
     }
@@ -218,6 +241,7 @@ grep_job_destroy :: proc(j: ^Grep_Job) {
 grep_answer_destroy :: proc(ans: ^Grep_Answer) {
     alloc := grep_job_allocator()
     delete(ans.query, alloc)
+    delete(ans.replace, alloc)
     grep_hits_destroy(ans.hits, alloc)
     ans^ = {}
 }

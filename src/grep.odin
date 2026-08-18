@@ -33,6 +33,12 @@ GREP_CONTEXT :: 2
 GrepPane :: struct {
     query:    string,           // the symbol or pattern searched (owned)
     hits:     [dynamic]GrepHit, // in scan order
+
+    // `:rep`: the text taking the query's place, already written into the rows this draws. The
+    // flag and not an empty string, because deleting every hit is `:rep "x" ""`.
+    replace:   string, // owned
+    replacing: bool,
+
     selected: int,
     scroll:   int,              // first visible DISPLAY row: the viewport top
     hover:    int,              // the block under the pointer, or -1; transient
@@ -138,9 +144,11 @@ grep_parse :: proc(raw, query: string) -> (GrepHit, bool) {
 }
 
 // Deep-clones `hits`, since callers pass temp-allocated scans, and frees the previous set.
-grep_set :: proc(g: ^GrepPane, query: string, hits: []GrepHit) {
+grep_set :: proc(g: ^GrepPane, query: string, hits: []GrepHit, replace := "", replacing := false) {
     grep_clear(g)
     g.query = strings.clone(query)
+    g.replace = strings.clone(replace)
+    g.replacing = replacing
     owned := grep_hits_clone(hits)
     append(&g.hits, ..owned)
     delete(owned)
@@ -210,6 +218,9 @@ grep_clone_lines :: proc(lines: []string, alloc: runtime.Allocator) -> []string 
 grep_clear :: proc(g: ^GrepPane) {
     delete(g.query)
     g.query = ""
+    delete(g.replace)
+    g.replace = ""
+    g.replacing = false
     for h in g.hits {
         grep_hit_destroy(h)
     }
@@ -272,7 +283,7 @@ grep_rows :: proc(g: ^GrepPane, root: string, alloc := context.allocator) -> []G
         loc := fmt.aprintf("%s:%d", grep_relpath(h.path, root), h.line, allocator = alloc)
         append(&rows, GrepRow{hit = hi, text = loc, header = true})
         if len(h.ctx) == 0 {
-            append(&rows, GrepRow{hit = hi, text = h.text, match = true})
+            append(&rows, GrepRow{hit = hi, text = grep_row_text(g, h.text, alloc), match = true})
         } else {
             for c, k in h.ctx {
                 ln := h.ctx_first + k
@@ -281,7 +292,7 @@ grep_rows :: proc(g: ^GrepPane, root: string, alloc := context.allocator) -> []G
                     GrepRow {
                         hit    = hi,
                         gutter = fmt.aprintf("%d", ln, allocator = alloc),
-                        text   = c,
+                        text   = grep_row_text(g, c, alloc),
                         match  = ln == h.line,
                     },
                 )
@@ -290,6 +301,42 @@ grep_rows :: proc(g: ^GrepPane, root: string, alloc := context.allocator) -> []G
         append(&rows, GrepRow{hit = -1}) // blank spacer
     }
     return rows[:]
+}
+
+// Under `:rep`, what the line WILL say. Every row and not only the matched one: a context line
+// can hold the query too, and the same line must not read two ways in two blocks. Borrows the
+// pane's storage when nothing changes.
+@(private = "file")
+grep_row_text :: proc(g: ^GrepPane, src: string, alloc: runtime.Allocator) -> string {
+    if !g.replacing || g.query == "" {
+        return src
+    }
+    out, _ := strings.replace_all(src, g.query, g.replace, alloc)
+    return out
+}
+
+// The pane's title. A `:rep` names both halves, since the rows below already show the new one.
+grep_head :: proc(g: ^GrepPane, alloc := context.temp_allocator) -> string {
+    if g.query == "" {
+        return "grep"
+    }
+    if g.replacing {
+        return fmt.aprintf("rep: %s → %s   (%d)", g.query, g.replace, len(g.hits), allocator = alloc)
+    }
+    return fmt.aprintf("grep: %s   (%d)", g.query, len(g.hits), allocator = alloc)
+}
+
+// How many distinct files the hits fall in. They arrive grouped by file, so one pass counting
+// the changes of path is exact.
+grep_file_count :: proc(g: ^GrepPane) -> (n: int) {
+    prev := ""
+    for h, i in g.hits {
+        if i == 0 || h.path != prev {
+            n += 1
+        }
+        prev = h.path
+    }
+    return
 }
 
 // Its title. The policy frames this as the editor frames its caret line, so a block scrolls in

@@ -28,6 +28,7 @@ Preview_Kind :: enum {
     Jump, // `:j <line>`   caret on the target line, the view carried behind it
     Find, // `:f <text>`   every hit marked, Up/Down to cycle
     Grep, // `:grep <re>`  results in the Grep pane, the pane you were on kept aside
+    Replace, // `:rep a b`  the same, with the replacement already written into the lines
 }
 
 CLPreview :: struct {
@@ -89,7 +90,7 @@ cl_preview_sync :: proc(a: ^App, now: f64) {
 @(private = "file")
 cl_preview_delay :: proc(a: ^App) -> f64 {
     name, _, ok := cl_preview_call(doc_string(&a.cl.doc, context.temp_allocator))
-    return ok && name == "grep" ? CL_GREP_DELAY : 0
+    return ok && (name == "grep" || name == "rep") ? CL_GREP_DELAY : 0
 }
 
 // The restore runs first every time: the new preview must photograph a pristine view.
@@ -107,6 +108,8 @@ cl_preview_build :: proc(a: ^App, b: ^Buffer) {
         preview_find(a, b, args)
     case "grep":
         preview_grep(a, args)
+    case "rep":
+        preview_replace(a, args)
     }
 }
 
@@ -156,10 +159,6 @@ preview_find :: proc(a: ^App, b: ^Buffer, args: string) {
     }
 }
 
-// The one preview that borrows the aux side rather than the page, so `nil` stands in for the
-// picture of a page. The old results are MOVED aside, not copied: a GrepPane owns everything it
-// holds, so one struct swap saves it and the swap back is the restore.
-//
 // A lone hit LISTS here where the builtin would jump straight in: a preview may not open
 // anything.
 @(private = "file")
@@ -168,12 +167,37 @@ preview_grep :: proc(a: ^App, args: string) {
     if len(query) < CL_GREP_MIN {
         return
     }
-    preview_begin(a, nil, .Grep)
+    preview_search(a, .Grep, query, "", false)
+}
+
+// The rows arrive with the replacement already in them (grep_rows), so this preview shows the
+// file as `Shift+Enter` would leave it, not merely where it would act.
+@(private = "file")
+preview_replace :: proc(a: ^App, args: string) {
+    old, new, ok := rep_parse(args)
+    if !ok || len(old) < CL_GREP_MIN {
+        return
+    }
+    preview_search(a, .Replace, old, new, true)
+}
+
+// The two previews that borrow the aux side rather than the page, so `nil` stands in for the
+// picture of a page. The old results are MOVED aside, not copied: a GrepPane owns everything it
+// holds, so one struct swap saves it and the swap back is the restore.
+@(private = "file")
+preview_search :: proc(a: ^App, kind: Preview_Kind, query, replace: string, replacing: bool) {
+    preview_begin(a, nil, kind)
     set_aux(a, .Grep)
     a.cl_preview.saved.grep = a.grep
     a.grep = {}
-    grep_set(&a.grep, query, nil) // the query now; the worker fills the hits in
-    grep_async(a, query, .Preview)
+    grep_set(&a.grep, query, nil, replace, replacing) // the query now; the worker fills the hits in
+    grep_async(a, query, .Preview, replace, replacing)
+}
+
+// The Grep pane is stashed in the saved picture and must go back. Asked by the restore and by
+// the worker, which may only write into a pane the preview still holds.
+preview_owns_grep :: proc(a: ^App) -> bool {
+    return a.cl_preview.kind == .Grep || a.cl_preview.kind == .Replace
 }
 
 // Step through a find preview's hits, wrapping. False when there is nothing to cycle, and the
@@ -260,7 +284,7 @@ cl_preview_restore :: proc(a: ^App) {
         b.scroll_detached = s.scroll_detached
         b.hscroll_detached = s.hscroll_detached
     }
-    if a.cl_preview.kind == .Grep {
+    if preview_owns_grep(a) {
         a.grep, s.grep = s.grep, a.grep // yours back; the preview's go to be freed
     }
     a.aux_mode = s.aux

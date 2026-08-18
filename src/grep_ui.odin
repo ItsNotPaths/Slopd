@@ -1,6 +1,5 @@
 package main
 
-import "core:fmt"
 import clay "../bindings/clay"
 
 // The grep results pane's UI half — the first pane whose rows are not one-per-item. It follows
@@ -97,8 +96,7 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
                 },
             },
         ) {
-            head := g.query == "" ? "grep" : fmt.tprintf("grep: %s   (%d)", g.query, len(g.hits))
-            clay.Text(head, clay_text_config(focus_fg(a, .Aux), lh))
+            clay.Text(grep_head(g), clay_text_config(focus_fg(a, .Aux), lh))
         }
 
         if clay.UI(clay.ID("gp_body"))(

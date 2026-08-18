@@ -81,6 +81,16 @@ cl_submit :: proc(a: ^App) {
 // — the search already did the work, and re-running it would collapse the set back to one.
 // False when there is no find preview, and plain Enter stands.
 cl_submit_all :: proc(a: ^App) -> bool {
+    // A `:rep` line commits rather than selecting: its hits are in files this page does not
+    // hold, so there is no cursor set to land them on. Read off the TYPED LINE and not the
+    // preview's kind, so the gesture still works with `cl_preview` turned off.
+    if name, args, ok := cl_builtin_call(doc_string(&a.cl.doc, context.temp_allocator)); ok && name == "rep" {
+        if _, _, valid := rep_parse(args); valid {
+            rep_apply(a, args) // before the close: it reads the typed line
+            cl_close_kept(a)
+            return true
+        }
+    }
     if !cl_preview_select_all(a) {
         return false
     }
@@ -347,6 +357,8 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         cl_find(a, args)
     case "grep":
         cl_grep(a, args)
+    case "rep":
+        cl_rep(a, args)
     case "cd":
         cl_cd(a, args)
     case "reload":
@@ -1110,6 +1122,8 @@ cl_ghost_hint :: proc(a: ^App, line: string) -> string {
         return cl_find_hint(a)
     case "grep":
         return cl_grep_hint(a)
+    case "rep":
+        return cl_rep_hint(a, args)
     }
     return ""
 }

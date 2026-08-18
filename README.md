@@ -91,6 +91,7 @@ gesture renders in the alert colour until you touch it.
 | `:j` / `:jump` | `:j 40`, `:j +5`, `:j file`, `:j file 40` |
 | `:f` / `:find` | literal search of the open buffer; smart case, `Up`/`Down` cycle the hits, `Shift+Enter` takes all of them |
 | `:grep <re>` | project-wide search into the Grep pane, filled live as you type |
+| `:rep <old> <new>` | project-wide LITERAL replace; the pane previews the result, `Shift+Enter` applies it into unsaved buffers (`:wa` writes, `:discard` backs one out) |
 | `:cd [dir]` | set the project root · `:tu` syncs unlocked terminals |
 | `:ls` `:cf` `:gs` `:bind` | filetree (also: refresh) · config · git tool · key bindings (`:binds` too) |
 | `:rebind [+\|-\|N] <action> [chord]` | edit a binding — `:rebind + nav.down alt+j` |
@@ -211,7 +212,7 @@ file and this one applies again.
 | `git_tool` | e.g. `lazygit` | what `Alt+G` / `:gs` hands the project root to |
 | `git_term` | int \| empty | terminal session to run it in; empty = spawn detached (for a GUI tool) |
 | `grep_pane` | `on` \| `off` | `:grep`: always open the results pane vs jump straight on a lone hit |
-| `cl_preview` | `on` \| `off` | `:j` `:f` `:grep` show what they would do while you type; `Esc` puts it back |
+| `cl_preview` | `on` \| `off` | `:j` `:f` `:grep` `:rep` show what they would do while you type; `Esc` puts it back |
 | `disk_conflict` | `prompt` \| `keep` | file changed on disk under unsaved edits |
 | `conflict_stage` | `on` \| `off` | a conflict stages `:reload ` in the CL; the modeline marks it `!` either way |
 | `mouse`, `hover` | `on` \| `off` | pointer input; hover tints the row under it |
