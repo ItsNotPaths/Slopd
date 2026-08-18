@@ -773,8 +773,7 @@ doc_changes_reset :: proc(d: ^Doc) {
 @(private = "file")
 doc_record_change :: proc(d: ^Doc, c: Doc_Change) {
     if len(d.changes) >= DOC_CHANGE_MAX {
-        doc_changes_drop(d)
-        return
+        doc_changes_drop(d) // everyone behind rebuilds; the log restarts AT this change
     }
     append(&d.changes, c)
     d.changes_next += 1
