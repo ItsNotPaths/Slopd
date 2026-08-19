@@ -117,7 +117,7 @@ test_wsfind_scan :: proc(t: ^testing.T) {
 }
 
 // The two lists the prompt shows, and the one thing that switches between them: an empty line
-// lists the unsaved ring, and the first character replaces it with the filter.
+// lists the open ring, and the first character replaces it with the filter.
 @(test)
 test_wsfind_rows :: proc(t: ^testing.T) {
     a: app.App
@@ -131,9 +131,9 @@ test_wsfind_rows :: proc(t: ^testing.T) {
         b.dirty = dirty
         append(&a.editor.buffers, b)
     }
+    ring(&a, "/w/src/clean.odin", false) // saved, but open: listed under the unsaved ones
     ring(&a, "/w/src/theme.odin", true)
-    ring(&a, "/w/src/clean.odin", false) // saved: not in the ring
-    ring(&a, "", true) // a dirty scratch buffer has nowhere to jump to
+    ring(&a, "", true) // a scratch buffer has nowhere to jump to, saved or not
 
     ws := &a.wsfind
     for p in ([?]string{"/w/src/theme.odin", "/w/src/window_ui.odin", "/w/README.md"}) {
@@ -141,10 +141,13 @@ test_wsfind_rows :: proc(t: ^testing.T) {
     }
     ws.root = strings.clone("/w")
 
+    // Unsaved first whatever order the ring holds them in, then the saved ones behind.
     app.wsfind_build(&a)
-    testing.expect_value(t, len(ws.rows), 1)
+    testing.expect_value(t, len(ws.rows), 2)
     testing.expect_value(t, ws.rows[0].path, "/w/src/theme.odin")
-    testing.expect(t, ws.rows[0].dirty, "a ring row is the unsaved star")
+    testing.expect(t, ws.rows[0].dirty, "an unsaved row is the star")
+    testing.expect_value(t, ws.rows[1].path, "/w/src/clean.odin")
+    testing.expect(t, !ws.rows[1].dirty)
 
     // Typed: the ring is gone and the rows are matches, best first — and the one that is also
     // unsaved keeps its star, which is the whole reason the flag is per ROW and not per list.
@@ -168,7 +171,7 @@ test_wsfind_rows :: proc(t: ^testing.T) {
     // …and emptying the line brings the ring back: the prompt has no third state.
     app.doc_set_text(&ws.query, "")
     app.wsfind_build(&a)
-    testing.expect_value(t, len(ws.rows), 1)
+    testing.expect_value(t, len(ws.rows), 2)
 }
 
 // The keys, through action_run — the one seam a chord, a click and a menu item all reach.

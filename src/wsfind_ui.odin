@@ -10,7 +10,7 @@ import clay "../bindings/clay"
 //     ws_edit    the typed line: the shared one-line Field, the path bar's twin
 //   ws_body      the clip group the rows scroll inside
 //     ws_row/i     one per visible row, keyed by ROW index so a hit names a row
-//       ws_pre/i     the two-cell prefix column: '*' for the unsaved ring, else '-'
+//       ws_pre/i     the two-cell prefix column: '*' for an unsaved buffer, else '-'
 //     ws_none    instead of the rows when there are none, saying WHICH nothing this is
 
 // Into the box the caller has already opened. Reads App, writes only Clay.
@@ -46,7 +46,7 @@ wsfind_declare_body :: proc(a: ^App, r: Rect, row_h, lh: i32, cw: f32, now: f64)
         },
     ) {
         if len(ws.rows) == 0 {
-            empty := wsfind_typed(ws) ? "no match" : "no unsaved buffers"
+            empty := wsfind_typed(ws) ? "no match" : "no open files"
             if clay.UI(clay.ID("ws_none"))(
                 {
                     layout = {
