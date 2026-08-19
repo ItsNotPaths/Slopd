@@ -338,10 +338,34 @@ doc_select_all :: proc(d: ^Doc) {
     doc_select_span(d, Pos{0, 0}, Pos{last, doc_line_len(d, last)})
 }
 
-@(private = "file")
 line_span :: proc(d: ^Doc, line: int) -> (anchor, head: Pos) {
     l := clamp(line, 0, doc_line_count(d) - 1)
     return Pos{l, 0}, Pos{l, doc_line_len(d, l)}
+}
+
+// The lines a LINE-WISE edit acts on: every line any cursor touches, ascending and without
+// repeats. doc_select_lines asks the smaller question (the line each caret sits on); this one
+// reads the selection, and a selection ending at column 0 does not reach that line — the caret
+// sits there, it covers no text on it. That is what stops a full-line sweep from taking the line
+// below it as well.
+doc_cursor_lines :: proc(d: ^Doc, alloc := context.temp_allocator) -> []int {
+    out := make([dynamic]int, 0, 8, alloc)
+    for c in d.cursors {
+        lo, hi := cursor_range(c)
+        last := hi.line > lo.line && hi.col == 0 ? hi.line - 1 : hi.line
+        for line in lo.line ..= last {
+            append(&out, line)
+        }
+    }
+    slice.sort(out[:])
+    w := 0
+    for line in out {
+        if w == 0 || out[w - 1] != line {
+            out[w] = line
+            w += 1
+        }
+    }
+    return out[:w]
 }
 
 // Word (2) or line (3+); grade 1 is doc_set_head. `press` and `at` carry glyph positions, not
@@ -390,6 +414,39 @@ doc_insert_text :: proc(d: ^Doc, text: string) -> bool {
 
 doc_newline :: proc(d: ^Doc) -> bool {
     return doc_insert_text(d, "\n")
+}
+
+// One edit per line, with the cursors put back on those same lines. `deltas[i]` is what
+// `lines[i]` gains, or loses when negative, and a line with no edit carries 0.
+//
+// doc_apply rebuilds the cursors collapsed onto each edit, which is right for typing and wrong
+// here: Tab is pressed twice to indent twice. A line-wise edit never moves a line, so a cursor
+// comes back where it was with its column shifted by what that line gained or lost.
+doc_line_commit :: proc(d: ^Doc, edits: []Edit, lines, deltas: []int) -> bool {
+    if len(edits) == 0 {
+        return false
+    }
+    kept := make([dynamic]Cursor, 0, len(d.cursors), context.temp_allocator)
+    for c in d.cursors {
+        k := c
+        k.anchor = line_shift(d, c.anchor, lines, deltas)
+        k.head = line_shift(d, c.head, lines, deltas)
+        append(&kept, k)
+    }
+    return doc_commit(d, edits, kept[:])
+}
+
+// The line's length AFTER the edit is its length now plus the delta, so the clamp is right
+// without waiting for the edit to land. A caret inside whitespace a dedent removed lands at 0.
+@(private = "file")
+line_shift :: proc(d: ^Doc, p: Pos, lines, deltas: []int) -> Pos {
+    for line, i in lines {
+        if line == p.line {
+            n := doc_line_len(d, line) + deltas[i]
+            return Pos{line, clamp(p.col + deltas[i], 0, max(n, 0))}
+        }
+    }
+    return p
 }
 
 // --- clipboard (GLFW I/O lives in input.odin) ---
@@ -566,6 +623,8 @@ Motion :: enum {
     Word_Right,
     Home,
     End,
+    Doc_Start,
+    Doc_End,
     Up,
     Down,
 }
@@ -609,10 +668,20 @@ move_cursor :: proc(d: ^Doc, c: ^Cursor, motion: Motion, select: bool, count := 
         cursor_place(c, Pos{c.head.line, word_right_index(doc_line(d, c.head.line), c.head.col)}, select)
         c.goal = doc_cell_col(d, c.head)
     case .Home:
-        cursor_place(c, Pos{c.head.line, 0}, select)
-        c.goal = 0
+        // The indentation first, column 0 on the second press: a line begins in two places and
+        // this is the only key that reaches either.
+        lead := line_indent_cols(doc_line(d, c.head.line))
+        cursor_place(c, Pos{c.head.line, c.head.col == lead ? 0 : lead}, select)
+        c.goal = doc_cell_col(d, c.head)
     case .End:
         cursor_place(c, Pos{c.head.line, doc_line_len(d, c.head.line)}, select)
+        c.goal = doc_cell_col(d, c.head)
+    case .Doc_Start:
+        cursor_place(c, Pos{0, 0}, select)
+        c.goal = 0
+    case .Doc_End:
+        last := doc_line_count(d) - 1
+        cursor_place(c, Pos{last, doc_line_len(d, last)}, select)
         c.goal = doc_cell_col(d, c.head)
     case .Up:
         if c.head.line > 0 {

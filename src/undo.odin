@@ -50,7 +50,12 @@ undo_destroy :: proc(d: ^Doc) {
 
 // A single-character insert extends the most recent step while that step's last inserted
 // character was not a break char and the caret is where the step left off.
-doc_commit :: proc(d: ^Doc, edits: []Edit) -> bool {
+//
+// doc_apply leaves one collapsed cursor per edit, which is right for typing and wrong for an
+// edit spanning whole lines — the selection has to survive Tab so a second press indents again.
+// `after_set` is the caller saying where its edit left the cursors; the step records those, so
+// redo lands on them too.
+doc_commit :: proc(d: ^Doc, edits: []Edit, after_set: []Cursor = nil) -> bool {
     before := clone_cursors(d.cursors[:])
     before_primary := d.primary
     batch: Batch
@@ -59,6 +64,9 @@ doc_commit :: proc(d: ^Doc, edits: []Edit) -> bool {
         delete(before)
         batch_destroy(&batch)
         return false
+    }
+    if len(after_set) > 0 {
+        set_cursors(d, after_set, before_primary)
     }
     undo_clear_redo(d)
     after := clone_cursors(d.cursors[:])

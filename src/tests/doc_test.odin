@@ -441,3 +441,52 @@ test_doc_vertical_goal_is_a_cell :: proc(t: ^testing.T) {
     testing.expect_value(t, l, 0)
     testing.expect_value(t, c, 10) // clamped to the line's byte length
 }
+
+// Home is two places, not one: the indentation, then column 0, and back. A line that is all
+// whitespace has only the one, so it lands at its end and then at its start.
+@(test)
+test_doc_home_toggles_at_the_indentation :: proc(t: ^testing.T) {
+    d := mkdoc("    hello")
+    defer app.doc_destroy(&d)
+
+    app.doc_move(&d, .End)
+    app.doc_move(&d, .Home)
+    _, c := head(&d);testing.expect_value(t, c, 4) // the text, not the margin
+    app.doc_move(&d, .Home)
+    _, c = head(&d);testing.expect_value(t, c, 0)
+    app.doc_move(&d, .Home)
+    _, c = head(&d);testing.expect_value(t, c, 4) // and back, so both stay reachable
+
+    // Selecting the indentation is Shift+Home from the text, which the toggle must not break.
+    app.doc_move(&d, .Home) // to 0
+    app.doc_move(&d, .End)
+    app.doc_move(&d, .Home, true)
+    testing.expect(t, app.cursor_has_selection(d.cursors[0]))
+    _, c = head(&d);testing.expect_value(t, c, 4)
+
+    bare := mkdoc("   ")
+    defer app.doc_destroy(&bare)
+    app.doc_move(&bare, .Home)
+    _, c = head(&bare);testing.expect_value(t, c, 3)
+    app.doc_move(&bare, .Home)
+    _, c = head(&bare);testing.expect_value(t, c, 0)
+}
+
+// The ends of the document, which no motion reached before: the top, and the last line's end.
+@(test)
+test_doc_start_and_end_motions :: proc(t: ^testing.T) {
+    d := mkdoc("one\ntwo\nthree")
+    defer app.doc_destroy(&d)
+
+    app.doc_reset_cursor(&d, app.Pos{1, 1})
+    app.doc_move(&d, .Doc_End)
+    l, c := head(&d);testing.expect_value(t, l, 2);testing.expect_value(t, c, 5)
+
+    app.doc_move(&d, .Doc_Start)
+    l, c = head(&d);testing.expect_value(t, l, 0);testing.expect_value(t, c, 0)
+
+    // Extending reaches the whole document, which is what makes Shift+Ctrl+End a sweep.
+    app.doc_move(&d, .Doc_End, true)
+    testing.expect_value(t, d.cursors[0].anchor, app.Pos{0, 0})
+    testing.expect_value(t, d.cursors[0].head, app.Pos{2, 5})
+}

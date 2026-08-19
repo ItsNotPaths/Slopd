@@ -43,7 +43,11 @@ Non-modal / Alt-rooted: bare keys type, arrows navigate, chords live under Alt.
 | `Ctrl+C` at a terminal | copies its selection; with nothing selected it is the job's interrupt |
 | `Alt+G` | hand the project root to the configured git tool |
 | `Alt+A` + arrow | drop a multi-cursor trail (`Alt+M` = next motion moves all, `Esc` collapses) |
-| `Ctrl+Up/Down` | jump `jump_lines` lines · `Ctrl+Enter` fold/unfold the block |
+| `Ctrl+Up/Down`, `PageUp/Down` | jump `jump_lines` lines · `Ctrl+Enter` fold/unfold the block |
+| `Ctrl+Home` `Ctrl+End` | the top and the end of the document |
+| `Home` | the indentation, then column 0 — press again to go back |
+| `Tab` `Shift+Tab` | indent / unindent. A selection crossing lines moves those WHOLE lines and survives, so Tab twice is two levels |
+| `Ctrl+/` | comment or uncomment the lines you are on, by the file's extension. A block with any bare line goes commented first |
 | `Alt+[` `Alt+]` | nudge the split · `Ctrl+=` `Ctrl+-` `Ctrl+0` font zoom |
 | `Ctrl+S/Z/Y/C/X/V` | save, undo, redo, clipboard — a save permissions refuse stages a `sudo` line in the CL |
 | `Ctrl+A` `Ctrl+L` | select the whole document · select the line, at every cursor (`Ctrl+E` is still end-of-line) |
@@ -209,7 +213,7 @@ file and this one applies again.
 | `line_numbers` | `global` \| `relative` | gutter |
 | `scroll_mode` | `follow` \| `middle` | every line view: move only when the target would leave, or pin it to the middle row |
 | `font_size` | int | logical points; `Ctrl +/-` writes it back (debounced) |
-| `jump_lines` | int | `Ctrl+Up/Down` step |
+| `jump_lines` | int | `Ctrl+Up/Down` and `PageUp/Down` step |
 | `whitespace`, `indent_guides`, `folding` | `on` \| `off` | editor reading aids |
 | `folder_cd` | `stage` \| `run` | filetree `Alt+Enter`: review the `:cd` in the CL, or run it |
 | `discard` | `stage` \| `run` | file pane `^k`: review the `:discard` in the CL, or throw the edits away at once |

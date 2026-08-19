@@ -91,6 +91,13 @@ buffer_autopair :: proc(b: ^Buffer, r: rune) -> bool {
 // or with no close ahead, indents instead. Mixed outcomes commit together.
 buffer_tab :: proc(b: ^Buffer, indent: Indent) {
     d := &b.doc
+    // A selection crossing lines is the BLOCK gesture, not a character to type over.
+    for c in d.cursors {
+        if lo, hi := cursor_range(c); lo.line != hi.line {
+            _ = buffer_indent_block(b, indent, false)
+            return
+        }
+    }
     edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
     for c in edit_cursors(d) {
         at := doc_off(d, c.head)
@@ -102,6 +109,47 @@ buffer_tab :: proc(b: ^Buffer, indent: Indent) {
         }
     }
     b.dirty |= doc_commit(d, edits[:])
+}
+
+// Tab and Shift+Tab over whole lines; `out` takes a level off instead of adding one. A blank line
+// is left alone, since indenting it would only leave trailing whitespace behind.
+buffer_indent_block :: proc(b: ^Buffer, indent: Indent, out: bool) -> bool {
+    d := &b.doc
+    lines := doc_cursor_lines(d)
+    edits := make([dynamic]Edit, 0, len(lines), context.temp_allocator)
+    deltas := make([]int, len(lines), context.temp_allocator)
+    unit := indent_text(indent)
+    for line, i in lines {
+        anchor, _ := line_span(d, line)
+        start := doc_off(d, anchor)
+        src := doc_line(d, line)
+        if out {
+            n := dedent_width(src, indent)
+            if n == 0 {
+                continue
+            }
+            append(&edits, Edit{start, start + n, "", 0})
+            deltas[i] = -n
+        } else if len(src) > 0 {
+            append(&edits, Edit{start, start, unit, 0})
+            deltas[i] = len(unit)
+        }
+    }
+    changed := doc_line_commit(d, edits[:], lines, deltas)
+    b.dirty |= changed
+    return changed
+}
+
+// What one Shift+Tab takes off the front: a tab, or up to a level's worth of spaces.
+dedent_width :: proc(src: []u8, indent: Indent) -> int {
+    if len(src) > 0 && src[0] == '\t' {
+        return 1
+    }
+    n := 0
+    for n < len(src) && n < max(indent.width, 1) && src[n] == ' ' {
+        n += 1
+    }
+    return n
 }
 
 // --- internals ---
