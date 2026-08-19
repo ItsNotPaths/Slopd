@@ -188,3 +188,24 @@ test_a_declined_chord_reaches_the_next_holder :: proc(t: ^testing.T) {
     a.aux_mode = .Grep
     testing.expect(t, !app.bind_dispatch(&a, q, glfw.KEY_Q, false))
 }
+
+// The keys this pass put on the table, and the two contexts they have to keep apart: the page
+// keys are the editor's jump, and stay the terminal's copy cursor where a session has the keys.
+@(test)
+test_the_line_and_page_chords :: proc(t: ^testing.T) {
+    testing.expect_value(t, act_of(glfw.KEY_TAB, 0, .Text), app.Action.Indent)
+    testing.expect_value(t, act_of(glfw.KEY_TAB, SHIFT, .Text), app.Action.Outdent)
+    testing.expect_value(t, act_of(glfw.KEY_SLASH, CTRL, .Text), app.Action.Comment_Toggle)
+    testing.expect_value(t, act_of(glfw.KEY_HOME, CTRL, .Text), app.Action.Move_Doc_Start)
+    testing.expect_value(t, act_of(glfw.KEY_END, CTRL, .Text), app.Action.Move_Doc_End)
+
+    testing.expect_value(t, act_of(glfw.KEY_PAGE_UP, 0, .Text), app.Action.Jump_Up)
+    testing.expect_value(t, act_of(glfw.KEY_PAGE_DOWN, 0, .Text), app.Action.Jump_Down)
+    testing.expect_value(t, act_of(glfw.KEY_PAGE_UP, 0, .Terminal), app.Action.Term_Sel_Up)
+    testing.expect_value(t, act_of(glfw.KEY_PAGE_DOWN, 0, .Terminal), app.Action.Term_Sel_Down)
+
+    // Shift+Tab is a verb of its own, so it must not fall back to Tab-extending.
+    b, ok := app.bind_find(app.BIND_DEFAULTS[:], app.Chord{glfw.KEY_TAB, SHIFT}, .Text)
+    testing.expect(t, ok)
+    testing.expect_value(t, b.chord.mods, SHIFT)
+}

@@ -68,6 +68,10 @@ Action :: enum {
     Delete_Word_Back,
     Delete_Word_Forward,
     Indent,
+    Outdent,
+    Comment_Toggle,
+    Move_Doc_Start,
+    Move_Doc_End,
     Select_All,
     Select_Line,
     Fold_Toggle,
@@ -295,6 +299,10 @@ action_run :: proc(a: ^App, act: Action, n: int, extend, all: bool) -> (handled:
         return motion_run(a, .Home, extend, all)
     case .Move_End:
         return motion_run(a, .End, extend, all)
+    case .Move_Doc_Start:
+        return motion_run(a, .Doc_Start, extend, all)
+    case .Move_Doc_End:
+        return motion_run(a, .Doc_End, extend, all)
     case .Jump_Up, .Jump_Down:
         // Elsewhere there is nothing to jump over, so these are the plain move.
         up := act == .Jump_Up
@@ -307,7 +315,7 @@ action_run :: proc(a: ^App, act: Action, n: int, extend, all: bool) -> (handled:
         return delete_run(a, act)
     case .Select_All, .Select_Line:
         return select_run(a, act)
-    case .Indent, .Fold_Toggle, .Save, .Undo, .Redo:
+    case .Indent, .Outdent, .Comment_Toggle, .Fold_Toggle, .Save, .Undo, .Redo:
         return buffer_run(a, act)
 
     // --- the file pane, the browser's chrome, the image surface ---
@@ -380,6 +388,10 @@ buffer_run :: proc(a: ^App, act: Action) -> bool {
     #partial switch act {
     case .Indent:
         buffer_tab(b, a.indent)
+    case .Outdent:
+        _ = buffer_indent_block(b, a.indent, true)
+    case .Comment_Toggle:
+        _ = buffer_comment_toggle(b)
     case .Fold_Toggle:
         if a.folding {buffer_fold_toggle(a, b)} else {buffer_enter(a, b)} // off: still Enter
     case .Save:
