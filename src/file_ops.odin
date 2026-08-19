@@ -24,7 +24,7 @@ filetree_cd_selected :: proc(a: ^App) {
 // surfaced. The trailing space run_command leaves is Shift+Enter's, which stages instead.
 open_or_run :: proc(a: ^App, path: string, exec: bool) {
     if cmd := run_command(path, exec, context.temp_allocator); cmd != "" {
-        run_in_term(a, strings.trim_space(cmd), a.run_term)
+        run_in_term(a, strings.trim_space(cmd), cl_term(a))
         return
     }
     open_file(a, path)
@@ -88,6 +88,6 @@ filetree_rm_selected :: proc(a: ^App, marked: bool) {
 // Runs rather than staging, unlike the delete: `stat` only reads, so there is nothing to review.
 filetree_props :: proc(a: ^App, path: string) {
     if cmd := properties_command(path, context.temp_allocator); cmd != "" {
-        run_in_t1(a, cmd)
+        run_in_cl_term(a, cmd)
     }
 }

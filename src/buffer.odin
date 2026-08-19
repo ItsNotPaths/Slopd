@@ -118,11 +118,13 @@ open_file :: proc(a: ^App, path: string) {
     }
 }
 
-// The quit/write builtins guard on this so a stray `:q` cannot discard work.
+// The quit/write builtins guard on this so a stray `:q` cannot discard work. Edits are work to
+// lose only when a FILE is waiting for them: nothing can write a buffer with no path, so it
+// guards nothing and a scratch buffer typed into cannot hold the session open.
 ring_dirty_count :: proc(e: ^Editor) -> int {
     n := 0
     for &b in e.buffers {
-        if b.dirty {
+        if b.dirty && buffer_on_disk(&b) {
             n += 1
         }
     }

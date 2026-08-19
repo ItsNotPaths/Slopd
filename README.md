@@ -103,8 +103,8 @@ gesture renders in the alert colour until you touch it.
 | `:reload y\|n` | answer a disk conflict: take the disk version, or keep mine (`:w` overwrites) |
 | `:readme` `:license` | open the embedded docs |
 | `:zen` `:full` `:normal` | view arrangement |
-| `:w :wa :q :q! :wq :wqa` | write / quit, the only way out; guarded by the unsaved ring |
-| `:w <path>` | write a COPY there and stay on this file, as vim does; `:w! <path>` overwrites an existing one |
+| `:w :wa :q :q! :wq :wqa` | write / quit, the only way out; guarded by the unsaved ring — which is the buffers with a FILE waiting for them, so an untitled scratch buffer never holds the session open |
+| `:w <path>` | write a COPY there and stay on this file, as vim does; `:w! <path>` overwrites an existing one. A buffer with NO file is NAMED instead: it takes the path and is saved |
 | `:discard [file]` | throw a buffer's unsaved edits away and take the disk version back |
 | `:saved` | the tail of the staged sudo save: mark clean IF the disk already holds this buffer |
 | `:crlf` | flip this buffer between CRLF and LF line endings; the modeline says `CRLF` |
@@ -213,6 +213,7 @@ file and this one applies again.
 | `whitespace`, `indent_guides`, `folding` | `on` \| `off` | editor reading aids |
 | `folder_cd` | `stage` \| `run` | filetree `Alt+Enter`: review the `:cd` in the CL, or run it |
 | `discard` | `stage` \| `run` | file pane `^k`: review the `:discard` in the CL, or throw the edits away at once |
+| `run_term` | 1-99 | the session the command line works in: its shell lines, its messages, and a program the file pane runs (`:tN` overrides it for one line) |
 | `git_tool` | e.g. `lazygit` | what `Alt+G` / `:gs` hands the project root to |
 | `git_term` | int \| empty | terminal session to run it in; empty = spawn detached (for a GUI tool) |
 | `grep_pane` | `on` \| `off` | `:grep`: always open the results pane vs jump straight on a lone hit |

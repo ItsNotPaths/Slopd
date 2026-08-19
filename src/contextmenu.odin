@@ -230,7 +230,7 @@ ctxmenu_file_action :: proc(a: ^App, action: Menu_Action, on: Menu_Target) {
     case .Discard:
         filetree_discard_selected(a)
     case .Properties:
-        filetree_props(a, on.path) // the target's, for all three kinds; t1 prints it
+        filetree_props(a, on.path) // the target's, for all three kinds; the CL's session prints it
     case .AddPlace:
         filebrowser_place_add(&a.filebrowser, on.path)
     case .RemovePlace:

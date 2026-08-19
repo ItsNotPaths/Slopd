@@ -56,7 +56,7 @@ Config :: struct {
     discard_run:      bool, // file pane ^k: discard the edits at once vs stage `:discard`
     git_tool:         string, // external tool Alt+G hands the project root to (owned); "" = none
     git_term:         int, // which terminal session to run it in; 0 = spawn it detached
-    run_term:         int, // which terminal session an activated executable runs in
+    run_term:         int, // the session the command line works in (cl_term)
     grep_pane_always: bool, // always open the results pane vs jump straight on a lone hit
     cl_preview:       bool, // show `:j` `:f` `:grep` effects while the line is typed
     conflict_prompt:  bool, // disk changed under unsaved edits: prompt vs silently keep mine
@@ -122,7 +122,7 @@ load_config :: proc() -> Config {
         folder_cd_run   = false, // stage the cd, reviewable
         discard_run     = false, // stage the discard: unsaved work is not thrown away unread
         git_term        = 0, // detached: a GUI tool wants its own window, not a PTY
-        run_term        = 1, // t1, the master CL terminal
+        run_term        = 1, // t1, the command line's own session
         grep_pane_always = true, // no auto-jump on a lone hit
         cl_preview      = true, // Esc puts back whatever the preview showed
         conflict_prompt = true,
