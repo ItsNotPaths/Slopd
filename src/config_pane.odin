@@ -568,7 +568,7 @@ config_dropdown_move :: proc(a: ^App, delta: int) {
     }
 }
 
-// A chosen option builds a `slopd ...` line and runs it in t1, through the seam the command
+// A chosen option builds a `slopd ...` line and runs it in the CL's session, through the seam
 // line's shell path uses. The pointer reaches these too, hence the verb living beside the
 // choice.
 config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
@@ -586,7 +586,7 @@ config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
     case .Uninstall:
         cmd = fmt.tprintf("%s --grammar uninstall %s", self, sh_quote(lang, context.temp_allocator))
     }
-    run_in_t1(a, cmd)
+    run_in_cl_term(a, cmd)
 }
 
 // Run the same way a language's are. Installing moves the binary Slopd is running from, which
@@ -606,5 +606,5 @@ config_run_install :: proc(a: ^App, opt: Install_Option) {
     case .DesktopRemove:
         cmd = fmt.tprintf("%s --desktop remove", self)
     }
-    run_in_t1(a, cmd)
+    run_in_cl_term(a, cmd)
 }

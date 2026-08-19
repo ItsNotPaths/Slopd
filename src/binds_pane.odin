@@ -110,7 +110,7 @@ binds_pane_move :: proc(bp: ^BindsPane, delta: int) {
     binds_note(bp, "")
 }
 
-// On the pane's own status row, not a t1 echo: that surfaces the terminal, and a command run
+// On the pane's own status row, not a cl_echo: that surfaces the terminal, and a command run
 // from this pane must not throw you out of it.
 binds_note :: proc(bp: ^BindsPane, msg: string) {
     delete(bp.note)

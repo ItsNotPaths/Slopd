@@ -188,7 +188,7 @@ cl_exec :: proc(a: ^App, input: string) {
 cl_parse :: proc(a: ^App, input: string) {
     cl_chain_clear(a)
     ch := &a.cl_chain
-    ch.target = 1
+    ch.target = cl_term(a)
 
     rest := strings.trim_space(input)
 
@@ -340,7 +340,7 @@ cl_inject_shell :: proc(a: ^App, cmd: string, last: bool) {
 }
 
 // `text` is the segment with its `:` stripped. Fails only on an unknown name — the sigil
-// promised a builtin, so a typo says so in t1 and stops the chain. This switch is the whole
+// promised a builtin, so a typo says so in the CL's session and stops the chain. This is the whole
 // registry; a new builtin is a case here and a row in the README's table.
 @(private = "file")
 cl_run_builtin :: proc(a: ^App, text: string) -> bool {
@@ -396,7 +396,7 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
     case "w", "w!", "wa", "q", "q!", "wq", "wqa", "waq":
         cl_quit(a, name, args)
     case:
-        cl_echo_t1(a, fmt.tprintf("%s: not a builtin (drop the : to run it in the shell)", name))
+        cl_echo(a, fmt.tprintf("%s: not a builtin (drop the : to run it in the shell)", name))
         return false
     }
     return true
@@ -411,7 +411,7 @@ cl_save :: proc(a: ^App, b: ^Buffer) -> Save_Result {
     res := buffer_save(b)
     // A staged line is the report; only a denial that cannot stage has to speak.
     if res == .Denied && !save_stage_sudo(a, b) {
-        cl_echo_t1(a, "save: permission denied, and no private folder to stage a sudo copy in")
+        cl_echo(a, "save: permission denied, and no private folder to stage a sudo copy in")
     }
     return res
 }
@@ -481,7 +481,7 @@ save_tmp_dir :: proc() -> string {
 @(private = "file")
 cl_saved :: proc(a: ^App) {
     if ring_mark_saved_matching(&a.editor) == 0 {
-        cl_echo_t1(a, ":saved: no unsaved buffer holds what its file holds — nothing changed")
+        cl_echo(a, ":saved: no unsaved buffer holds what its file holds — nothing changed")
     }
 }
 
@@ -496,11 +496,11 @@ cl_crlf :: proc(a: ^App) {
     }
     b.crlf = !b.crlf
     b.dirty = true
-    cl_echo_t1(a, fmt.tprintf(":crlf: line endings are %s now — `:w` writes them", b.crlf ? "CRLF" : "LF"))
+    cl_echo(a, fmt.tprintf(":crlf: line endings are %s now — `:w` writes them", b.crlf ? "CRLF" : "LF"))
 }
 
 // The only way to close Slopd (Esc never quits), guarded by the unsaved ring. Refusals echo into
-// t1 naming the sigilled line that would work.
+// the CL's session naming the sigilled line that would work.
 @(private = "file")
 cl_quit :: proc(a: ^App, cmd: string, args: string) {
     switch cmd {
@@ -511,8 +511,8 @@ cl_quit :: proc(a: ^App, cmd: string, args: string) {
         }
         // A denial stages its own `sudo cp` line, which is the message.
         switch cl_save(a, editor_current(&a.editor)) {
-        case .No_Path: cl_echo_t1(a, ":w: no filename — `:w <path>` writes a copy there")
-        case .Failed:  cl_echo_t1(a, ":w: could not write the file")
+        case .No_Path: cl_echo(a, ":w: no filename — `:w <path>` names it")
+        case .Failed:  cl_echo(a, ":w: could not write the file")
         case .Ok, .Denied:
         }
     case "wa":
@@ -521,21 +521,21 @@ cl_quit :: proc(a: ^App, cmd: string, args: string) {
         glfw.SetWindowShouldClose(a.window, true)
     case "q":
         if n := ring_dirty_count(&a.editor); n > 0 {
-            cl_echo_t1(a, fmt.tprintf(":q: %d unsaved buffer(s) — :wqa saves+quits, :q! drops", n))
+            cl_echo(a, fmt.tprintf(":q: %d unsaved buffer(s) — :wqa saves+quits, :q! drops", n))
         } else {
             glfw.SetWindowShouldClose(a.window, true)
         }
     case "wq":
         buffer_save(editor_current(&a.editor))
         if n := ring_dirty_count(&a.editor); n > 0 {
-            cl_echo_t1(a, fmt.tprintf(":wq: %d other unsaved buffer(s) — :wqa or :q!", n))
+            cl_echo(a, fmt.tprintf(":wq: %d other unsaved buffer(s) — :wqa or :q!", n))
         } else {
             glfw.SetWindowShouldClose(a.window, true)
         }
     case "wqa", "waq":
         cl_write_all(a)
         if n := ring_dirty_count(&a.editor); n > 0 {
-            cl_echo_t1(a, fmt.tprintf(":wqa: %d buffer(s) could not be saved — :q! to discard", n))
+            cl_echo(a, fmt.tprintf(":wqa: %d buffer(s) could not be saved — :q! to discard", n))
         } else {
             glfw.SetWindowShouldClose(a.window, true)
         }
@@ -551,11 +551,19 @@ cl_write_copy :: proc(a: ^App, b: ^Buffer, args: string, force: bool) {
     path := cl_resolve_path(a, unquote_arg(strings.trim_space(args)))
     defer delete(path)
     if why := cl_write_refusal(path, force); why != "" {
-        cl_echo_t1(a, why)
+        cl_echo(a, why)
         return
     }
     if file_write_atomic(path, buffer_bytes(b)) != .Ok {
-        cl_echo_t1(a, fmt.tprintf(":w: could not write %s", path))
+        cl_echo(a, fmt.tprintf(":w: could not write %s", path))
+        return
+    }
+    // A buffer with no file was not COPIED anywhere — it was named. It takes the path, so the
+    // next `^S` writes it, the modeline says where, and the extension picks up a grammar.
+    if b.path == "" && !b.embedded {
+        delete(b.path)
+        b.path = strings.clone(path)
+        buffer_mark_saved(b)
     }
 }
 
@@ -589,16 +597,16 @@ cl_discard :: proc(a: ^App, args: string) {
         defer delete(path)
         b = ring_dirty_buffer(a, path)
         if b == nil {
-            cl_echo_t1(a, fmt.tprintf(":discard: %s has no unsaved changes", arg))
+            cl_echo(a, fmt.tprintf(":discard: %s has no unsaved changes", arg))
             return
         }
     }
     if b == nil || !buffer_discard(b) {
-        cl_echo_t1(a, ":discard: nothing to take back — this buffer has no file on disk")
+        cl_echo(a, ":discard: nothing to take back — this buffer has no file on disk")
     }
 }
 
-// Returns how many remain dirty (an unnamed buffer stays).
+// Returns how many of the ring's buffers are still unsaved; one with no file is not in it.
 @(private = "file")
 cl_write_all :: proc(a: ^App) -> int {
     for &b in a.editor.buffers {
@@ -609,10 +617,10 @@ cl_write_all :: proc(a: ^App) -> int {
     return ring_dirty_count(&a.editor)
 }
 
-// Feedback lands in a real terminal (spawning t1) rather than the status strip. sh_quote means
+// Feedback lands in a real terminal (spawning it) rather than the status strip. sh_quote means
 // a message carrying the user's own text can hold anything.
-cl_echo_t1 :: proc(a: ^App, msg: string) {
-    run_in_t1(a, fmt.tprintf("echo %s", sh_quote(msg, context.temp_allocator)))
+cl_echo :: proc(a: ^App, msg: string) {
+    run_in_cl_term(a, fmt.tprintf("echo %s", sh_quote(msg, context.temp_allocator)))
 }
 
 // `:cd [dir]`: set the project root, never a shell's cwd (an unsigilled `cd` is the shell's).
@@ -962,9 +970,15 @@ cl_chain_clear :: proc(a: ^App) {
     ch.wait_term = nil
 }
 
-// Surface t1 and run — no chaining.
-run_in_t1 :: proc(a: ^App, cmd: string) {
-    run_in_term(a, cmd, 1)
+// Surface the command line's own session and run — no chaining.
+run_in_cl_term :: proc(a: ^App, cmd: string) {
+    run_in_term(a, cmd, cl_term(a))
+}
+
+// The session the command line works in: its shell steps, its messages, and the file pane's
+// runs. `:tN` overrides it for one line. Clamped, since a bare App has no config loaded.
+cl_term :: proc(a: ^App) -> int {
+    return max(1, a.run_term)
 }
 
 // The same in session `n` — the open ones plus the next, so `run_term: 8` with three open opens

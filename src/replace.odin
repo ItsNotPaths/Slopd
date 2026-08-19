@@ -49,7 +49,7 @@ rep_parse :: proc(args: string) -> (old, new: string, ok: bool) {
 cl_rep :: proc(a: ^App, args: string) {
     old, new, ok := rep_parse(args)
     if !ok {
-        cl_echo_t1(a, "rep: :rep <old> <new> — quote anything with spaces")
+        cl_echo(a, "rep: :rep <old> <new> — quote anything with spaces")
         return
     }
     grep_async(a, old, .List, new, true)
@@ -65,7 +65,7 @@ rep_apply :: proc(a: ^App, args: string) {
     }
     targets := rep_targets(a, old)
     if len(targets) > REP_FILE_MAX {
-        cl_echo_t1(a, fmt.tprintf("rep: %d files, over the %d limit — narrow the pattern", len(targets), REP_FILE_MAX))
+        cl_echo(a, fmt.tprintf("rep: %d files, over the %d limit — narrow the pattern", len(targets), REP_FILE_MAX))
         return
     }
     files, hits := 0, 0
@@ -80,10 +80,10 @@ rep_apply :: proc(a: ^App, args: string) {
         }
     }
     if files == 0 {
-        cl_echo_t1(a, fmt.tprintf("rep: %s not found", old))
+        cl_echo(a, fmt.tprintf("rep: %s not found", old))
         return
     }
-    cl_echo_t1(a, fmt.tprintf("rep: %d in %d file%s, unsaved — :wa writes them", hits, files, files == 1 ? "" : "s"))
+    cl_echo(a, fmt.tprintf("rep: %d in %d file%s, unsaved — :wa writes them", hits, files, files == 1 ? "" : "s"))
 }
 
 // Every file to look in, each once and in scan order. grep speaks for the disk; a dirty buffer

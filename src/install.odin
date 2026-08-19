@@ -461,7 +461,7 @@ on_path :: proc(dir: string) -> bool {
 
 // --- CLI (`slopd --install`, `--uninstall`, `--where`) ---
 
-// Handled before the GLFW window opens: the Config pane's install row runs these in t1, and
+// Handled before the GLFW window opens: the Config pane's install row runs these in a terminal, and
 // they must answer on a machine with no display.
 install_cli :: proc(args: []string) -> (handled: bool) {
     for arg in args {

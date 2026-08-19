@@ -28,10 +28,10 @@ free_sessions :: proc(a: ^app.App) {
     delete(a.terminals)
 }
 
-// The quit/write builtins guard on the unsaved ring (ring_dirty_count): an unnamed
-// buffer can't be written yet, so `wa` leaves it dirty; giving it a path lets `wa`
-// save it and clear the ring. The window-closing paths (clean `q` / `q!`) and the
-// t1-echo refusal need a live GLFW window / terminal, so they aren't exercised here.
+// The quit/write builtins guard on the unsaved ring (ring_dirty_count): a buffer with no file
+// is not in it, because `wa` has nowhere to write it and no later save could rescue it; giving
+// it a path puts it in, and `wa` then saves it back out. The window-closing paths (clean `q` /
+// `q!`) and the echo refusal need a live GLFW window / terminal, so they aren't exercised here.
 @(test)
 test_cl_write_ring :: proc(t: ^testing.T) {
     a: app.App
@@ -40,15 +40,16 @@ test_cl_write_ring :: proc(t: ^testing.T) {
 
     b := app.editor_current(&a.editor)
 
-    // Unnamed: `:wa` can't save it, so it stays in the ring.
+    // No file: `:wa` cannot write it, and it guards nothing.
     b.dirty = true
     app.cl_exec(&a, ":wa")
-    testing.expect_value(t, app.ring_dirty_count(&a.editor), 1)
+    testing.expect_value(t, app.ring_dirty_count(&a.editor), 0)
 
-    // Named: `:wa` writes it and the ring clears.
+    // Named: it joins the ring, and `:wa` writes it and clears it again.
     path := "/tmp/slopd_quit_test.txt"
     b.path = strings.clone(path)
     b.dirty = true
+    testing.expect_value(t, app.ring_dirty_count(&a.editor), 1)
     app.cl_exec(&a, ":wa")
     testing.expect_value(t, app.ring_dirty_count(&a.editor), 0)
     os.remove(path)
@@ -78,6 +79,61 @@ test_cl_write_copy :: proc(t: ^testing.T) {
 
     testing.expect_value(t, b.path, "/tmp/slopd_wcopy_src.txt") // still its own file
     testing.expect(t, b.dirty, "a copy is not a save: the buffer is still unsaved")
+    testing.expect_value(t, app.ring_dirty_count(&a.editor), 1)
+}
+
+// The other half of the same verb: a buffer with NO file was not copied anywhere, it was named.
+// It takes the path, so `^S` writes it from then on — emacs' write-file, not vim's `:w <path>`.
+@(test)
+test_cl_write_names_a_buffer_with_no_file :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    defer app.editor_destroy(&a.editor)
+
+    b := app.editor_current(&a.editor)
+    app.buffer_set_text(b, "a note")
+    b.final_newline = false
+    b.dirty = true // the scratch buffer, typed into
+
+    path := "/tmp/slopd_wname.txt"
+    defer os.remove(path)
+    app.cl_exec(&a, strings.concatenate({":w ", path}, context.temp_allocator))
+
+    testing.expect_value(t, b.path, path)
+    testing.expect(t, !b.dirty, "naming it IS the save")
+    testing.expect_value(t, app.ring_dirty_count(&a.editor), 0)
+
+    data, err := os.read_entire_file_from_path(path, context.temp_allocator)
+    testing.expect(t, err == nil)
+    testing.expect_value(t, string(data), "a note")
+
+    // And from here it is an ordinary file: `^S` writes it where it now lives.
+    app.buffer_set_text(b, "edited")
+    b.dirty = true
+    testing.expect_value(t, app.cl_save(&a, b), app.Save_Result.Ok)
+    data, _ = os.read_entire_file_from_path(path, context.temp_allocator)
+    testing.expect_value(t, string(data), "edited")
+}
+
+// Unsaved edits guard the quit only when a FILE is waiting for them. A buffer with no path has
+// nowhere to be written, so it cannot be rescued and must not hold the session open.
+@(test)
+test_a_buffer_with_no_file_does_not_guard_the_quit :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    defer app.editor_destroy(&a.editor)
+
+    b := app.editor_current(&a.editor)
+    app.buffer_set_text(b, "typed into the scratch buffer")
+    b.dirty = true
+    testing.expect_value(t, app.ring_dirty_count(&a.editor), 0)
+
+    // One with a file behind it guards as it always did.
+    named: app.Buffer
+    app.doc_init(&named.doc)
+    named.path = strings.clone("/tmp/slopd_guard.txt")
+    named.dirty = true
+    append(&a.editor.buffers, named)
     testing.expect_value(t, app.ring_dirty_count(&a.editor), 1)
 }
 
@@ -182,7 +238,7 @@ test_cl_bare_tN_is_shell :: proc(t: ^testing.T) {
     a.term_active = 2
 
     app.cl_parse(&a, "t2 --version")
-    testing.expect_value(t, a.cl_chain.target, 1) // t1, the default — not session 2
+    testing.expect_value(t, a.cl_chain.target, 1) // the CL's own session — not session 2
     testing.expect_value(t, len(a.cl_chain.steps), 1)
     testing.expect(t, a.cl_chain.steps[0].shell, "an unsigilled tN is a shell command")
     testing.expect_value(t, a.cl_chain.steps[0].text, "t2 --version")
@@ -1161,4 +1217,22 @@ test_open_stage_sudo :: proc(t: ^testing.T) {
 
     // The other failures are not ours to answer: a missing file stages nothing.
     testing.expect(t, !app.open_stage_sudo(&a, "slopd-no-such-file.tmp"))
+}
+
+// `run_term` is the session the command line works in, not only the file pane's runs: a shell
+// line goes there by default, and `:tN` is still the per-line override.
+@(test)
+test_run_term_is_the_command_lines_session :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    defer app.editor_destroy(&a.editor)
+
+    testing.expect_value(t, app.cl_term(&a), 1) // no config loaded: t1
+
+    a.run_term = 3
+    app.cl_parse(&a, "make")
+    testing.expect_value(t, a.cl_chain.target, 3)
+
+    app.cl_parse(&a, ":t2 make")
+    testing.expect_value(t, a.cl_chain.target, 2) // one line, elsewhere
 }

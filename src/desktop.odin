@@ -157,7 +157,7 @@ desktop_reindex :: proc() {
 // --- CLI (`slopd --desktop [add|remove]`) ---
 
 // Bare `--desktop` adds; `remove` is spelled out, like `--grammar uninstall`. Before the window
-// opens, so the Config pane's rows can run it in t1 and see the output.
+// opens, so the Config pane's rows can run it in a terminal and see the output.
 desktop_cli :: proc(args: []string) -> (handled: bool) {
     for arg, i in args {
         if arg != "--desktop" {
