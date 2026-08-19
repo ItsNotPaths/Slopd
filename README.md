@@ -53,6 +53,9 @@ paste, `^d` delete, `^w` path, `^k` discard the selected file's unsaved edits, `
 workspace to the browsed folder — `:cd` plus `:tu` in one keystroke); hold `Ctrl` for the
 cheat-sheet bar under EITHER face, or **right-click** for the same list as buttons.
 
+`Alt+Q` discards here too. It is the terminal's close chord, and that verb declines wherever its
+pane is not up, so the file pane is offered the key next and takes it.
+
 `Alt+P` puts a `WORKSPACE/` prompt in that pane's top bar, under either face. With nothing typed
 it lists what is open: the unsaved ones first (red, starred), then the rest of the ring. Type and
 it lists fuzzy matches over every file under the project root instead. `Up`/`Down` pick, `Enter`
@@ -243,6 +246,10 @@ the pane until you save, so rebinding an arrow does not change the pane under yo
 
 `:rebind` works from anywhere: `+` adds, `-` (or `-N`) clears, a bare `N` replaces the Nth chord,
 and no selector replaces the first.
+
+A chord more than one action holds is offered to each in turn, in table order: a verb that has
+nothing to do where you pressed it declines, and the next holder gets it. That is how `Alt+Q` is
+the terminal's close and the file pane's discard without either one being modal.
 
 The file half is a `[binds]` block of `chord: action` lines over the defaults, `none` to unbind.
 A chord is `ctrl`/`alt`/`shift` then the key (`alt+f`, `ctrl+shift+z`, `alt+[`, `f5`), physical.

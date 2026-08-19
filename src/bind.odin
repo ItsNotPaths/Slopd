@@ -11,6 +11,9 @@ import "vendor:glfw"
 //   Surface   a list, a browser or an image. Bare keys are free.
 //   Terminal  a live session: a MISS here reaches the job.
 //   Shell     no table at all — an alt-screen program's plain keys.
+//
+// A verb answering false means "not mine", not "eat the key", so a chord more than one row holds
+// is offered to each in turn — `skip` below, walked by bind_dispatch.
 
 CHORD_MODS :: glfw.MOD_SHIFT | glfw.MOD_CONTROL | glfw.MOD_ALT
 
@@ -214,6 +217,7 @@ BIND_DEFAULTS := [?]Bind {
     {{glfw.KEY_H, MC}, .File_Workspace},
     {{glfw.KEY_O, MC}, .File_Edit},
     {{glfw.KEY_K, MC}, .File_Discard},
+    {{glfw.KEY_Q, MA}, .File_Discard}, // term.close holds it too, and declines outside its pane
     {{glfw.KEY_BACKSPACE, 0}, .Parent},
 
     // surface: the browser's top bar and sidebar
@@ -265,32 +269,38 @@ bind_ctx :: proc(a: ^App, chord: Chord) -> Bind_Ctx {
 }
 
 // Exact match first; failing that, a Shift-qualified chord retries without Shift and runs
-// extending. An exact Shift row therefore beats the fallback.
-bind_find :: proc(binds: []Bind, chord: Chord, ctx: Bind_Ctx) -> (Bind, bool) {
-    if b, ok := bind_scan(binds, chord, ctx); ok {
+// extending. An exact Shift row therefore beats the fallback. `skip` passes over that many
+// holders, which is how a caller whose verb declined asks for the next one.
+bind_find :: proc(binds: []Bind, chord: Chord, ctx: Bind_Ctx, skip := 0) -> (Bind, bool) {
+    left := skip
+    if b, ok := bind_scan(binds, chord, ctx, &left); ok {
         return b, true
     }
     if chord.mods & MS != 0 {
-        return bind_scan(binds, {chord.key, chord.mods & ~i32(MS)}, ctx)
+        return bind_scan(binds, {chord.key, chord.mods & ~i32(MS)}, ctx, &left)
     }
     return {}, false
 }
 
+// `left` counts down over the holders passed, so the Shift retry resumes the exact pass's count.
 @(private = "file")
-bind_scan :: proc(binds: []Bind, chord: Chord, ctx: Bind_Ctx) -> (Bind, bool) {
+bind_scan :: proc(binds: []Bind, chord: Chord, ctx: Bind_Ctx, left: ^int) -> (Bind, bool) {
     for b in binds {
         if bind_ctxs(b.act) & {.Global, ctx} == {} || b.chord.mods != chord.mods {
             continue
         }
         if chord.key >= b.chord.key && chord.key <= b.chord.key + bind_run(b.act) {
-            return b, true
+            if left^ == 0 {
+                return b, true
+            }
+            left^ -= 1
         }
     }
     return {}, false
 }
 
-// Same modifiers, overlapping key runs, a context in common. First match wins, so the loader
-// refuses the second.
+// Same modifiers, overlapping key runs, a context in common. The loader refuses the second: one
+// chord names one verb per context, whatever the walk past a declining one would allow.
 bind_clash :: proc(x, y: Bind) -> bool {
     if bind_ctxs(x.act) & bind_ctxs(y.act) == {} || x.chord.mods != y.chord.mods {
         return false
