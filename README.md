@@ -89,7 +89,7 @@ gesture renders in the alert colour until you touch it.
 | | |
 |---|---|
 | `:tN` | send this line's shell parts to session N (`:t2 make`) · alone, a goto |
-| `:j` / `:jump` | `:j 40`, `:j +5`, `:j file`, `:j file 40` |
+| `:j` / `:jump` | `:j 40`, `:j +5`, `:j file`, `:j file 40`. A jump that lands somewhere else leaves the line BACK to where it was in the history, so `Alt+C` then `Up` is the return trip |
 | `:f` / `:find` | literal search of the open buffer; smart case, `Up`/`Down` cycle the hits, `Shift+Enter` takes all of them |
 | `:grep <re>` | project-wide search into the Grep pane, filled live as you type |
 | `:rep <old> <new>` | project-wide LITERAL replace; the pane previews the result, `Shift+Enter` applies it into unsaved buffers (`:wa` writes, `:discard` backs one out) |

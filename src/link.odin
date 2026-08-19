@@ -46,14 +46,32 @@ link_follow :: proc(a: ^App) {
 // The one "reveal a location" entry point, behind `:j`, the grep pane and every Alt+Enter
 // follow. `line`/`col` are 0-based and clamped, and `col` counts CHARACTERS. Callers compute the
 // absolute target: jump_to does no relative arithmetic of its own.
+//
+// A jump that lands elsewhere leaves the way back in the command line's history: one `:j` line,
+// so Alt+C then Up returns you with no location stack to keep and no chord of its own.
 jump_to :: proc(a: ^App, path: string, line: int, col: int) {
+    from_path, from_line, has_from := jump_origin(a)
     if path != "" {
-        open_file(a, path)
+        open_file(a, path) // may grow the ring, so nothing above may outlive this
     }
     b := editor_current(&a.editor)
     target := clamp(line, 0, doc_line_count(&b.doc) - 1)
     doc_reset_cursor(&b.doc, Pos{target, doc_byte_col(&b.doc, target, max(col, 0))})
     set_focus(a, .Editor)
+    if has_from && (from_path != b.path || from_line != target) {
+        cl_history_jump(a, from_path, b.path, from_line)
+    }
+}
+
+// Where the jump leaves from, cloned out of the ring before an open can move it. Not ok on the
+// image surface: there is no caret there to come back to.
+@(private = "file")
+jump_origin :: proc(a: ^App) -> (path: string, line: int, ok: bool) {
+    b := main_text_buffer(a)
+    if b == nil {
+        return
+    }
+    return strings.clone(b.path, context.temp_allocator), b.cursors[b.primary].head.line, true
 }
 
 // A bare `name.ext` is the nearest match under the project root; `/abs` and `~/` are

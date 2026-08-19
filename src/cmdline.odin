@@ -112,6 +112,26 @@ cl_close_kept :: proc(a: ^App) -> string {
     return input
 }
 
+// The way back from a jump (link.odin), left newest in the ring so Alt+C then Up is the return
+// trip. A jump inside one file needs no path; a buffer with no file cannot be named by a `:j`
+// line at all, so it leaves nothing. Quoted only when a space would split the path in two.
+cl_history_jump :: proc(a: ^App, from_path, to_path: string, line: int) {
+    cmd: string
+    switch {
+    case from_path == to_path:
+        cmd = fmt.tprintf(":j %d", line + 1)
+    case from_path == "":
+        return
+    case:
+        arg := from_path
+        if strings.contains(arg, " ") {
+            arg = sh_quote(arg, context.temp_allocator)
+        }
+        cmd = fmt.tprintf(":j %s %d", arg, line + 1)
+    }
+    append(&a.cl.history, strings.clone(cmd))
+}
+
 cl_history_prev :: proc(a: ^App) {
     if a.cl.hist_idx > 0 {
         a.cl.hist_idx -= 1
