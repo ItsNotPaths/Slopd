@@ -151,10 +151,8 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     if binds_pane_key(a, chord) {
         return
     }
-    if b, ok := bind_find(a.binds[:], chord, bind_ctx(a, chord)); ok && !cl_swallows(a, b) {
-        if action_run(a, b.act, int(key - b.chord.key), chord.mods & glfw.MOD_SHIFT != 0, all) {
-            return
-        }
+    if bind_dispatch(a, chord, key, all) {
+        return
     }
 
     // Unclaimed keys reach a live terminal; an Alt chord never does, bound or not.
@@ -164,6 +162,23 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     if tf := term_focused(a); tf != nil {
         terminal_input_key(tf, key, mods)
     }
+}
+
+// The chord's holders in turn, until one takes it: a verb answering false has nothing to do
+// where you pressed it, and the next row holding the chord gets its turn. A swallowed chord ends
+// the walk instead — the open line has it. Bounded by the table, which cannot hold more.
+bind_dispatch :: proc(a: ^App, chord: Chord, key: i32, all: bool) -> bool {
+    ctx := bind_ctx(a, chord)
+    for skip in 0 ..< len(a.binds) {
+        b, ok := bind_find(a.binds[:], chord, ctx, skip)
+        if !ok || cl_swallows(a, b) {
+            break
+        }
+        if action_run(a, b.act, int(key - b.chord.key), chord.mods & glfw.MOD_SHIFT != 0, all) {
+            return true
+        }
+    }
+    return false
 }
 
 // A pane chord under an open line would move focus out from under it, and Alt+C would clear it.

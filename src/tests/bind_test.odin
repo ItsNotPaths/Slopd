@@ -4,10 +4,11 @@ import app ".."
 import "core:testing"
 import "vendor:glfw"
 
-// The bind table's three rules, which every chord in Slopd now rests on:
+// The bind table's four rules, which every chord in Slopd now rests on:
 //   1. Global is searched from every context, and the context table beside it.
 //   2. An EXACT match wins; a Shift-qualified miss retries without Shift, extending.
 //   3. A row can cover a RUN of keys, and the action is handed the offset.
+//   4. A verb answering false hands the chord to the next row holding it.
 
 @(private = "file") CTRL :: i32(glfw.MOD_CONTROL)
 @(private = "file") SHIFT :: i32(glfw.MOD_SHIFT)
@@ -140,4 +141,50 @@ test_no_chord_is_bound_twice_in_one_context :: proc(t: ^testing.T) {
             testing.expectf(t, ok, "%v and %v fight over one chord", x.act, y.act)
         }
     }
+}
+
+// Alt+Q is held twice over: term.close, which declines outside its own pane, and then the file
+// pane's discard. `skip` is how the dispatcher walks from the one to the other.
+@(test)
+test_alt_q_is_held_by_both_the_terminal_and_the_file_pane :: proc(t: ^testing.T) {
+    q := app.Chord{glfw.KEY_Q, ALT}
+
+    b, ok := app.bind_find(app.BIND_DEFAULTS[:], q, .Surface)
+    testing.expect(t, ok)
+    testing.expect_value(t, b.act, app.Action.Term_Close)
+
+    b, ok = app.bind_find(app.BIND_DEFAULTS[:], q, .Surface, 1)
+    testing.expect(t, ok)
+    testing.expect_value(t, b.act, app.Action.File_Discard)
+
+    _, ok = app.bind_find(app.BIND_DEFAULTS[:], q, .Surface, 2)
+    testing.expect(t, !ok, "two holders, and the walk has to end")
+
+    // The discard is a Surface row, so an editable holding the keys never reaches it.
+    testing.expect_value(t, act_of(glfw.KEY_Q, ALT, .Text), app.Action.Term_Close)
+    _, ok = app.bind_find(app.BIND_DEFAULTS[:], q, .Text, 1)
+    testing.expect(t, !ok)
+}
+
+// The walk itself, through the seam a keystroke takes: the terminal verb declines where its pane
+// is not up, and the chord reaches the file pane instead of dying there.
+@(test)
+test_a_declined_chord_reaches_the_next_holder :: proc(t: ^testing.T) {
+    a: app.App
+    append(&a.binds, ..app.BIND_DEFAULTS[:])
+    app.editor_init(&a.editor)
+    defer {delete(a.binds);app.editor_destroy(&a.editor)}
+
+    q := app.Chord{glfw.KEY_Q, ALT}
+    a.focus = .Aux
+
+    a.aux_mode = .FileTree
+    testing.expect(t, app.bind_dispatch(&a, q, glfw.KEY_Q, false), "the file pane takes it")
+
+    a.aux_mode = .Terminal
+    testing.expect(t, app.bind_dispatch(&a, q, glfw.KEY_Q, false), "its first holder keeps it")
+
+    // A pane holding neither verb leaves the chord unclaimed, rather than the walk running on.
+    a.aux_mode = .Grep
+    testing.expect(t, !app.bind_dispatch(&a, q, glfw.KEY_Q, false))
 }
