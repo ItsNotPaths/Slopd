@@ -133,7 +133,8 @@ test_cl_goto :: proc(t: ^testing.T) {
 test_cl_jump :: proc(t: ^testing.T) {
     a: app.App
     app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    app.cl_init(&a.cl) // every jump leaves a way back in the history ring
+    defer {app.editor_destroy(&a.editor);app.cl_destroy(&a)}
     b := app.editor_current(&a.editor)
     app.buffer_set_text(b, "l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9") // 10 lines
 

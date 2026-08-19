@@ -6,8 +6,8 @@ import "core:slice"
 import "core:strings"
 
 // The workspace jump list. Alt+P turns the file pane's top bar into a `WORKSPACE/` prompt: with
-// nothing typed the list under it is the unsaved ring, and the first keystroke replaces that
-// with a fuzzy filter over every file under the project root.
+// nothing typed the list under it is the open ring — unsaved first, then the rest — and the
+// first keystroke replaces that with a fuzzy filter over every file under the project root.
 //
 // The listing it covers is untouched — no navigation, no selection moved, no directory read —
 // which is what makes this a prompt rather than a mode. One model, drawn by both faces of the
@@ -119,27 +119,39 @@ wsfind_close :: proc(a: ^App) {
 }
 
 // Called by whichever face is up, before it declares. The rows follow the typed line and, while
-// nothing is typed, the ring: a save under an open prompt drops a row with no version bumped to
-// say so. A count is enough, since those rows ARE the dirty buffers.
+// nothing is typed, the ring: an open or a save under an open prompt changes what a row says
+// with no version bumped, so both counts are compared.
 wsfind_sync :: proc(a: ^App) {
     ws := &a.wsfind
     if !ws.open {
         return
     }
-    if ws.query.version != ws.ver || (!wsfind_typed(ws) && len(ws.rows) != wsfind_ring_count(a)) {
+    if ws.query.version != ws.ver || (!wsfind_typed(ws) && wsfind_ring_stale(a)) {
         wsfind_build(a)
     }
 }
 
-// Unsaved, and with a file to go back to.
+// The listed rows against the ring they were built from. A save keeps the total and moves one
+// row across the split, so the unsaved count is the half that catches it.
 @(private = "file")
-wsfind_ring_count :: proc(a: ^App) -> (n: int) {
+wsfind_ring_stale :: proc(a: ^App) -> bool {
+    total, unsaved := 0, 0
     for &b in a.editor.buffers {
-        if b.dirty && buffer_on_disk(&b) {
-            n += 1
+        if !buffer_on_disk(&b) {
+            continue
+        }
+        total += 1
+        if b.dirty {
+            unsaved += 1
         }
     }
-    return
+    listed := 0
+    for r in a.wsfind.rows {
+        if r.dirty {
+            listed += 1
+        }
+    }
+    return total != len(a.wsfind.rows) || unsaved != listed
 }
 
 wsfind_move :: proc(ws: ^WS_Find, delta: int) {
@@ -177,7 +189,7 @@ wsfind_typed :: proc(ws: ^WS_Find) -> bool {
     return wsfind_query(ws) != ""
 }
 
-// The unsaved ring while the line is empty, the fuzzy filter once it is not. The selection goes
+// The open ring while the line is empty, the fuzzy filter once it is not. The selection goes
 // back to the top: a new list has a new best answer.
 wsfind_build :: proc(a: ^App) {
     ws := &a.wsfind
@@ -185,10 +197,13 @@ wsfind_build :: proc(a: ^App) {
     wsfind_rows_clear(ws)
     q := wsfind_query(ws)
     if q == "" {
-        // Only buffers with a file to go back to: a dirty scratch buffer has no location.
-        for &b in a.editor.buffers {
-            if b.dirty && buffer_on_disk(&b) {
-                append(&ws.rows, WS_Row{strings.clone(b.path), true})
+        // Unsaved first, then the rest. Only buffers with a file to go back to: a scratch
+        // buffer has no location.
+        for want_dirty in ([?]bool{true, false}) {
+            for &b in a.editor.buffers {
+                if b.dirty == want_dirty && buffer_on_disk(&b) {
+                    append(&ws.rows, WS_Row{strings.clone(b.path), b.dirty})
+                }
             }
         }
     } else {

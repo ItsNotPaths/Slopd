@@ -32,7 +32,7 @@ Non-modal / Alt-rooted: bare keys type, arrows navigate, chords live under Alt.
 |---|---|
 | `Alt+Left/Right`, `Alt+E` | focus editor / aux |
 | `Alt+F` `Alt+T` `Alt+R` | aux mode: filetree, terminal, grep results |
-| `Alt+P` | workspace jump: the file pane's top bar becomes `WORKSPACE/` — the unsaved ring, then fuzzy matches over the project's files as you type |
+| `Alt+P` | workspace jump: the file pane's top bar becomes `WORKSPACE/` — the open ring, unsaved first, then fuzzy matches over the project's files as you type |
 | `Alt+C` `Alt+;` | command line: a shell line · the same line with the builtin `:` typed |
 | `Alt+W` | open it pre-filled with `:j `, ready for a line number |
 | `Alt+Enter` | editor: follow the token under the caret (def / URL / `[[file]]` / colour) · filetree: `:cd` to the folder |
@@ -54,8 +54,9 @@ workspace to the browsed folder — `:cd` plus `:tu` in one keystroke); hold `Ct
 cheat-sheet bar under EITHER face, or **right-click** for the same list as buttons.
 
 `Alt+P` puts a `WORKSPACE/` prompt in that pane's top bar, under either face. With nothing typed
-it lists the unsaved ring (red, starred); type and it lists fuzzy matches over every file under
-the project root. `Up`/`Down` pick, `Enter` opens, `Esc` puts the listing back untouched.
+it lists what is open: the unsaved ones first (red, starred), then the rest of the ring. Type and
+it lists fuzzy matches over every file under the project root instead. `Up`/`Down` pick, `Enter`
+opens, `Esc` puts the listing back untouched.
 
 What it walks is the config's `exclude:` line, a one comma-separated list of directory names in
 grep's own `--exclude-dir` syntax (`exclude: .git, vendor, node_modules`), shared by the prompt,
@@ -88,7 +89,7 @@ gesture renders in the alert colour until you touch it.
 | | |
 |---|---|
 | `:tN` | send this line's shell parts to session N (`:t2 make`) · alone, a goto |
-| `:j` / `:jump` | `:j 40`, `:j +5`, `:j file`, `:j file 40` |
+| `:j` / `:jump` | `:j 40`, `:j +5`, `:j file`, `:j file 40`. A jump that lands somewhere else leaves the line BACK to where it was in the history, so `Alt+C` then `Up` is the return trip |
 | `:f` / `:find` | literal search of the open buffer; smart case, `Up`/`Down` cycle the hits, `Shift+Enter` takes all of them |
 | `:grep <re>` | project-wide search into the Grep pane, filled live as you type |
 | `:rep <old> <new>` | project-wide LITERAL replace; the pane previews the result, `Shift+Enter` applies it into unsaved buffers (`:wa` writes, `:discard` backs one out) |
