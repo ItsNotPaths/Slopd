@@ -219,6 +219,25 @@ test_preview_find_takes_every_hit :: proc(t: ^testing.T) {
     testing.expect(t, !a.find.show) // the marks come down: the cursors say it now
 }
 
+// With `cl_preview` off nothing searched as you typed, so Shift+Enter runs the line's own
+// search before it takes the hits — the gesture does not depend on the setting.
+@(test)
+test_submit_all_finds_with_the_preview_off :: proc(t: ^testing.T) {
+    a := mkapp("l0\nhit\nl2\nhit\nl4")
+    defer freeapp(&a)
+
+    a.cl_preview_on = false
+    typeln(&a, ":f hit")
+    testing.expect_value(t, len(a.find.matches), 0) // nothing previewed it
+    testing.expect(t, app.cl_submit_all(&a))
+
+    b := app.editor_current(&a.editor)
+    testing.expect_value(t, len(b.cursors), 2)
+    testing.expect_value(t, b.cursors[1].anchor, app.Pos{line = 3, col = 0})
+    testing.expect_value(t, b.cursors[1].head, app.Pos{line = 3, col = 3})
+    testing.expect(t, !a.find.show)
+}
+
 // Only a find preview answers it. With none up, Shift+Enter is the plain Enter it has always
 // been — cl_submit_all says so by returning false.
 @(test)

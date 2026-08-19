@@ -77,24 +77,56 @@ cl_submit :: proc(a: ^App) {
     }
 }
 
-// Shift+Enter over a `:f` preview: every hit takes a cursor and the line closes WITHOUT running
+// Shift+Enter over a `:f` line: every hit takes a cursor and the line closes WITHOUT running
 // — the search already did the work, and re-running it would collapse the set back to one.
-// False when there is no find preview, and plain Enter stands.
+// False when the line does not answer it, and plain Enter stands.
 cl_submit_all :: proc(a: ^App) -> bool {
-    // A `:rep` line commits rather than selecting: its hits are in files this page does not
-    // hold, so there is no cursor set to land them on. Read off the TYPED LINE and not the
-    // preview's kind, so the gesture still works with `cl_preview` turned off.
-    if name, args, ok := cl_builtin_call(doc_string(&a.cl.doc, context.temp_allocator)); ok && name == "rep" {
-        if _, _, valid := rep_parse(args); valid {
-            rep_apply(a, args) // before the close: it reads the typed line
-            cl_close_kept(a)
-            return true
-        }
+    // The TYPED LINE decides, not the preview's kind, so the gesture still works with
+    // `cl_preview` turned off.
+    name, args, ok := cl_builtin_call(doc_string(&a.cl.doc, context.temp_allocator))
+    if !ok {
+        return false
     }
-    if !cl_preview_select_all(a) {
+    switch name {
+    case "rep":
+        // A `:rep` line commits rather than selecting: its hits are in files this page does not
+        // hold, so there is no cursor set to land them on.
+        if _, _, valid := rep_parse(args); !valid {
+            return false
+        }
+        rep_apply(a, args) // before the close: it reads the typed line
+    case "f", "find":
+        if a.cl_preview.kind != .Find {
+            cl_find(a, args) // no preview ran the search, so it is owed here
+        }
+        if !cl_find_select_all(a) {
+            return false
+        }
+    case:
         return false
     }
     cl_close_kept(a)
+    return true
+}
+
+// One selected cursor per hit, the head at its end. The primary stays on the hit the caret is
+// on, so the view does not jump. False when there is nothing to take.
+@(private = "file")
+cl_find_select_all :: proc(a: ^App) -> bool {
+    b := main_text_buffer(a)
+    if b == nil || len(a.find.matches) == 0 {
+        return false
+    }
+    clear(&b.cursors)
+    for m in a.find.matches {
+        head := doc_clamp_pos(&b.doc, Pos{m.line, m.col + m.n})
+        append(&b.cursors, Cursor{
+            anchor = doc_clamp_pos(&b.doc, Pos{m.line, m.col}),
+            head   = head,
+            goal   = doc_cell_col(&b.doc, head),
+        })
+    }
+    b.primary = clamp(a.find.cur, 0, len(b.cursors) - 1)
     return true
 }
 
