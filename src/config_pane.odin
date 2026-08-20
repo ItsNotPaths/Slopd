@@ -79,7 +79,8 @@ SETTING_COUNT :: len(Setting)
 ROW_INSTALL :: 0 // first, because it says where every write below lands
 ROW_SETTINGS :: ROW_INSTALL + 1 // the first settings row; Setting(r - ROW_SETTINGS)
 ROW_BINDS :: ROW_SETTINGS + SETTING_COUNT // the key table, edited in its own pane
-ROW_SEARCH :: ROW_BINDS + 1 // the language filter
+ROW_MACROS :: ROW_BINDS + 1 // the `[macros]` block, opened in the editor
+ROW_SEARCH :: ROW_MACROS + 1 // the language filter
 ROW_LANGS :: ROW_SEARCH + 1 // the first filtered language
 
 // The pane borrows each name from the App-owned registry, which outlives it, so it frees only
@@ -132,7 +133,7 @@ config_pane_rows :: proc(cp: ^ConfigPane) -> int {
 }
 
 config_pane_setting :: proc(r: int) -> (Setting, bool) {
-    if r >= ROW_SETTINGS && r < ROW_SEARCH {
+    if r >= ROW_SETTINGS && r < ROW_BINDS {
         return Setting(r - ROW_SETTINGS), true
     }
     return {}, false
@@ -144,6 +145,10 @@ config_pane_is_install :: proc(r: int) -> bool {
 
 config_pane_is_binds :: proc(r: int) -> bool {
     return r == ROW_BINDS
+}
+
+config_pane_is_macros :: proc(r: int) -> bool {
+    return r == ROW_MACROS
 }
 
 config_pane_is_search :: proc(r: int) -> bool {
@@ -325,6 +330,7 @@ Config_Row_Kind :: enum {
     Install, // install state plus its install/uninstall dropdown
     Setting, // key + value column
     Binds, // opens the key table's block, and carries any load error
+    Macros, // opens the `[macros]` block in the editor, and carries any load error
     Text, // a settings row whose value is FREE TEXT
     Search, // the language filter box, always an editor
     Lang, // status mark + name
@@ -410,6 +416,18 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
         },
     )
 
+    append(
+        &rows,
+        ConfigRow {
+            kind = .Macros,
+            text = "macros:",
+            value = macros_row_text(len(a.macro_errors), alloc),
+            item = ROW_MACROS,
+            opt = -1,
+            indent = 1,
+        },
+    )
+
     append(&rows, chrome(.Rule, rule), chrome(.Header, "syntax"), chrome(.Rule, rule))
     append(
         &rows,
@@ -449,6 +467,14 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
 }
 
 @(private = "file")
+macros_row_text :: proc(n: int, alloc: runtime.Allocator) -> string {
+    if n == 0 {
+        return strings.clone("edit command macros", alloc)
+    }
+    return fmt.aprintf("! %d error%s in macro config", n, n == 1 ? "" : "s", allocator = alloc)
+}
+
+@(private = "file")
 binds_row_text :: proc(n: int, alloc: runtime.Allocator) -> string {
     if n == 0 {
         return strings.clone("change bindings", alloc)
@@ -471,7 +497,7 @@ config_row_selected :: proc(cp: ^ConfigPane, r: ConfigRow) -> bool {
     switch r.kind {
     case .Rule, .Header:
         return false
-    case .Search, .Text, .Binds:
+    case .Search, .Text, .Binds, .Macros:
         return true
     case .Install:
         return cp.open != .Install

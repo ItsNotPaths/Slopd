@@ -102,6 +102,8 @@ config_click :: proc(a: ^App, rows: []ConfigRow, row: int) {
         }
     case .Binds:
         set_aux(a, .Binds)
+    case .Macros:
+        config_open_macros(a)
     case .Search, .Text:
     // Neither text row has a double-click verb: selecting one makes it the editor.
     }
@@ -125,7 +127,7 @@ config_row_color :: proc(th: ^Theme, r: ConfigRow, sel: bool) -> [3]f32 {
         case .Portable:  return sel ? th.fg : th.muted
         }
         return th.fg
-    case .Binds:
+    case .Binds, .Macros:
         return r.value[0] == '!' ? th.urgent : sel ? th.fg : th.muted
     case .Setting, .Text, .Search, .Option:
         return sel ? th.fg : th.muted

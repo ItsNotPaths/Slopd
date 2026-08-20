@@ -151,6 +151,9 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     if binds_pane_key(a, chord) {
         return
     }
+    if macro_fire(a, chord) {
+        return
+    }
     if bind_dispatch(a, chord, key, all) {
         return
     }

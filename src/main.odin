@@ -107,6 +107,7 @@ main :: proc() {
     app.filebrowser.view = cfg.file_view
     app.font_px = cfg.font_px // text_init bakes the atlas at it
     app.binds, app.bind_errors = load_binds()
+    app.macros, app.macro_errors = load_macros(app.binds[:]) // after them: they hold the chords
     binds_pane_init(&app.binds_pane, app.binds[:], app.bind_errors)
 
     editor_init(&app.editor)

@@ -30,7 +30,7 @@ COLS :: 29
 INSTALL_ROWS :: 4
 
 @(private = "file")
-BINDS_ROWS :: 1
+BINDS_ROWS :: 2 // bindings and macros
 
 // In cells: the widest setting key ("conflict_stage", 14) plus ": ". Pinned, because every
 // column assertion below multiplies it out — a longer key fails exactly this assertion rather

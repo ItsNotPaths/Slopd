@@ -815,6 +815,8 @@ config_open_selected :: proc(a: ^App, cp: ^ConfigPane) {
     switch {
     case config_pane_is_binds(cp.sel):
         set_aux(a, .Binds)
+    case config_pane_is_macros(cp.sel):
+        config_open_macros(a)
     case config_pane_is_install(cp.sel):
         config_pane_open_install(a)
     case config_pane_lang(cp, cp.sel) != nil:

@@ -391,6 +391,10 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         set_aux(a, .Binds)
     case "rebind":
         cl_rebind(a, args)
+    case "macro":
+        cl_macro(a, args)
+    case "macros":
+        config_open_macros(a) // the block itself: its values are command lines, so the editor
     case "readme", "README":
         open_embedded_doc(a, .Readme)
     case "license", "LICENSE":

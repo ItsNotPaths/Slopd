@@ -627,45 +627,84 @@ config_places :: proc(alloc := context.allocator) -> []Place {
 
 // Every other line of the file survives verbatim. The block is dropped and re-emitted at the
 // end rather than edited in place: it is a list, so neither an add nor a remove is the
-// line-for-line replacement config_set does.
-config_places_write :: proc(places: []Place) -> bool {
+// line-for-line replacement config_set does. `keep_empty` writes the header with nothing under
+// it, which is how an emptied [places] stays empty instead of being filled back in.
+config_block_write :: proc(
+    section, comment: string,
+    lines: []string,
+    keep_empty := false,
+) -> bool {
     if !config_writable() {
         return false // read-only — see install.odin
     }
     path := config_file()
     b := strings.builder_make(context.temp_allocator)
-
     if src := os.read_entire_file_from_path(path, context.temp_allocator) or_else nil; src != nil {
         rest := string(src)
         skipping := false
         for raw in strings.split_lines_iterator(&rest) {
-            s := config_strip_comment(raw)
-            if config_is_section(s) {
-                skipping = s == CONFIG_SECTION_PLACES
-                if skipping {
-                    continue
-                }
+            if s := config_strip_comment(raw); config_is_section(s) {
+                skipping = s == section
             }
-            if skipping {
-                continue // a line of the old block
+            if !skipping {
+                strings.write_string(&b, raw)
+                strings.write_byte(&b, '\n')
             }
-            strings.write_string(&b, raw)
-            strings.write_byte(&b, '\n')
         }
     }
     // One blank line before the header whatever the file ended with; the trim stops a
     // rewrite-per-add growing a run of them.
-    out := strings.trim_right_space(strings.to_string(b))
+    body := strings.trim_right_space(strings.to_string(b))
     b = strings.builder_make(context.temp_allocator)
-    strings.write_string(&b, out)
-    strings.write_string(&b, "\n\n")
-    strings.write_string(&b, CONFIG_SECTION_PLACES)
-    strings.write_string(&b, "  # file browser sidebar — add/remove by right-clicking a folder\n")
-    for p in places {
-        fmt.sbprintf(&b, "%s: %s\n", p.name, p.path)
+    strings.write_string(&b, body)
+    strings.write_byte(&b, '\n')
+    if len(lines) > 0 || keep_empty {
+        fmt.sbprintf(&b, "\n%s  %s\n", section, comment)
+        for l in lines {
+            strings.write_string(&b, l)
+            strings.write_byte(&b, '\n')
+        }
     }
     ensure_parent(path)
     return os.write_entire_file(path, transmute([]byte)strings.to_string(b)) == nil
+}
+
+config_places_write :: proc(places: []Place) -> bool {
+    lines := make([dynamic]string, 0, len(places), context.temp_allocator)
+    for p in places {
+        append(&lines, fmt.tprintf("%s: %s", p.name, p.path))
+    }
+    return config_block_write(
+        CONFIG_SECTION_PLACES,
+        "# file browser sidebar — add/remove by right-clicking a folder",
+        lines[:],
+        keep_empty = true,
+    )
+}
+
+// Open slopd.config at the first line of `section` the loader refused, else at its header, else
+// at the end. Shared by the config pane's bindings and macros rows.
+config_open_block :: proc(a: ^App, section: string, errs: []Bind_Error, line := 0) {
+    path := config_file()
+    at := line > 0 ? line : config_block_line(path, section, errs)
+    cl_dispatch(a, fmt.tprintf(":j %s %d", cl_quote_arg(path, context.temp_allocator), at), true)
+}
+
+@(private = "file")
+config_block_line :: proc(path, section: string, errs: []Bind_Error) -> int {
+    if len(errs) > 0 {
+        return errs[0].line
+    }
+    src, _ := os.read_entire_file_from_path(path, context.temp_allocator)
+    rest, n, last := string(src), 0, 1
+    for raw in strings.split_lines_iterator(&rest) {
+        n += 1
+        if config_strip_comment(raw) == section {
+            return n
+        }
+        last = n
+    }
+    return last
 }
 
 // "prompt" asks in the command line before reconciling a disk change against unsaved edits;

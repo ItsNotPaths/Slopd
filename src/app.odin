@@ -144,6 +144,11 @@ App :: struct {
     binds:       [dynamic]Bind,
     bind_errors: []Bind_Error,
 
+    // The `[macros]` block: a chord and the command line it fires. Its own errors, shown on the
+    // config pane's macros row, because they block a `:macro` edit rather than a bind one.
+    macros:       [dynamic]Macro,
+    macro_errors: []Bind_Error,
+
     // Alt+A held + a direction drops a cursor and steps that way, laying a trail. Esc
     // collapses back to one.
     a_held: bool,
@@ -409,6 +414,8 @@ app_destroy :: proc(a: ^App) {
     delete(a.clip_pieces)
     delete(a.binds)
     bind_errors_destroy(a.bind_errors)
+    macros_destroy(&a.macros)
+    bind_errors_destroy(a.macro_errors)
     binds_pane_destroy(&a.binds_pane)
     if a.color.orig_text != "" {
         delete(a.color.orig_text)

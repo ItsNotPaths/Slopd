@@ -206,6 +206,8 @@ Bind_Fault :: enum {
     Bare_In_Text, // a bare key where typing happens: it would eat a letter
     Already_Bound, // an earlier line in the block took the chord
     No_Slot, // `:rebind N` named a chord this action does not have
+    Chord_Taken, // a macro chord an action already holds
+    No_Command, // a macro line with nothing after the colon
 }
 
 // A line the loader refused. It is NOT a live bind, so it carries its own text: the config pane
@@ -223,6 +225,8 @@ bind_fault_text :: proc(why: Bind_Fault) -> string {
     case .Bare_In_Text:  return "a bare key would stop this letter typing"
     case .Already_Bound: return "this chord is already bound above"
     case .No_Slot:       return "this action has no chord there"
+    case .Chord_Taken:   return "an action already holds this chord"
+    case .No_Command:    return "there is no command after the chord"
     }
     return ""
 }

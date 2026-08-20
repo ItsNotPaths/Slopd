@@ -1,6 +1,5 @@
 package main
 
-import "core:fmt"
 import "core:os"
 import "core:strings"
 
@@ -97,39 +96,14 @@ bind_replace :: proc(binds: ^[dynamic]Bind, b: Bind) {
 // Only what differs from BIND_DEFAULTS, so a default that changes in a later version still
 // reaches you. Refuses while any line is in error.
 config_binds_write :: proc(binds: []Bind, errs: []Bind_Error) -> bool {
-    if len(errs) > 0 || !config_writable() {
+    if len(errs) > 0 {
         return false
     }
-    b := strings.builder_make(context.temp_allocator)
-    path := config_file()
-    if src := os.read_entire_file_from_path(path, context.temp_allocator) or_else nil; src != nil {
-        rest := string(src)
-        skipping := false
-        for raw in strings.split_lines_iterator(&rest) {
-            if s := config_strip_comment(raw); config_is_section(s) {
-                skipping = s == CONFIG_SECTION_BINDS
-            }
-            if !skipping {
-                strings.write_string(&b, raw)
-                strings.write_byte(&b, '\n')
-            }
-        }
-    }
-    body := strings.trim_right_space(strings.to_string(b))
-    b = strings.builder_make(context.temp_allocator)
-    strings.write_string(&b, body)
-    strings.write_byte(&b, '\n')
-    if lines := bind_diff(binds, context.temp_allocator); len(lines) > 0 {
-        strings.write_byte(&b, '\n')
-        strings.write_string(&b, CONFIG_SECTION_BINDS)
-        strings.write_string(&b, "  # chord: action. `none` unbinds a default\n")
-        for l in lines {
-            strings.write_string(&b, l)
-            strings.write_byte(&b, '\n')
-        }
-    }
-    ensure_parent(path)
-    return os.write_entire_file(path, transmute([]byte)strings.to_string(b)) == nil
+    return config_block_write(
+        CONFIG_SECTION_BINDS,
+        "# chord: action. `none` unbinds a default",
+        bind_diff(binds, context.temp_allocator),
+    )
 }
 
 // One line per bind added or changed, plus a `none` per default that is gone.
@@ -177,26 +151,6 @@ bind_shadowed :: proc(binds: []Bind, d: Bind) -> bool {
 
 // --- the config pane's bindings row ---
 
-// Open slopd.config at the first bad line, else the block header, else the end.
 config_open_binds :: proc(a: ^App, line := 0) {
-    path := config_file()
-    at := line > 0 ? line : binds_line(path, a.bind_errors)
-    cl_dispatch(a, fmt.tprintf(":j %s %d", cl_quote_arg(path, context.temp_allocator), at), true)
-}
-
-@(private = "file")
-binds_line :: proc(path: string, errs: []Bind_Error) -> int {
-    if len(errs) > 0 {
-        return errs[0].line
-    }
-    src, _ := os.read_entire_file_from_path(path, context.temp_allocator)
-    rest, n, last := string(src), 0, 1
-    for raw in strings.split_lines_iterator(&rest) {
-        n += 1
-        if config_strip_comment(raw) == CONFIG_SECTION_BINDS {
-            return n
-        }
-        last = n
-    }
-    return last
+    config_open_block(a, CONFIG_SECTION_BINDS, a.bind_errors, line)
 }

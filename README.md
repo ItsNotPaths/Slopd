@@ -103,6 +103,7 @@ gesture renders in the alert colour until you touch it.
 | `:cd [dir]` | set the project root · `:tu` syncs unlocked terminals |
 | `:ls` `:cf` `:gs` `:bind` | filetree (also: refresh) · config · git tool · key bindings (`:binds` too) |
 | `:rebind [+\|-\|N] <action> [chord]` | edit a binding — `:rebind + nav.down alt+j` |
+| `:macro [-] <chord> [!]<command>` | put a command line on a chord — `:macro alt+1 !git status && :ls`; `:macros` opens the block |
 | `:put [text]` | type text + the editor selection into the target terminal, no newline |
 | `:reload y\|n` | answer a disk conflict: take the disk version, or keep mine (`:w` overwrites) |
 | `:readme` `:license` | open the embedded docs |
@@ -229,8 +230,8 @@ file and this one applies again.
 | `file_view` | `list` \| `grid` | the browser's contents; its toggle button writes this back |
 | `file_icons` | `on` \| `off` | per-type icons in the browser (needs the vendored icon face) |
 
-Two `[section]` blocks sit below the settings and are data rather than knobs: `[places]` is the
-browser's sidebar, and `[binds]` is the key table.
+Three `[section]` blocks sit below the settings and are data rather than knobs: `[places]` is the
+browser's sidebar, `[binds]` is the key table, and `[macros]` puts command lines on chords.
 
 ## Rebinding
 
@@ -260,6 +261,25 @@ The file half is a `[binds]` block of `chord: action` lines over the defaults, `
 A chord is `ctrl`/`alt`/`shift` then the key (`alt+f`, `ctrl+shift+z`, `alt+[`, `f5`), physical.
 Shift is not usually written: a Shift chord that matches nothing retries without it and the action
 extends, which is what makes `Shift+Down` sweep marks and `^Shift+D` take the marked set.
+
+## Macros
+
+A macro is a chord and a command line: what a binding is to a verb the app holds, a macro is to a
+line you would have typed. The Config pane's `macros` row (or `:macros`) opens the block in the
+editor, since the value is a command line and the editor edits one better than a row would.
+
+```ini
+[macros]
+alt+1: !git status && :ls    # ! runs it at once
+f5: cargo build              # no ! stages it: read the line, press Enter
+```
+
+The command is an ordinary command line, so `&&`, the `:builtins` and a `:tN` target all work.
+`:macro alt+1 !git status` sets one from anywhere and writes the block; `:macro - alt+1` drops it.
+
+A macro fires wherever you press it, so it takes a chord no action holds and no bare key — the
+loader refuses both, and says so on the Config pane's `macros` row. `Ctrl+Alt+*` and `F5`..`F12`
+are the free ground. Changes made by hand in the file are read at the next start.
 
 ## Theme
 
