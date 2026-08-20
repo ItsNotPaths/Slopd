@@ -148,6 +148,9 @@ test_filebrowser_history :: proc(t: ^testing.T) {
     app.filebrowser_back(&br, &ft)
     testing.expect_value(t, ft.dir, dir)
     testing.expect(t, app.filebrowser_can_forward(&br), "back must leave something to go forward to")
+    if e := app.filetree_selected(&ft); e != nil {
+        testing.expect_value(t, e.path, a_dir) // the cursor lands on where we came back from
+    }
 
     app.filebrowser_forward(&br, &ft)
     testing.expect_value(t, ft.dir, a_dir)

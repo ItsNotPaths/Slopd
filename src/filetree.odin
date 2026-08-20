@@ -120,22 +120,28 @@ filetree_enter :: proc(ft: ^FileTree) {
     filetree_load(ft, target)
 }
 
-// Left / h, re-selecting the directory we came from.
-filetree_parent :: proc(ft: ^FileTree) {
-    parent := filepath.dir(ft.dir) // slices into ft.dir; not owned
-    if parent == ft.dir { // already at the filesystem root
-        return
-    }
-    // The reload frees ft.dir, which `parent` aliases.
-    parent_dir := strings.clone(parent, context.temp_allocator)
+// Load `dir` and put the cursor back on the directory we left, when the new listing holds it.
+// Every navigation goes through here, so stepping out lands on where you were under both
+// presentations. Both paths are cloned into temp: the load frees ft.dir, which they can alias.
+filetree_goto :: proc(ft: ^FileTree, dir: string) {
+    target := strings.clone(dir, context.temp_allocator)
     came_from := strings.clone(ft.dir, context.temp_allocator)
-    filetree_load(ft, parent_dir)
+    filetree_load(ft, target)
     for e, i in ft.entries {
         if e.path == came_from {
             ft.selected = i
             break
         }
     }
+}
+
+// Left / h, re-selecting the directory we came from.
+filetree_parent :: proc(ft: ^FileTree) {
+    parent := filepath.dir(ft.dir) // slices into ft.dir; not owned
+    if parent == ft.dir { // already at the filesystem root
+        return
+    }
+    filetree_goto(ft, parent)
 }
 
 // Descend into a directory, or report a file path to open. ("", false) when it descended.

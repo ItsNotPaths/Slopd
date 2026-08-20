@@ -127,8 +127,7 @@ filebrowser_navigate :: proc(br: ^FileBrowser, ft: ^FileTree, dir: string) {
         delete(p)
     }
     clear(&br.fwd)
-    target := strings.clone(dir, context.temp_allocator) // ft.dir is freed by the load
-    filetree_load(ft, target)
+    filetree_goto(ft, dir)
 }
 
 filebrowser_can_back :: proc(br: ^FileBrowser) -> bool {
@@ -159,8 +158,7 @@ filebrowser_step :: proc(from, to: ^[dynamic]string, ft: ^FileTree) {
     if ft.dir != "" {
         append(to, strings.clone(ft.dir))
     }
-    target := strings.clone(dir, context.temp_allocator)
-    filetree_load(ft, target)
+    filetree_goto(ft, dir)
 }
 
 // --- the path bar ---
