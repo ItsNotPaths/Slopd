@@ -3,14 +3,19 @@ Type=Application
 Name=Slopd
 GenericName=Text Editor
 Comment=A GPU text editor: two panes, a command line, no modes
-Exec=slopd
+Exec=slopd --util %f
 TryExec=slopd
 Icon=slopd
 Terminal=false
 # Utility is the one main category; TextEditor is its subcategory. Adding Development
 # (also a main category) would list the app twice in a menu that groups by main category.
 Categories=Utility;TextEditor;
-Keywords=editor;text;code;odin;
+Keywords=editor;text;code;odin;file;manager;browser;
+
+# One association, and a narrow one. Claiming text/* would put Slopd in the Open With list of
+# every text file on the machine, which is a decision for the person, not for us. A FOLDER is
+# different: opening one is what the file browser is FOR, and `%f` above hands us the path.
+MimeType=inode/directory;
 StartupNotify=true
 
 # The window's app-id, and the one string that ties a running window back to this entry.
@@ -20,9 +25,13 @@ StartupNotify=true
 # what you type, what `--install` writes, and what `hyprctl clients` reports.
 StartupWMClass=slopd
 
-# Still no MimeType. File associations are possible now that the window is matchable, but
-# they are a separate decision: an entry that claims text/* takes over the Open With list
-# for every editor on the machine, so it stays off until it is asked for.
+# `--util %f` is the launcher's half of the association: %f is the folder it opened, and
+# --util starts Full on the file pane, because a person who opened a FOLDER asked for the
+# browser and not for the editor. Slopd takes a bare path as well as its own `--<path>`
+# form, so nothing has to wrap the command to reorder an argument.
+#
+# `slopd --desktop add` rewrites Exec with the binary's ABSOLUTE path and keeps everything
+# after the command word, so the field code survives that rewrite.
 
 # THIS FILE IS A TEMPLATE. It is #load-ed into the binary (src/desktop.odin) and written to
 # ~/.local/share/applications by `slopd --desktop add`. That write replaces the two lines

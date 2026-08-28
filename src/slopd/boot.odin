@@ -93,9 +93,12 @@ app_poll :: proc(a: ^App, now: f64) {
 //   --perflog  append a per-second frame-timing line to perf.log
 //   --pick=*   run as somebody's file dialog; see pick.odin for the whole family
 //   --<path>   a directory becomes the workspace, a file opens with its folder as one
+//   <path>     the same, bare. What a desktop entry's %f hands us, and what every other
+//              program on the machine accepts
 //
-// The path case is a CATCH-ALL, so every other flag has to be named above it or it is read as a
-// folder to open.
+// The `--` path case is a CATCH-ALL, so every other flag has to be named above it or it is read
+// as a folder to open. The bare case is last of all, and takes anything left. Later wins, so a
+// launcher's argument beats a wrapper script's default.
 Launch_Args :: struct {
     path:    string, // "" for none
     util:    bool,
@@ -130,6 +133,8 @@ parse_launch_args :: proc(args: []string) -> (out: Launch_Args) {
         case strings.has_prefix(arg, "--cell-dump"): // handled by cell_dump_cli
         case len(arg) > 2 && strings.has_prefix(arg, "--"):
             out.path = arg[2:]
+        case arg != "" && !strings.has_prefix(arg, "-"):
+            out.path = arg
         }
     }
     return

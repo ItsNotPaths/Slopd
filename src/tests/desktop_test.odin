@@ -14,9 +14,16 @@ test_desktop_entry_source :: proc(t: ^testing.T) {
     src := app.DESKTOP_ENTRY_SRC
     testing.expect(t, len(src) > 100, "the desktop entry did not get #load-ed")
     testing.expect(t, strings.has_prefix(src, "[Desktop Entry]"), "a desktop file must open with its group header")
-    for key in ([]string{"Type=Application", "Name=Slopd", "Icon=slopd", "StartupWMClass=slopd", "Categories="}) {
+    for key in ([]string{"Type=Application", "Name=Slopd", "Icon=slopd", "StartupWMClass=slopd",
+                         "Categories=", "MimeType=inode/directory;"}) {
         testing.expect(t, strings.contains(src, key), key)
     }
+
+    // The field code is what a launcher substitutes the opened folder into, and --util is
+    // what makes an opened FOLDER arrive on the file pane rather than behind the editor.
+    testing.expect(t, strings.contains(src, "Exec=slopd --util %f\n"))
+    // TryExec is a path the launcher stats, so it takes neither.
+    testing.expect(t, strings.contains(src, "TryExec=slopd\n"))
 
     // What the entry's `Icon=slopd` resolves to through the hicolor theme. A launcher that
     // cannot parse it falls back to a generic icon, so this only checks a document arrived.
@@ -28,9 +35,11 @@ test_desktop_entry_source :: proc(t: ^testing.T) {
 @(test)
 test_desktop_entry_text :: proc(t: ^testing.T) {
     out := app.desktop_entry_text(app.DESKTOP_ENTRY_SRC, "/home/me/.local/bin/slopd", context.temp_allocator)
-    testing.expect(t, strings.contains(out, "Exec=/home/me/.local/bin/slopd\n"))
+    // The absolute path, and everything the template put after the command word. Rewriting
+    // the line whole would drop the field code and the association would open nothing.
+    testing.expect(t, strings.contains(out, "Exec=/home/me/.local/bin/slopd --util %f\n"))
     testing.expect(t, strings.contains(out, "TryExec=/home/me/.local/bin/slopd\n"))
-    testing.expect(t, !strings.contains(out, "Exec=slopd\n"), "the template's bare name must not survive")
+    testing.expect(t, !strings.contains(out, "Exec=slopd"), "the template's bare name must not survive")
 
     // Everything else is copied verbatim, the comments included.
     testing.expect(t, strings.contains(out, "StartupWMClass=slopd"))
@@ -39,6 +48,13 @@ test_desktop_entry_text :: proc(t: ^testing.T) {
 
     // Icon=slopd is a name resolved through the icon theme, not a path to rewrite.
     testing.expect(t, strings.contains(out, "Icon=slopd\n"))
+}
+
+@(test)
+test_desktop_exec_tail :: proc(t: ^testing.T) {
+    testing.expect_value(t, app.desktop_exec_tail("Exec=slopd --util %f"), " --util %f")
+    testing.expect_value(t, app.desktop_exec_tail("Exec=slopd"), "")
+    testing.expect_value(t, app.desktop_exec_tail("Exec="), "")
 }
 
 // A template with no Exec still produces a file, and adds nothing.

@@ -226,3 +226,21 @@ test_pick_cancel_writes_nothing :: proc(t: ^testing.T) {
     app.cl_cancel(&a)
     testing.expect(t, !os.exists(out))
 }
+
+// What a desktop entry's %f hands us, and what every other program on the machine takes.
+// It must not shadow a flag, and later must win so a launcher beats a wrapper's default.
+@(test)
+test_bare_path_argument :: proc(t: ^testing.T) {
+    testing.expect_value(t, app.parse_launch_args([]string{"/home/fig/Downloads"}).path, "/home/fig/Downloads")
+    testing.expect_value(t, app.parse_launch_args([]string{"--util", "/tmp"}).path, "/tmp")
+    testing.expect(t, app.parse_launch_args([]string{"--util", "/tmp"}).util)
+
+    // Flags stay flags.
+    testing.expect_value(t, app.parse_launch_args([]string{"--tui"}).path, "")
+    testing.expect_value(t, app.parse_launch_args([]string{"--perflog"}).path, "")
+    testing.expect_value(t, app.parse_launch_args([]string{"--pick=save"}).path, "")
+
+    // Both forms name the same thing, and the last one wins.
+    testing.expect_value(t, app.parse_launch_args([]string{"--/a", "/b"}).path, "/b")
+    testing.expect_value(t, app.parse_launch_args([]string{"/b", "--/a"}).path, "/a")
+}

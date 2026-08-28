@@ -132,7 +132,10 @@ desktop_entry_text :: proc(src, exec: string, allocator := context.allocator) ->
     for line in strings.split_lines_iterator(&rest) {
         switch {
         case strings.has_prefix(line, "Exec="):
-            fmt.sbprintf(&b, "Exec=%s", exec)
+            // The absolute path, then whatever the template put AFTER the command: the
+            // field code is what a launcher substitutes the opened folder into, and
+            // rewriting the line wholesale would drop it.
+            fmt.sbprintf(&b, "Exec=%s%s", exec, desktop_exec_tail(line))
         case strings.has_prefix(line, "TryExec="):
             fmt.sbprintf(&b, "TryExec=%s", exec)
         case:
@@ -141,6 +144,13 @@ desktop_entry_text :: proc(src, exec: string, allocator := context.allocator) ->
         strings.write_byte(&b, '\n')
     }
     return strings.to_string(b)
+}
+
+// Everything after the command word in an `Exec=` line, its leading space included, or "".
+desktop_exec_tail :: proc(line: string) -> string {
+    value := line[len("Exec="):]
+    i := strings.index_byte(value, ' ')
+    return i < 0 ? "" : value[i:]
 }
 
 // Where the machine keeps one. Most launchers read the directory itself; the ones that cache

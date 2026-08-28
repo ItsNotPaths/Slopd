@@ -167,6 +167,27 @@ want them back in step (`^h` in the file panes is those two builtins in one keys
 </tr>
 </table>
 
+## Opening a folder
+
+`slopd --desktop add` files an entry claiming **one** MIME type, `inode/directory`. So
+`xdg-open ~/Downloads`, a folder in a launcher, and "Open Containing Folder" in a browser all
+land in Slopd's file browser.
+
+```
+Exec=slopd --util %f
+MimeType=inode/directory;
+```
+
+`%f` is the folder, and `--util` is what puts it on the file pane rather than behind the
+editor. To make it the machine's default rather than one more choice in the list:
+
+```sh
+xdg-mime default slopd.desktop inode/directory
+```
+
+It claims no text type. An entry claiming `text/*` would join the Open With list of every text
+file you own, and that is a decision for you to make rather than for an install to make for you.
+
 ## File dialog
 
 Slopd will stand in as another program's Save As / Open dialog. It is `--util` with one extra
@@ -340,8 +361,9 @@ slopd --health [lang]        # ✓/✗ table
 |---|---|
 | `--version` / `-v` | build version |
 | `--<path>` | launch there: a directory becomes the workspace (`slopd --~/code/thing`), a file opens with its folder as the workspace (`slopd --/etc/fstab`) |
+| `<path>` | the same, bare (`slopd ~/code/thing`). What a launcher's `%f` hands us. Later wins over earlier |
 | `--install` / `--uninstall` | copy this binary to `~/.local/bin/slopd` and write its config and folders / remove that copy, keeping the files |
-| `--desktop [add\|remove]` | file `slopd.desktop` and its icon under `~/.local/share`, or take them back off |
+| `--desktop [add\|remove]` | file `slopd.desktop` and its icon under `~/.local/share`, or take them back off — see **Opening a folder** |
 | `--where` | the mode in force, and every path in use |
 | `--util` | launch into Full on the aux pane (filetree fills the window) |
 | `--pick=open\|save\|dir` | run as somebody's file dialog — see **File dialog** |
