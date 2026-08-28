@@ -130,6 +130,8 @@ ACTIONS := [Action]Action_Info {
     .Browse_Reload       = {"browse.reload", SF, 0},
     .Browse_View         = {"browse.view", SF, 0},
     .Browse_Place        = {"browse.place", SF, 8},
+    .Browse_Column       = {"browse.column", SF, 0},
+    .Browse_Path_Edit    = {"browse.path_edit", TS, 0}, // Text too: the open line closes on it
     .Media_Zoom_In       = {"image.zoom_in", SF, 0},
     .Media_Zoom_Out      = {"image.zoom_out", SF, 0},
     .Media_Fit           = {"image.fit", SF, 0},
@@ -236,6 +238,8 @@ BIND_DEFAULTS := [?]Bind {
     {{glfw.KEY_R, MC}, .Browse_Reload},
     {{glfw.KEY_G, MC}, .Browse_View},
     {{glfw.KEY_1, MC}, .Browse_Place},
+    {{glfw.KEY_TAB, 0}, .Browse_Column},
+    {{glfw.KEY_SPACE, 0}, .Browse_Path_Edit},
 
     // surface: the image viewer, on bare keys
     {{glfw.KEY_EQUAL, 0}, .Media_Zoom_In},

@@ -378,6 +378,54 @@ filebrowser_parent :: proc(a: ^App) {
 }
 
 // The `^1`..`^9` chords, the sidebar's keyboard twin. One-based, like Alt+1..9.
+// Tab. Moving onto an empty places list would strand the arrows, so it declines.
+filebrowser_column_toggle :: proc(a: ^App) -> bool {
+    br := browse_target(a)
+    if br == nil {
+        return false
+    }
+    if !br.on_places && len(br.places) == 0 {
+        return false
+    }
+    br.on_places = !br.on_places
+    br.place_sel = clamp(br.place_sel, 0, max(0, len(br.places) - 1))
+    return true
+}
+
+// Up/Down while the places column has the keyboard.
+filebrowser_place_move :: proc(br: ^FileBrowser, d: int) {
+    if len(br.places) == 0 {
+        return
+    }
+    br.place_sel = clamp(br.place_sel + d, 0, len(br.places) - 1)
+}
+
+// Enter on the selected place. The columns swap back, because the point of going there was to
+// look at what is in it.
+filebrowser_place_activate :: proc(a: ^App) -> bool {
+    br := browse_target(a)
+    if br == nil || !br.on_places || len(br.places) == 0 {
+        return false
+    }
+    filebrowser_navigate(br, &a.tree, br.places[clamp(br.place_sel, 0, len(br.places) - 1)].path)
+    br.on_places = false
+    return true
+}
+
+// Space. The line opens holding the browsed directory, and Space again drops it unchanged —
+// the same escape hatch Escape gives, on the key that opened it.
+filebrowser_path_toggle :: proc(a: ^App) -> bool {
+    if browse_target(a) == nil {
+        return false
+    }
+    if a.filebrowser.path_edit {
+        filebrowser_path_cancel(a)
+    } else {
+        filebrowser_path_open(a)
+    }
+    return true
+}
+
 filebrowser_place_open :: proc(a: ^App, n: int) {
     br := &a.filebrowser
     if n >= 1 && n <= len(br.places) {
@@ -446,7 +494,9 @@ filebrowser_declare :: proc(a: ^App, face: gfx.Face, pane: gfx.Rect, top: int, o
                 for p, i in br.places {
                     here := p.path == ft.dir
                     bg: clay.Color
-                    if ui.hover_shown(u) && i == br.hover_place {
+                    if br.on_places && i == br.place_sel {
+                        bg = ui.clay_rgb(th.separator) // the keyboard is here
+                    } else if ui.hover_shown(u) && i == br.hover_place {
                         bg = ui.clay_rgb(ui.hover_bg(th))
                     }
                     if clay.UI(clay.ID("fb_place", u32(i)))(
@@ -498,8 +548,14 @@ filebrowser_declare :: proc(a: ^App, face: gfx.Face, pane: gfx.Rect, top: int, o
     }
 }
 
-// Every button is square — `SizingFixed(bar_h)` on both axes — which keeps the icons on a
-// common baseline at any zoom.
+// A button is square at bar_h, which keeps the icons on a common baseline at any zoom — but never
+// narrower than the icon plus an edge either side. A pixel bar is many times the height of a
+// glyph, so the square already has the room; a grid's bar is ONE ROW, and three square buttons
+// there are three touching cells with the icons jammed against each other and the pane border.
+@(private = "file")
+filebrowser_btn_w :: proc(bar_h: i32, cw, line_h: f32) -> f32 {
+    return max(f32(bar_h), cw + f32(2 * gfx.edge(line_h)))
+}
 @(private = "file")
 filebrowser_declare_bar :: proc(a: ^App, bar: gfx.Rect, bar_h, lh: i32, cw: f32, now: f64) {
     u := ctx_of(a)
@@ -518,9 +574,9 @@ filebrowser_declare_bar :: proc(a: ^App, bar: gfx.Rect, bar_h, lh: i32, cw: f32,
             backgroundColor = ui.clay_rgb(th.border_light),
         },
     ) {
-        filebrowser_declare_btn(u, br, .Back, FB_ICON_BACK, filebrowser_can_back(br), bar_h, lh)
-        filebrowser_declare_btn(u, br, .Forward, FB_ICON_FWD, filebrowser_can_forward(br), bar_h, lh)
-        filebrowser_declare_btn(u, br, .Reload, FB_ICON_RELOAD, true, bar_h, lh)
+        filebrowser_declare_btn(u, br, .Back, FB_ICON_BACK, filebrowser_can_back(br), bar_h, lh, cw)
+        filebrowser_declare_btn(u, br, .Forward, FB_ICON_FWD, filebrowser_can_forward(br), bar_h, lh, cw)
+        filebrowser_declare_btn(u, br, .Reload, FB_ICON_RELOAD, true, bar_h, lh, cw)
 
         if clay.UI(clay.ID("fb_path"))(
             {
@@ -550,7 +606,7 @@ filebrowser_declare_bar :: proc(a: ^App, bar: gfx.Rect, bar_h, lh: i32, cw: f32,
         // The toggle shows the view it would give you, not the one you are in: a button is a
         // verb.
         icon := br.view == .List ? FB_ICON_GRID : FB_ICON_LIST
-        filebrowser_declare_btn(u, br, .View, icon, true, bar_h, lh)
+        filebrowser_declare_btn(u, br, .View, icon, true, bar_h, lh, cw)
     }
 }
 
@@ -587,7 +643,7 @@ filebrowser_declare_segs :: proc(u: ui.UI_Ctx, br: ^FileBrowser, segs: []Path_Se
 // A disabled button (no history behind [◀]) draws in the border colour and takes no hover tint,
 // but stays in place so the bar does not reflow as you navigate.
 @(private = "file")
-filebrowser_declare_btn :: proc(u: ui.UI_Ctx, br: ^FileBrowser, b: Browse_Btn, icon: string, enabled: bool, bar_h, lh: i32) {
+filebrowser_declare_btn :: proc(u: ui.UI_Ctx, br: ^FileBrowser, b: Browse_Btn, icon: string, enabled: bool, bar_h, lh: i32, cw: f32) {
     th := u.theme
     bg: clay.Color
     if enabled && ui.hover_shown(u) && br.hover_btn == b {
@@ -596,7 +652,7 @@ filebrowser_declare_btn :: proc(u: ui.UI_Ctx, br: ^FileBrowser, b: Browse_Btn, i
     if clay.UI(clay.ID("fb_btn", u32(b)))(
         {
             layout = {
-                sizing         = {clay.SizingFixed(f32(bar_h)), clay.SizingFixed(f32(bar_h))},
+                sizing         = {clay.SizingFixed(filebrowser_btn_w(bar_h, cw, f32(lh))), clay.SizingFixed(f32(bar_h))},
                 childAlignment = {x = .Center, y = .Center},
             },
             backgroundColor = bg,

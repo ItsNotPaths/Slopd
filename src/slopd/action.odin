@@ -100,6 +100,8 @@ Action :: enum {
     Browse_Reload,
     Browse_View,
     Browse_Place,
+    Browse_Column,
+    Browse_Path_Edit,
 
     // --- the image surface ---
     Media_Zoom_In,
@@ -333,7 +335,8 @@ action_run :: proc(a: ^App, act: Action, n: int, extend, all: bool) -> (handled:
          .File_Discard,
          .Parent:
         return file_run(a, act, extend)
-    case .Browse_Back, .Browse_Forward, .Browse_Reload, .Browse_View, .Browse_Place:
+    case .Browse_Back, .Browse_Forward, .Browse_Reload, .Browse_View, .Browse_Place,
+         .Browse_Column, .Browse_Path_Edit:
         return browse_run(a, act, n)
     case .Media_Zoom_In, .Media_Zoom_Out, .Media_Fit:
         return media_run(a, act)
@@ -461,6 +464,10 @@ browse_run :: proc(a: ^App, act: Action, n: int) -> bool {
         filebrowser_button(&a.filebrowser, &a.tree, .View) // the toggle button's keyboard twin
     case .Browse_Place:
         filebrowser_place_open(a, n + 1)
+    case .Browse_Column:
+        return filebrowser_column_toggle(a)
+    case .Browse_Path_Edit:
+        return filebrowser_path_toggle(a)
     }
     return true
 }
@@ -648,7 +655,9 @@ activate_run :: proc(a: ^App, extend: bool) -> bool {
         case extend:
             filetree_open_selected(a) // to the desktop, or stage its run command
         case browse_target(a) != nil:
-            filebrowser_activate(a) // into the folder, through the history
+            if !filebrowser_place_activate(a) {
+                filebrowser_activate(a) // into the folder, through the history
+            }
         case:
             filetree_activate_selected(a)
         }
@@ -837,6 +846,21 @@ config_open_selected :: proc(a: ^App, cp: ^ConfigPane) {
 @(private = "file")
 filetree_nav :: proc(a: ^App, ft: ^FileTree, n: Nav, extend: bool) {
     br := browse_target(a)
+    // The places column has its own selection and one row per place, so a grid step would
+    // overshoot it and a sweep means nothing there.
+    if br != nil && br.on_places {
+        #partial switch n {
+        case .Up:
+            filebrowser_place_move(br, -1)
+        case .Down:
+            filebrowser_place_move(br, 1)
+        case .Right:
+            filebrowser_place_activate(a)
+        case .Left:
+            br.on_places = false
+        }
+        return
+    }
     grid := br != nil && br.view == .Grid
     step := grid ? max(1, br.cols) : 1
     switch n {

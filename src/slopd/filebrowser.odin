@@ -59,6 +59,11 @@ FileBrowser :: struct {
     // Written where the hit is taken and read by the declaration: the hovered thing, one field
     // per kind of target (rule 6). `cols` is published for the keyboard, since Up/Down move by
     // a grid row and only the geometry knows how wide one is.
+    // Which column the KEYBOARD drives, and where it sits in the places list. Tab moves between
+    // them; the mouse reaches either without asking, so this is only ever about the arrows.
+    on_places: bool,
+    place_sel: int,
+
     hover_row:   int,
     hover_place: int,
     hover_seg:   int,
