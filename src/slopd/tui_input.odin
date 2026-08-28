@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:strings"
 import "vendor:glfw"
 import "../tty"
 import "../wake"
@@ -17,10 +18,13 @@ import "../wake"
 // as a broken one.
 Tui_Input :: struct {
     pending: [dynamic]u8,
+    paste:   [dynamic]u8, // content between the bracketed-paste markers
+    pasting: bool,
 }
 
 tui_input_destroy :: proc(in_: ^Tui_Input) {
     delete(in_.pending)
+    delete(in_.paste)
 }
 
 // Everything that has arrived, dispatched in order. True when anything was read, which is the
@@ -34,17 +38,60 @@ tui_input_pump :: proc(a: ^App, in_: ^Tui_Input, host: ^tty.Tty, buf: []u8) -> b
 
     used := 0
     for used < len(in_.pending) {
+        // Inside a paste the bytes are CONTENT, not keystrokes, and are taken verbatim: pasted
+        // text can hold anything, escape sequences included, and parsing it would run whatever
+        // it happened to spell.
+        if in_.pasting {
+            used += tui_take_paste(a, in_, in_.pending[used:])
+            if in_.pasting {
+                break // the end marker has not arrived
+            }
+            continue
+        }
         ev, size, res := tty.parse(in_.pending[used:])
         if res == .Incomplete || size == 0 {
             break // wait for the rest of it
         }
         used += size
-        if res == .Event {
+        #partial switch res {
+        case .Event:
             tui_dispatch(a, ev)
+        case .Paste_Begin:
+            in_.pasting = true
+            clear(&in_.paste)
         }
     }
     remove_range(&in_.pending, 0, used)
     return true
+}
+
+// Bytes up to the end marker, or all of them when it has not arrived. Returns how many were
+// taken. What is held back is only ever a partial end marker.
+@(private = "file")
+tui_take_paste :: proc(a: ^App, in_: ^Tui_Input, rest: []u8) -> int {
+    if at := strings.index(string(rest), tty.PASTE_END); at >= 0 {
+        append(&in_.paste, ..rest[:at])
+        in_.pasting = false
+        tui_paste(a, string(in_.paste[:]))
+        clear(&in_.paste)
+        return at + len(tty.PASTE_END)
+    }
+    keep := max(0, len(rest) - (len(tty.PASTE_END) - 1))
+    append(&in_.paste, ..rest[:keep])
+    return keep
+}
+
+// Where a paste goes is the surface's business, so it goes through the same clip_put a bound
+// paste does. The content stands in for the clipboard read rather than replacing the clipboard:
+// pasting is not copying, and it must not overwrite what you last cut.
+@(private = "file")
+tui_paste :: proc(a: ^App, text: string) {
+    if text == "" {
+        return
+    }
+    a.paste_in = text
+    defer a.paste_in = ""
+    clip_put(a)
 }
 
 // The key first and the text second, which is the order GLFW fires its two callbacks in: a bind

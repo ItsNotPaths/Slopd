@@ -61,10 +61,17 @@ Key_Event :: struct {
 }
 
 Parse_Result :: enum {
-    None,       // nothing usable at the front of the buffer
-    Event,      // `ev` is filled and `n` bytes are consumed
-    Incomplete, // a sequence has begun but has not finished arriving
+    None,        // nothing usable at the front of the buffer
+    Event,       // `ev` is filled and `n` bytes are consumed
+    Paste_Begin, // the terminal is about to send clipboard content, not keystrokes
+    Paste_End,
+    Incomplete,  // a sequence has begun but has not finished arriving
 }
+
+// The terminal wraps a paste in these when ?2004h is on. Everything between them is CONTENT:
+// a newline in it is a line break rather than Enter, and a `:` does not open the command line.
+PASTE_BEGIN :: "\e[200~"
+PASTE_END :: "\e[201~"
 
 // One event off the front of `buf`. Bytes that are not an escape sequence decode as text, which
 // is what a terminal that ignores the flags above still sends, and what bracketed paste is made
@@ -81,6 +88,17 @@ parse :: proc(buf: []u8) -> (ev: Key_Event, n: int, res: Parse_Result) {
         // real Escape arrives as CSI 27 u and this is the leading byte of something unfinished.
         return {}, 0, .Incomplete
     }
+    if buf[1] == '[' {
+        for m in ([]struct{want: string, res: Parse_Result}{{PASTE_BEGIN, .Paste_Begin}, {PASTE_END, .Paste_End}}) {
+            switch match(buf, m.want) {
+            case .Full:
+                return {}, len(m.want), m.res
+            case .Partial:
+                return {}, 0, .Incomplete
+            case .Miss:
+            }
+        }
+    }
     if buf[1] != '[' {
         return {}, 1, .None // an escape sequence we do not speak; drop the ESC and resync
     }
@@ -92,6 +110,25 @@ parse :: proc(buf: []u8) -> (ev: Key_Event, n: int, res: Parse_Result) {
 @(private = "file")
 is_private_use :: proc(c: i32) -> bool {
     return (c >= 0xE000 && c <= 0xF8FF) || (c >= 0xF0000 && c <= 0x10FFFD)
+}
+
+@(private = "file")
+Match :: enum {
+    Miss,
+    Partial, // as far as it goes, it matches; the rest has not arrived
+    Full,
+}
+
+// Partial is not a miss. A paste marker split across two reads would otherwise be handed to the
+// CSI parser, which would eat it and hand the content to the bind table. `\e[20` is a prefix of
+// both `\e[200~` and F9's `\e[20~`, so one more byte is genuinely needed to tell them apart.
+@(private = "file")
+match :: proc(buf: []u8, want: string) -> Match {
+    n := min(len(buf), len(want))
+    if string(buf[:n]) != want[:n] {
+        return .Miss
+    }
+    return n == len(want) ? .Full : .Partial
 }
 
 @(private = "file")

@@ -84,6 +84,7 @@ enter :: proc(t: ^Tty) -> bool {
     // and a glyph in the last column must not scroll the screen out from under the next row.
     write(t, "\e[?1049h\e[?25l\e[?7l\e[2J")
     write(t, KITTY_PUSH)
+    write(t, "\e[?2004h") // bracketed paste: a pasted newline is text, not Enter
     return true
 }
 
@@ -94,6 +95,7 @@ leave :: proc(t: ^Tty) {
         return
     }
     t.entered = false
+    write(t, "\e[?2004l")
     write(t, KITTY_POP)
     write(t, "\e[?7h\e[?25h\e[0m\e[?1049l")
     posix.tcsetattr(t.fd, .TCSAFLUSH, &t.saved)

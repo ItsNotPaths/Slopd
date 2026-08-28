@@ -21,6 +21,9 @@ Clipboard :: struct {
 // Falls back to our own last copy, which is what a terminal answers with: OSC 52 is write-only,
 // so the system's clipboard is not readable and ours is the only one there is.
 clipboard_get :: proc(a: ^App) -> string {
+    if a.paste_in != "" {
+        return a.paste_in
+    }
     if a.clipboard.get == nil {
         return a.clip_joined
     }
@@ -90,6 +93,7 @@ clipboard_set :: proc(a: ^App, joined: string, pieces: []string) {
     if a.clipboard.set != nil {
         a.clipboard.set(a.clipboard.user, joined)
     }
+
     delete(a.clip_joined)
     for p in a.clip_pieces {
         delete(p)

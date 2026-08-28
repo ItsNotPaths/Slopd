@@ -693,7 +693,8 @@ clip_take :: proc(a: ^App, cut: bool) -> bool {
     return false
 }
 
-@(private = "file")
+// Not file-private: a bracketed paste arrives as input rather than as a bound action, and it goes
+// to the same surfaces by the same rules.
 clip_put :: proc(a: ^App) -> bool {
     kind, d := active_editable(a)
     switch kind {

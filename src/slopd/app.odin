@@ -54,6 +54,10 @@ Pane_Vis :: struct {
 App :: struct {
     // The system clipboard, installed by whichever front-end is up. See Clipboard.
     clipboard: Clipboard,
+    // What a bracketed paste delivered. That IS the clipboard read for the paste it belongs to,
+    // since the terminal already did the reading, so clipboard_get answers with it while it is
+    // set. Lives for one clip_put and is cleared after.
+    paste_in:  string,
     // Set by :q and friends. A front-end ends its own session on it: the window closes, the
     // terminal leaves the alternate screen. Neither knows how the other stops.
     quit:     bool,

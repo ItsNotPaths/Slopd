@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "../clip"
 import "../gfx"
 import "../tty"
 import "../wake"
@@ -51,7 +52,7 @@ tui_run :: proc(args: []string) {
         fmt.eprintfln("slopd: no such path: %s", launch.path)
     }
 
-    a.clipboard = {set = tui_clipboard_set, user = &host} // no get: OSC 52 is write-only
+    a.clipboard = {get = tui_clipboard_get, set = tui_clipboard_set, user = &host}
 
     ui.frame_budget = TUI_FRAME_BUDGET
     input: Tui_Input
@@ -91,12 +92,24 @@ tui_run :: proc(args: []string) {
     }
 }
 
-// Out to the terminal, which puts it on the system clipboard. Reading back is not offered, so
-// clipboard_get falls through to our own last copy; a paste FROM another program arrives as
-// bracketed paste through input instead.
+// The platform's own clipboard tool where there is one, and OSC 52 where there is not. The split
+// is not local-versus-remote by accident: over SSH there is no wl-copy to run and no display to
+// run it against, and the clipboard worth writing to is on the machine the terminal is on, which
+// is exactly the one OSC 52 reaches.
 @(private = "file")
 tui_clipboard_set :: proc(user: rawptr, s: string) {
+    if clip.set(s) {
+        return
+    }
     tty.clipboard_set((^tty.Tty)(user), s)
+}
+
+// "" when there is no tool, and clipboard_get then falls through to our own last copy. OSC 52
+// has a read form and it is not used: it lets any program on the terminal read your clipboard,
+// which is why terminals disable it. A paste from elsewhere arrives as bracketed paste instead.
+@(private = "file")
+tui_clipboard_get :: proc(user: rawptr) -> string {
+    return clip.get()
 }
 
 // `--tui` anywhere in the arguments. Checked before the window is opened, and it is a front-end
