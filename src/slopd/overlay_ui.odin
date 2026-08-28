@@ -54,7 +54,11 @@ switcher_shown :: proc(a: ^App) -> bool {
 // Two digits wide plus padding, never wider than the pane. The one source every phase sizes
 // itself from.
 switcher_geom :: proc(area: gfx.Rect, line_h, cell_w: f32) -> (colw, row_h: i32, rows: int) {
-    colw = min(i32(cell_w * 2) + gfx.pad(line_h, SWITCHER_COL_PAD), area.w)
+    margin := gfx.pad(line_h, SWITCHER_COL_PAD)
+    if margin == 0 {
+        margin = 2 * gfx.gap(cell_w)
+    }
+    colw = min(i32(cell_w * 2) + margin, area.w)
     row_h = i32(line_h) + gfx.pad(line_h, SWITCHER_ROW_PAD)
     if area.h <= 0 || row_h <= 0 {
         return colw, row_h, 0

@@ -175,7 +175,7 @@ cell_text_string :: proc(c: ^Cell_Draw, s: string, x, y: f32, fg: [3]f32) {
 @(private)
 cell_flush_pane :: proc(c: ^Cell_Draw, clip: Rect) {
     for q in c.under {
-        cell_paint_bg(c, rect_isect(q.r, clip), q.c)
+        cell_paint_fill(c, rect_isect(q.r, clip), q.c)
     }
     for run in c.runs {
         for i in 0 ..< run.n {
@@ -183,7 +183,7 @@ cell_flush_pane :: proc(c: ^Cell_Draw, clip: Rect) {
         }
     }
     for q in c.over {
-        cell_paint_bg(c, rect_isect(q.r, clip), q.c)
+        cell_paint_over(c, rect_isect(q.r, clip), q.c)
     }
     clear(&c.under)
     clear(&c.runs)
@@ -191,8 +191,29 @@ cell_flush_pane :: proc(c: ^Cell_Draw, clip: Rect) {
     clear(&c.scratch)
 }
 
+// A fill COVERS what is under it, so it clears the runes as well as setting the colour. Without
+// that, a badge drawn over a terminal keeps the terminal's characters and reads as "C3" where it
+// should read " 3 " — the pane below bleeds through its own overlay.
+//
+// Safe against the layer order this backend promises: every fill in a flush composites before
+// every glyph run, so a pane's own text is written after its own background whichever order the
+// two were declared in.
 @(private = "file")
-cell_paint_bg :: proc(c: ^Cell_Draw, r: Rect, col: [3]f32) {
+cell_paint_fill :: proc(c: ^Cell_Draw, r: Rect, col: [3]f32) {
+    for y in r.y ..< r.y + r.h {
+        for x in r.x ..< r.x + r.w {
+            if cell := cell_at(c, x, y); cell != nil {
+                cell^ = Cell{r = ' ', fg = col, bg = col}
+                c.painted += 1
+            }
+        }
+    }
+}
+
+// A caret MARKS a cell rather than covering it: the character under a block cursor is still the
+// character you are on, so only the colour changes.
+@(private = "file")
+cell_paint_over :: proc(c: ^Cell_Draw, r: Rect, col: [3]f32) {
     for y in r.y ..< r.y + r.h {
         for x in r.x ..< r.x + r.w {
             if cell := cell_at(c, x, y); cell != nil {
