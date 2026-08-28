@@ -206,6 +206,17 @@ gl_fill :: proc(t: ^GL_Draw, r: Rect, c: [3]f32) {
 }
 
 // Above the glyphs: carets, which sit on top of the text on their column.
+// Four bars just inside the rect, which is the 2px focus ring panel used to draw by filling and
+// insetting.
+@(private)
+gl_border :: proc(t: ^GL_Draw, r: Rect, c: [3]f32) {
+    w := edge(t.font.line_height)
+    gl_fill(t, Rect{r.x, r.y, r.w, w}, c)
+    gl_fill(t, Rect{r.x, r.y + r.h - w, r.w, w}, c)
+    gl_fill(t, Rect{r.x, r.y, w, r.h}, c)
+    gl_fill(t, Rect{r.x + r.w - w, r.y, w, r.h}, c)
+}
+
 @(private)
 gl_caret :: proc(t: ^GL_Draw, r: Rect, c: [3]f32) {
     if r.w > 0 && r.h > 0 {

@@ -162,18 +162,7 @@ finish_csi :: proc(fields: [3][2]i32, seen: bool, final: u8, n: int) -> (Key_Eve
             return {}, n, .None
         }
         ev.form = .Codepoint
-        ev.code = fields[0][0]
-        // Without the associated-text field, an UNMODIFIED character key still inserts what it
-        // says it is. Three exclusions, each one a real key that would otherwise type garbage:
-        //
-        //   below 32     control codes; Enter and Tab are keys, not characters
-        //   private use  where the protocol puts every key that HAS no character, so a bare
-        //                Alt press would insert U+E063 and dirty the buffer
-        //   shift        the protocol reports the UNSHIFTED code, so Shift+A arrives as 97 and
-        //                this would type a lower-case one
-        //
-        // Flag 16 means the text field is normally present anyway; this is the fallback for a
-        // terminal that gave us less than we asked for.
+        ev.code = fields[0][0] // kitty protocol exclusions
         if ev.text == 0 && ev.mods == 0 && ev.code >= 32 && !is_private_use(ev.code) {
             ev.text = rune(ev.code)
         }
@@ -187,7 +176,7 @@ finish_csi :: proc(fields: [3][2]i32, seen: bool, final: u8, n: int) -> (Key_Eve
         ev.form = .Letter
         ev.code = i32(final)
     case:
-        return {}, n, .None // some other CSI: a mouse report, a status reply, not ours
+        return {}, n, .None // some other csi, mouse report, status reply
     }
     return ev, n, .Event
 }

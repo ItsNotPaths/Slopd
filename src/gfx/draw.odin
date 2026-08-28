@@ -120,6 +120,17 @@ fill :: proc(d: ^Draw, r: Rect, c: [3]f32) {
     }
 }
 
+// A rect's edge. A pixel backend draws the thin ring it always did; a grid draws box-drawing
+// glyphs, because its thinnest quad is a whole cell and would read as a solid bar.
+border :: proc(d: ^Draw, r: Rect, c: [3]f32) {
+    switch &b in d.backend {
+    case GL_Draw:
+        gl_border(&b, r, c)
+    case Cell_Draw:
+        cell_border(&b, r, c)
+    }
+}
+
 // Above the glyphs: carets, which sit on top of the text on their column.
 caret :: proc(d: ^Draw, r: Rect, c: [3]f32) {
     switch &b in d.backend {

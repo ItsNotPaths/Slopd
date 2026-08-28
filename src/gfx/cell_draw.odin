@@ -111,6 +111,44 @@ cell_caret :: proc(c: ^Cell_Draw, r: Rect, col: [3]f32) {
     }
 }
 
+// Light triple-dash. Unicode has no dashed corners, so the joins are the solid light ones.
+@(private = "file")
+BORDER_H :: '┄'
+@(private = "file")
+BORDER_V :: '┆'
+
+// A rect's edge as glyphs, which is what a grid has instead of a thin quad: a filled border cell
+// would be a solid block a whole cell wide, far heavier than the 2px line it stands in for.
+@(private)
+cell_border :: proc(c: ^Cell_Draw, r: Rect, col: [3]f32) {
+    if r.w < 2 || r.h < 2 {
+        return
+    }
+    x1, y1 := r.x + r.w - 1, r.y + r.h - 1
+    cell_repeat(c, BORDER_H, int(r.w - 2), r.x + 1, r.y, col)
+    cell_repeat(c, BORDER_H, int(r.w - 2), r.x + 1, y1, col)
+    for y in r.y + 1 ..< y1 {
+        cell_repeat(c, BORDER_V, 1, r.x, y, col)
+        cell_repeat(c, BORDER_V, 1, x1, y, col)
+    }
+    cell_repeat(c, '┌', 1, r.x, r.y, col)
+    cell_repeat(c, '┐', 1, x1, r.y, col)
+    cell_repeat(c, '└', 1, r.x, y1, col)
+    cell_repeat(c, '┘', 1, x1, y1, col)
+}
+
+@(private = "file")
+cell_repeat :: proc(c: ^Cell_Draw, r: rune, n: int, x, y: i32, fg: [3]f32) {
+    if n <= 0 {
+        return
+    }
+    at := len(c.scratch)
+    for _ in 0 ..< n {
+        append(&c.scratch, r)
+    }
+    append(&c.runs, Cell_Run{x, y, at, n, fg})
+}
+
 @(private)
 cell_text :: proc(c: ^Cell_Draw, runes: []rune, x, y: f32, fg: [3]f32) {
     if len(runes) == 0 {
