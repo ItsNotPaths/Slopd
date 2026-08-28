@@ -457,10 +457,6 @@ editor_paint_body :: proc(t: ^gfx.Draw, r, clip: gfx.Rect, win_w, win_h: i32, ho
         if a.show_guides {
             draw_indent_guides(t, b, line, text_x, y, row_h, cw, unit, th, scope)
         }
-        if a.show_whitespace {
-            draw_whitespace(t, cells.runes, text_x, f32(y), row_h, cw, lh, th.whitespace)
-        }
-
         // Culled to the visible columns. The colour row is one entry per rune, so the same
         // window indexes both — but only once its length is known to match.
         k := line - v.top // highlight rows are absolute-line based
@@ -474,8 +470,14 @@ editor_paint_body :: proc(t: ^gfx.Draw, r, clip: gfx.Rect, win_w, win_h: i32, ho
             gfx.text_draw_runes(t, cells.runes[lo:hi], rx, ty, th.fg)
         }
 
+        // AFTER the line, not before it: these are glyphs now, and the line's own spaces would
+        // overwrite them in a grid where the last rune written to a cell is the one you see.
+        if a.show_whitespace {
+            draw_whitespace(t, cells.runes, text_x, f32(y), cw, th.whitespace)
+        }
+
         if edit.buffer_fold_index(b, line) >= 0 {
-            draw_fold_marker(t, text_x + cw * (f32(ncells) + 0.5), f32(y), lh, th.accent)
+            draw_fold_marker(t, text_x + cw * (f32(ncells) + 0.5), f32(y), th.accent)
         }
 
         if ui.caret_blink_on(ctx_of(a), e.now) {
@@ -595,38 +597,30 @@ draw_find_marks :: proc(t: ^gfx.Draw, f: ^Find, line: int, cells: txt.Cells, tex
     }
 }
 
-// Over a line's LEADING indentation only: a centred dot per space, a short stroke per tab.
-// y is the row top; row_h the padded row height.
+// A dot per space, a stroke per tab, over a line's LEADING indentation only. GLYPHS rather than
+// small filled rects: a grid's smallest rect is a whole cell, so the dots came out as solid
+// blocks the width of the character they were marking.
+WS_DOT :: '·'
+WS_TAB :: '─'
+
 @(private = "file")
-draw_whitespace :: proc(t: ^gfx.Draw, runes: []rune, text_x, y: f32, row_h: i32, cw, line_h: f32, color: [3]f32) {
+draw_whitespace :: proc(t: ^gfx.Draw, runes: []rune, text_x, y, cw: f32, color: [3]f32) {
+    marks: [1]rune
     for r, col in runes {
         if r != ' ' && r != '\t' {
             break
         }
-        cx := text_x + cw * f32(col)
-        if r == ' ' {
-            d := max(1, gfx.hairline(line_h))
-            dx := i32(cx + (cw - f32(d)) / 2)
-            dy := i32(y) + (row_h - d) / 2
-            gfx.fill(t, gfx.Rect{dx, dy, d, d}, color)
-        } else { // tab: a short centred stroke
-            h := max(1, gfx.hairline(line_h))
-            sx := i32(cx + cw * 0.2)
-            sy := i32(y) + (row_h - h) / 2
-            gfx.fill(t, gfx.Rect{sx, sy, i32(cw * 0.6), h}, color)
-        }
+        marks[0] = r == ' ' ? WS_DOT : WS_TAB
+        gfx.text_draw_runes(t, marks[:], text_x + cw * f32(col), y, color)
     }
 }
 
-// Three dots trailing a folded header line.
+// Trailing a folded header line. Three separate dots rather than the one ellipsis glyph, so it
+// reads at the same weight as the whitespace marks.
 @(private = "file")
-draw_fold_marker :: proc(t: ^gfx.Draw, x, y, lh: f32, color: [3]f32) {
-    d := max(1, gfx.hairline(lh))
-    cy := i32(y + lh / 2) - d / 2
-    for k in 0 ..< 3 {
-        dx := i32(x + f32(k) * f32(d + gfx.hairline(lh)))
-        gfx.fill(t, gfx.Rect{dx, cy, d, d}, color)
-    }
+draw_fold_marker :: proc(t: ^gfx.Draw, x, y: f32, color: [3]f32) {
+    marks := [3]rune{WS_DOT, WS_DOT, WS_DOT}
+    gfx.text_draw_runes(t, marks[:], x, y, color)
 }
 
 // Runs of one colour each; monospace makes each run's x pure arithmetic. A mismatched colour
