@@ -65,6 +65,12 @@ filetree_discard_selected :: proc(a: ^App) {
 // xdg-open, except for anything RUNNABLE: that stages its command instead, since running with
 // arguments is a decision worth reading first.
 filetree_open_selected :: proc(a: ^App) {
+    // As a file dialog this chord means "this is the one", and it stages rather than answering
+    // so the name can be edited first. Ahead of everything: a runnable is a file to return too.
+    if pick_live(a) {
+        pick_stage(a, pick_targets(a))
+        return
+    }
     e := filetree_selected(&a.tree)
     if e == nil || e.name == ".." {
         return

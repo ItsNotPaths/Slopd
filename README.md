@@ -112,6 +112,7 @@ gesture renders in the alert colour until you touch it.
 | `:w <path>` | write a COPY there and stay on this file, as vim does; `:w! <path>` overwrites an existing one. A buffer with NO file is NAMED instead: it takes the path and is saved |
 | `:discard [file]` | throw a buffer's unsaved edits away and take the disk version back |
 | `:saved` | the tail of the staged sudo save: mark clean IF the disk already holds this buffer |
+| `:return [path...]` | only while Slopd is somebody's file dialog: answer with these paths and quit. No path takes the marks, or the row under the cursor. `:return!` overwrites in save mode |
 | `:crlf` | flip this buffer between CRLF and LF line endings; the modeline says `CRLF` |
 
 **Saving a file you do not own.** `Ctrl+S` (or `:w`) on a file the filesystem refuses does not
@@ -165,6 +166,29 @@ want them back in step (`^h` in the file panes is those two builtins in one keys
 <td colspan="2"><b>Image viewer</b>, opening an image flips the main pane to the media surface. Wheel zooms about the pointer, drag pans, double-click refits.<br><img src="imgs/media.png"></td>
 </tr>
 </table>
+
+## File dialog
+
+Slopd will stand in as another program's Save As / Open dialog. It is `--util` with one extra
+verb: browse as usual, and `:return` writes the chosen paths to the file named by `--pick-out`,
+one absolute path per line, then quits.
+
+```sh
+slopd --pick=save --pick-out=/tmp/answer --pick-name=cat.png --pick-title=firefox --~/Downloads
+```
+
+`Shift+Enter` on a row STAGES `:return <path>` in the command line rather than answering with
+it, and a save arrives with that line already staged against the suggested name. So the common
+gesture is Enter, and the useful one is editing the tail first: turn `cat.png` into `cat-2.png`
+and you have saved beside the original instead of over it.
+
+Every other way out is a cancel — `Esc`, `:q`, closing the window, a kill — because a cancel is
+simply nothing written. Overwriting an existing file in save mode takes `:return!`, the same
+bang `:w!` carries.
+
+Nothing in Slopd knows who asked. Whatever started us reads the file back. That keeps the
+transport somebody else's problem: a D-Bus portal, a kipp consumer and a shell script all drive
+it the same way.
 
 ## Install
 
@@ -320,6 +344,9 @@ slopd --health [lang]        # ✓/✗ table
 | `--desktop [add\|remove]` | file `slopd.desktop` and its icon under `~/.local/share`, or take them back off |
 | `--where` | the mode in force, and every path in use |
 | `--util` | launch into Full on the aux pane (filetree fills the window) |
+| `--pick=open\|save\|dir` | run as somebody's file dialog — see **File dialog** |
+| `--pick-out=<file>` | where `:return` writes the answer |
+| `--pick-name=` `--pick-title=` `--pick-multi` | a save's suggested filename · who is asking · allow more than one file |
 | `--perflog` | append per-second frame timings to `perf.log` (in the data folder) |
 | `--sysbus` | *(parked/WIP)* print one D-Bus snapshot of the watched system services, then exit |
 | `$SLOPD_FONT` | `.ttf` to use instead of the bundled Iosevka subset |

@@ -432,6 +432,8 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         cl_tu(a)
     case "color", "colour", "colors", "colours":
         cl_color(a)
+    case "return", "return!":
+        cl_return(a, name == "return!", args)
     case "w", "w!", "wa", "q", "q!", "wq", "wqa", "waq":
         cl_quit(a, name, args)
     case:
@@ -677,7 +679,6 @@ cl_cd :: proc(a: ^App, args: string) {
 
 // `~`, `~/x`, project-root-relative or absolute -> absolute cleaned path, owned by the caller.
 // Existence is the caller's check.
-@(private = "file")
 cl_resolve_path :: proc(a: ^App, arg: string) -> string {
     home := os.get_env("HOME", context.temp_allocator)
     raw: string

@@ -111,6 +111,10 @@ App :: struct {
     file_pane:   File_Pane,
     file_icons:  bool, // inert without the vendored icon face
 
+    // Set when we were started as somebody's file dialog (pick.odin). .None the rest of the
+    // time, and every gesture it adds asks pick_live first.
+    pick:        Pick,
+
     // Which front-end a bare `slopd` opens (config `default_display`). Read before this App
     // exists, so it is held only for the Config pane to show and edit.
     default_display: Display,
@@ -406,6 +410,7 @@ app_destroy :: proc(a: ^App) {
     find_destroy(&a.find)
     ctxmenu_destroy(a)
     search.grep_destroy(&a.grep)
+    pick_destroy(&a.pick)
     delete(a.project_root)
     delete(a.theme_path)
     delete(a.git_tool)

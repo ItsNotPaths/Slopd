@@ -189,9 +189,15 @@ strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
     dx := f32(pad)
 
     // No editor on screen: name the aux pane. The rest is about a document, and there is none.
+    // A file dialog says what it wants instead, in the accent, because that is the one thing
+    // about this window that is not ordinary.
     if !panes_visible(a).editor {
+        label, col := aux_mode_name(a.aux_mode), th.muted
+        if pick_live(a) {
+            label, col = pick_label(a), th.accent
+        }
         if clay.UI(clay.ID("st_left"))(strip_slot(.LeftCenter, dx)) {
-            clay.Text(aux_mode_name(a.aux_mode), ui.clay_text_config(th.muted, lh))
+            clay.Text(label, ui.clay_text_config(col, lh))
         }
         return
     }

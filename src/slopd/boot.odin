@@ -91,6 +91,7 @@ app_poll :: proc(a: ^App, now: f64) {
 //
 //   --util     launch into Full on the aux pane, so the filetree fills the surface
 //   --perflog  append a per-second frame-timing line to perf.log
+//   --pick=*   run as somebody's file dialog; see pick.odin for the whole family
 //   --<path>   a directory becomes the workspace, a file opens with its folder as one
 //
 // The path case is a CATCH-ALL, so every other flag has to be named above it or it is read as a
@@ -99,6 +100,13 @@ Launch_Args :: struct {
     path:    string, // "" for none
     util:    bool,
     perflog: bool,
+
+    // The file-dialog family. `pick` alone decides whether we are one; the rest fill it in.
+    pick:       Pick_Mode,
+    pick_out:   string, // where the answer is written
+    pick_name:  string, // a save's suggested filename
+    pick_title: string, // who is asking
+    pick_multi: bool,
 }
 
 parse_launch_args :: proc(args: []string) -> (out: Launch_Args) {
@@ -108,6 +116,16 @@ parse_launch_args :: proc(args: []string) -> (out: Launch_Args) {
             out.util = true
         case arg == "--perflog":
             out.perflog = true
+        case strings.has_prefix(arg, "--pick="):
+            out.pick = pick_mode_parse(arg[len("--pick="):])
+        case strings.has_prefix(arg, "--pick-out="):
+            out.pick_out = arg[len("--pick-out="):]
+        case strings.has_prefix(arg, "--pick-name="):
+            out.pick_name = arg[len("--pick-name="):]
+        case strings.has_prefix(arg, "--pick-title="):
+            out.pick_title = arg[len("--pick-title="):]
+        case arg == "--pick-multi":
+            out.pick_multi = true
         case arg == "--tui", arg == "--gfx": // front-end selectors, not paths
         case strings.has_prefix(arg, "--cell-dump"): // handled by cell_dump_cli
         case len(arg) > 2 && strings.has_prefix(arg, "--"):
@@ -147,6 +165,11 @@ app_launch :: proc(a: ^App, args: Launch_Args) -> (ok: bool) {
     if args.util {
         a.view = .Full
         a.focus = .Aux
+    }
+    // Last: it wants Full on the file pane too, and it stages a line against the folder the
+    // path argument just settled.
+    if args.pick != .None {
+        pick_begin(a, args)
     }
     return
 }
