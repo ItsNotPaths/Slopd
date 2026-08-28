@@ -1,6 +1,5 @@
 package tests
 
-import app ".."
 import "core:math/rand"
 import "core:testing"
 import "../txt"

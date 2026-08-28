@@ -1,6 +1,5 @@
 package tests
 
-import app ".."
 import "core:testing"
 import "../txt"
 

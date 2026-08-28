@@ -1,4 +1,4 @@
-package main
+package pty
 
 import "base:runtime"
 import "core:c"
@@ -7,10 +7,11 @@ import "core:strings"
 import "core:sync"
 import "core:sys/posix"
 import "core:thread"
-import vt "../bindings/libvterm"
+import vt "../../bindings/libvterm"
 import "vendor:glfw"
-import "wake"
-import "txt"
+import "../wake"
+import "../txt"
+import "../ui"
 
 // A terminal session: the libvterm VT state machine plus the PTY and child shell. A
 // per-session reader thread does the one blocking read() on the master fd; vterm_* stays
@@ -187,9 +188,9 @@ terminal_color :: proc(t: ^Terminal, col: vt.Color) -> (rgb: [3]f32, is_default:
 vt_color :: proc(rgb: [3]f32) -> vt.Color {
     return vt.Color {
         type  = 0, // RGB: type bit clear, no default flags
-        red   = u8(clampf(rgb.r, 0, 1) * 255),
-        green = u8(clampf(rgb.g, 0, 1) * 255),
-        blue  = u8(clampf(rgb.b, 0, 1) * 255),
+        red   = u8(clamp(rgb.r, 0, 1) * 255),
+        green = u8(clamp(rgb.g, 0, 1) * 255),
+        blue  = u8(clamp(rgb.b, 0, 1) * 255),
     }
 }
 
@@ -717,7 +718,7 @@ terminal_enable_scrollback :: proc(t: ^Terminal) {
 }
 
 // We track ALTSCREEN and MOUSE. While a TUI is up it owns scrolling, so PageUp routes there
-// (input.odin). "c" callback on the main thread — a flag write, no context needed.
+// (src/slopd/input.odin). "c" callback on the main thread — a flag write, no context needed.
 @(private = "file")
 term_settermprop_cb :: proc "c" (prop: c.int, val: rawptr, user: rawptr) -> c.int {
     t := (^Terminal)(user)
@@ -922,7 +923,7 @@ terminal_alive :: proc(t: ^Terminal) -> bool {
 
 
 // --- input routing --- A focused live terminal owns bare + Ctrl keys; Alt stays global
-// (input.odin takes it first), so the shell never sees an Alt-chord.
+// (src/slopd/input.odin takes it first), so the shell never sees an Alt-chord.
 
 
 
@@ -937,7 +938,7 @@ terminal_input_rune :: proc(t: ^Terminal, r: rune) {
 terminal_input_key :: proc(t: ^Terminal, key, mods: i32) {
     // A bare modifier press must not reset, or Ctrl+Shift+C would drop the selection before
     // the copy fires.
-    if !key_is_modifier(key) {
+    if !ui.key_is_modifier(key) {
         terminal_sel_reset(t)
     }
     vk: vt.Key

@@ -1,9 +1,10 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:testing"
 import "vendor:glfw"
 import "../txt"
+import "../pty"
 
 @(private = "file")
 mkdoc :: proc(s: string) -> txt.Doc {
@@ -42,7 +43,7 @@ test_copy_line_when_no_selection :: proc(t: ^testing.T) {
 // is the question both halves ask, so the copy and the fall-through can never disagree.
 @(test)
 test_term_has_span_decides_copy_or_interrupt :: proc(t: ^testing.T) {
-    term: app.Terminal
+    term: pty.Terminal
     testing.expect(t, !app.term_has_span(&term), "a fresh session has nothing to copy")
 
     term.sel_active = true // the keyboard's line range

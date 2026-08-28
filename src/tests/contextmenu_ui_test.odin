@@ -1,6 +1,6 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import clay "../../bindings/clay"
 import "core:testing"
 import "../gfx"
@@ -14,7 +14,7 @@ import "../ui"
 // either side. The menu below is 12 cells at its widest item, so 136px by 65px.
 
 @(private = "file")
-ITEMS := [?]app.Menu_Item {
+ITEMS := [?]ui.Menu_Item {
     {"Open", "Enter", .Open, true},
     {action = .None},
     {"Cut", "^x", .Cut, true},
@@ -49,7 +49,7 @@ test_ctxmenu_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, row_h, i32(20))
     testing.expect_value(t, sep_h, i32(5))
     testing.expect_value(t, pad, u16(8))
-    testing.expect_value(t, app.ctxmenu_width_cells(&a.ctxmenu), 12) // "Open" + 3 + "Enter"
+    testing.expect_value(t, ui.ctxmenu_width_cells(&a.ctxmenu), 12) // "Open" + 3 + "Enter"
 
     cmds := app.ctxmenu_layout(&a, &f, 600, 300)
 

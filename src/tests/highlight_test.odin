@@ -1,10 +1,11 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "../txt"
 import "core:fmt"
 import "core:strings"
 import "core:testing"
+import "../edit"
 
 // Syntax-highlighting tests, over the odin grammar. The suite builds its own grammars and
 // caches them; tests/grammars.odin owns that, and the skip-vs-fail policy with it.
@@ -41,9 +42,9 @@ main :: proc() {
 `
 
 @(private = "file")
-mkbuf :: proc() -> app.Buffer {
-    b: app.Buffer
-    app.buffer_set_text(&b, SNIPPET)
+mkbuf :: proc() -> edit.Buffer {
+    b: edit.Buffer
+    edit.buffer_set_text(&b, SNIPPET)
     b.path = strings.clone("demo.odin") // owned: buffer_destroy frees it
     return b
 }
@@ -62,7 +63,7 @@ test_highlight_semantic :: proc(t: ^testing.T) {
     }
     defer hl_app_destroy(&a)
     b := mkbuf()
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     rows := hl_rows(&a, &b)
     th := &a.theme
 
@@ -104,7 +105,7 @@ test_highlight_scroll_stable :: proc(t: ^testing.T) {
     }
     defer hl_app_destroy(&a)
     b := mkbuf()
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     n := txt.doc_line_count(&b.doc)
     // Snapshot the full-buffer paint (deep copy — the next highlight_visible frees it).
@@ -172,7 +173,7 @@ test_highlight_dump :: proc(t: ^testing.T) {
     }
     defer hl_app_destroy(&a)
     b := mkbuf()
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     app.highlight_dump_captures(&a, &b, 0, txt.doc_line_count(&b.doc))
 }
 
@@ -186,7 +187,7 @@ test_highlight_dump :: proc(t: ^testing.T) {
 
 // Settle the worker, then paint the whole buffer. The painter never waits, so a test that
 // asserts on one paint must wait for the tree first. Shared with highlight_stress_test.
-hl_rows :: proc(a: ^app.App, b: ^app.Buffer) -> []app.Row_Colors {
+hl_rows :: proc(a: ^app.App, b: ^edit.Buffer) -> []app.Row_Colors {
     app.hl_settle(a, b)
     return app.highlight_visible(a, b, 0, txt.doc_line_count(&b.doc))
 }
@@ -242,7 +243,7 @@ test_highlight_incremental_matches_full :: proc(t: ^testing.T) {
     defer hl_app_destroy(&a)
 
     live := mkbuf()
-    defer app.buffer_destroy(&live)
+    defer edit.buffer_destroy(&live)
 
     // Parse it whole once. The changes list is drained by that parse, which is the protocol:
     // the tree and the document are now in step.
@@ -265,9 +266,9 @@ test_highlight_incremental_matches_full :: proc(t: ^testing.T) {
     testing.expect(t, !lost1)
 
     // The same text, loaded fresh: nothing to be incremental about, so it parses whole.
-    ref: app.Buffer
-    defer app.buffer_destroy(&ref)
-    app.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
+    ref: edit.Buffer
+    defer edit.buffer_destroy(&ref)
+    edit.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
     ref.path = strings.clone("demo.odin")
 
     n := txt.doc_line_count(&live.doc)
@@ -293,7 +294,7 @@ test_highlight_incremental_through_typing :: proc(t: ^testing.T) {
     defer hl_app_destroy(&a)
 
     live := mkbuf()
-    defer app.buffer_destroy(&live)
+    defer edit.buffer_destroy(&live)
     txt.doc_reset_cursor(&live.doc, txt.Pos{11, 4}) // inside the `return a + b` body
 
     // Reparse after EVERY keystroke, as the painter does — so each one is an incremental step
@@ -304,9 +305,9 @@ test_highlight_incremental_through_typing :: proc(t: ^testing.T) {
     }
     got := clone_rows(hl_rows(&a, &live))
 
-    ref: app.Buffer
-    defer app.buffer_destroy(&ref)
-    app.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
+    ref: edit.Buffer
+    defer edit.buffer_destroy(&ref)
+    edit.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
     ref.path = strings.clone("demo.odin")
     want := hl_rows(&a, &ref)
     expect_rows_equal(t, got, want, "after a typed run")
@@ -323,7 +324,7 @@ test_highlight_incremental_through_undo :: proc(t: ^testing.T) {
     defer hl_app_destroy(&a)
 
     live := mkbuf()
-    defer app.buffer_destroy(&live)
+    defer edit.buffer_destroy(&live)
     n0 := txt.doc_line_count(&live.doc)
     base := clone_rows(hl_rows(&a, &live))
 
@@ -347,7 +348,7 @@ test_highlight_full_parse_when_changes_lost :: proc(t: ^testing.T) {
     defer hl_app_destroy(&a)
 
     live := mkbuf()
-    defer app.buffer_destroy(&live)
+    defer edit.buffer_destroy(&live)
     _ = hl_rows(&a, &live)
 
     // Edit past the cap with no reader keeping up — exactly what a buffer edited off-screen
@@ -363,9 +364,9 @@ test_highlight_full_parse_when_changes_lost :: proc(t: ^testing.T) {
     _, still_lost := hl_pending(&live.doc)
     testing.expect(t, !still_lost, "the reparse did not clear the loss")
 
-    ref: app.Buffer
-    defer app.buffer_destroy(&ref)
-    app.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
+    ref: edit.Buffer
+    defer edit.buffer_destroy(&ref)
+    edit.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
     ref.path = strings.clone("demo.odin")
     want := hl_rows(&a, &ref)
     expect_rows_equal(t, got, want, "after a lost change list")

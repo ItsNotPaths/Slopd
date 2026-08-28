@@ -1,10 +1,10 @@
-package main
+package search
 
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
-import "txt"
-import "ui"
+import "../txt"
+import "../ui"
 
 // The workspace jump list. Alt+P turns the file pane's top bar into a `WORKSPACE/` prompt: with
 // nothing typed the list under it is the open ring — unsaved first, then the rest — and the

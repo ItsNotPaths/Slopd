@@ -1,33 +1,34 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:testing"
 import "../txt"
+import "../edit"
 
 // Auto-indent + brace expansion on Enter (buffer_enter). No grammar is loaded for these
 // buffers (path is ""), so the tree-sitter string/comment gate is inert and these exercise
 // the pure bracket heuristic — exactly the no-grammar fallback path.
 
 @(private = "file")
-mkbuf :: proc(s: string) -> app.Buffer {
-    b: app.Buffer
-    app.buffer_set_text(&b, s)
+mkbuf :: proc(s: string) -> edit.Buffer {
+    b: edit.Buffer
+    edit.buffer_set_text(&b, s)
     return b
 }
 
 @(private = "file")
-bln :: proc(b: ^app.Buffer, i: int) -> string {
+bln :: proc(b: ^edit.Buffer, i: int) -> string {
     return string(txt.doc_line(&b.doc, i, context.temp_allocator))
 }
 
 @(private = "file")
-SP4 :: app.Indent {
+SP4 :: txt.Indent {
     kind  = .Spaces,
     width = 4,
 }
 
 @(private = "file")
-put_caret :: proc(b: ^app.Buffer, line, col: int) {
+put_caret :: proc(b: ^edit.Buffer, line, col: int) {
     b.cursors[0] = txt.Cursor{head = {line, col}, anchor = {line, col}}
 }
 
@@ -37,7 +38,7 @@ test_enter_keeps_indent :: proc(t: ^testing.T) {
     a: app.App
     a.indent = SP4
     b := mkbuf("    foo")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     put_caret(&b, 0, 7) // end of "    foo"
     app.buffer_enter(&a, &b)
     testing.expect_value(t, bln(&b, 1), "    ")
@@ -51,7 +52,7 @@ test_enter_indents_after_opener :: proc(t: ^testing.T) {
     a: app.App
     a.indent = SP4
     b := mkbuf("if x {")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     put_caret(&b, 0, 6) // end, just after '{'
     app.buffer_enter(&a, &b)
     testing.expect_value(t, bln(&b, 1), "    ")
@@ -63,7 +64,7 @@ test_enter_indents_nested :: proc(t: ^testing.T) {
     a: app.App
     a.indent = SP4
     b := mkbuf("    if x {")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     put_caret(&b, 0, 10)
     app.buffer_enter(&a, &b)
     testing.expect_value(t, bln(&b, 1), "        ")
@@ -75,7 +76,7 @@ test_enter_expands_braces :: proc(t: ^testing.T) {
     a: app.App
     a.indent = SP4
     b := mkbuf("f() {}")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     put_caret(&b, 0, 5) // between '{' and '}'
     app.buffer_enter(&a, &b)
     testing.expect_value(t, bln(&b, 0), "f() {")
@@ -92,7 +93,7 @@ test_enter_no_expand_unmatched :: proc(t: ^testing.T) {
     a: app.App
     a.indent = SP4
     b := mkbuf("{x")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     put_caret(&b, 0, 1) // between '{' and 'x'
     app.buffer_enter(&a, &b)
     testing.expect_value(t, bln(&b, 0), "{")
@@ -103,9 +104,9 @@ test_enter_no_expand_unmatched :: proc(t: ^testing.T) {
 @(test)
 test_enter_tab_indent :: proc(t: ^testing.T) {
     a: app.App
-    a.indent = app.Indent{kind = .Tab, width = 4}
+    a.indent = txt.Indent{kind = .Tab, width = 4}
     b := mkbuf("x {")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     put_caret(&b, 0, 3)
     app.buffer_enter(&a, &b)
     testing.expect_value(t, bln(&b, 1), "\t")

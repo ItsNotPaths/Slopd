@@ -1,10 +1,11 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:testing"
 import "../txt"
-import "../gfx"
 import "../ui"
+import "../search"
+import "../edit"
 
 // The command line's live preview (cl_preview.odin): what a `:` line shows while it is typed,
 // and that Esc puts the view back untouched. Driven here the way the frame loop drives it —
@@ -13,9 +14,9 @@ import "../ui"
 @(private = "file")
 mkapp :: proc(text: string) -> app.App {
     a: app.App
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     app.cl_init(&a.cl)
-    app.buffer_set_text(app.editor_current(&a.editor), text)
+    edit.buffer_set_text(edit.editor_current(&a.editor), text)
     a.cl_active = true
     a.cl_preview_on = true
     return a
@@ -23,11 +24,11 @@ mkapp :: proc(text: string) -> app.App {
 
 @(private = "file")
 freeapp :: proc(a: ^app.App) {
-    app.editor_destroy(&a.editor)
+    edit.editor_destroy(&a.editor)
     app.cl_destroy(a)
     app.cl_preview_destroy(a)
     app.find_destroy(&a.find)
-    app.grep_destroy(&a.grep)
+    search.grep_destroy(&a.grep)
 }
 
 // Type a line into the command line and run the frame's preview tick over it. `now` is the
@@ -46,7 +47,7 @@ tick :: proc(a: ^app.App, now: f64) {
 
 @(private = "file")
 caret :: proc(a: ^app.App) -> txt.Pos {
-    b := app.editor_current(&a.editor)
+    b := edit.editor_current(&a.editor)
     return b.cursors[b.primary].head
 }
 
@@ -58,9 +59,9 @@ PREVIEW_PAGE :: "l0\nl1\nl2\nl3\nl4\nl5"
 // which is what stops the two landing in different places.
 @(test)
 test_cl_jump_line :: proc(t: ^testing.T) {
-    b: app.Buffer
-    app.buffer_set_text(&b, PREVIEW_PAGE)
-    defer app.buffer_destroy(&b)
+    b: edit.Buffer
+    edit.buffer_set_text(&b, PREVIEW_PAGE)
+    defer edit.buffer_destroy(&b)
     txt.doc_reset_cursor(&b.doc, txt.Pos{line = 2, col = 1})
 
     p, ok := app.cl_jump_line(&b, "4") // 1-based in, 0-based out
@@ -103,7 +104,7 @@ test_preview_restores_the_cursor_trail :: proc(t: ^testing.T) {
     a := mkapp(PREVIEW_PAGE)
     defer freeapp(&a)
 
-    b := app.editor_current(&a.editor)
+    b := edit.editor_current(&a.editor)
     txt.doc_reset_cursor(&b.doc, txt.Pos{line = 1, col = 0})
     txt.doc_drop_anchor(&b.doc) // Alt+A + Down twice: a trail of three
     txt.doc_move(&b.doc, .Down)
@@ -212,7 +213,7 @@ test_preview_find_takes_every_hit :: proc(t: ^testing.T) {
     testing.expect(t, !a.cl_active)
     testing.expect_value(t, len(a.cl.history), 1) // a line you typed, kept either way
 
-    b := app.editor_current(&a.editor)
+    b := edit.editor_current(&a.editor)
     testing.expect_value(t, len(b.cursors), 2)
     testing.expect_value(t, b.cursors[0].anchor, txt.Pos{line = 1, col = 0})
     testing.expect_value(t, b.cursors[0].head, txt.Pos{line = 1, col = 3})
@@ -234,7 +235,7 @@ test_submit_all_finds_with_the_preview_off :: proc(t: ^testing.T) {
     testing.expect_value(t, len(a.find.matches), 0) // nothing previewed it
     testing.expect(t, app.cl_submit_all(&a))
 
-    b := app.editor_current(&a.editor)
+    b := edit.editor_current(&a.editor)
     testing.expect_value(t, len(b.cursors), 2)
     testing.expect_value(t, b.cursors[1].anchor, txt.Pos{line = 3, col = 0})
     testing.expect_value(t, b.cursors[1].head, txt.Pos{line = 3, col = 3})
@@ -283,7 +284,7 @@ test_cl_grep_query :: proc(t: ^testing.T) {
 test_preview_grep_borrows_the_pane :: proc(t: ^testing.T) {
     a := mkapp(PREVIEW_PAGE)
     defer freeapp(&a)
-    app.grep_set(&a.grep, "older", nil) // results already in the pane, from an earlier search
+    search.grep_set(&a.grep, "older", nil) // results already in the pane, from an earlier search
     a.aux_mode = .FileTree
 
     typeln(&a, ":grep hello")

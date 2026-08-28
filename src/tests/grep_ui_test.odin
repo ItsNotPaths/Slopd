@@ -1,10 +1,11 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import clay "../../bindings/clay"
 import "core:testing"
 import "../gfx"
 import "../ui"
+import "../search"
 
 // The grep results pane declared in Clay. The filetree proved a flat list of one-row items;
 // this proves the case every remaining pane has — one ITEM is several display ROWS. So the
@@ -35,7 +36,7 @@ fixture :: proc(a: ^app.App, ctx0: []string, ctx1: []string) {
     a.project_root = "/proj"
     append(
         &a.grep.hits,
-        app.GrepHit {
+        search.GrepHit {
             path      = "/proj/src/a.odin",
             line      = 10,
             text      = "bb",
@@ -45,7 +46,7 @@ fixture :: proc(a: ^app.App, ctx0: []string, ctx1: []string) {
     )
     append(
         &a.grep.hits,
-        app.GrepHit {
+        search.GrepHit {
             path      = "/proj/src/b.odin",
             line      = 100,
             text      = "ee",
@@ -64,7 +65,7 @@ test_grep_rows_flatten :: proc(t: ^testing.T) {
     fixture(&a, c0[:], c1[:])
     defer delete(a.grep.hits)
 
-    rows := app.grep_rows(&a.grep, a.project_root, context.temp_allocator)
+    rows := search.grep_rows(&a.grep, a.project_root, context.temp_allocator)
     testing.expect_value(t, len(rows), 9)
 
     // The title is project-relative and carries its block's index, as every row of the block
@@ -87,7 +88,7 @@ test_grep_rows_flatten :: proc(t: ^testing.T) {
     testing.expect_value(t, rows[8].hit, -1)
 
     // Measured from the rows that will be DRAWN, not estimated from max(line) + GREP_CONTEXT.
-    testing.expect_value(t, app.grep_gutter_w(rows), 3)
+    testing.expect_value(t, search.grep_gutter_w(rows), 3)
 }
 
 // A block is framed by its TITLE row, so it scrolls into view from its top rather than by
@@ -100,14 +101,14 @@ test_grep_anchor :: proc(t: ^testing.T) {
     fixture(&a, c0[:], c1[:])
     defer delete(a.grep.hits)
 
-    rows := app.grep_rows(&a.grep, a.project_root, context.temp_allocator)
-    testing.expect_value(t, app.grep_anchor(rows, 0), 0)
-    testing.expect_value(t, app.grep_anchor(rows, 1), 5) // the second block's title row
-    testing.expect_value(t, app.grep_anchor(rows, 99), 0) // out of range: the top
+    rows := search.grep_rows(&a.grep, a.project_root, context.temp_allocator)
+    testing.expect_value(t, search.grep_anchor(rows, 0), 0)
+    testing.expect_value(t, search.grep_anchor(rows, 1), 5) // the second block's title row
+    testing.expect_value(t, search.grep_anchor(rows, 99), 0) // out of range: the top
 
     // The policy runs on DISPLAY rows: selecting the second block pulls its title onto the
     // bottom row of the viewport.
-    app.grep_scroll_apply(&a.grep, app.grep_anchor(rows, 1), 4, len(rows), false)
+    app.grep_scroll_apply(&a.grep, search.grep_anchor(rows, 1), 4, len(rows), false)
     testing.expect_value(t, a.grep.scroll, 5 - 4 + 1)
 }
 
@@ -141,7 +142,7 @@ test_grep_command_list :: proc(t: ^testing.T) {
     a.grep.query = "needle"
     a.grep.selected = 0
 
-    rows := app.grep_rows(&a.grep, a.project_root, context.temp_allocator)
+    rows := search.grep_rows(&a.grep, a.project_root, context.temp_allocator)
     cmds := app.grep_layout(&a, &f, PANE, rows, 500, 300)
 
     rects, borders, texts := 0, 0, 0
@@ -224,7 +225,7 @@ test_grep_hit_resolves_to_block :: proc(t: ^testing.T) {
     fixture(&a, c0[:], c1[:])
     defer delete(a.grep.hits)
 
-    rows := app.grep_rows(&a.grep, a.project_root, context.temp_allocator)
+    rows := search.grep_rows(&a.grep, a.project_root, context.temp_allocator)
     _ = app.grep_layout(&a, &f, PANE, rows, 500, 300) // frame 1: boxes to hit
 
     body_y :: AREA.y + ROW_H // the first display row

@@ -1,11 +1,12 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
 import "core:time"
+import "../pty"
 
 // Real-shell integration: drive cl_exec against an actual forked shell (lazily
 // spawned by the first injection) and pump the && chain the way the main loop does.
@@ -29,7 +30,7 @@ run_cl :: proc(a: ^app.App, line: string) -> bool {
     app.cl_exec(a, line)
     for _ in 0 ..< TIMEOUT_STEPS {
         for term in a.terminals {
-            app.terminal_drain(term)
+            pty.terminal_drain(term)
         }
         app.cl_chain_pump(a)
         if !a.cl_chain.waiting && len(a.cl_chain.steps) == 0 {
@@ -41,11 +42,11 @@ run_cl :: proc(a: ^app.App, line: string) -> bool {
 }
 
 @(private = "file")
-grid_text :: proc(term: ^app.Terminal, alloc := context.temp_allocator) -> string {
+grid_text :: proc(term: ^pty.Terminal, alloc := context.temp_allocator) -> string {
     sb := strings.builder_make(alloc)
     for row in 0 ..< term.rows {
         for col in 0 ..< term.cols {
-            if r := app.terminal_cell_rune(term, row, col); r >= 0x20 && r < 0x7f {
+            if r := pty.terminal_cell_rune(term, row, col); r >= 0x20 && r < 0x7f {
                 strings.write_rune(&sb, r)
             }
         }
@@ -59,7 +60,7 @@ wait_grid :: proc(a: ^app.App, sub: string) -> bool {
     for _ in 0 ..< TIMEOUT_STEPS {
         free_all(context.temp_allocator)
         for term in a.terminals {
-            app.terminal_drain(term)
+            pty.terminal_drain(term)
             if strings.contains(grid_text(term), sub) {
                 return true
             }

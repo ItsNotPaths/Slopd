@@ -19,7 +19,7 @@ on:
 
 env:
   # The binary is `slopd`, not the project's name: lower case, because it is what you type.
-  # It is also the app-id the window reports (APP_ID in src/main.odin), the name `--install`
+  # It is also the app-id the window reports (APP_ID in src/slopd/main.odin), the name `--install`
   # writes to ~/.local/bin, and the name slopd.desktop calls in Exec. Matches release.sh.
   BIN_NAME: slopd
 
@@ -74,7 +74,7 @@ jobs:
           # binary uses the GLFW we vendor rather than whatever libglfw the runner has
           # (and users then need at run time). Matches release.sh --local.
           # SLOPD_VERSION stamps the tag into `slopd --version`.
-          odin build src -out:"$BIN_NAME" -o:speed -define:GLFW_SHARED=false \
+          odin build src/slopd -out:"$BIN_NAME" -o:speed -define:GLFW_SHARED=false \
               -define:SLOPD_VERSION="${{ inputs.version }}"
           strip --strip-all "$BIN_NAME"
 

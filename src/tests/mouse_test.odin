@@ -1,9 +1,12 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:testing"
 import "vendor:glfw" // key codes only; no window is opened
 import "../ui"
+import "../search"
+import "../pty"
+import "../edit"
 
 // The routing decision table. wheel_target is pure — App state plus the frame's Layout in, a
 // target out — so "which pane owns this notch" is settled here. Headless throughout.
@@ -110,7 +113,7 @@ test_wheel_target_before_first_frame :: proc(t: ^testing.T) {
 test_wheel_apply_list_scrolls_view :: proc(t: ^testing.T) {
     a := routing_app(.Grep)
     for i in 0 ..< 20 {
-        append(&a.grep.hits, app.GrepHit{line = i + 1})
+        append(&a.grep.hits, search.GrepHit{line = i + 1})
     }
     defer delete(a.grep.hits)
     a.grep.selected = 4
@@ -162,7 +165,7 @@ test_wheel_apply_file_pane_is_slower :: proc(t: ^testing.T) {
 test_wheel_apply_inert_targets :: proc(t: ^testing.T) {
     a := routing_app(.Grep)
     for i in 0 ..< 5 {
-        append(&a.grep.hits, app.GrepHit{line = i + 1})
+        append(&a.grep.hits, search.GrepHit{line = i + 1})
     }
     defer delete(a.grep.hits)
 
@@ -262,7 +265,7 @@ test_mouse_stand_down_never_eats_a_click :: proc(t: ^testing.T) {
 test_mouse_wheel_wakes :: proc(t: ^testing.T) {
     a := routing_app(.Grep)
     for i in 0 ..< 20 {
-        append(&a.grep.hits, app.GrepHit{line = i + 1})
+        append(&a.grep.hits, search.GrepHit{line = i + 1})
     }
     defer delete(a.grep.hits)
     a.hover_on = true
@@ -300,7 +303,7 @@ test_mouse_wheel_wakes :: proc(t: ^testing.T) {
 test_mouse_wheel_subnotch_accumulates :: proc(t: ^testing.T) {
     a := routing_app(.Grep)
     for i in 0 ..< 40 {
-        append(&a.grep.hits, app.GrepHit{line = i + 1})
+        append(&a.grep.hits, search.GrepHit{line = i + 1})
     }
     defer delete(a.grep.hits)
     a.mouse_on = true
@@ -331,13 +334,13 @@ test_mouse_wheel_subnotch_accumulates :: proc(t: ^testing.T) {
 // cursor on screen to aim, and Ctrl held is the filetree's chord bar.
 @(test)
 test_key_is_modifier :: proc(t: ^testing.T) {
-    testing.expect(t, app.key_is_modifier(glfw.KEY_LEFT_ALT))
-    testing.expect(t, app.key_is_modifier(glfw.KEY_RIGHT_CONTROL))
-    testing.expect(t, app.key_is_modifier(glfw.KEY_LEFT_SHIFT))
-    testing.expect(t, app.key_is_modifier(glfw.KEY_LEFT_SUPER))
-    testing.expect(t, !app.key_is_modifier(glfw.KEY_A))
-    testing.expect(t, !app.key_is_modifier(glfw.KEY_DOWN))
-    testing.expect(t, !app.key_is_modifier(glfw.KEY_ENTER))
+    testing.expect(t, ui.key_is_modifier(glfw.KEY_LEFT_ALT))
+    testing.expect(t, ui.key_is_modifier(glfw.KEY_RIGHT_CONTROL))
+    testing.expect(t, ui.key_is_modifier(glfw.KEY_LEFT_SHIFT))
+    testing.expect(t, ui.key_is_modifier(glfw.KEY_LEFT_SUPER))
+    testing.expect(t, !ui.key_is_modifier(glfw.KEY_A))
+    testing.expect(t, !ui.key_is_modifier(glfw.KEY_DOWN))
+    testing.expect(t, !ui.key_is_modifier(glfw.KEY_ENTER))
 }
 
 // Through wheel_apply rather than past it. It used to call terminal_sel_move, so a notch moved
@@ -346,22 +349,22 @@ test_key_is_modifier :: proc(t: ^testing.T) {
 @(test)
 test_wheel_apply_terminal_scrolls_the_view :: proc(t: ^testing.T) {
     a := routing_app(.Terminal)
-    term := new(app.Terminal)
+    term := new(pty.Terminal)
     defer free(term)
-    app.terminal_vt_init(term, 2, 20)
-    defer app.terminal_vt_destroy(term)
-    app.terminal_enable_scrollback(term)
-    app.terminal_feed(term, transmute([]u8)string("L0\r\nL1\r\nL2\r\nL3\r\nL4"))
+    pty.terminal_vt_init(term, 2, 20)
+    defer pty.terminal_vt_destroy(term)
+    pty.terminal_enable_scrollback(term)
+    pty.terminal_feed(term, transmute([]u8)string("L0\r\nL1\r\nL2\r\nL3\r\nL4"))
     append(&a.terminals, term)
     defer delete(a.terminals)
 
     app.wheel_apply(&a, .Terminal, -1)
-    testing.expect_value(t, app.terminal_view_top(term), term.sb_total - ui.WHEEL_LINES)
+    testing.expect_value(t, pty.terminal_view_top(term), term.sb_total - ui.WHEEL_LINES)
     testing.expect(t, !term.sel_active, "a notch must not conjure a copy cursor")
     testing.expect(t, term.view_detached, "... it detaches the VIEW, like every other pane")
 
     app.wheel_apply(&a, .Terminal, 1)
-    testing.expect_value(t, app.terminal_view_top(term), term.sb_total) // the live bottom
+    testing.expect_value(t, pty.terminal_view_top(term), term.sb_total) // the live bottom
 }
 
 // --- the horizontal axis --- Two ways in, one destination: Shift + the wheel, and a tilt wheel
@@ -371,7 +374,7 @@ test_wheel_apply_terminal_scrolls_the_view :: proc(t: ^testing.T) {
 @(private = "file")
 wheel_editor_app :: proc() -> app.App {
     a := routing_app(.FileTree)
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     a.mouse_on = true
     a.mouse.known = true
     a.lay = LAY
@@ -383,7 +386,7 @@ wheel_editor_app :: proc() -> app.App {
     for _ in 0 ..< 100 {
         append(&buf, 'x', '\n')
     }
-    app.buffer_set_text(app.editor_current(&a.editor), string(buf[:]))
+    edit.buffer_set_text(edit.editor_current(&a.editor), string(buf[:]))
     return a
 }
 
@@ -391,8 +394,8 @@ wheel_editor_app :: proc() -> app.App {
 @(test)
 test_wheel_shift_scrolls_columns :: proc(t: ^testing.T) {
     a := wheel_editor_app()
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
 
     app.mouse_wheel(&a, -1) // plain: the page moves…
     testing.expect_value(t, b.scroll, ui.WHEEL_LINES)
@@ -416,8 +419,8 @@ test_wheel_shift_scrolls_columns :: proc(t: ^testing.T) {
 @(test)
 test_wheel_native_horizontal_axis :: proc(t: ^testing.T) {
     a := wheel_editor_app()
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
 
     app.mouse_wheel(&a, 0, 1) // positive x = right = later columns
     testing.expect_value(t, b.hscroll, ui.WHEEL_COLS)
@@ -445,7 +448,7 @@ test_wheel_native_horizontal_axis :: proc(t: ^testing.T) {
 test_wheel_shift_left_alone_off_the_editor :: proc(t: ^testing.T) {
     a := routing_app(.Grep)
     for i in 0 ..< 40 {
-        append(&a.grep.hits, app.GrepHit{line = i + 1})
+        append(&a.grep.hits, search.GrepHit{line = i + 1})
     }
     defer delete(a.grep.hits)
     a.mouse_on = true

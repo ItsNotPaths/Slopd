@@ -1,29 +1,30 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:strings"
 import "core:testing"
 import "../txt"
+import "../edit"
 
 // The comment toggle: which token a file gets, and the one rule the toggle turns on — a block
 // goes fully commented unless every line holding text is commented already, and only then bare.
 
 @(private = "file")
-mk :: proc(path, src: string) -> app.Buffer {
-    b: app.Buffer
+mk :: proc(path, src: string) -> edit.Buffer {
+    b: edit.Buffer
     txt.doc_init(&b.doc)
-    app.buffer_set_text(&b, src)
+    edit.buffer_set_text(&b, src)
     b.path = strings.clone(path)
     return b
 }
 
 @(private = "file")
-text :: proc(b: ^app.Buffer) -> string {
+text :: proc(b: ^edit.Buffer) -> string {
     return txt.doc_string(&b.doc, context.temp_allocator)
 }
 
 @(private = "file")
-whole :: proc(b: ^app.Buffer) {
+whole :: proc(b: ^edit.Buffer) {
     txt.doc_select_all(&b.doc)
 }
 
@@ -57,7 +58,7 @@ test_comment_token_by_extension :: proc(t: ^testing.T) {
 test_comment_toggle_round_trip :: proc(t: ^testing.T) {
     src := "fn:\n    a\n\n        b" // as stored: doc_normalize drops one trailing newline
     b := mk("/w/x.odin", src)
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     whole(&b)
     testing.expect(t, app.buffer_comment_toggle(&b))
@@ -74,7 +75,7 @@ test_comment_toggle_round_trip :: proc(t: ^testing.T) {
 @(test)
 test_comment_toggle_takes_a_mixed_block_forward :: proc(t: ^testing.T) {
     b := mk("/w/x.odin", "// done\nnot yet")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     whole(&b)
     testing.expect(t, app.buffer_comment_toggle(&b))
@@ -90,7 +91,7 @@ test_comment_toggle_takes_a_mixed_block_forward :: proc(t: ^testing.T) {
 @(test)
 test_uncomment_takes_only_its_own_space :: proc(t: ^testing.T) {
     b := mk("/w/x.odin", "//no space\n//  two spaces")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     whole(&b)
     testing.expect(t, app.buffer_comment_toggle(&b))
@@ -102,7 +103,7 @@ test_uncomment_takes_only_its_own_space :: proc(t: ^testing.T) {
 @(test)
 test_comment_one_line_carries_the_caret :: proc(t: ^testing.T) {
     b := mk("/w/x.py", "x = 1\ny = 2")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     txt.doc_reset_cursor(&b.doc, txt.Pos{1, 4})
     testing.expect(t, app.buffer_comment_toggle(&b))
@@ -114,13 +115,13 @@ test_comment_one_line_carries_the_caret :: proc(t: ^testing.T) {
 @(test)
 test_comment_toggle_declines :: proc(t: ^testing.T) {
     b := mk("/w/notes.zzz", "a\nb")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     whole(&b)
     testing.expect(t, !app.buffer_comment_toggle(&b))
     testing.expect(t, !b.dirty)
 
     blank := mk("/w/x.odin", "\n\n")
-    defer app.buffer_destroy(&blank)
+    defer edit.buffer_destroy(&blank)
     before := strings.clone(text(&blank), context.temp_allocator)
     whole(&blank)
     testing.expect(t, !app.buffer_comment_toggle(&blank))

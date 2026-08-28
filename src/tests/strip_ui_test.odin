@@ -1,12 +1,13 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import clay "../../bindings/clay"
 import "core:strings"
 import "core:testing"
 import "../txt"
 import "../gfx"
 import "../ui"
+import "../edit"
 
 // The status strip declared in Clay. It has no list, no viewport and no click, so what is left
 // is the whole of it: which of the things it shows, and where each piece lands.
@@ -34,17 +35,17 @@ PAD :: 8
 
 @(private = "file")
 fixture :: proc(a: ^app.App, text: string) {
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     a.scale = 1
     a.focus = .Editor
     a.project_root = "/zz/proj" // no $HOME prefix, so home_abbrev leaves it alone
     app.cl_init(&a.cl)
-    app.buffer_set_text(app.editor_current(&a.editor), text)
+    edit.buffer_set_text(edit.editor_current(&a.editor), text)
 }
 
 @(private = "file")
 teardown :: proc(a: ^app.App) {
-    app.editor_destroy(&a.editor)
+    edit.editor_destroy(&a.editor)
     txt.doc_destroy(&a.cl.doc)
 }
 
@@ -86,7 +87,7 @@ test_strip_mode :: proc(t: ^testing.T) {
 
     testing.expect_value(t, app.strip_mode(&a), app.Strip_Mode.Status)
 
-    b := app.editor_current(&a.editor)
+    b := edit.editor_current(&a.editor)
     b.conflict = true
     testing.expect_value(t, app.strip_mode(&a), app.Strip_Mode.Status) // no line of its own
 
@@ -166,7 +167,7 @@ test_strip_labels_are_anchored_not_a_row :: proc(t: ^testing.T) {
     defer teardown(&a)
 
     // A file name far wider than its share: 45 characters in a 50-cell window.
-    b := app.editor_current(&a.editor)
+    b := edit.editor_current(&a.editor)
     b.path = strings.clone("/tmp/a-very-long-file-name-that-eats-the-strip.odin") // owned
     cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
 
@@ -269,7 +270,7 @@ test_strip_conflict_marks_the_modeline :: proc(t: ^testing.T) {
     a: app.App
     fixture(&a, "alpha")
     defer teardown(&a)
-    b := app.editor_current(&a.editor)
+    b := edit.editor_current(&a.editor)
     b.path = strings.clone("/tmp/x.odin") // owned
     b.dirty = true
 

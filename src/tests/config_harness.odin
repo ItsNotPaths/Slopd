@@ -1,6 +1,6 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:sync"
 
 // Pointing the config file at a scratch file, for the tests that write settings back.

@@ -1,11 +1,12 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import clay "../../bindings/clay"
 import "core:testing"
 import "../txt"
 import "../gfx"
 import "../ui"
+import "../edit"
 
 // The editor pane declared in Clay, its body painted through a Custom. What is under test is
 // the SEAM: a pixel read back as a Pos must land on the glyph painted there. editor_pos_at is
@@ -30,11 +31,11 @@ TEXT_X :: AREA.x + 40 // margin + 2 gutter digits + gap, at cw = 10
 // Torn down with editor_destroy: the buffer owns its runes, unlike the filetree fixtures.
 @(private = "file")
 fake_editor :: proc(a: ^app.App, text: string) {
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     a.scale = 1
     a.mouse_on = true
     a.mouse.known = true
-    app.buffer_set_text(app.editor_current(&a.editor), text)
+    edit.buffer_set_text(edit.editor_current(&a.editor), text)
 }
 
 // By hand, so the geometry tests need no anim, font or frame. Mirrors editor_view at cw = 10 /
@@ -83,8 +84,8 @@ test_editor_geom :: proc(t: ^testing.T) {
 test_editor_gutter :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "one\ntwo\nthree")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
 
     // A short file still gets the minimum, so the column does not jitter in a scratch buffer.
     testing.expect_value(t, app.editor_gutter_w(b), 2)
@@ -96,7 +97,7 @@ test_editor_gutter :: proc(t: ^testing.T) {
     for _ in 0 ..< 120 {
         append(&buf, 'x', '\n')
     }
-    app.buffer_set_text(b, string(buf[:]))
+    edit.buffer_set_text(b, string(buf[:]))
     testing.expect_value(t, app.editor_gutter_w(b), 3) // 121 lines
     testing.expect_value(t, app.editor_text_x(AREA.x, 3, 10), f32(AREA.x + 50))
 }
@@ -107,8 +108,8 @@ test_editor_gutter :: proc(t: ^testing.T) {
 test_editor_pos_at :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "alpha\nbravo\ncharlie\ndelta\necho")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
     v := mkview(0, 0)
 
     p, ok := app.editor_pos_at(b, v, TEXT_X + 2, AREA.y + 2)
@@ -159,9 +160,9 @@ test_editor_pos_at :: proc(t: ^testing.T) {
 test_editor_pos_at_folded :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "header\nbody1\nbody2\nafter\ntail")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
-    append(&b.folds, app.Fold{line = 0, end = 2})
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
+    append(&b.folds, edit.Fold{line = 0, end = 2})
     v := mkview(0, 0)
 
     p, ok := app.editor_pos_at(b, v, TEXT_X, AREA.y + 2)
@@ -197,8 +198,8 @@ test_editor_command_list :: proc(t: ^testing.T) {
 
     a: app.App
     fake_editor(&a, "alpha\nbravo\ncharlie")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
 
     area, row_h, rows := app.editor_geom(PANE, 1, f.line_height)
     v := app.editor_view(b, &f, area, row_h, rows, 0)
@@ -238,8 +239,8 @@ test_editor_command_list :: proc(t: ^testing.T) {
 test_editor_hit :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "alpha\nbravo\ncharlie")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
     v := mkview(0, 0)
 
     a.mouse.x, a.mouse.y = TEXT_X + 22, AREA.y + ROW_H + 4
@@ -289,8 +290,8 @@ test_editor_hit_survives_the_aux_pane :: proc(t: ^testing.T) {
 
     a: app.App
     fake_editor(&a, "alpha\nbravo\ncharlie")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
 
     a.tree.dir = "/tmp/ft"
     append(&a.tree.entries, app.FileEntry{name = "e", path = "/tmp/ft/e", display = "e"})
@@ -330,9 +331,9 @@ test_editor_hit_survives_the_aux_pane :: proc(t: ^testing.T) {
 test_editor_hit_fold_marker :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "header\nbody\nafter")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
-    append(&b.folds, app.Fold{line = 0, end = 1})
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
+    append(&b.folds, edit.Fold{line = 0, end = 1})
     v := mkview(0, 0)
 
     // Just past "header" (6 cells) on the header's row: the marker.
@@ -357,8 +358,8 @@ test_editor_hit_fold_marker :: proc(t: ^testing.T) {
 test_editor_click_verbs :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "alpha bravo\ncharlie delta")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
 
     press :: proc(a: ^app.App, count: int, shift := false, alt := false) {
         a.mouse.click = true
@@ -427,14 +428,14 @@ test_editor_click_verbs :: proc(t: ^testing.T) {
 test_editor_click_reattaches_scroll :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "a\nb\nc\nd\ne\nf\ng\nh")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
 
     // The aux pane holds focus and has a detached view of its own.
     a.focus = .Aux
     a.tree.scroll_detached = 50
 
-    app.buffer_scroll_by(b, 4, 50) // the wheel cuts the view loose at t=50
+    edit.buffer_scroll_by(b, 4, 50) // the wheel cuts the view loose at t=50
     testing.expect(t, b.scroll_detached > 0)
 
     a.mouse.click = true
@@ -453,9 +454,9 @@ test_editor_click_reattaches_scroll :: proc(t: ^testing.T) {
 test_editor_click_fold_expands :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "header\nbody\nafter")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
-    append(&b.folds, app.Fold{line = 0, end = 1})
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
+    append(&b.folds, edit.Fold{line = 0, end = 1})
 
     txt.doc_reset_cursor(&b.doc, txt.Pos{2, 1})
     a.mouse.click = true
@@ -474,8 +475,8 @@ test_editor_click_fold_expands :: proc(t: ^testing.T) {
 test_editor_click_begins_a_drag :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "alpha bravo\ncharlie")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
     a.mouse.down = true
 
     a.mouse.click, a.mouse.click_count = true, 2
@@ -487,7 +488,7 @@ test_editor_click_begins_a_drag :: proc(t: ^testing.T) {
 
     // A marker is a button, not something you drag out of.
     a.drag = {}
-    append(&b.folds, app.Fold{line = 0, end = 0})
+    append(&b.folds, edit.Fold{line = 0, end = 0})
     a.mouse.click, a.mouse.click_count = true, 1
     app.editor_click(&a, app.Editor_Hit{kind = .Fold, pos = txt.Pos{0, 11}}, 101)
     testing.expect_value(t, a.drag.kind, ui.Drag_Kind.None)
@@ -500,8 +501,8 @@ test_editor_click_begins_a_drag :: proc(t: ^testing.T) {
 test_editor_drag_pos_past_the_edges :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "alpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\ngolf\nhotel\nindia\njuliet\nkilo\nlima")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
     v := mkview(0, 0)
 
     // Above the window: the first visible row, not a refusal or a negative one.
@@ -526,8 +527,8 @@ test_editor_drag_pos_past_the_edges :: proc(t: ^testing.T) {
     // "nothing".
     short: app.App
     fake_editor(&short, "one\ntwo\nthree")
-    defer app.editor_destroy(&short.editor)
-    sb := app.editor_current(&short.editor)
+    defer edit.editor_destroy(&short.editor)
+    sb := edit.editor_current(&short.editor)
     p, _ = app.editor_drag_pos(sb, v, TEXT_X + 900, AREA.y + 4000)
     testing.expect_value(t, p, txt.Pos{2, 5})
 }
@@ -538,8 +539,8 @@ test_editor_drag_pos_past_the_edges :: proc(t: ^testing.T) {
 test_editor_drag_extends_by_character :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "alpha bravo\ncharlie delta")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
     v := mkview(0, 0)
     a.mouse.down = true
 
@@ -562,12 +563,12 @@ test_editor_drag_extends_by_character :: proc(t: ^testing.T) {
     testing.expect_value(t, b.cursors[0].head, txt.Pos{0, 0})
 
     // The capture is a buffer's: another buffer current leaves the drag held but inert.
-    second: app.Buffer
+    second: edit.Buffer
     txt.doc_init(&second.doc)
     append(&a.editor.buffers, second)
     a.editor.active = 1
-    b2 := app.editor_current(&a.editor)
-    app.buffer_set_text(b2, "second buffer")
+    b2 := edit.editor_current(&a.editor)
+    edit.buffer_set_text(b2, "second buffer")
     a.mouse.x, a.mouse.y = TEXT_X + 40, AREA.y + 4
     app.editor_drag(&a, b2, v, 103)
     testing.expect_value(t, b2.cursors[0].head, txt.Pos{0, 0})
@@ -581,8 +582,8 @@ test_editor_drag_extends_by_character :: proc(t: ^testing.T) {
 test_editor_drag_word_and_line_grades :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "alpha bravo\ncharlie delta")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
     v := mkview(0, 0)
     a.mouse.down = true
 
@@ -623,8 +624,8 @@ test_editor_drag_word_and_line_grades :: proc(t: ^testing.T) {
 test_editor_drag_autoscrolls_past_the_edge :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
     v := mkview(0, 0)
     a.mouse.down = true
 
@@ -668,7 +669,7 @@ test_editor_drag_autoscrolls_past_the_edge :: proc(t: ^testing.T) {
 
     // The wheel may detach the view mid-drag, and a detached view does not chase the caret. So
     // walking past an edge re-attaches it, or the selection extends out of sight.
-    app.buffer_scroll_by(b, 2, 100) // the wheel, mid-gesture
+    edit.buffer_scroll_by(b, 2, 100) // the wheel, mid-gesture
     testing.expect(t, b.scroll_detached > 0)
     a.mouse.y = AREA.y + AREA.h + ROW_H
     app.editor_drag(&a, b, v2, 100 + 5 * ui.DRAG_SCROLL_S)
@@ -685,8 +686,8 @@ test_editor_drag_autoscrolls_past_the_edge :: proc(t: ^testing.T) {
 test_editor_drag_composes_with_the_click_that_began_it :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "alpha bravo\ncharlie delta")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
     v := mkview(0, 0)
     a.mouse.down = true
 
@@ -727,8 +728,8 @@ test_editor_drag_composes_with_the_click_that_began_it :: proc(t: ^testing.T) {
 test_editor_drag_word_grade_uses_the_glyph :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "alpha bravo\ncharlie delta")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
     v := mkview(0, 0)
     a.mouse.down = true
 
@@ -753,8 +754,8 @@ test_editor_drag_word_grade_uses_the_glyph :: proc(t: ^testing.T) {
 test_editor_pos_at_through_hscroll :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "0123456789abcdefghijklmnopqrstuvwxyz")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
 
     // At home, x = TEXT_X is column 0 and each cell is 10px further right.
     v := mkview(0, 0)
@@ -806,8 +807,8 @@ test_editor_cols :: proc(t: ^testing.T) {
 test_editor_longest_visible :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, "ab\n0123456789\nxyz\nlonger line here\n")
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
 
     testing.expect_value(t, app.editor_longest_visible(b, 0, 2), 10) // lines 0-1
     testing.expect_value(t, app.editor_longest_visible(b, 0, 4), 16) // through line 3
@@ -834,8 +835,8 @@ MB :: "héllo → wörld"
 test_editor_pos_at_multibyte :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, MB)
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
     v := mkview(0, 0)
 
     cells := txt.doc_cells(&b.doc, 0, context.temp_allocator)
@@ -870,8 +871,8 @@ test_editor_pos_at_multibyte :: proc(t: ^testing.T) {
 test_editor_hit_glyph_multibyte :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, MB)
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
     v := mkview(0, 0)
 
     // Cell 8 is the 'w' of "wörld"; its right half diverges the two columns, but here they are
@@ -894,8 +895,8 @@ test_editor_hit_glyph_multibyte :: proc(t: ^testing.T) {
 test_editor_drag_pos_multibyte :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, MB)
-    defer app.editor_destroy(&a.editor)
-    b := app.editor_current(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    b := edit.editor_current(&a.editor)
     v := mkview(0, 0)
 
     p, glyph := app.editor_drag_pos(b, v, TEXT_X + 86, AREA.y + 2)
@@ -914,9 +915,9 @@ test_editor_drag_pos_multibyte :: proc(t: ^testing.T) {
 test_find_marks_multibyte :: proc(t: ^testing.T) {
     a: app.App
     fake_editor(&a, MB)
-    defer app.editor_destroy(&a.editor)
+    defer edit.editor_destroy(&a.editor)
     defer app.find_destroy(&a.find)
-    b := app.editor_current(&a.editor)
+    b := edit.editor_current(&a.editor)
 
     app.find_set(&a.find, b, "wörld", txt.Pos{0, 0})
     testing.expect_value(t, len(a.find.matches), 1)

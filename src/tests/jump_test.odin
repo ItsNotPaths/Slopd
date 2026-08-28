@@ -1,10 +1,11 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:fmt"
 import "core:os"
 import "core:testing"
 import "../txt"
+import "../edit"
 
 // The `j`/jump line-spec parser (parse_line_spec) shared by the `j` builtin and the
 // Alt+Enter file-path follow. Path resolution (jump_resolve_path) touches the filesystem,
@@ -39,11 +40,11 @@ test_parse_line_spec_rejects_nonnumeric :: proc(t: ^testing.T) {
 @(test)
 test_jump_records_the_way_back :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     app.cl_init(&a.cl)
-    defer {app.editor_destroy(&a.editor);app.cl_destroy(&a)}
+    defer {edit.editor_destroy(&a.editor);app.cl_destroy(&a)}
 
-    b := app.editor_current(&a.editor)
+    b := edit.editor_current(&a.editor)
     txt.doc_set_text(&b.doc, "one\ntwo\nthree\nfour\nfive")
     txt.doc_reset_cursor(&b.doc, txt.Pos{3, 0})
 
@@ -66,19 +67,19 @@ test_jump_records_the_file_it_left :: proc(t: ^testing.T) {
     defer {os.remove(from);os.remove(to)}
 
     a: app.App
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     app.cl_init(&a.cl)
-    defer {app.editor_destroy(&a.editor);app.cl_destroy(&a)}
+    defer {edit.editor_destroy(&a.editor);app.cl_destroy(&a)}
 
     app.open_file(&a, from)
-    txt.doc_reset_cursor(&app.editor_current(&a.editor).doc, txt.Pos{2, 0})
+    txt.doc_reset_cursor(&edit.editor_current(&a.editor).doc, txt.Pos{2, 0})
 
     app.jump_to(&a, to, 0, 0)
     testing.expect_value(t, len(a.cl.history), 1)
     testing.expect_value(t, a.cl.history[0], fmt.tprintf(":j %s 3", from))
 
     // A buffer with no file cannot be named by a `:j` line, so nothing is recorded for one.
-    scratch: app.Buffer
+    scratch: edit.Buffer
     txt.doc_init(&scratch.doc)
     append(&a.editor.buffers, scratch)
     a.editor.active = len(a.editor.buffers) - 1

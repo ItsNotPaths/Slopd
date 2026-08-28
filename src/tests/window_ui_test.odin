@@ -1,10 +1,11 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import clay "../../bindings/clay"
 import "core:testing"
 import "../gfx"
 import "../ui"
+import "../edit"
 
 // The window frame: one tree per frame, the panes floating inside it at the rects
 // compute_layout chose.
@@ -45,11 +46,11 @@ two_panes :: proc(a: ^app.App, f: ^gfx.Font, v: app.Editor_View) {
 
 @(private = "file")
 fixture :: proc(a: ^app.App, f: ^gfx.Font) -> app.Editor_View {
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     a.scale = 1
     a.mouse_on = true
     a.mouse.known = true
-    app.buffer_set_text(app.editor_current(&a.editor), "alpha\nbravo\ncharlie")
+    edit.buffer_set_text(edit.editor_current(&a.editor), "alpha\nbravo\ncharlie")
 
     a.tree.dir = "/tmp/ft"
     for _ in 0 ..< 8 {
@@ -57,12 +58,12 @@ fixture :: proc(a: ^app.App, f: ^gfx.Font) -> app.Editor_View {
     }
 
     area, row_h, rows := app.editor_geom(ED_PANE, 1, f.line_height)
-    return app.editor_view(app.editor_current(&a.editor), f, area, row_h, rows, 0)
+    return app.editor_view(edit.editor_current(&a.editor), f, area, row_h, rows, 0)
 }
 
 @(private = "file")
 teardown :: proc(a: ^app.App) {
-    app.editor_destroy(&a.editor)
+    edit.editor_destroy(&a.editor)
     delete(a.tree.entries)
 }
 

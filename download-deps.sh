@@ -125,7 +125,7 @@ echo "==> clay (immediate-mode layout + hit-test engine; static lib)"
 # three-line clay.c that does exactly that, then compile it to libclay.a with cc + ar,
 # no Makefile/CMake. Same story as libvterm and the tree-sitter runtime: a static
 # archive under gitignored vendor/, reached by relative path from bindings/clay, so
-# `odin build src` links it transitively.
+# `odin build src/slopd` links it transitively.
 #   -ffreestanding matches upstream's own build-clay-lib.sh: Clay allocates nothing and
 #   calls no libc beyond memcpy, so it must not pick up hosted-environment assumptions.
 # The ODIN BINDING is NOT downloaded — bindings/clay/clay.odin is a tracked verbatim

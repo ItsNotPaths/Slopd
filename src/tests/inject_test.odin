@@ -1,11 +1,12 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 import "../txt"
+import "../edit"
 
 // A file pane gesture stages a command line rather than acting behind a modal, which means the
 // NAME OF A FILE ends up inside a line the chain will parse. `&&` is that chain's operator, so
@@ -32,8 +33,8 @@ test_cd_gesture_cannot_be_split_by_a_folder_name :: proc(t: ^testing.T) {
         defer os.remove(dir)
 
         a: app.App
-        app.editor_init(&a.editor)
-        defer app.editor_destroy(&a.editor)
+        edit.editor_init(&a.editor)
+        defer edit.editor_destroy(&a.editor)
         append(&a.tree.entries, app.FileEntry{name = name, path = strings.clone(dir), is_dir = true})
         defer app.filetree_destroy(&a.tree)
 

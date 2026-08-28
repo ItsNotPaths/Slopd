@@ -1,5 +1,5 @@
-package main
-import "txt"
+package edit
+import "../txt"
 
 // Folding and indentation geometry. A Buffer holds Folds, each collapsing a block to its header
 // line. The same indentation helpers feed the whitespace markers and the indent guides, so "how
@@ -19,7 +19,7 @@ Fold :: struct {
 // --- indentation geometry (shared by folds, whitespace markers, indent guides) ---
 
 // In cells: one for tab indentation, else the space count.
-indent_unit :: proc(ind: Indent) -> int {
+indent_unit :: proc(ind: txt.Indent) -> int {
     return ind.kind == .Tab ? 1 : max(1, ind.width)
 }
 

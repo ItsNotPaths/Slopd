@@ -2,7 +2,7 @@ package ui
 
 
 // The pointer as the panes see it. The GLFW callbacks that fill this in are the product's
-// (src/mouse_app.odin); what is here is what a pane asks. Everything reachable
+// (src/slopd/mouse_app.odin); what is here is what a pane asks. Everything reachable
 // here has a key binding too, so `mouse: off` costs convenience, never capability.
 //
 // Mouse input is NOUN-FIRST: a wheel notch carries only a position and must resolve to a pane

@@ -1,9 +1,10 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:strings"
 import "core:testing"
 import "../txt"
+import "../edit"
 
 // Incremental reparse over the grammars that can break it in ways odin cannot.
 //
@@ -93,9 +94,9 @@ expect_incremental_matches_full :: proc(t: ^testing.T, lang, ext, src: string, e
     }
     defer hl_app_destroy(&a)
 
-    live: app.Buffer
-    defer app.buffer_destroy(&live)
-    app.buffer_set_text(&live, src)
+    live: edit.Buffer
+    defer edit.buffer_destroy(&live)
+    edit.buffer_set_text(&live, src)
     live.path = strings.clone(strings.concatenate({"stress.", ext}, context.temp_allocator))
 
     // Parse it whole, then apply each edit with a repaint after it — so every step but the
@@ -107,9 +108,9 @@ expect_incremental_matches_full :: proc(t: ^testing.T, lang, ext, src: string, e
     }
     got := clone_rows(hl_rows(&a, &live))
 
-    ref: app.Buffer
-    defer app.buffer_destroy(&ref)
-    app.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
+    ref: edit.Buffer
+    defer edit.buffer_destroy(&ref)
+    edit.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
     ref.path = strings.clone(live.path)
     want := hl_rows(&a, &ref)
     expect_rows_equal(t, got, want, what)
@@ -214,9 +215,9 @@ test_incremental_cpp_typing :: proc(t: ^testing.T) {
     }
     defer hl_app_destroy(&a)
 
-    live: app.Buffer
-    defer app.buffer_destroy(&live)
-    app.buffer_set_text(&live, CPP_SRC)
+    live: edit.Buffer
+    defer edit.buffer_destroy(&live)
+    edit.buffer_set_text(&live, CPP_SRC)
     live.path = strings.clone("stress.cpp")
 
     txt.doc_reset_cursor(&live.doc, txt.Pos{18, txt.doc_line_len(&live.doc, 18)})
@@ -226,9 +227,9 @@ test_incremental_cpp_typing :: proc(t: ^testing.T) {
     }
     got := clone_rows(hl_rows(&a, &live))
 
-    ref: app.Buffer
-    defer app.buffer_destroy(&ref)
-    app.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
+    ref: edit.Buffer
+    defer edit.buffer_destroy(&ref)
+    edit.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
     ref.path = strings.clone("stress.cpp")
     want := hl_rows(&a, &ref)
     expect_rows_equal(t, got, want, "cpp typed run")

@@ -1,6 +1,6 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"

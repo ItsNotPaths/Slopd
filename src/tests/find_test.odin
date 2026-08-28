@@ -1,28 +1,29 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:testing"
 import "../txt"
+import "../edit"
 
 // The in-buffer literal search behind `:f` and its live preview (find.odin). All of it is pure
 // — a Buffer in, a match list out — so none of this needs a window.
 
 @(private = "file")
-mkbuf :: proc(text: string) -> app.Buffer {
-    b: app.Buffer
-    app.buffer_set_text(&b, text)
+mkbuf :: proc(text: string) -> edit.Buffer {
+    b: edit.Buffer
+    edit.buffer_set_text(&b, text)
     return b
 }
 
 @(private = "file")
-scan :: proc(f: ^app.Find, b: ^app.Buffer, query: string) {
+scan :: proc(f: ^app.Find, b: ^edit.Buffer, query: string) {
     app.find_set(f, b, query, txt.Pos{})
 }
 
 @(test)
 test_find_scans_in_line_order :: proc(t: ^testing.T) {
     b := mkbuf("one two\nthree\ntwo two")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     f: app.Find
     defer app.find_destroy(&f)
 
@@ -37,7 +38,7 @@ test_find_scans_in_line_order :: proc(t: ^testing.T) {
 @(test)
 test_find_hits_do_not_overlap :: proc(t: ^testing.T) {
     b := mkbuf("aaa")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     f: app.Find
     defer app.find_destroy(&f)
 
@@ -50,7 +51,7 @@ test_find_hits_do_not_overlap :: proc(t: ^testing.T) {
 @(test)
 test_find_smart_case :: proc(t: ^testing.T) {
     b := mkbuf("Buffer buffer BUFFER")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     f: app.Find
     defer app.find_destroy(&f)
 
@@ -65,7 +66,7 @@ test_find_smart_case :: proc(t: ^testing.T) {
 @(test)
 test_find_empty_query_clears :: proc(t: ^testing.T) {
     b := mkbuf("aaa")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     f: app.Find
     defer app.find_destroy(&f)
 
@@ -81,7 +82,7 @@ test_find_empty_query_clears :: proc(t: ^testing.T) {
 @(test)
 test_find_lands_at_or_after_anchor :: proc(t: ^testing.T) {
     b := mkbuf("x\nx\nx")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     f: app.Find
     defer app.find_destroy(&f)
 
@@ -95,7 +96,7 @@ test_find_lands_at_or_after_anchor :: proc(t: ^testing.T) {
 @(test)
 test_find_step_wraps_both_ways :: proc(t: ^testing.T) {
     b := mkbuf("x\nx\nx")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
     f: app.Find
     defer app.find_destroy(&f)
 
@@ -132,12 +133,12 @@ test_find_first_on_line :: proc(t: ^testing.T) {
 @(test)
 test_cl_find_lands_and_clears_marks :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
     defer app.find_destroy(&a.find)
 
-    b := app.editor_current(&a.editor)
-    app.buffer_set_text(b, "one\ntwo\nthree")
+    b := edit.editor_current(&a.editor)
+    edit.buffer_set_text(b, "one\ntwo\nthree")
     a.find.show = true
 
     app.cl_find(&a, "three")

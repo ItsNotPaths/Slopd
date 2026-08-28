@@ -1,8 +1,9 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:testing"
 import "../txt"
+import "../edit"
 
 // Line-wise editing: which lines a selection reaches (doc_cursor_lines), block indent and its
 // undo (buffer_indent_block), and the one thing both rest on — the selection SURVIVING the edit,
@@ -12,21 +13,21 @@ import "../txt"
 SRC :: "one\n  two\n    three\nfour"
 
 @(private = "file")
-mk :: proc(src := SRC) -> app.Buffer {
-    b: app.Buffer
+mk :: proc(src := SRC) -> edit.Buffer {
+    b: edit.Buffer
     txt.doc_init(&b.doc)
-    app.buffer_set_text(&b, src)
+    edit.buffer_set_text(&b, src)
     return b
 }
 
 @(private = "file")
-sel :: proc(b: ^app.Buffer, anchor, head: txt.Pos) {
+sel :: proc(b: ^edit.Buffer, anchor, head: txt.Pos) {
     txt.doc_reset_cursor(&b.doc, anchor)
     txt.doc_set_head(&b.doc, head, true)
 }
 
 @(private = "file")
-text :: proc(b: ^app.Buffer) -> string {
+text :: proc(b: ^edit.Buffer) -> string {
     return txt.doc_string(&b.doc, context.temp_allocator)
 }
 
@@ -36,7 +37,7 @@ text :: proc(b: ^app.Buffer) -> string {
 @(test)
 test_cursor_lines_of_a_selection :: proc(t: ^testing.T) {
     b := mk()
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     txt.doc_reset_cursor(&b.doc, txt.Pos{2, 1})
     testing.expect_value(t, len(txt.doc_cursor_lines(&b.doc)), 1)
@@ -62,8 +63,8 @@ test_cursor_lines_of_a_selection :: proc(t: ^testing.T) {
 @(test)
 test_block_indent_keeps_the_selection :: proc(t: ^testing.T) {
     b := mk("a\n\nb")
-    defer app.buffer_destroy(&b)
-    ind := app.Indent{.Spaces, 2}
+    defer edit.buffer_destroy(&b)
+    ind := txt.Indent{.Spaces, 2}
 
     sel(&b, txt.Pos{0, 0}, txt.Pos{2, 1})
     app.buffer_tab(&b, ind)
@@ -84,23 +85,23 @@ test_block_indent_keeps_the_selection :: proc(t: ^testing.T) {
 @(test)
 test_block_dedent :: proc(t: ^testing.T) {
     b := mk()
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     sel(&b, txt.Pos{0, 0}, txt.Pos{2, 5})
-    app.buffer_indent_block(&b, app.Indent{.Spaces, 2}, true)
+    app.buffer_indent_block(&b, txt.Indent{.Spaces, 2}, true)
     testing.expect_value(t, text(&b), "one\ntwo\n  three\nfour")
 
     // Fewer spaces than a level is all of them, never a wrap onto the line above.
     b2 := mk(" x")
-    defer app.buffer_destroy(&b2)
+    defer edit.buffer_destroy(&b2)
     txt.doc_reset_cursor(&b2.doc, txt.Pos{0, 0})
-    app.buffer_indent_block(&b2, app.Indent{.Spaces, 4}, true)
+    app.buffer_indent_block(&b2, txt.Indent{.Spaces, 4}, true)
     testing.expect_value(t, text(&b2), "x")
 
     b3 := mk("\t\tx")
-    defer app.buffer_destroy(&b3)
+    defer edit.buffer_destroy(&b3)
     txt.doc_reset_cursor(&b3.doc, txt.Pos{0, 3})
-    app.buffer_indent_block(&b3, app.Indent{.Tab, 4}, true)
+    app.buffer_indent_block(&b3, txt.Indent{.Tab, 4}, true)
     testing.expect_value(t, text(&b3), "\tx")
     testing.expect_value(t, b3.doc.cursors[0].head, txt.Pos{0, 2}) // carried with the line
 }
@@ -110,16 +111,16 @@ test_block_dedent :: proc(t: ^testing.T) {
 @(test)
 test_dedent_without_a_selection :: proc(t: ^testing.T) {
     b := mk()
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     txt.doc_reset_cursor(&b.doc, txt.Pos{1, 1})
-    app.buffer_indent_block(&b, app.Indent{.Spaces, 2}, true)
+    app.buffer_indent_block(&b, txt.Indent{.Spaces, 2}, true)
     testing.expect_value(t, text(&b), "one\ntwo\n    three\nfour")
     testing.expect_value(t, b.doc.cursors[0].head, txt.Pos{1, 0})
 
     // Nothing to take off is not an edit at all.
     b.dirty = false
-    app.buffer_indent_block(&b, app.Indent{.Spaces, 2}, true)
+    app.buffer_indent_block(&b, txt.Indent{.Spaces, 2}, true)
     testing.expect(t, !b.dirty)
 }
 
@@ -128,10 +129,10 @@ test_dedent_without_a_selection :: proc(t: ^testing.T) {
 @(test)
 test_block_indent_undoes_as_one :: proc(t: ^testing.T) {
     b := mk()
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     sel(&b, txt.Pos{0, 0}, txt.Pos{3, 4})
-    app.buffer_tab(&b, app.Indent{.Spaces, 2})
+    app.buffer_tab(&b, txt.Indent{.Spaces, 2})
     testing.expect_value(t, text(&b), "  one\n    two\n      three\n  four")
 
     testing.expect(t, txt.doc_undo(&b.doc))
@@ -148,9 +149,9 @@ test_block_indent_undoes_as_one :: proc(t: ^testing.T) {
 @(test)
 test_tab_within_one_line_is_not_a_block :: proc(t: ^testing.T) {
     b := mk("hello")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     sel(&b, txt.Pos{0, 1}, txt.Pos{0, 3})
-    app.buffer_tab(&b, app.Indent{.Spaces, 2})
+    app.buffer_tab(&b, txt.Indent{.Spaces, 2})
     testing.expect_value(t, text(&b), "hel  lo")
 }

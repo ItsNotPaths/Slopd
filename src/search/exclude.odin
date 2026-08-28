@@ -1,4 +1,4 @@
-package main
+package search
 
 import "core:path/filepath"
 import "core:strings"
@@ -22,11 +22,6 @@ exclude_split :: proc(list: string, alloc := context.temp_allocator) -> []string
         }
     }
     return out[:]
-}
-
-// The seam every caller uses, so nobody re-splits it their own way.
-exclude_dirs :: proc(a: ^App, alloc := context.temp_allocator) -> []string {
-    return exclude_split(a.exclude, alloc)
 }
 
 // A pattern that will not compile matches nothing rather than everything: a typo must not

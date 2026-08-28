@@ -1,4 +1,4 @@
-package main
+package edit
 
 import "core:fmt"
 import "core:os"
@@ -6,8 +6,8 @@ import "core:path/filepath"
 import "core:strings"
 import "core:sync"
 import "core:time"
-import "txt"
-import "ui"
+import "../txt"
+import "../ui"
 
 // A list of open Buffers (the ring) with one active. Each is a Doc plus file/view state, so
 // every motion and edit op is the code the command line uses.

@@ -1,7 +1,8 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:testing"
+import "../pty"
 
 // The one piece of the launcher worth pinning headlessly: which session a launch lands in.
 // Everything else in git_tool.odin forks a process or writes to a PTY.
@@ -29,5 +30,5 @@ test_term_slot :: proc(t: ^testing.T) {
     testing.expect_value(t, app.term_slot(3, -1), 1)
 
     // You cannot ask your way past TERM_MAX.
-    testing.expect_value(t, app.term_slot(app.TERM_MAX, app.TERM_MAX + 5), app.TERM_MAX)
+    testing.expect_value(t, app.term_slot(pty.TERM_MAX, pty.TERM_MAX + 5), pty.TERM_MAX)
 }

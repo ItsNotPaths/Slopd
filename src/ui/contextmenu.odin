@@ -1,7 +1,7 @@
-package main
+package ui
 
 import "core:unicode/utf8"
-import "gfx"
+import "../gfx"
 
 // The one popup in the program: a right-press opens a list of buttons naming verbs the chords
 // already do. Not a filetree feature — the model is a `kind` plus a list of items, so a second

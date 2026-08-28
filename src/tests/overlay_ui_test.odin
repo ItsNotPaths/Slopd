@@ -1,10 +1,12 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import clay "../../bindings/clay"
 import "core:testing"
 import "../gfx"
 import "../ui"
+import "../pty"
+import "../edit"
 
 // The two overlays. Within one scissor group quads paint UNDER glyphs, so a bar covering a
 // pane's text has to get out of that group. Three fields do it:
@@ -94,7 +96,7 @@ switcher_app :: proc(a: ^app.App, n, active: int) {
     palette(a)
     faded_in(&a.switcher_anim)
     for _ in 0 ..< n {
-        append(&a.terminals, new(app.Terminal))
+        append(&a.terminals, new(pty.Terminal))
     }
 }
 
@@ -567,14 +569,14 @@ test_overlay_outranks_everything_declared_after_it :: proc(t: ^testing.T) {
     a: app.App
     chord_app(&a, 20)
     defer delete(a.tree.entries)
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
-    app.buffer_set_text(app.editor_current(&a.editor), "alpha\nbravo")
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
+    edit.buffer_set_text(edit.editor_current(&a.editor), "alpha\nbravo")
 
     ed_pane := gfx.Rect{0, 0, 90, 380}
     strip := gfx.Rect{0, 380, 500, 20}
     ed_area, ed_row_h, ed_rows := app.editor_geom(ed_pane, 1, f.line_height)
-    v := app.editor_view(app.editor_current(&a.editor), &f, ed_area, ed_row_h, ed_rows, 0)
+    v := app.editor_view(edit.editor_current(&a.editor), &f, ed_area, ed_row_h, ed_rows, 0)
 
     app.clay_window_begin(500, 400)
     if clay.UI(clay.ID(app.WIN_ROOT))(app.clay_window_root(500, 400)) {

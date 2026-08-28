@@ -1,11 +1,11 @@
 package tests
 
-import app ".."
 import "core:fmt"
 import "core:testing"
 import "core:strings"
 import "core:time"
 import "../txt"
+import "../edit"
 
 // E8's keep-the-numbers-honest bench, in budget_test's spirit: measure rather than reason,
 // assert a CEILING rather than an exact figure, and print the measurement so drift is visible.
@@ -44,16 +44,16 @@ test_perf_ceilings :: proc(t: ^testing.T) {
     // Load: best of three, so a cold first run does not decide the figure.
     load := time.MAX_DURATION
     for _ in 0 ..< 3 {
-        b: app.Buffer
+        b: edit.Buffer
         start := time.tick_now()
-        app.buffer_set_text(&b, src)
+        edit.buffer_set_text(&b, src)
         load = min(load, time.tick_since(start))
-        app.buffer_destroy(&b)
+        edit.buffer_destroy(&b)
     }
 
-    b: app.Buffer
-    app.buffer_set_text(&b, src)
-    defer app.buffer_destroy(&b)
+    b: edit.Buffer
+    edit.buffer_set_text(&b, src)
+    defer edit.buffer_destroy(&b)
 
     // A typed run mid-file, through the whole funnel. The average IS the smoothing.
     txt.doc_reset_cursor(&b.doc, txt.Pos{txt.doc_line_count(&b.doc) / 2, 4})
@@ -68,7 +68,7 @@ test_perf_ceilings :: proc(t: ^testing.T) {
     save := time.MAX_DURATION
     for _ in 0 ..< 3 {
         start = time.tick_now()
-        _ = app.buffer_bytes(&b)
+        _ = edit.buffer_bytes(&b)
         save = min(save, time.tick_since(start))
     }
 

@@ -1,6 +1,6 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import clay "../../bindings/clay"
 import vt "../../bindings/libvterm"
 import "core:c"
@@ -8,6 +8,7 @@ import "core:testing"
 import "../txt"
 import "../gfx"
 import "../ui"
+import "../pty"
 
 // The terminal pane declared in Clay, its cell grid painted through a Custom. Two claims: a
 // pixel becomes a CELL, and that cell is either handed to a child process as protocol bytes or
@@ -36,22 +37,22 @@ ROWS :: 12
 // With the scrollback and settermprop callbacks wired, which is what makes term.mouse_on track
 // a TUI's DECSET 1000.
 @(private = "file")
-mkterm :: proc(rows := ROWS, cols := COLS) -> ^app.Terminal {
-    term := new(app.Terminal)
-    app.terminal_vt_init(term, rows, cols)
-    app.terminal_enable_scrollback(term)
+mkterm :: proc(rows := ROWS, cols := COLS) -> ^pty.Terminal {
+    term := new(pty.Terminal)
+    pty.terminal_vt_init(term, rows, cols)
+    pty.terminal_enable_scrollback(term)
     return term
 }
 
 @(private = "file")
-killterm :: proc(term: ^app.Terminal) {
-    app.terminal_vt_destroy(term)
+killterm :: proc(term: ^pty.Terminal) {
+    pty.terminal_vt_destroy(term)
     free(term)
 }
 
 @(private = "file")
-feed :: proc(term: ^app.Terminal, s: string) {
-    app.terminal_feed(term, transmute([]u8)s)
+feed :: proc(term: ^pty.Terminal, s: string) {
+    pty.terminal_feed(term, transmute([]u8)s)
 }
 
 @(private = "file")
@@ -113,7 +114,7 @@ sink_text :: proc(sk: ^Sink) -> string {
 
 // As a TUI does: SGR encoding (1006) so the reports are readable, then the tracking mode.
 @(private = "file")
-tui_wants_mouse :: proc(term: ^app.Terminal, sk: ^Sink, mode := "1000") {
+tui_wants_mouse :: proc(term: ^pty.Terminal, sk: ^Sink, mode := "1000") {
     feed(term, "\x1b[?1006h")
     feed(term, "\x1b[?")
     feed(term, mode)
@@ -213,7 +214,7 @@ test_terminal_hit_scrollback_is_not_live :: proc(t: ^testing.T) {
     // Top row at absolute line 4: four rows of history, then the grid.
     term.sel_active = true
     term.view_top = 4
-    v := mkview(app.terminal_view_top(term))
+    v := mkview(pty.terminal_view_top(term))
     testing.expect_value(t, v.top, 4)
 
     point_at(&a, 0, 0)
@@ -228,7 +229,7 @@ test_terminal_hit_scrollback_is_not_live :: proc(t: ^testing.T) {
 
     // A pane that grew this frame has screen rows the session is not resized into yet, and
     // those must resolve as not-forwardable rather than as a cell the TUI does not have.
-    tall := mkview(app.terminal_view_top(term))
+    tall := mkview(pty.terminal_view_top(term))
     tall.rows = ROWS + 6
     tall.area.h = i32(tall.rows) * ROW_H
     a.mouse.y = AREA.y + i32(ROWS + 4) * ROW_H + 3
@@ -304,7 +305,7 @@ test_terminal_click_selects_by_character :: proc(t: ^testing.T) {
     testing.expect(t, term.msel_on, "a click starts a mouse selection")
     testing.expect_value(t, term.msel.anchor, txt.Pos{2, 0})
     testing.expect_value(t, term.msel.head, txt.Pos{2, 0})
-    testing.expect(t, !app.terminal_msel_has_span(term), "a bare click selects nothing yet")
+    testing.expect(t, !pty.terminal_msel_has_span(term), "a bare click selects nothing yet")
     testing.expect(t, !term.sel_active, "the keyboard's copy cursor stands down")
     testing.expect(t, !a.mouse.click, "a click on a cell must be claimed")
 
@@ -315,7 +316,7 @@ test_terminal_click_selects_by_character :: proc(t: ^testing.T) {
     testing.expect_value(t, term.msel.anchor, txt.Pos{2, 0})
     testing.expect_value(t, term.msel.head, txt.Pos{4, 0})
 
-    text := app.terminal_selection_text(term)
+    text := pty.terminal_selection_text(term)
     defer delete(text)
     testing.expect_value(t, text, "l2\nl3\n")
 
@@ -426,12 +427,12 @@ test_terminal_drag_autoscrolls :: proc(t: ^testing.T) {
 
     term.sel_active = true
     term.view_top = 5
-    v := mkview(app.terminal_view_top(term))
+    v := mkview(pty.terminal_view_top(term))
     point_at(&a, 0, 0)
     press(&a)
     app.terminal_click(app.ctx_of(&a), term, a.term_active, app.terminal_hit(app.ctx_of(&a), term, v))
     testing.expect_value(t, term.msel.anchor.line, 5)
-    testing.expect_value(t, app.terminal_view_top(term), 5) // the click did not snap the view
+    testing.expect_value(t, pty.terminal_view_top(term), 5) // the click did not snap the view
 
     // Above the pane: the walk goes up into history and drags the view with it.
     a.mouse.y = AREA.y - ROW_H
@@ -546,7 +547,7 @@ test_terminal_click_on_scrollback_stays_local :: proc(t: ^testing.T) {
 
     term.sel_active = true
     term.view_top = 4
-    v := mkview(app.terminal_view_top(term))
+    v := mkview(pty.terminal_view_top(term))
 
     point_at(&a, 0, 0) // absolute line 4: history
     press(&a)
@@ -606,7 +607,7 @@ test_terminal_track_forwards_motion :: proc(t: ^testing.T) {
     tui_wants_mouse(back, &sk4, "1003")
     back.sel_active = true
     back.view_top = 4
-    scrolled := mkview(app.terminal_view_top(back))
+    scrolled := mkview(pty.terminal_view_top(back))
     point_at(&a, 0, 0) // absolute line 4, deep in captured history
     app.terminal_track(back, app.terminal_hit(app.ctx_of(&a), back, scrolled))
     testing.expect_value(t, sink_text(&sk4), "")
@@ -631,7 +632,7 @@ test_terminal_triple_click_takes_the_whole_wrapped_line :: proc(t: ^testing.T) {
     testing.expect_value(t, term.msel.head, txt.Pos{1, 10})
 
     // …and it copies back as the one line it was typed as.
-    text := app.terminal_selection_text(term)
+    text := pty.terminal_selection_text(term)
     defer delete(text)
     testing.expect_value(t, text, "0123456789abcd")
 }
@@ -656,7 +657,7 @@ test_terminal_selections_are_alternatives :: proc(t: ^testing.T) {
     testing.expect(t, term.msel_on)
 
     // …and a keyboard move retires the click's.
-    app.terminal_sel_move(term, -1, false)
+    pty.terminal_sel_move(term, -1, false)
     testing.expect(t, !term.msel_on)
     testing.expect(t, term.sel_active)
 
@@ -664,7 +665,7 @@ test_terminal_selections_are_alternatives :: proc(t: ^testing.T) {
     press(&a)
     app.terminal_click(app.ctx_of(&a), term, a.term_active, app.terminal_hit(app.ctx_of(&a), term, v))
     testing.expect(t, term.msel_on)
-    app.terminal_sel_reset(term)
+    pty.terminal_sel_reset(term)
     testing.expect(t, !term.msel_on)
     testing.expect(t, !term.sel_active)
 }
@@ -683,12 +684,12 @@ test_terminal_msel_row_span :: proc(t: ^testing.T) {
     lo, hi := app.terminal_msel_row_span(term, 1, COLS)
     testing.expect_value(t, lo, 0)
     testing.expect_value(t, hi, 0)
-    app.terminal_msel_set(term, txt.Pos{1, 3}, txt.Pos{1, 3})
+    pty.terminal_msel_set(term, txt.Pos{1, 3}, txt.Pos{1, 3})
     lo, hi = app.terminal_msel_row_span(term, 1, COLS)
     testing.expect_value(t, hi, lo)
 
     // Three lines: the first clipped at its start, the last at its end, the interior full.
-    app.terminal_msel_set(term, txt.Pos{1, 2}, txt.Pos{3, 4})
+    pty.terminal_msel_set(term, txt.Pos{1, 2}, txt.Pos{3, 4})
     lo, hi = app.terminal_msel_row_span(term, 1, COLS)
     testing.expect_value(t, lo, 2)
     testing.expect_value(t, hi, COLS)
@@ -704,13 +705,13 @@ test_terminal_msel_row_span :: proc(t: ^testing.T) {
     testing.expect_value(t, hi, lo)
 
     // Within one line it is a run of cells, which is the case a row tint gets wrong.
-    app.terminal_msel_set(term, txt.Pos{2, 2}, txt.Pos{2, 5})
+    pty.terminal_msel_set(term, txt.Pos{2, 2}, txt.Pos{2, 5})
     lo, hi = app.terminal_msel_row_span(term, 2, COLS)
     testing.expect_value(t, lo, 2)
     testing.expect_value(t, hi, 5)
 
     // Backwards it is the same run: the pair is ordered on READ, never on write.
-    app.terminal_msel_set(term, txt.Pos{2, 5}, txt.Pos{2, 2})
+    pty.terminal_msel_set(term, txt.Pos{2, 5}, txt.Pos{2, 2})
     lo, hi = app.terminal_msel_row_span(term, 2, COLS)
     testing.expect_value(t, lo, 2)
     testing.expect_value(t, hi, 5)
@@ -731,15 +732,15 @@ test_terminal_click_does_not_restore_a_stale_view :: proc(t: ^testing.T) {
     // Scrolled back, then escaped: view_top still holds the old position.
     term.sel_active = true
     term.view_top = 4
-    app.terminal_sel_reset(term)
+    pty.terminal_sel_reset(term)
     testing.expect_value(t, term.view_top, 4) // stale, deliberately
-    testing.expect_value(t, app.terminal_view_top(term), term.sb_total) // the view is live
+    testing.expect_value(t, pty.terminal_view_top(term), term.sb_total) // the view is live
 
-    v := mkview(app.terminal_view_top(term))
+    v := mkview(pty.terminal_view_top(term))
     point_at(&a, 0, 0)
     press(&a)
     app.terminal_click(app.ctx_of(&a), term, a.term_active, app.terminal_hit(app.ctx_of(&a), term, v))
-    testing.expect_value(t, app.terminal_view_top(term), term.sb_total)
+    testing.expect_value(t, pty.terminal_view_top(term), term.sb_total)
 }
 
 // The twin of test_terminal_msel_row_span, for the KEYBOARD's copy cursor.
@@ -760,13 +761,13 @@ test_terminal_sel_row_span :: proc(t: ^testing.T) {
     testing.expect_value(t, hi, lo) // nothing selected paints nothing
 
     // The marker moved but nothing extended: still no highlight.
-    app.terminal_sel_move(term, -1, false)
+    pty.terminal_sel_move(term, -1, false)
     lo, hi = app.terminal_sel_row_span(term)
     testing.expect_value(t, hi, lo)
 
     // One Shift press lights exactly one line: the one below the marker it left.
     head := term.sel_head
-    app.terminal_sel_move(term, -1, true)
+    pty.terminal_sel_move(term, -1, true)
     lo, hi = app.terminal_sel_row_span(term)
     testing.expect_value(t, lo, head - 1)
     testing.expect_value(t, hi, head)
@@ -777,7 +778,7 @@ test_terminal_sel_row_span :: proc(t: ^testing.T) {
     testing.expect(t, !app.terminal_sel_row_shown(term, head), "the anchor's own line is not selected")
     testing.expect(t, !app.terminal_sel_row_shown(term, head - 2), "nor the one above the marker")
 
-    app.terminal_sel_move(term, -1, true)
+    pty.terminal_sel_move(term, -1, true)
     lo, hi = app.terminal_sel_row_span(term)
     testing.expect_value(t, hi - lo, 2)
 }

@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RELEASE_DIR="$PROJECT_DIR/build"
 # The binary is `slopd`, not the folder's name: lower case, because it is what you type. It is
-# also the app-id the window reports (APP_ID in src/main.odin), the name `--install` writes to
+# also the app-id the window reports (APP_ID in src/slopd/main.odin), the name `--install` writes to
 # ~/.local/bin, and the name slopd.desktop calls in Exec. One spelling, everywhere.
 BIN_NAME="slopd"
 
@@ -55,7 +55,7 @@ if [ $DO_LOCAL -eq 1 ]; then
     # Requires ./download-deps.sh to have built the static archive first.
     # SLOPD_VERSION stamps `slopd --version`; a local build is not a tagged one, so it
     # says so rather than claiming a release number.
-    odin build "$PROJECT_DIR/src" -out:"$RELEASE_DIR/$BIN_NAME" \
+    odin build "$PROJECT_DIR/src/slopd" -out:"$RELEASE_DIR/$BIN_NAME" \
         -o:speed -define:GLFW_SHARED=false -define:SLOPD_VERSION="dev-local"
     # ~150KB of a ~1.9MB binary is .symtab/.strtab. A -o:speed build carries no .debug_*
     # sections to begin with, so --strip-all costs no debuggability that this build had.

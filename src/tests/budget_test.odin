@@ -1,6 +1,6 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import clay "../../bindings/clay"
 import "core:fmt"
 import "core:testing"

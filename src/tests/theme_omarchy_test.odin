@@ -1,6 +1,6 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:log"
 import "core:testing"
 import "../gfx"

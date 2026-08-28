@@ -1,6 +1,5 @@
 package tests
 
-import app ".."
 import "core:c"
 import "core:fmt"
 import "core:testing"

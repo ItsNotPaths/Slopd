@@ -1,6 +1,6 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import clay "../../bindings/clay"
 import "core:os"
 import "core:path/filepath"
@@ -8,6 +8,7 @@ import "core:strings"
 import "core:testing"
 import "../gfx"
 import "../ui"
+import "../edit"
 
 // The filetree declared in Clay. The claim is not "it draws" but that geometry, hit-testing and
 // paint all come from ONE tree, so a row's box, the row the pointer resolves to and the row that
@@ -314,8 +315,8 @@ test_filetree_scroll_eases :: proc(t: ^testing.T) {
     fake_tree(&a, 40)
     defer fake_tree_free(&a)
     // app_next_wake asks the editor for its own scroll tween, so the ring has to exist.
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
     a.tree.selected = 10 // so the row paints a background this can find
     a.tree.scroll = 10   // the TARGET; the tween starts from the settled 0
 

@@ -1,6 +1,5 @@
 package tests
 
-import app ".."
 import clay "../../bindings/clay"
 import "base:runtime"
 import "core:fmt"

@@ -1,6 +1,6 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:strings"
 import "core:testing"
 

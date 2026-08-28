@@ -1,6 +1,6 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -8,6 +8,8 @@ import "core:testing"
 import "vendor:glfw"
 import "../txt"
 import "../ui"
+import "../search"
+import "../edit"
 
 // The workspace prompt's model (wsfind.odin): what a typed line matches, what the list holds
 // when nothing is typed, and what the keys do to it. Host-independent — no window, no Clay —
@@ -26,25 +28,25 @@ tmp :: proc(name: string) -> string {
 // halves of that: which strings match at all, and which of two matches is the better one.
 @(test)
 test_wsfind_score :: proc(t: ^testing.T) {
-    _, ok := app.wsfind_score("src/wsfind.odin", "wsf")
+    _, ok := search.wsfind_score("src/wsfind.odin", "wsf")
     testing.expect(t, ok)
-    _, ok = app.wsfind_score("src/wsfind.odin", "WSFIND") // case-folded both ways
+    _, ok = search.wsfind_score("src/wsfind.odin", "WSFIND") // case-folded both ways
     testing.expect(t, ok)
-    _, ok = app.wsfind_score("src/wsfind.odin", "ws find") // spaces are gaps you need not spell
+    _, ok = search.wsfind_score("src/wsfind.odin", "ws find") // spaces are gaps you need not spell
     testing.expect(t, ok)
-    _, ok = app.wsfind_score("src/wsfind.odin", "wsz")
+    _, ok = search.wsfind_score("src/wsfind.odin", "wsz")
     testing.expect(t, !ok, "a rune that is not there must not match")
-    _, ok = app.wsfind_score("src/wsfind.odin", "dnifsw")
+    _, ok = search.wsfind_score("src/wsfind.odin", "dnifsw")
     testing.expect(t, !ok, "the order of the query is part of the query")
 
     // A run landing together beats the same letters scattered, and a hit in the base name beats
     // one buried in the directories above it.
-    run, _ := app.wsfind_score("src/wsfind.odin", "wsfind")
-    scattered, _ := app.wsfind_score("src/window_ui_stuff.odin", "wsfind")
+    run, _ := search.wsfind_score("src/wsfind.odin", "wsfind")
+    scattered, _ := search.wsfind_score("src/window_ui_stuff.odin", "wsfind")
     testing.expect(t, run > scattered)
 
-    base, _ := app.wsfind_score("src/theme.odin", "theme")
-    dir, _ := app.wsfind_score("theme/a.odin", "theme")
+    base, _ := search.wsfind_score("src/theme.odin", "theme")
+    dir, _ := search.wsfind_score("theme/a.odin", "theme")
     testing.expect(t, base > dir)
 }
 
@@ -52,10 +54,10 @@ test_wsfind_score :: proc(t: ^testing.T) {
 // from elsewhere) keeps its absolute path, since a relative one would name the wrong file.
 @(test)
 test_wsfind_rel :: proc(t: ^testing.T) {
-    testing.expect_value(t, app.wsfind_rel("/home/me/src", "/home/me/src/app.odin"), "app.odin")
-    testing.expect_value(t, app.wsfind_rel("/home/me/src", "/home/me/src/a/b.odin"), "a/b.odin")
-    testing.expect_value(t, app.wsfind_rel("/home/me/src", "/etc/hosts"), "/etc/hosts")
-    testing.expect_value(t, app.wsfind_rel("", "/etc/hosts"), "/etc/hosts")
+    testing.expect_value(t, search.wsfind_rel("/home/me/src", "/home/me/src/app.odin"), "app.odin")
+    testing.expect_value(t, search.wsfind_rel("/home/me/src", "/home/me/src/a/b.odin"), "a/b.odin")
+    testing.expect_value(t, search.wsfind_rel("/home/me/src", "/etc/hosts"), "/etc/hosts")
+    testing.expect_value(t, search.wsfind_rel("", "/etc/hosts"), "/etc/hosts")
 }
 
 // The scan walks the tree once, when the prompt opens: files at any depth, dotted DIRECTORIES
@@ -88,10 +90,10 @@ test_wsfind_scan :: proc(t: ^testing.T) {
         os.remove(vendor);os.remove(hidden);os.remove(sub);os.remove(root)
     }
 
-    ws: app.WS_Find
-    app.wsfind_init(&ws)
-    defer app.wsfind_destroy(&ws)
-    app.wsfind_scan(&ws, root, app.exclude_split("vendor"))
+    ws: search.WS_Find
+    search.wsfind_init(&ws)
+    defer search.wsfind_destroy(&ws)
+    search.wsfind_scan(&ws, root, search.exclude_split("vendor"))
 
     testing.expect_value(t, ws.root, root)
     found: [3]bool
@@ -114,7 +116,7 @@ test_wsfind_scan :: proc(t: ^testing.T) {
 
     // …and with nothing excluded, `vendor` is just another folder: the list is the config's,
     // not a rule baked into the scan.
-    app.wsfind_scan(&ws, root)
+    search.wsfind_scan(&ws, root)
     testing.expect_value(t, len(ws.files), 4)
 }
 
@@ -123,11 +125,11 @@ test_wsfind_scan :: proc(t: ^testing.T) {
 @(test)
 test_wsfind_rows :: proc(t: ^testing.T) {
     a: app.App
-    app.wsfind_init(&a.wsfind)
-    defer app.wsfind_destroy(&a.wsfind)
-    defer app.editor_destroy(&a.editor)
+    search.wsfind_init(&a.wsfind)
+    defer search.wsfind_destroy(&a.wsfind)
+    defer edit.editor_destroy(&a.editor)
     ring :: proc(a: ^app.App, path: string, dirty: bool) {
-        b: app.Buffer
+        b: edit.Buffer
         txt.doc_init(&b.doc)
         b.path = strings.clone(path)
         b.dirty = dirty
@@ -190,10 +192,10 @@ test_wsfind_keys :: proc(t: ^testing.T) {
 
     a: app.App
     a.project_root = strings.clone(root, context.temp_allocator) // no app_destroy here: arena it
-    app.wsfind_init(&a.wsfind)
-    defer app.wsfind_destroy(&a.wsfind)
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    search.wsfind_init(&a.wsfind)
+    defer search.wsfind_destroy(&a.wsfind)
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
     run :: proc(a: ^app.App, act: app.Action) -> bool {
         return app.action_run(a, act, 0, false, false)
     }
@@ -223,7 +225,7 @@ test_wsfind_keys :: proc(t: ^testing.T) {
     testing.expect(t, run(&a, .Activate))
     testing.expect(t, !a.wsfind.open, "opening a row closes the prompt")
     testing.expect_value(t, a.focus, ui.Focus.Editor)
-    testing.expect_value(t, app.editor_current(&a.editor).path, file)
+    testing.expect_value(t, edit.editor_current(&a.editor).path, file)
 
     // Esc closes it without opening anything, leaving the listing as it was found.
     testing.expect(t, run(&a, .Ws_Find))

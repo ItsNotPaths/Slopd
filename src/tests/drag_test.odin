@@ -1,6 +1,6 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:testing"
 import "../txt"
 import "../ui"

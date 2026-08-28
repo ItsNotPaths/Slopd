@@ -31,7 +31,7 @@ Doc :: struct {
 // Fixed rather than a registration list: two of them, both living as long as the Doc.
 Doc_Reader :: enum {
     Highlight, // folds each change into the cached parse tree (highlight.odin)
-    Folds,     // shifts collapsed ranges so an edit elsewhere does not drop them (fold.odin)
+    Folds,     // shifts collapsed ranges so an edit elsewhere does not drop them (src/edit)
 }
 
 // Both byte offsets and points, because tree-sitter's Input_Edit wants both. Offsets are in the

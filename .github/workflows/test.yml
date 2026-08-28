@@ -60,4 +60,4 @@ jobs:
       # A test build is not a release build: -o:speed changes what the optimiser folds, and
       # a warning-free debug compile has let a release-only break through before.
       - name: Build (release settings)
-        run: odin build src -out:slopd -o:speed -define:GLFW_SHARED=false
+        run: odin build src/slopd -out:slopd -o:speed -define:GLFW_SHARED=false

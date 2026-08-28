@@ -1,4 +1,4 @@
-package main
+package search
 
 import "base:runtime"
 import "core:fmt"

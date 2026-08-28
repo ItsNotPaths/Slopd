@@ -1,8 +1,9 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:testing"
 import "vendor:glfw"
+import "../edit"
 
 // The bind table's four rules, which every chord in Slopd now rests on:
 //   1. Global is searched from every context, and the context table beside it.
@@ -172,8 +173,8 @@ test_alt_q_is_held_by_both_the_terminal_and_the_file_pane :: proc(t: ^testing.T)
 test_a_declined_chord_reaches_the_next_holder :: proc(t: ^testing.T) {
     a: app.App
     append(&a.binds, ..app.BIND_DEFAULTS[:])
-    app.editor_init(&a.editor)
-    defer {delete(a.binds);app.editor_destroy(&a.editor)}
+    edit.editor_init(&a.editor)
+    defer {delete(a.binds);edit.editor_destroy(&a.editor)}
 
     q := app.Chord{glfw.KEY_Q, ALT}
     a.focus = .Aux

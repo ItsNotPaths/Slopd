@@ -1,11 +1,12 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import clay "../../bindings/clay"
 import "core:testing"
 import "../txt"
 import "../gfx"
 import "../ui"
+import "../search"
 
 // The workspace prompt declared in Clay, under BOTH faces of the file pane. The claim is the one
 // the shared UI half exists for: the same prompt and the same rows come out of the `ls` header
@@ -36,11 +37,11 @@ fake_prompt :: proc(a: ^app.App, n: int) {
     a.aux_mode = .FileTree
     a.focus = .Aux
     a.tree.dir = "/home/me/src"
-    app.wsfind_init(&a.wsfind)
+    search.wsfind_init(&a.wsfind)
     a.wsfind.open = true
     a.wsfind.root = "/w" // literals throughout: torn down by hand, never by wsfind_destroy
     for i in 0 ..< n {
-        append(&a.wsfind.rows, app.WS_Row{path = "/w/src/a.odin", dirty = i == 0})
+        append(&a.wsfind.rows, search.WS_Row{path = "/w/src/a.odin", dirty = i == 0})
     }
     append(&a.filebrowser.places, app.Place{"Home", "/home/me"})
     a.filebrowser.hover_row, a.filebrowser.hover_place, a.filebrowser.hover_seg = -1, -1, -1

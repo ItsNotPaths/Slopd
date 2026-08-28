@@ -1,17 +1,19 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:testing"
 import "../txt"
+import "../search"
+import "../edit"
 
 // Workspace-wide find and replace (replace.odin). The two halves are tested apart, because they
 // fail apart: the PARSE and the SCAN are pure, and the EDIT is a buffer in and a buffer out. The
 // disk half — grep naming the files, the ring taking them — is grep_run's, already covered.
 
 @(private = "file")
-mkbuf :: proc(text: string) -> app.Buffer {
-    b: app.Buffer
-    app.buffer_set_text(&b, text)
+mkbuf :: proc(text: string) -> edit.Buffer {
+    b: edit.Buffer
+    edit.buffer_set_text(&b, text)
     return b
 }
 
@@ -91,7 +93,7 @@ test_rep_offsets_are_case_sensitive :: proc(t: ^testing.T) {
 @(test)
 test_rep_replaces_after_a_multibyte_rune :: proc(t: ^testing.T) {
     b := mkbuf("héllo foo\nfoo")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     testing.expect_value(t, app.rep_buffer_replace(&b, "foo", "bar"), 2)
     testing.expect_value(t, txt.doc_string(&b.doc, context.temp_allocator), "héllo bar\nbar")
@@ -102,7 +104,7 @@ test_rep_replaces_after_a_multibyte_rune :: proc(t: ^testing.T) {
 @(test)
 test_rep_is_one_undo_step_per_file :: proc(t: ^testing.T) {
     b := mkbuf("foo\nfoo\nfoo")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     testing.expect_value(t, app.rep_buffer_replace(&b, "foo", "bar"), 3)
     testing.expect_value(t, txt.doc_string(&b.doc, context.temp_allocator), "bar\nbar\nbar")
@@ -117,7 +119,7 @@ test_rep_is_one_undo_step_per_file :: proc(t: ^testing.T) {
 @(test)
 test_rep_does_not_rescan_its_own_output :: proc(t: ^testing.T) {
     b := mkbuf("foo foo")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     testing.expect_value(t, app.rep_buffer_replace(&b, "foo", "foofoo"), 2)
     testing.expect_value(t, txt.doc_string(&b.doc, context.temp_allocator), "foofoo foofoo")
@@ -127,7 +129,7 @@ test_rep_does_not_rescan_its_own_output :: proc(t: ^testing.T) {
 @(test)
 test_rep_leaves_a_missed_buffer_clean :: proc(t: ^testing.T) {
     b := mkbuf("nothing here")
-    defer app.buffer_destroy(&b)
+    defer edit.buffer_destroy(&b)
 
     testing.expect_value(t, app.rep_buffer_replace(&b, "foo", "bar"), 0)
     testing.expect(t, !b.dirty, "a buffer with no match is not dirtied")
@@ -144,9 +146,9 @@ rep_fixture :: proc(a: ^app.App, c0, c1, c2: []string) {
     a.project_root = "/proj"
     append(
         &a.grep.hits,
-        app.GrepHit{path = "/proj/a.odin", line = 2, text = "foo", ctx = c0, ctx_first = 1},
-        app.GrepHit{path = "/proj/a.odin", line = 5, text = "foo", ctx = c1, ctx_first = 4},
-        app.GrepHit{path = "/proj/b.odin", line = 2, text = "foo", ctx = c2, ctx_first = 1},
+        search.GrepHit{path = "/proj/a.odin", line = 2, text = "foo", ctx = c0, ctx_first = 1},
+        search.GrepHit{path = "/proj/a.odin", line = 5, text = "foo", ctx = c1, ctx_first = 4},
+        search.GrepHit{path = "/proj/b.odin", line = 2, text = "foo", ctx = c2, ctx_first = 1},
     )
     a.grep.query = "foo"
 }
@@ -163,7 +165,7 @@ test_rep_rows_show_the_replacement :: proc(t: ^testing.T) {
     a.grep.replace = "bar"
     a.grep.replacing = true
 
-    rows := app.grep_rows(&a.grep, a.project_root, context.temp_allocator)
+    rows := search.grep_rows(&a.grep, a.project_root, context.temp_allocator)
     for r in rows {
         testing.expect(t, r.text != "foo", "a row still shows the old text")
     }
@@ -183,7 +185,7 @@ test_rep_rows_replace_in_context_lines :: proc(t: ^testing.T) {
     a.grep.replace = "bar"
     a.grep.replacing = true
 
-    rows := app.grep_rows(&a.grep, a.project_root, context.temp_allocator)
+    rows := search.grep_rows(&a.grep, a.project_root, context.temp_allocator)
     testing.expect_value(t, rows[1].text, "bar above") // context, not the match
     testing.expect_value(t, rows[3].text, "bar below")
 }
@@ -198,7 +200,7 @@ test_grep_rows_are_untouched_without_a_replace :: proc(t: ^testing.T) {
     rep_fixture(&a, c0[:], c1[:], c2[:])
     defer delete(a.grep.hits)
 
-    rows := app.grep_rows(&a.grep, a.project_root, context.temp_allocator)
+    rows := search.grep_rows(&a.grep, a.project_root, context.temp_allocator)
     testing.expect_value(t, rows[2].text, "foo")
 }
 
@@ -212,13 +214,13 @@ test_grep_head_names_the_search :: proc(t: ^testing.T) {
     rep_fixture(&a, c0[:], c1[:], c2[:])
     defer delete(a.grep.hits)
 
-    testing.expect_value(t, app.grep_head(&a.grep), "grep: foo   (3)")
+    testing.expect_value(t, search.grep_head(&a.grep), "grep: foo   (3)")
     a.grep.replace = "bar"
     a.grep.replacing = true
-    testing.expect_value(t, app.grep_head(&a.grep), "rep: foo → bar   (3)")
+    testing.expect_value(t, search.grep_head(&a.grep), "rep: foo → bar   (3)")
 
     empty: app.App
-    testing.expect_value(t, app.grep_head(&empty.grep), "grep")
+    testing.expect_value(t, search.grep_head(&empty.grep), "grep")
 }
 
 // Hits arrive grouped by file, so the count is one pass. Two of the three are the same file.
@@ -231,10 +233,10 @@ test_grep_file_count :: proc(t: ^testing.T) {
     rep_fixture(&a, c0[:], c1[:], c2[:])
     defer delete(a.grep.hits)
 
-    testing.expect_value(t, app.grep_file_count(&a.grep), 2)
+    testing.expect_value(t, search.grep_file_count(&a.grep), 2)
 
     empty: app.App
-    testing.expect_value(t, app.grep_file_count(&empty.grep), 0)
+    testing.expect_value(t, search.grep_file_count(&empty.grep), 0)
 }
 
 // --- the preview and its hint ---
@@ -243,17 +245,17 @@ test_grep_file_count :: proc(t: ^testing.T) {
 @(test)
 test_preview_rep_borrows_the_pane :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     app.cl_init(&a.cl)
     defer {
-        app.editor_destroy(&a.editor)
+        edit.editor_destroy(&a.editor)
         app.cl_destroy(&a)
         app.cl_preview_destroy(&a)
-        app.grep_destroy(&a.grep)
+        search.grep_destroy(&a.grep)
     }
     a.cl_active = true
     a.cl_preview_on = true
-    app.grep_set(&a.grep, "older", nil)
+    search.grep_set(&a.grep, "older", nil)
     a.aux_mode = .FileTree
 
     txt.doc_set_text(&a.cl.doc, ":rep foo bar")

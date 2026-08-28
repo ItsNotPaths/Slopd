@@ -1,37 +1,37 @@
 package tests
 
 import vt "../../bindings/libvterm"
-import app ".."
 import "core:c"
 import "core:testing"
 import "../txt"
+import "../pty"
 
 // The libvterm core wiring: bytes fed in land in the cell grid and move the cursor as the VT
 // spec dictates. No GL, no shell, no PTY.
 
 @(private = "file")
-mkterm :: proc(rows, cols: int) -> app.Terminal {
-    t: app.Terminal
-    app.terminal_vt_init(&t, rows, cols)
+mkterm :: proc(rows, cols: int) -> pty.Terminal {
+    t: pty.Terminal
+    pty.terminal_vt_init(&t, rows, cols)
     return t
 }
 
 @(private = "file")
-feed :: proc(t: ^app.Terminal, s: string) {
-    app.terminal_feed(t, transmute([]u8)s)
+feed :: proc(t: ^pty.Terminal, s: string) {
+    pty.terminal_feed(t, transmute([]u8)s)
 }
 
 @(test)
 test_terminal_plain_text :: proc(t: ^testing.T) {
     term := mkterm(4, 20)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
 
     feed(&term, "hi")
-    testing.expect_value(t, app.terminal_cell_rune(&term, 0, 0), 'h')
-    testing.expect_value(t, app.terminal_cell_rune(&term, 0, 1), 'i')
-    testing.expect_value(t, app.terminal_cell_rune(&term, 0, 2), rune(0)) // blank
+    testing.expect_value(t, pty.terminal_cell_rune(&term, 0, 0), 'h')
+    testing.expect_value(t, pty.terminal_cell_rune(&term, 0, 1), 'i')
+    testing.expect_value(t, pty.terminal_cell_rune(&term, 0, 2), rune(0)) // blank
 
-    row, col := app.terminal_cursor(&term)
+    row, col := pty.terminal_cursor(&term)
     testing.expect_value(t, row, 0)
     testing.expect_value(t, col, 2)
 }
@@ -39,13 +39,13 @@ test_terminal_plain_text :: proc(t: ^testing.T) {
 @(test)
 test_terminal_crlf_wraps_to_next_row :: proc(t: ^testing.T) {
     term := mkterm(4, 20)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
 
     feed(&term, "a\r\nb")
-    testing.expect_value(t, app.terminal_cell_rune(&term, 0, 0), 'a')
-    testing.expect_value(t, app.terminal_cell_rune(&term, 1, 0), 'b')
+    testing.expect_value(t, pty.terminal_cell_rune(&term, 0, 0), 'a')
+    testing.expect_value(t, pty.terminal_cell_rune(&term, 1, 0), 'b')
 
-    row, col := app.terminal_cursor(&term)
+    row, col := pty.terminal_cursor(&term)
     testing.expect_value(t, row, 1)
     testing.expect_value(t, col, 1)
 }
@@ -53,11 +53,11 @@ test_terminal_crlf_wraps_to_next_row :: proc(t: ^testing.T) {
 @(test)
 test_terminal_cursor_escape :: proc(t: ^testing.T) {
     term := mkterm(4, 20)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
 
     // "abc" (cursor at col 3), then CUB 2.
     feed(&term, "abc\x1b[2D")
-    row, col := app.terminal_cursor(&term)
+    row, col := pty.terminal_cursor(&term)
     testing.expect_value(t, row, 0)
     testing.expect_value(t, col, 1)
 }
@@ -65,20 +65,20 @@ test_terminal_cursor_escape :: proc(t: ^testing.T) {
 @(test)
 test_terminal_out_of_range_cell :: proc(t: ^testing.T) {
     term := mkterm(4, 20)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
 
-    _, ok := app.terminal_cell(&term, 99, 99)
+    _, ok := pty.terminal_cell(&term, 99, 99)
     testing.expect(t, !ok, "cell outside the grid should report ok=false")
 }
 
 @(test)
 test_terminal_sgr_color_attr :: proc(t: ^testing.T) {
     term := mkterm(4, 20)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
 
     // SGR 7 = reverse video, then a glyph.
     feed(&term, "\x1b[7mX")
-    cell, ok := app.terminal_cell(&term, 0, 0)
+    cell, ok := pty.terminal_cell(&term, 0, 0)
     testing.expect(t, ok, "cell (0,0) should be in range")
     testing.expect_value(t, rune(cell.chars[0]), 'X')
     testing.expect(t, cell.attrs.reverse, "SGR 7 should set the reverse attribute")
@@ -92,32 +92,32 @@ test_terminal_sgr_color_attr :: proc(t: ^testing.T) {
 @(test)
 test_terminal_line_selection :: proc(t: ^testing.T) {
     term := mkterm(4, 20)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
 
     feed(&term, "l0\r\nl1\r\nl2") // rows 0..2; row 3 is the empty bottom
     testing.expect(t, !term.sel_active, "no selection until a move")
 
-    app.terminal_sel_move(&term, -1, false) // off the bottom, up to row 2
+    pty.terminal_sel_move(&term, -1, false) // off the bottom, up to row 2
     testing.expect(t, term.sel_active, "first move enters select mode")
     testing.expect_value(t, term.sel_head, 2)
     testing.expect_value(t, term.sel_anchor, 2) // no span yet
 
     // The cursor is a BOUNDARY, so anchor == head selects nothing.
-    testing.expect_value(t, app.terminal_selection_text(&term), "")
+    testing.expect_value(t, pty.terminal_selection_text(&term), "")
 
-    app.terminal_sel_move(&term, -1, true) // Shift: extend up over row 1
-    lo, hi := app.terminal_sel_range(&term)
+    pty.terminal_sel_move(&term, -1, true) // Shift: extend up over row 1
+    lo, hi := pty.terminal_sel_range(&term)
     testing.expect_value(t, lo, 1)
     testing.expect_value(t, hi, 2) // half-open: line 1, and only line 1
 
     // One Shift press selects ONE line. It selected two until a bug report: the range was read
     // as inclusive while the marker was drawn as a boundary.
-    text := app.terminal_selection_text(&term)
+    text := pty.terminal_selection_text(&term)
     defer delete(text)
     testing.expect_value(t, text, "l1")
 
-    app.terminal_sel_move(&term, -1, true)
-    more := app.terminal_selection_text(&term)
+    pty.terminal_sel_move(&term, -1, true)
+    more := pty.terminal_selection_text(&term)
     defer delete(more)
     testing.expect_value(t, more, "l0\nl1")
 }
@@ -126,12 +126,12 @@ test_terminal_line_selection :: proc(t: ^testing.T) {
 @(test)
 test_terminal_selection_collapse_at_bottom :: proc(t: ^testing.T) {
     term := mkterm(4, 20)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
 
     feed(&term, "a\r\nb")
-    app.terminal_sel_move(&term, -1, false) // enter at row 2
+    pty.terminal_sel_move(&term, -1, false) // enter at row 2
     testing.expect(t, term.sel_active, "in select mode")
-    app.terminal_sel_move(&term, 1, false) // back to the bottom row
+    pty.terminal_sel_move(&term, 1, false) // back to the bottom row
     testing.expect(t, !term.sel_active, "returning to the bottom leaves select mode")
 }
 
@@ -140,30 +140,30 @@ test_terminal_selection_collapse_at_bottom :: proc(t: ^testing.T) {
 @(test)
 test_terminal_scrollback_capture_and_select :: proc(t: ^testing.T) {
     term := mkterm(2, 20)
-    defer app.terminal_vt_destroy(&term)
-    app.terminal_enable_scrollback(&term) // on the settled local, not inside mkterm
+    defer pty.terminal_vt_destroy(&term)
+    pty.terminal_enable_scrollback(&term) // on the settled local, not inside mkterm
 
     feed(&term, "L0\r\nL1\r\nL2\r\nL3\r\nL4") // 2-row grid: L0..L2 scroll off
     testing.expect_value(t, term.sb_total, 3) // three lines pushed
 
     // Absolute line 0 is the oldest; lines 3..4 are the live rows.
-    sb00, ok00 := app.terminal_view_cell(&term, 0, 0)
+    sb00, ok00 := pty.terminal_view_cell(&term, 0, 0)
     testing.expect(t, ok00, "oldest scrollback line should be readable")
     testing.expect_value(t, rune(sb00.chars[0]), 'L')
-    sb01, _ := app.terminal_view_cell(&term, 0, 1)
+    sb01, _ := pty.terminal_view_cell(&term, 0, 1)
     testing.expect_value(t, rune(sb01.chars[0]), '0')
-    live41, _ := app.terminal_view_cell(&term, 4, 1)
+    live41, _ := pty.terminal_view_cell(&term, 4, 1)
     testing.expect_value(t, rune(live41.chars[0]), '4')
 
     // From the live grid up into scrollback: head 4 -> 1, anchor pinned at 3.
-    app.terminal_sel_move(&term, -1, false) // enter at line 3
-    app.terminal_sel_move(&term, -1, true) // line 2
-    app.terminal_sel_move(&term, -1, true) // line 1
-    lo, hi := app.terminal_sel_range(&term)
+    pty.terminal_sel_move(&term, -1, false) // enter at line 3
+    pty.terminal_sel_move(&term, -1, true) // line 2
+    pty.terminal_sel_move(&term, -1, true) // line 1
+    lo, hi := pty.terminal_sel_range(&term)
     testing.expect_value(t, lo, 1)
     testing.expect_value(t, hi, 3) // half-open: lines 1 and 2
 
-    text := app.terminal_selection_text(&term)
+    text := pty.terminal_selection_text(&term)
     defer delete(text)
     testing.expect_value(t, text, "L1\nL2")
 }
@@ -174,8 +174,8 @@ test_terminal_scrollback_capture_and_select :: proc(t: ^testing.T) {
 @(test)
 test_terminal_altscreen_isolates_scrollback :: proc(t: ^testing.T) {
     term := mkterm(2, 20)
-    defer app.terminal_vt_destroy(&term)
-    app.terminal_enable_scrollback(&term) // also wires settermprop
+    defer pty.terminal_vt_destroy(&term)
+    pty.terminal_enable_scrollback(&term) // also wires settermprop
 
     // Primary screen: P0,P1 scroll off into our scrollback.
     feed(&term, "P0\r\nP1\r\nP2\r\nP3")
@@ -199,20 +199,20 @@ test_terminal_altscreen_isolates_scrollback :: proc(t: ^testing.T) {
 @(test)
 test_terminal_resize_under_active_pen_stays_default :: proc(t: ^testing.T) {
     term := mkterm(6, 20)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
 
     // Green background, one short cell, no reset: the state a frame-boundary resize catches a
     // TUI in mid-line.
     feed(&term, "\x1b[48;2;0;255;0mX")
-    app.terminal_resize(&term, 10, 24)
-    app.terminal_resize(&term, 6, 20)
+    pty.terminal_resize(&term, 10, 24)
+    pty.terminal_resize(&term, 6, 20)
 
     // Every cell bar the explicit 'X' must read default bg.
     for row in 0 ..< 6 {
         for col in 0 ..< 20 {
             if row == 0 && col == 0 do continue // the written 'X' carries green
-            c, _ := app.terminal_cell(&term, row, col)
-            _, def := app.terminal_color(&term, c.bg)
+            c, _ := pty.terminal_cell(&term, row, col)
+            _, def := pty.terminal_color(&term, c.bg)
             testing.expectf(t, def, "cell (%d,%d) exposed by resize must be default bg, not the active pen", row, col)
         }
     }
@@ -224,8 +224,8 @@ test_terminal_resize_under_active_pen_stays_default :: proc(t: ^testing.T) {
 @(test)
 test_terminal_altscreen_selector_pins_to_live_grid :: proc(t: ^testing.T) {
     term := mkterm(2, 20)
-    defer app.terminal_vt_destroy(&term)
-    app.terminal_enable_scrollback(&term)
+    defer pty.terminal_vt_destroy(&term)
+    pty.terminal_enable_scrollback(&term)
 
     feed(&term, "P0\r\nP1\r\nP2\r\nP3") // two lines into the primary scrollback
     testing.expect_value(t, term.sb_total, 2)
@@ -234,7 +234,7 @@ test_terminal_altscreen_selector_pins_to_live_grid :: proc(t: ^testing.T) {
 
     // Well past the top of the live grid: it must stop at sb_total, never terminal_oldest.
     for _ in 0 ..< 10 {
-        app.terminal_sel_move(&term, -1, true)
+        pty.terminal_sel_move(&term, -1, true)
     }
     testing.expect_value(t, term.sel_head, term.sb_total) // 2, not 0
 }
@@ -244,27 +244,27 @@ test_terminal_altscreen_selector_pins_to_live_grid :: proc(t: ^testing.T) {
 @(test)
 test_terminal_bg_color_confined_across_scrollback :: proc(t: ^testing.T) {
     term := mkterm(2, 20)
-    defer app.terminal_vt_destroy(&term)
-    app.terminal_enable_scrollback(&term)
+    defer pty.terminal_vt_destroy(&term)
+    pty.terminal_enable_scrollback(&term)
 
     // Green bg behind "GG", reset, then two lines so the green one scrolls off.
     feed(&term, "\x1b[48;2;0;255;0mGG\x1b[0m\r\nplain\r\nlast")
     testing.expect_value(t, term.sb_total, 1) // only the green line scrolled off
 
     // Absolute line 0 is the green line, now in scrollback.
-    g0, _ := app.terminal_view_cell(&term, 0, 0)
-    bg0, def0 := app.terminal_color(&term, g0.bg)
+    g0, _ := pty.terminal_view_cell(&term, 0, 0)
+    bg0, def0 := pty.terminal_color(&term, g0.bg)
     testing.expect(t, !def0, "painted cell bg should not be default")
     testing.expectf(t, bg0.g > 0.5 && bg0.r < 0.2 && bg0.b < 0.2, "expected green bg, got %v", bg0)
 
     // The cell just past "GG" was never painted.
-    g2, _ := app.terminal_view_cell(&term, 0, 2)
-    _, def2 := app.terminal_color(&term, g2.bg)
+    g2, _ := pty.terminal_view_cell(&term, 0, 2)
+    _, def2 := pty.terminal_color(&term, g2.bg)
     testing.expect(t, def2, "trailing cells of the diff line must stay default bg (no spill)")
 
     // And the next line must be entirely default bg.
-    p0, _ := app.terminal_view_cell(&term, 1, 0)
-    _, defp := app.terminal_color(&term, p0.bg)
+    p0, _ := pty.terminal_view_cell(&term, 1, 0)
+    _, defp := pty.terminal_color(&term, p0.bg)
     testing.expect(t, defp, "the following line must not inherit the diff's bg")
 }
 
@@ -274,8 +274,8 @@ test_terminal_bg_color_confined_across_scrollback :: proc(t: ^testing.T) {
 @(test)
 test_terminal_bce_does_not_leak_to_next_line :: proc(t: ^testing.T) {
     term := mkterm(3, 20)
-    defer app.terminal_vt_destroy(&term)
-    app.terminal_enable_scrollback(&term)
+    defer pty.terminal_vt_destroy(&term)
+    pty.terminal_enable_scrollback(&term)
 
     // Green bg, "+ add", erase-to-EOL (BCE fills the row), reset, newline, then plain
     // newlines to bring fresh blank lines onto the grid.
@@ -283,15 +283,15 @@ test_terminal_bce_does_not_leak_to_next_line :: proc(t: ^testing.T) {
     feed(&term, "\r\n")
 
     // The erased part of the diff row must read green.
-    d, _ := app.terminal_cell(&term, 0, 10)
-    _, defd := app.terminal_color(&term, d.bg)
+    d, _ := pty.terminal_cell(&term, 0, 10)
+    _, defd := pty.terminal_color(&term, d.bg)
     testing.expect(t, !defd, "BCE should have painted the erased diff cells green")
 
     // The blank lines after the reset must be default bg, every column.
     for row in 1 ..< 3 {
         for col in 0 ..< 20 {
-            c, _ := app.terminal_cell(&term, row, col)
-            _, def := app.terminal_color(&term, c.bg)
+            c, _ := pty.terminal_cell(&term, row, col)
+            _, def := pty.terminal_color(&term, c.bg)
             testing.expectf(t, def, "cell (%d,%d) after reset must be default bg, not green", row, col)
         }
     }
@@ -302,23 +302,23 @@ test_terminal_bce_does_not_leak_to_next_line :: proc(t: ^testing.T) {
 // xterm bce behaviour, and the app's job to reset before scrolling.
 @(test)
 test_terminal_bg_reset_paths :: proc(t: ^testing.T) {
-    check_default :: proc(t: ^testing.T, term: ^app.Terminal, row, col: int, what: string) {
-        c, _ := app.terminal_cell(term, row, col)
-        _, def := app.terminal_color(term, c.bg)
+    check_default :: proc(t: ^testing.T, term: ^pty.Terminal, row, col: int, what: string) {
+        c, _ := pty.terminal_cell(term, row, col)
+        _, def := pty.terminal_color(term, c.bg)
         testing.expectf(t, def, "%s: cell (%d,%d) must be default bg, not a leaked colour", what, row, col)
     }
 
     { // SGR 49, reset background only.
         term := mkterm(3, 20)
-        defer app.terminal_vt_destroy(&term)
+        defer pty.terminal_vt_destroy(&term)
         feed(&term, "\x1b[42mX\x1b[49m\x1b[K\r\nplain")
         check_default(t, &term, 0, 5, "sgr-49 reset")
         check_default(t, &term, 1, 0, "sgr-49 reset next line")
     }
     { // On the alt screen: green, erase-to-EOL, reset, newline; next line default.
         term := mkterm(3, 20)
-        defer app.terminal_vt_destroy(&term)
-        app.terminal_enable_scrollback(&term)
+        defer pty.terminal_vt_destroy(&term)
+        pty.terminal_enable_scrollback(&term)
         feed(&term, "\x1b[?1049h")
         testing.expect(t, term.on_altscreen, "entered alt screen")
         feed(&term, "\x1b[48;2;0;255;0m+ add\x1b[K\x1b[0m\r\n\r\n")
@@ -337,22 +337,22 @@ test_terminal_bg_reset_paths :: proc(t: ^testing.T) {
 @(test)
 test_terminal_continuation_flag :: proc(t: ^testing.T) {
     term := mkterm(4, 10)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
     feed(&term, "0123456789abcd") // 14 chars into a 10-wide grid: wraps onto row 1
 
-    testing.expect(t, !app.terminal_continuation(&term, 0), "the first row continues nothing")
+    testing.expect(t, !pty.terminal_continuation(&term, 0), "the first row continues nothing")
     testing.expect(
         t,
-        app.terminal_continuation(&term, 1),
+        pty.terminal_continuation(&term, 1),
         "premise changed: libvterm no longer flags a wrapped row as a continuation",
     )
-    testing.expect(t, !app.terminal_continuation(&term, 2), "a row nothing wrapped onto")
+    testing.expect(t, !pty.terminal_continuation(&term, 2), "a row nothing wrapped onto")
 
     // The logical line is the run of rows the command occupies, from either end.
-    first, last := app.terminal_logical_line(&term, 1)
+    first, last := pty.terminal_logical_line(&term, 1)
     testing.expect_value(t, first, 0)
     testing.expect_value(t, last, 1)
-    first, last = app.terminal_logical_line(&term, 0)
+    first, last = pty.terminal_logical_line(&term, 0)
     testing.expect_value(t, first, 0)
     testing.expect_value(t, last, 1)
 }
@@ -361,13 +361,13 @@ test_terminal_continuation_flag :: proc(t: ^testing.T) {
 @(test)
 test_terminal_copy_rejoins_a_wrapped_line :: proc(t: ^testing.T) {
     term := mkterm(4, 10)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
     // Two logical lines: rows 0+1 are one, row 2 is another.
     feed(&term, "0123456789abcd\r\nsecond")
 
     term.sel_active = true
     term.sel_anchor, term.sel_head = 0, 3 // half-open: both logical lines
-    text := app.terminal_selection_text(&term)
+    text := pty.terminal_selection_text(&term)
     defer delete(text)
     testing.expect_value(t, text, "0123456789abcd\nsecond")
 }
@@ -377,8 +377,8 @@ test_terminal_copy_rejoins_a_wrapped_line :: proc(t: ^testing.T) {
 @(test)
 test_terminal_copy_rejoins_a_wrapped_scrollback_line :: proc(t: ^testing.T) {
     term := mkterm(3, 10)
-    defer app.terminal_vt_destroy(&term)
-    app.terminal_enable_scrollback(&term)
+    defer pty.terminal_vt_destroy(&term)
+    pty.terminal_enable_scrollback(&term)
     feed(&term, "0123456789abcd\r\nb\r\nc\r\nd\r\ne")
 
     testing.expect(t, term.sb_total >= 2, "the wrapped rows scrolled into history")
@@ -386,7 +386,7 @@ test_terminal_copy_rejoins_a_wrapped_scrollback_line :: proc(t: ^testing.T) {
 
     term.sel_active = true
     term.sel_anchor, term.sel_head = 0, 2 // the wrapped line's two rows
-    text := app.terminal_selection_text(&term)
+    text := pty.terminal_selection_text(&term)
     defer delete(text)
     testing.expect_value(t, text, "0123456789abcd")
 }
@@ -396,20 +396,20 @@ test_terminal_copy_rejoins_a_wrapped_scrollback_line :: proc(t: ^testing.T) {
 @(test)
 test_terminal_range_text_clips_and_trims :: proc(t: ^testing.T) {
     term := mkterm(4, 20)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
     feed(&term, "alpha bravo\r\ncharlie delta")
 
-    a := app.terminal_range_text(&term, txt.Pos{0, 6}, txt.Pos{1, 7})
+    a := pty.terminal_range_text(&term, txt.Pos{0, 6}, txt.Pos{1, 7})
     defer delete(a)
     testing.expect_value(t, a, "bravo\ncharlie")
 
     // A segment that stops short keeps the spaces inside it…
-    b := app.terminal_range_text(&term, txt.Pos{0, 4}, txt.Pos{0, 8})
+    b := pty.terminal_range_text(&term, txt.Pos{0, 4}, txt.Pos{0, 8})
     defer delete(b)
     testing.expect_value(t, b, "a br")
 
     // …while one that runs to the edge is trimmed of the row's padding.
-    c := app.terminal_range_text(&term, txt.Pos{0, 0}, txt.Pos{0, 20})
+    c := pty.terminal_range_text(&term, txt.Pos{0, 0}, txt.Pos{0, 20})
     defer delete(c)
     testing.expect_value(t, c, "alpha bravo")
 }
@@ -419,19 +419,19 @@ test_terminal_range_text_clips_and_trims :: proc(t: ^testing.T) {
 @(test)
 test_terminal_word_span :: proc(t: ^testing.T) {
     term := mkterm(4, 20)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
     feed(&term, "alpha bravo")
 
-    lo, hi := app.terminal_word_span(&term, 0, 8) // inside "bravo"
+    lo, hi := pty.terminal_word_span(&term, 0, 8) // inside "bravo"
     testing.expect_value(t, lo, 6)
     testing.expect_value(t, hi, 11)
 
-    lo, hi = app.terminal_word_span(&term, 0, 5) // the space between is a run too
+    lo, hi = pty.terminal_word_span(&term, 0, 5) // the space between is a run too
     testing.expect_value(t, lo, 5)
     testing.expect_value(t, hi, 6)
 
     // Past the written text the blanks are one run out to the row's width.
-    lo, hi = app.terminal_word_span(&term, 0, 15)
+    lo, hi = pty.terminal_word_span(&term, 0, 15)
     testing.expect_value(t, lo, 11)
     testing.expect_value(t, hi, 20)
 }
@@ -443,27 +443,27 @@ test_terminal_word_span :: proc(t: ^testing.T) {
 @(test)
 test_terminal_wheel_scrolls_the_view_only :: proc(t: ^testing.T) {
     term := mkterm(2, 20)
-    defer app.terminal_vt_destroy(&term)
-    app.terminal_enable_scrollback(&term)
+    defer pty.terminal_vt_destroy(&term)
+    pty.terminal_enable_scrollback(&term)
     feed(&term, "L0\r\nL1\r\nL2\r\nL3\r\nL4") // 2-row grid: L0..L2 into history
 
-    app.terminal_scroll_by(&term, -2)
-    testing.expect_value(t, app.terminal_view_top(&term), 1)
+    pty.terminal_scroll_by(&term, -2)
+    testing.expect_value(t, pty.terminal_view_top(&term), 1)
     testing.expect(t, !term.sel_active, "scrolling must not conjure a copy cursor")
     testing.expect_value(t, term.sel_head, 0) // and must not move one
-    testing.expect_value(t, app.terminal_selection_text(&term), "")
+    testing.expect_value(t, pty.terminal_selection_text(&term), "")
 
     // Clamped at both ends: never past the oldest retained line, never below the live grid.
-    app.terminal_scroll_by(&term, -99)
-    testing.expect_value(t, app.terminal_view_top(&term), 0)
-    app.terminal_scroll_by(&term, 99)
-    testing.expect_value(t, app.terminal_view_top(&term), term.sb_total)
+    pty.terminal_scroll_by(&term, -99)
+    testing.expect_value(t, pty.terminal_view_top(&term), 0)
+    pty.terminal_scroll_by(&term, 99)
+    testing.expect_value(t, pty.terminal_view_top(&term), term.sb_total)
 
     // A keystroke to the shell re-attaches, as in every list pane.
-    app.terminal_scroll_by(&term, -2)
+    pty.terminal_scroll_by(&term, -2)
     testing.expect(t, term.view_detached)
-    app.terminal_sel_reset(&term)
-    testing.expect_value(t, app.terminal_view_top(&term), term.sb_total)
+    pty.terminal_sel_reset(&term)
+    testing.expect_value(t, pty.terminal_view_top(&term), term.sb_total)
 }
 
 // The view catches at the live bottom and follows the output again. Both used to freeze the
@@ -472,27 +472,27 @@ test_terminal_wheel_scrolls_the_view_only :: proc(t: ^testing.T) {
 @(test)
 test_terminal_view_follows_the_bottom_again :: proc(t: ^testing.T) {
     term := mkterm(2, 20)
-    defer app.terminal_vt_destroy(&term)
-    app.terminal_enable_scrollback(&term)
+    defer pty.terminal_vt_destroy(&term)
+    pty.terminal_enable_scrollback(&term)
     feed(&term, "L0\r\nL1\r\nL2\r\nL3\r\nL4") // 2-row grid: L0..L2 into history
 
     // Up into history and back: the notch landing on the bottom re-attaches.
-    app.terminal_scroll_by(&term, -2)
-    app.terminal_scroll_by(&term, 99)
+    pty.terminal_scroll_by(&term, -2)
+    pty.terminal_scroll_by(&term, 99)
     testing.expect(t, !term.view_detached, "back at the bottom is not scrolled")
     feed(&term, "\r\nL5")
-    testing.expect_value(t, app.terminal_view_top(&term), term.sb_total)
+    testing.expect_value(t, pty.terminal_view_top(&term), term.sb_total)
 
     // A bare click pins the view too, and pinning it at the bottom must not stop it following.
-    app.terminal_msel_set(&term, txt.Pos{term.sb_total, 0}, txt.Pos{term.sb_total, 0})
+    pty.terminal_msel_set(&term, txt.Pos{term.sb_total, 0}, txt.Pos{term.sb_total, 0})
     feed(&term, "\r\nL6")
-    testing.expect_value(t, app.terminal_view_top(&term), term.sb_total)
+    testing.expect_value(t, pty.terminal_view_top(&term), term.sb_total)
 
     // Parked above the bottom it still holds its line.
-    app.terminal_scroll_by(&term, -2)
-    parked := app.terminal_view_top(&term)
+    pty.terminal_scroll_by(&term, -2)
+    parked := pty.terminal_view_top(&term)
     feed(&term, "\r\nL7")
-    testing.expect_value(t, app.terminal_view_top(&term), parked)
+    testing.expect_value(t, pty.terminal_view_top(&term), parked)
 }
 
 // A mouse selection survives a scroll, which is what you want when the thing being selected
@@ -500,15 +500,15 @@ test_terminal_view_follows_the_bottom_again :: proc(t: ^testing.T) {
 @(test)
 test_terminal_wheel_keeps_a_mouse_selection :: proc(t: ^testing.T) {
     term := mkterm(2, 20)
-    defer app.terminal_vt_destroy(&term)
-    app.terminal_enable_scrollback(&term)
+    defer pty.terminal_vt_destroy(&term)
+    pty.terminal_enable_scrollback(&term)
     feed(&term, "L0\r\nL1\r\nL2\r\nL3\r\nL4")
 
-    app.terminal_msel_set(&term, txt.Pos{3, 0}, txt.Pos{4, 2})
-    app.terminal_scroll_by(&term, -2)
+    pty.terminal_msel_set(&term, txt.Pos{3, 0}, txt.Pos{4, 2})
+    pty.terminal_scroll_by(&term, -2)
     testing.expect(t, term.msel_on, "a notch is not a new selection gesture")
     testing.expect_value(t, term.msel.anchor, txt.Pos{3, 0})
-    testing.expect_value(t, app.terminal_view_top(&term), 1)
+    testing.expect_value(t, pty.terminal_view_top(&term), 1)
 }
 
 // The copy cursor starts at the bottom of what is ON SCREEN, not the live bottom — otherwise
@@ -516,19 +516,19 @@ test_terminal_wheel_keeps_a_mouse_selection :: proc(t: ^testing.T) {
 @(test)
 test_terminal_keyboard_selects_from_the_scrolled_view :: proc(t: ^testing.T) {
     term := mkterm(2, 20)
-    defer app.terminal_vt_destroy(&term)
-    app.terminal_enable_scrollback(&term)
+    defer pty.terminal_vt_destroy(&term)
+    pty.terminal_enable_scrollback(&term)
     feed(&term, "L0\r\nL1\r\nL2\r\nL3\r\nL4")
 
-    app.terminal_scroll_by(&term, -3) // view_top 0: showing L0, L1
-    app.terminal_sel_move(&term, -1, true) // Shift: select the bottom visible line
+    pty.terminal_scroll_by(&term, -3) // view_top 0: showing L0, L1
+    pty.terminal_sel_move(&term, -1, true) // Shift: select the bottom visible line
     testing.expect_value(t, term.sel_anchor, 1) // the boundary below L1…
     testing.expect_value(t, term.sel_head, 0) // …and the one above it
 
-    text := app.terminal_selection_text(&term)
+    text := pty.terminal_selection_text(&term)
     defer delete(text)
     testing.expect_value(t, text, "L0")
-    testing.expect_value(t, app.terminal_view_top(&term), 0) // the view stayed put
+    testing.expect_value(t, pty.terminal_view_top(&term), 0) // the view stayed put
 }
 
 // One predicate for "does this pointer event belong to the child?", asked by the wheel and the
@@ -539,38 +539,38 @@ test_terminal_keyboard_selects_from_the_scrolled_view :: proc(t: ^testing.T) {
 // inline). Its click went to fzf while its wheel scrolled our scrollback.
 @(test)
 test_terminal_wheel_forwards_is_one_predicate :: proc(t: ^testing.T) {
-    plain := app.Terminal{} // a shell: no alt screen, no mouse tracking
-    testing.expect(t, !app.terminal_wheel_forwards(&plain, false), "a plain shell scrolls OUR view")
+    plain := pty.Terminal{} // a shell: no alt screen, no mouse tracking
+    testing.expect(t, !pty.terminal_wheel_forwards(&plain, false), "a plain shell scrolls OUR view")
 
-    pager := app.Terminal{on_altscreen = true} // `less`, `man`
-    testing.expect(t, app.terminal_wheel_forwards(&pager, false), "a full-screen pager owns the notch")
+    pager := pty.Terminal{on_altscreen = true} // `less`, `man`
+    testing.expect(t, pty.terminal_wheel_forwards(&pager, false), "a full-screen pager owns the notch")
 
-    tui := app.Terminal{on_altscreen = true, mouse_on = true} // vim mouse=a, htop, tmux
-    testing.expect(t, app.terminal_wheel_forwards(&tui, false), "a mouse-tracking TUI owns it too")
+    tui := pty.Terminal{on_altscreen = true, mouse_on = true} // vim mouse=a, htop, tmux
+    testing.expect(t, pty.terminal_wheel_forwards(&tui, false), "a mouse-tracking TUI owns it too")
 
     // THE CASE THE OLD PREDICATE GOT WRONG. Mouse tracking without the alt screen — an
     // inline picker — and the click already went to it, so the wheel must as well.
-    inline_picker := app.Terminal{mouse_on = true}
+    inline_picker := pty.Terminal{mouse_on = true}
     testing.expect(
         t,
-        app.terminal_wheel_forwards(&inline_picker, false),
+        pty.terminal_wheel_forwards(&inline_picker, false),
         "an inline mouse-tracking program was taking clicks but losing notches",
     )
 
     // Shift overrides every one, as the click has always done.
-    testing.expect(t, !app.terminal_wheel_forwards(&tui, true), "Shift keeps the notch local")
-    testing.expect(t, !app.terminal_wheel_forwards(&pager, true), "over a pager too")
-    testing.expect(t, !app.terminal_wheel_forwards(&inline_picker, true), "and over an inline one")
+    testing.expect(t, !pty.terminal_wheel_forwards(&tui, true), "Shift keeps the notch local")
+    testing.expect(t, !pty.terminal_wheel_forwards(&pager, true), "over a pager too")
+    testing.expect(t, !pty.terminal_wheel_forwards(&inline_picker, true), "and over an inline one")
 
     // No session: nothing to forward to, and the caller must not have to check separately.
-    testing.expect(t, !app.terminal_wheel_forwards(nil, false), "no terminal forwards nothing")
+    testing.expect(t, !pty.terminal_wheel_forwards(nil, false), "no terminal forwards nothing")
 }
 
 // --- paste ---
 
 @(private = "file")
 sanitized :: proc(s: string) -> string {
-    return string(app.terminal_paste_sanitize(s, context.temp_allocator))
+    return string(pty.terminal_paste_sanitize(s, context.temp_allocator))
 }
 
 // In the app the output callback is the PTY master; here it is this buffer, which is how a
@@ -594,7 +594,7 @@ out_cb :: proc "c" (s: [^]u8, n: c.size_t, user: rawptr) {
 
 // Capture from a clean buffer, and return what has landed since.
 @(private = "file")
-out_capture :: proc(term: ^app.Terminal, o: ^Out) {
+out_capture :: proc(term: ^pty.Terminal, o: ^Out) {
     vt.output_set_callback(term.term, out_cb, o)
     o.n = 0
 }
@@ -623,35 +623,35 @@ test_terminal_paste_sanitize :: proc(t: ^testing.T) {
 @(test)
 test_terminal_paste_brackets_only_when_asked :: proc(t: ^testing.T) {
     term := mkterm(4, 20)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
     o: Out
     out_capture(&term, &o)
 
     // A plain shell never enabled DECSET 2004, so the text goes over bare. Only the markers
     // can show up here, and the point is that none do.
-    app.terminal_paste(&term, "ls\n")
+    pty.terminal_paste(&term, "ls\n")
     testing.expect_value(t, out_text(&o), "")
 
     feed(&term, "\x1b[?2004h")
     out_capture(&term, &o)
-    app.terminal_paste(&term, "ls\n")
+    pty.terminal_paste(&term, "ls\n")
     testing.expect_value(t, out_text(&o), "\x1b[200~\x1b[201~")
 
     // An empty clipboard is not a paste: no markers, nothing for the shell.
     out_capture(&term, &o)
-    app.terminal_paste(&term, "")
+    pty.terminal_paste(&term, "")
     testing.expect_value(t, out_text(&o), "")
 }
 
 @(test)
 test_terminal_paste_returns_to_the_live_bottom :: proc(t: ^testing.T) {
     term := mkterm(4, 20)
-    defer app.terminal_vt_destroy(&term)
+    defer pty.terminal_vt_destroy(&term)
 
     // Pasting is input, so a scrolled-back view snaps forward and drops its selection.
     term.sel_active = true
     term.view_detached = true
-    app.terminal_paste(&term, "ls")
+    pty.terminal_paste(&term, "ls")
     testing.expect(t, !term.sel_active, "a paste drops the selection, as typing does")
     testing.expect(t, !term.view_detached, "and snaps the view back to the live bottom")
 }

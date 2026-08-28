@@ -1,11 +1,13 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:os"
 import "core:strings"
 import "core:testing"
 import "../txt"
 import "../ui"
+import "../pty"
+import "../edit"
 
 @(private = "file")
 val :: proc(a: ^app.App) -> string {
@@ -18,7 +20,7 @@ val :: proc(a: ^app.App) -> string {
 @(private = "file")
 fake_sessions :: proc(a: ^app.App, n: int) {
     for _ in 0 ..< n {
-        append(&a.terminals, new(app.Terminal))
+        append(&a.terminals, new(pty.Terminal))
     }
 }
 
@@ -37,23 +39,23 @@ free_sessions :: proc(a: ^app.App) {
 @(test)
 test_cl_write_ring :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
 
-    b := app.editor_current(&a.editor)
+    b := edit.editor_current(&a.editor)
 
     // No file: `:wa` cannot write it, and it guards nothing.
     b.dirty = true
     app.cl_exec(&a, ":wa")
-    testing.expect_value(t, app.ring_dirty_count(&a.editor), 0)
+    testing.expect_value(t, edit.ring_dirty_count(&a.editor), 0)
 
     // Named: it joins the ring, and `:wa` writes it and clears it again.
     path := "/tmp/slopd_quit_test.txt"
     b.path = strings.clone(path)
     b.dirty = true
-    testing.expect_value(t, app.ring_dirty_count(&a.editor), 1)
+    testing.expect_value(t, edit.ring_dirty_count(&a.editor), 1)
     app.cl_exec(&a, ":wa")
-    testing.expect_value(t, app.ring_dirty_count(&a.editor), 0)
+    testing.expect_value(t, edit.ring_dirty_count(&a.editor), 0)
     os.remove(path)
 }
 
@@ -62,11 +64,11 @@ test_cl_write_ring :: proc(t: ^testing.T) {
 @(test)
 test_cl_write_copy :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
 
-    b := app.editor_current(&a.editor)
-    app.buffer_set_text(b, "mine")
+    b := edit.editor_current(&a.editor)
+    edit.buffer_set_text(b, "mine")
     b.final_newline = false
     b.path = strings.clone("/tmp/slopd_wcopy_src.txt")
     b.dirty = true
@@ -81,7 +83,7 @@ test_cl_write_copy :: proc(t: ^testing.T) {
 
     testing.expect_value(t, b.path, "/tmp/slopd_wcopy_src.txt") // still its own file
     testing.expect(t, b.dirty, "a copy is not a save: the buffer is still unsaved")
-    testing.expect_value(t, app.ring_dirty_count(&a.editor), 1)
+    testing.expect_value(t, edit.ring_dirty_count(&a.editor), 1)
 }
 
 // The other half of the same verb: a buffer with NO file was not copied anywhere, it was named.
@@ -89,11 +91,11 @@ test_cl_write_copy :: proc(t: ^testing.T) {
 @(test)
 test_cl_write_names_a_buffer_with_no_file :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
 
-    b := app.editor_current(&a.editor)
-    app.buffer_set_text(b, "a note")
+    b := edit.editor_current(&a.editor)
+    edit.buffer_set_text(b, "a note")
     b.final_newline = false
     b.dirty = true // the scratch buffer, typed into
 
@@ -103,16 +105,16 @@ test_cl_write_names_a_buffer_with_no_file :: proc(t: ^testing.T) {
 
     testing.expect_value(t, b.path, path)
     testing.expect(t, !b.dirty, "naming it IS the save")
-    testing.expect_value(t, app.ring_dirty_count(&a.editor), 0)
+    testing.expect_value(t, edit.ring_dirty_count(&a.editor), 0)
 
     data, err := os.read_entire_file_from_path(path, context.temp_allocator)
     testing.expect(t, err == nil)
     testing.expect_value(t, string(data), "a note")
 
     // And from here it is an ordinary file: `^S` writes it where it now lives.
-    app.buffer_set_text(b, "edited")
+    edit.buffer_set_text(b, "edited")
     b.dirty = true
-    testing.expect_value(t, app.cl_save(&a, b), app.Save_Result.Ok)
+    testing.expect_value(t, app.cl_save(&a, b), edit.Save_Result.Ok)
     data, _ = os.read_entire_file_from_path(path, context.temp_allocator)
     testing.expect_value(t, string(data), "edited")
 }
@@ -122,21 +124,21 @@ test_cl_write_names_a_buffer_with_no_file :: proc(t: ^testing.T) {
 @(test)
 test_a_buffer_with_no_file_does_not_guard_the_quit :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
 
-    b := app.editor_current(&a.editor)
-    app.buffer_set_text(b, "typed into the scratch buffer")
+    b := edit.editor_current(&a.editor)
+    edit.buffer_set_text(b, "typed into the scratch buffer")
     b.dirty = true
-    testing.expect_value(t, app.ring_dirty_count(&a.editor), 0)
+    testing.expect_value(t, edit.ring_dirty_count(&a.editor), 0)
 
     // One with a file behind it guards as it always did.
-    named: app.Buffer
+    named: edit.Buffer
     txt.doc_init(&named.doc)
     named.path = strings.clone("/tmp/slopd_guard.txt")
     named.dirty = true
     append(&a.editor.buffers, named)
-    testing.expect_value(t, app.ring_dirty_count(&a.editor), 1)
+    testing.expect_value(t, edit.ring_dirty_count(&a.editor), 1)
 }
 
 // What the bang is for: an existing file is refused until `:w!` names it, so a mistyped name
@@ -163,20 +165,20 @@ test_cl_discard :: proc(t: ^testing.T) {
     defer os.remove(path)
 
     a: app.App
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
 
-    b := app.editor_current(&a.editor)
-    testing.expect(t, app.buffer_load(b, path))
-    app.buffer_set_text(b, "my edits")
+    b := edit.editor_current(&a.editor)
+    testing.expect(t, edit.buffer_load(b, path))
+    edit.buffer_set_text(b, "my edits")
     b.dirty = true
-    testing.expect_value(t, app.ring_dirty_count(&a.editor), 1)
-    testing.expect(t, app.ring_contains(&a.editor, path))
+    testing.expect_value(t, edit.ring_dirty_count(&a.editor), 1)
+    testing.expect(t, edit.ring_contains(&a.editor, path))
 
     app.cl_exec(&a, strings.concatenate({":discard ", path}, context.temp_allocator))
-    testing.expect_value(t, app.ring_dirty_count(&a.editor), 0)
+    testing.expect_value(t, edit.ring_dirty_count(&a.editor), 0)
     testing.expect_value(t, txt.doc_string(&b.doc, context.temp_allocator), "on disk")
-    testing.expect(t, !app.ring_contains(&a.editor, path))
+    testing.expect(t, !edit.ring_contains(&a.editor, path))
 }
 
 @(test)
@@ -190,11 +192,11 @@ test_cl_goto :: proc(t: ^testing.T) {
 @(test)
 test_cl_jump :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     app.cl_init(&a.cl) // every jump leaves a way back in the history ring
-    defer {app.editor_destroy(&a.editor);app.cl_destroy(&a)}
-    b := app.editor_current(&a.editor)
-    app.buffer_set_text(b, "l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9") // 10 lines
+    defer {edit.editor_destroy(&a.editor);app.cl_destroy(&a)}
+    b := edit.editor_current(&a.editor)
+    edit.buffer_set_text(b, "l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9") // 10 lines
 
     app.cl_exec(&a, ":j 3") // absolute, 1-based -> line index 2
     testing.expect_value(t, b.cursors[b.primary].head.line, 2)
@@ -327,11 +329,11 @@ test_cl_ghost_hint :: proc(t: ^testing.T) {
 @(test)
 test_cl_ghost_hint_conflict :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
 
     testing.expect_value(t, app.cl_ghost_hint(&a, ":reload "), "(y/n)")
-    app.editor_current(&a.editor).conflict = true
+    edit.editor_current(&a.editor).conflict = true
     testing.expect_value(t, app.cl_ghost_hint(&a, ":reload "), "(y = disk / n = mine / :w = overwrite)")
 }
 
@@ -340,16 +342,16 @@ test_cl_ghost_hint_conflict :: proc(t: ^testing.T) {
 @(test)
 test_cl_reload_conflict :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
     defer app.cl_destroy(&a)
 
     path := "/tmp/slopd_cl_conflict.txt"
     testing.expect(t, os.write_entire_file(path, transmute([]u8)string("disk\n")) == nil)
     defer os.remove(path)
 
-    b := app.editor_current(&a.editor)
-    app.buffer_set_text(b, "mine")
+    b := edit.editor_current(&a.editor)
+    edit.buffer_set_text(b, "mine")
     b.path = strings.clone(path) // freed by editor_destroy
     b.dirty = true
     b.conflict = true
@@ -367,7 +369,7 @@ test_cl_reload_conflict :: proc(t: ^testing.T) {
     testing.expect_value(t, string(txt.doc_line(&b.doc, 0, context.temp_allocator)), "disk")
 
     // With no conflict, a bare `:reload` is a manual re-read from disk (discards edits).
-    app.buffer_set_text(b, "scratch")
+    edit.buffer_set_text(b, "scratch")
     b.dirty = true
     app.cl_exec(&a, ":reload")
     testing.expect_value(t, string(txt.doc_line(&b.doc, 0, context.temp_allocator)), "disk")
@@ -378,7 +380,7 @@ test_cl_reload_conflict :: proc(t: ^testing.T) {
 @(test)
 test_cl_active_owns_keys_over_terminal :: proc(t: ^testing.T) {
     a: app.App
-    tm := new(app.Terminal)
+    tm := new(pty.Terminal)
     tm.alive = true
     append(&a.terminals, tm)
     defer {free(tm);delete(a.terminals)}
@@ -520,14 +522,14 @@ test_cl_launch_path_file :: proc(t: ^testing.T) {
     defer os.remove(path)
 
     a: app.App
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     app.filetree_init(&a.tree)
-    defer {app.editor_destroy(&a.editor);app.filetree_destroy(&a.tree);delete(a.project_root)}
+    defer {edit.editor_destroy(&a.editor);app.filetree_destroy(&a.tree);delete(a.project_root)}
 
     testing.expect(t, app.cl_launch_path(&a, path))
     testing.expect_value(t, a.project_root, dir) // the folder, not the file
     testing.expect_value(t, a.tree.dir, dir)
-    testing.expect_value(t, app.editor_current(&a.editor).path, path)
+    testing.expect_value(t, edit.editor_current(&a.editor).path, path)
     testing.expect_value(t, a.focus, ui.Focus.Editor) // the opened file is what you look at
 }
 
@@ -570,19 +572,19 @@ test_cl_dispatch_stage_vs_run :: proc(t: ^testing.T) {
 @(test)
 test_filetree_discard_stages :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     a.tree.dir = "/tmp/ft"
     append(&a.tree.entries, app.FileEntry{name = "f.txt", path = "/tmp/ft/f.txt"})
     defer {
         delete(a.tree.entries)
-        app.editor_destroy(&a.editor)
+        edit.editor_destroy(&a.editor)
         app.cl_destroy(&a)
     }
 
     app.filetree_discard_selected(&a)
     testing.expect(t, !a.cl_active, "a file with nothing unsaved has nothing to discard")
 
-    b := app.editor_current(&a.editor)
+    b := edit.editor_current(&a.editor)
     b.path = strings.clone("/tmp/ft/f.txt")
     b.dirty = true
     app.filetree_discard_selected(&a)
@@ -595,7 +597,7 @@ test_filetree_discard_stages :: proc(t: ^testing.T) {
 @(test)
 test_cl_chain_success_runs_builtin :: proc(t: ^testing.T) {
     a: app.App
-    tm := new(app.Terminal)
+    tm := new(pty.Terminal)
     tm.alive = true // fake live session; pty is -1 so writes are no-ops
     append(&a.terminals, tm)
     defer {app.cl_chain_clear(&a);free(tm);delete(a.terminals)}
@@ -615,7 +617,7 @@ test_cl_chain_success_runs_builtin :: proc(t: ^testing.T) {
 @(test)
 test_cl_chain_failure_short_circuits :: proc(t: ^testing.T) {
     a: app.App
-    tm := new(app.Terminal)
+    tm := new(pty.Terminal)
     tm.alive = true
     append(&a.terminals, tm)
     defer {app.cl_chain_clear(&a);free(tm);delete(a.terminals)}
@@ -766,13 +768,13 @@ test_cl_jump_quoted_filename :: proc(t: ^testing.T) {
     defer {os.remove(path);os.remove(dir)}
 
     a: app.App
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
     defer delete(a.project_root)
     a.project_root = strings.clone(dir)
 
     app.cl_exec(&a, `:j "my notes.md" 3`)
-    b := app.editor_current(&a.editor)
+    b := edit.editor_current(&a.editor)
     testing.expect_value(t, b.path, path)
     testing.expect_value(t, b.cursors[b.primary].head.line, 2) // 1-based 3
 }
@@ -883,15 +885,15 @@ test_cl_view_commands_are_builtins :: proc(t: ^testing.T) {
 // --- multi-step chain runner (&& across several steps; exit codes simulated) ---
 
 @(private = "file")
-fake_live :: proc(a: ^app.App) -> ^app.Terminal {
-    tm := new(app.Terminal)
+fake_live :: proc(a: ^app.App) -> ^pty.Terminal {
+    tm := new(pty.Terminal)
     tm.alive = true // pty is -1, so injected writes are no-ops
     append(&a.terminals, tm)
     return tm
 }
 
 @(private = "file")
-free_live :: proc(a: ^app.App, tm: ^app.Terminal) {
+free_live :: proc(a: ^app.App, tm: ^pty.Terminal) {
     app.cl_chain_clear(a)
     free(tm)
     delete(a.terminals)
@@ -899,7 +901,7 @@ free_live :: proc(a: ^app.App, tm: ^app.Terminal) {
 
 // Answer the chain's current shell wait with `code`, then pump.
 @(private = "file")
-feed_exit :: proc(a: ^app.App, tm: ^app.Terminal, code: int) {
+feed_exit :: proc(a: ^app.App, tm: ^pty.Terminal, code: int) {
     tm.exit_ready = true
     tm.exit_id = a.cl_chain.wait_id
     tm.exit_code = code
@@ -1050,12 +1052,12 @@ test_sudo_save_line_is_a_gated_chain :: proc(t: ^testing.T) {
 @(test)
 test_save_stage_sudo :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     app.cl_init(&a.cl)
-    defer {app.editor_destroy(&a.editor);app.cl_destroy(&a)}
+    defer {edit.editor_destroy(&a.editor);app.cl_destroy(&a)}
 
-    b := app.editor_current(&a.editor)
-    app.buffer_set_text(b, "one\ntwo")
+    b := edit.editor_current(&a.editor)
+    edit.buffer_set_text(b, "one\ntwo")
     b.final_newline = true
     b.path = strings.clone("/etc/slopd-not-written.conf") // never touched: only the LINE names it
     b.dirty = true
@@ -1085,7 +1087,7 @@ test_save_stage_sudo :: proc(t: ^testing.T) {
     testing.expect(t, gone != nil, "the superseded copy was left on disk")
 
     last := strings.clone(b.save_tmp, context.temp_allocator)
-    app.buffer_drop_save_tmp(b)
+    edit.buffer_drop_save_tmp(b)
     _, gone2 := os.read_entire_file_from_path(last, context.temp_allocator)
     testing.expect(t, gone2 != nil, "the staged copy outlived the buffer")
 }
@@ -1095,15 +1097,15 @@ test_save_stage_sudo :: proc(t: ^testing.T) {
 @(test)
 test_cl_saved_verifies :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
-    defer {app.editor_destroy(&a.editor);app.cl_chain_clear(&a)}
+    edit.editor_init(&a.editor)
+    defer {edit.editor_destroy(&a.editor);app.cl_chain_clear(&a)}
 
     path := "slopd_cl_saved.tmp"
     testing.expect(t, os.write_entire_file(path, transmute([]u8)string("mine\n")) == nil)
     defer os.remove(path)
 
-    b := app.editor_current(&a.editor)
-    app.buffer_set_text(b, "mine")
+    b := edit.editor_current(&a.editor)
+    edit.buffer_set_text(b, "mine")
     b.final_newline = true
     b.path = strings.clone(path) // freed by editor_destroy
     b.dirty = true
@@ -1115,9 +1117,9 @@ test_cl_saved_verifies :: proc(t: ^testing.T) {
 
     // And on a buffer the disk does not match, it changes nothing at all. (The refusal echoes
     // into t1, which needs a terminal, so the claim is checked through buffer_matches_disk.)
-    app.buffer_insert_rune(b, 'X')
+    edit.buffer_insert_rune(b, 'X')
     b.dirty = true
-    testing.expect(t, !app.buffer_matches_disk(b))
+    testing.expect(t, !edit.buffer_matches_disk(b))
     testing.expect(t, b.dirty)
 }
 
@@ -1129,29 +1131,29 @@ test_cl_saved_verifies :: proc(t: ^testing.T) {
 @(test)
 test_cl_saved_reaches_the_buffer_that_was_written :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
-    defer {app.editor_destroy(&a.editor);app.cl_chain_clear(&a)}
+    edit.editor_init(&a.editor)
+    defer {edit.editor_destroy(&a.editor);app.cl_chain_clear(&a)}
 
     written := "slopd_cl_saved_bg.tmp"
     testing.expect(t, os.write_entire_file(written, transmute([]u8)string("theirs\n")) == nil)
     defer os.remove(written)
 
     // A second buffer joins the ring first: appending would move the first one's storage.
-    extra: app.Buffer
-    app.buffer_set_text(&extra, "unsaved work")
+    extra: edit.Buffer
+    edit.buffer_set_text(&extra, "unsaved work")
     extra.dirty = true
     append(&a.editor.buffers, extra)
     a.editor.active = 1
 
     // The buffer the sudo line was staged for: its file already holds its bytes.
     bg := &a.editor.buffers[0]
-    app.buffer_set_text(bg, "theirs")
+    edit.buffer_set_text(bg, "theirs")
     bg.final_newline = true
     bg.path = strings.clone(written) // freed by editor_destroy
     bg.dirty = true
 
     front := &a.editor.buffers[1] // …and the one we are looking at instead
-    testing.expect(t, app.editor_current(&a.editor) == front)
+    testing.expect(t, edit.editor_current(&a.editor) == front)
 
     app.cl_exec(&a, ":saved")
     testing.expect(t, !bg.dirty, ":saved must reach the buffer whose file was written")
@@ -1205,13 +1207,13 @@ test_open_stage_sudo :: proc(t: ^testing.T) {
     }
 
     a: app.App
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     app.cl_init(&a.cl)
-    defer {app.editor_destroy(&a.editor);app.cl_destroy(&a)}
+    defer {edit.editor_destroy(&a.editor);app.cl_destroy(&a)}
 
     app.open_file(&a, path)
     testing.expect_value(t, len(a.editor.buffers), 1) // the scratch buffer alone: nothing opened
-    testing.expect_value(t, app.editor_current(&a.editor).path, "")
+    testing.expect_value(t, edit.editor_current(&a.editor).path, "")
 
     testing.expect(t, a.cl_active)
     testing.expect(t, a.cl.injected, "the line must be staged, not run")
@@ -1226,8 +1228,8 @@ test_open_stage_sudo :: proc(t: ^testing.T) {
 @(test)
 test_run_term_is_the_command_lines_session :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
 
     testing.expect_value(t, app.cl_term(&a), 1) // no config loaded: t1
 

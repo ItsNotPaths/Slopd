@@ -1,16 +1,18 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:strings"
 import "core:testing"
 import "../gfx"
+import "../ui"
+import "../edit"
 
 // Where a popup goes for a press, which rows the keyboard may land on, and what a press outside
 // one does. The placement is the interesting half, and being pure is what lets all four cases be
 // asserted without a window.
 
 @(private = "file")
-ITEMS := [?]app.Menu_Item {
+ITEMS := [?]ui.Menu_Item {
     {"Open", "Enter", .Open, true},
     {action = .None}, // a separator
     {"Cut", "^x", .Cut, true},
@@ -23,23 +25,23 @@ ITEMS := [?]app.Menu_Item {
 @(test)
 test_ctxmenu_place :: proc(t: ^testing.T) {
     // Room for it: the press is the top-left corner.
-    testing.expect_value(t, app.ctxmenu_place(100, 100, 120, 80, 800, 600), gfx.Rect{100, 100, 120, 80})
+    testing.expect_value(t, ui.ctxmenu_place(100, 100, 120, 80, 800, 600), gfx.Rect{100, 100, 120, 80})
 
     // Against the right edge: flipped left, not slid back along the edge.
-    testing.expect_value(t, app.ctxmenu_place(750, 100, 120, 80, 800, 600), gfx.Rect{630, 100, 120, 80})
+    testing.expect_value(t, ui.ctxmenu_place(750, 100, 120, 80, 800, 600), gfx.Rect{630, 100, 120, 80})
 
     // Against the bottom: flipped above it.
-    testing.expect_value(t, app.ctxmenu_place(100, 560, 120, 80, 800, 600), gfx.Rect{100, 480, 120, 80})
+    testing.expect_value(t, ui.ctxmenu_place(100, 560, 120, 80, 800, 600), gfx.Rect{100, 480, 120, 80})
 
     // The corner does both at once.
-    testing.expect_value(t, app.ctxmenu_place(750, 560, 120, 80, 800, 600), gfx.Rect{630, 480, 120, 80})
+    testing.expect_value(t, ui.ctxmenu_place(750, 560, 120, 80, 800, 600), gfx.Rect{630, 480, 120, 80})
 
     // Exactly touching the edge is not an overflow: a flip would be a jump for one pixel.
-    testing.expect_value(t, app.ctxmenu_place(680, 520, 120, 80, 800, 600), gfx.Rect{680, 520, 120, 80})
+    testing.expect_value(t, ui.ctxmenu_place(680, 520, 120, 80, 800, 600), gfx.Rect{680, 520, 120, 80})
 
     // A press near the left edge with no room either side clamps into the window rather than
     // resolving to a negative origin.
-    testing.expect_value(t, app.ctxmenu_place(10, 10, 120, 80, 100, 60), gfx.Rect{0, 0, 120, 80})
+    testing.expect_value(t, ui.ctxmenu_place(10, 10, 120, 80, 100, 60), gfx.Rect{0, 0, 120, 80})
 }
 
 // Separators and disabled rows are skipped both ways, and an open menu lands on something
@@ -111,14 +113,14 @@ test_ctxmenu_discard_only_for_unsaved :: proc(t: ^testing.T) {
     a: app.App
     a.tree.dir = "/tmp/ft"
     append(&a.tree.entries, app.FileEntry{name = "f.txt", path = "/tmp/ft/f.txt"})
-    app.editor_init(&a.editor)
+    edit.editor_init(&a.editor)
     defer {
         delete(a.tree.entries)
-        app.editor_destroy(&a.editor)
+        edit.editor_destroy(&a.editor)
     }
 
     // The menu the right press on f.txt would build, and whether it carries the discard.
-    discard_row :: proc(a: ^app.App) -> (app.Menu_Item, bool) {
+    discard_row :: proc(a: ^app.App) -> (ui.Menu_Item, bool) {
         items := app.ctxmenu_file_items(a, {"/tmp/ft/f.txt", .Entry}, false, context.temp_allocator)
         for it in items {
             if it.action == .Discard {
@@ -131,7 +133,7 @@ test_ctxmenu_discard_only_for_unsaved :: proc(t: ^testing.T) {
     _, on_clean := discard_row(&a)
     testing.expect(t, !on_clean, "a file with nothing unsaved must not carry a dead Discard")
 
-    b := app.editor_current(&a.editor)
+    b := edit.editor_current(&a.editor)
     b.path = strings.clone("/tmp/ft/f.txt")
     b.dirty = true
     it, on_dirty := discard_row(&a)
@@ -140,7 +142,7 @@ test_ctxmenu_discard_only_for_unsaved :: proc(t: ^testing.T) {
     testing.expect_value(t, it.hint, "^k") // the chord it stands for, never a verb of its own
 
     // The '*' in the listing and the menu row are one question asked twice.
-    testing.expect(t, app.ring_contains(&a.editor, "/tmp/ft/f.txt"))
+    testing.expect(t, edit.ring_contains(&a.editor, "/tmp/ft/f.txt"))
 }
 
 // Cut to what the TARGET can have, and only then greyed for what it cannot do yet: a verb
@@ -160,7 +162,7 @@ test_ctxmenu_file_items_enablement :: proc(t: ^testing.T) {
         delete(a.tree.clip)
     }
 
-    find :: proc(items: []app.Menu_Item, action: app.Menu_Action) -> app.Menu_Item {
+    find :: proc(items: []ui.Menu_Item, action: ui.Menu_Action) -> ui.Menu_Item {
         for it in items {
             if it.action == action {
                 return it
@@ -168,7 +170,7 @@ test_ctxmenu_file_items_enablement :: proc(t: ^testing.T) {
         }
         return {}
     }
-    has :: proc(items: []app.Menu_Item, action: app.Menu_Action) -> bool {
+    has :: proc(items: []ui.Menu_Item, action: ui.Menu_Action) -> bool {
         for it in items {
             if it.action == action {
                 return true
@@ -255,8 +257,8 @@ test_ctxmenu_every_target_is_navigable :: proc(t: ^testing.T) {
     a.tree.dir = "/tmp/ft"
     defer app.ctxmenu_destroy(&a)
 
-    for kind in app.Menu_Target_Kind {
-        on := app.Menu_Target{"/tmp/ft", kind}
+    for kind in ui.Menu_Target_Kind {
+        on := ui.Menu_Target{"/tmp/ft", kind}
         items := app.ctxmenu_file_items(&a, on, true, context.temp_allocator)
         app.ctxmenu_open(&a, .FileOps, items, 10, 10, on)
         testing.expectf(t, a.ctxmenu.sel >= 0, "%v opened with nothing selectable", kind)

@@ -1,11 +1,12 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:os"
 import "core:strings"
 import "core:testing"
 import "../txt"
 import "../syntax"
+import "../edit"
 
 @(test)
 test_config_pane_nav :: proc(t: ^testing.T) {
@@ -111,8 +112,8 @@ test_setting_options :: proc(t: ^testing.T) {
 @(test)
 test_onoff_settings :: proc(t: ^testing.T) {
     a: app.App
-    app.editor_init(&a.editor)
-    defer app.editor_destroy(&a.editor)
+    edit.editor_init(&a.editor)
+    defer edit.editor_destroy(&a.editor)
 
     for s in ([]app.Setting{.Folding, .IndentGuides, .Whitespace}) {
         opts := app.setting_options(&a, s)
@@ -134,11 +135,11 @@ test_onoff_settings :: proc(t: ^testing.T) {
     _, bad := app.parse_on_off("maybe")
     testing.expect(t, !bad)
 
-    b := app.editor_current(&a.editor)
-    app.buffer_set_text(b, "def f():\n    a = 1\n    b = 2\nx = 3")
+    b := edit.editor_current(&a.editor)
+    edit.buffer_set_text(b, "def f():\n    a = 1\n    b = 2\nx = 3")
     app.buffer_fold_toggle(&a, b)
     testing.expect_value(t, len(b.folds), 1)
-    app.editor_clear_folds(&a.editor)
+    edit.editor_clear_folds(&a.editor)
     testing.expect_value(t, len(b.folds), 0) // folds expanded
 }
 
@@ -395,6 +396,6 @@ test_config_writeback :: proc(t: ^testing.T) {
     cfg := app.load_config()
     defer app.config_destroy(&cfg)
     testing.expect_value(t, cfg.line_numbers, app.Line_Numbers.Relative)
-    testing.expect_value(t, cfg.indent.kind, app.Indent_Kind.Spaces)
+    testing.expect_value(t, cfg.indent.kind, txt.Indent_Kind.Spaces)
     testing.expect_value(t, cfg.indent.width, 2)
 }

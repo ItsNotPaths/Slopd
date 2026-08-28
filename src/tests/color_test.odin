@@ -1,10 +1,10 @@
 package tests
 
-import app ".."
+import app "../slopd"
 import "core:testing"
 import "core:unicode/utf8"
 import "../txt"
-import "../gfx"
+import "../edit"
 
 // Reading a colour out of a line and writing it back. The picker edits IN PLACE, so color_at
 // and color_format have to be inverses: what the caret was on is the form the buffer keeps.
@@ -163,8 +163,8 @@ picker_app :: proc(text: string, col: int) -> app.App {
     a.main = .Text
     a.scale = 1
     a.color.buf_idx = -1
-    b: app.Buffer
-    app.buffer_set_text(&b, text)
+    b: edit.Buffer
+    edit.buffer_set_text(&b, text)
     b.cursors[b.primary].head.col = col
     b.cursors[b.primary].anchor = b.cursors[b.primary].head
     append(&a.editor.buffers, b)
@@ -175,7 +175,7 @@ picker_app :: proc(text: string, col: int) -> app.App {
 picker_free :: proc(a: ^app.App) {
     app.color_close(a, true) // owns the original token; commit so it does not write into the freed doc
     for &b in a.editor.buffers {
-        app.buffer_destroy(&b)
+        edit.buffer_destroy(&b)
     }
     delete(a.editor.buffers)
 }
