@@ -38,8 +38,8 @@ Terminal_View :: struct {
 // No row padding: a terminal's rows are the line height exactly, so box-drawing characters
 // meet. A degenerate pane reports ZERO rows, unlike the list panes — `rows` goes out via
 // TIOCSWINSZ.
-terminal_geom :: proc(pane: gfx.Rect, scale: f32, line_h: f32, cell_w: f32) -> (area: gfx.Rect, row_h: i32, cols, rows: int) {
-    area = ui.inset(pane, i32(2 * scale))
+terminal_geom :: proc(pane: gfx.Rect, line_h: f32, cell_w: f32) -> (area: gfx.Rect, row_h: i32, cols, rows: int) {
+    area = ui.inset(pane, gfx.hairline(line_h))
     row_h = max(1, i32(line_h))
     if area.w <= 0 || area.h <= 0 || cell_w <= 0 {
         return area, row_h, 0, 0
@@ -238,7 +238,7 @@ Terminal_Body :: struct {
 //     sw_col       the Alt-held switcher (overlay_ui.odin), a floating child over the grid
 // `a` only for the session switcher, which must be declared INSIDE the pane to inherit its
 // clip. The grid itself knows nothing of the application.
-terminal_declare :: proc(u: ui.UI_Ctx, a: ^App, f: ^gfx.Font, term: ^pty.Terminal, v: Terminal_View, now: f64 = 0) {
+terminal_declare :: proc(u: ui.UI_Ctx, a: ^App, face: gfx.Face, term: ^pty.Terminal, v: Terminal_View, now: f64 = 0) {
     area := v.area
 
     body := new(Terminal_Body, context.temp_allocator)
@@ -259,7 +259,7 @@ terminal_declare :: proc(u: ui.UI_Ctx, a: ^App, f: ^gfx.Font, term: ^pty.Termina
         // After the grid and inside the pane, so it inherits the clip and paints in its own
         // group. It would survive without one here, but only by accident of this pane's shape.
         if switcher_shown(a) {
-            switcher_declare(u, a.terminals[:], a.term_active, &a.switcher_anim, f, area, now)
+            switcher_declare(u, a.terminals[:], a.term_active, &a.switcher_anim, face, area, now)
         }
     }
 }
@@ -320,7 +320,7 @@ memo_color :: proc(m: ^Color_Memo, term: ^pty.Terminal, col: vt.Color) -> (rgb: 
 // The default background in one quad, then per cell a fill only where it differs, the glyph,
 // and a reverse-video block at the cursor. Positions come from `r`, the box the solver
 // resolved, not v.area — tests/terminal_ui_test.odin pins the equality.
-terminal_paint_grid :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
+terminal_paint_grid :: proc(t: ^gfx.Draw, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
     a := (^App)(host)
     u := ctx_of(a)
     g := (^Terminal_Body)(user)
@@ -383,7 +383,7 @@ terminal_paint_grid :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, 
     // from. Hidden at the bottom input line.
     if term.sel_active {
         if sr := term.sel_head - v.top; sr >= 0 && sr < v.rows {
-            gfx.caret(t, gfx.Rect{r.x, r.y + i32(sr) * rh, r.w, max(1, i32(2 * a.scale))}, th.accent)
+            gfx.caret(t, gfx.Rect{r.x, r.y + i32(sr) * rh, r.w, max(1, gfx.hairline(f32(rh)))}, th.accent)
         }
     }
 
@@ -394,9 +394,9 @@ terminal_paint_grid :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, 
 // The active session's cell grid. The view is built twice, not to re-aim a tween but because
 // the click can change WHICH lines are on screen: clicking the live bottom leaves select mode,
 // and terminal_view_top then answers differently.
-terminal_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect, now: f64) {
+terminal_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect, now: f64) {
     u := ctx_of(a)
-    area, row_h, cols, rows := terminal_geom(pane, u.scale, t.font.line_height, t.font.cell_w)
+    area, row_h, cols, rows := terminal_geom(pane, gfx.face(t).line_height, gfx.face(t).cell_w)
     if cols == 0 || rows == 0 {
         return
     }
@@ -407,23 +407,23 @@ terminal_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect, now: f64) {
 
     // The pointer is over the grid the LAST frame painted, so the click resolves against a view
     // built before this frame's resize reaches the session.
-    v := terminal_view(term, area, row_h, t.font.cell_w, cols, rows)
+    v := terminal_view(term, area, row_h, gfx.face(t).cell_w, cols, rows)
     hit := terminal_hit(u, term, v)
     terminal_click(u, term, a.term_active, hit)
     terminal_drag(u, term, v, a.term_active, glfw.GetTime()) // extend a capture the press already made
     terminal_track(term, hit)
 
     terminal_sync(term, &a.theme, cols, rows)
-    v = terminal_view(term, area, row_h, t.font.cell_w, cols, rows)
+    v = terminal_view(term, area, row_h, gfx.face(t).cell_w, cols, rows)
 
     // `now` is the switcher's fade; the grid does not animate.
-    terminal_declare(u, a, &t.font, term, v, now)
+    terminal_declare(u, a, gfx.face(t), term, v, now)
 }
 
 // Test-facing wrapper; see filetree_layout.
 terminal_layout :: proc(
     a: ^App,
-    f: ^gfx.Font,
+    face: gfx.Face,
     term: ^pty.Terminal,
     win_w, win_h: i32,
     v: Terminal_View,
@@ -431,7 +431,7 @@ terminal_layout :: proc(
 ) -> clay.ClayArray(clay.RenderCommand) {
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        terminal_declare(ctx_of(a), a, f, term, v, now)
+        terminal_declare(ctx_of(a), a, face, term, v, now)
     }
     return clay.EndLayout(0)
 }

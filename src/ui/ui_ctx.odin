@@ -18,7 +18,7 @@ UI_Ctx :: struct {
     blink_base:    ^f64, // the last-input time the blink is measured from; a drag re-bases it
     focus:         Focus,
     scroll_mode:   Scroll_Mode,
-    scale:         f32,
+    face:          gfx.Face, // sizes come from the line box, never from a DPI scale
     mouse_on:      bool,
     hover_on:      bool,
     last_input_at: f64,

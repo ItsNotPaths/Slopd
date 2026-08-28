@@ -15,8 +15,8 @@ import "../ui"
 //   2. The pointer moves it: a drag pans by the total travel since the press, a notch zooms
 //      about the pointer, and a click claims the press.
 //
-// The texture name is a made-up non-zero u32: nothing dereferences it, since Clay carries a GL
-// name in the imageData pointer and the bridge casts it straight back out.
+// The backend handle is a made-up non-zero u32: nothing dereferences it, since Clay carries a
+// pointer to the pane's own gfx.Image and the bridge reads the handle straight back out.
 
 @(private = "file")
 WIN_W :: 400
@@ -27,7 +27,7 @@ PANE :: gfx.Rect{0, 0, 200, 280}
 @(private = "file")
 AREA :: gfx.Rect{2, 2, 196, 276} // inset by the 2px focus ring
 @(private = "file")
-FAKE_TEX :: 7
+FAKE_HANDLE :: 7
 
 // A 200x100 image on the main surface, with the pointer live over the pane.
 @(private = "file")
@@ -39,9 +39,7 @@ media_app :: proc(x, y: i32) -> app.App {
         lay      = app.Layout{editor = PANE, vis = {editor = true}},
     }
     a.media = app.Media {
-        tex  = FAKE_TEX,
-        w    = 200,
-        h    = 100,
+        img  = gfx.Image{handle = FAKE_HANDLE, w = 200, h = 100},
         zoom = 1,
     }
     a.mouse.known = true
@@ -60,10 +58,10 @@ press :: proc(a: ^app.App, count: int) {
 // The content area inside the focus ring: the same inset the pane backdrop leaves.
 @(test)
 test_media_geom_is_the_ring_inset :: proc(t: ^testing.T) {
-    testing.expect_value(t, app.media_geom(PANE, 1), AREA)
-    testing.expect_value(t, app.media_geom(PANE, 2), gfx.Rect{4, 4, 192, 272})
+    testing.expect_value(t, app.media_geom(PANE, 16), AREA) // a 16px line box: a 2-unit ring
+    testing.expect_value(t, app.media_geom(PANE, 32), gfx.Rect{4, 4, 192, 272}) // 2x DPI doubles it
     // Too small to have an inside yields a rect with no area, which every phase refuses.
-    testing.expect(t, app.media_geom(gfx.Rect{}, 1).w <= 0, "a hidden pane has no content area")
+    testing.expect(t, app.media_geom(gfx.Rect{}, 16).w <= 0, "a hidden pane has no content area")
 }
 
 // The image lands at media_fit_rect's answer, inside the pane's clip group: what used to be an
@@ -73,23 +71,23 @@ test_media_geom_is_the_ring_inset :: proc(t: ^testing.T) {
 test_media_declares_the_image_at_its_fit_rect :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a := media_app(100, 100)
     a.media.zoom = 2 // bigger than the pane: the clip is the whole question
-    cmds := app.media_layout(&a, &f, PANE, WIN_W, WIN_H)
+    cmds := app.media_layout(&a, f, PANE, WIN_W, WIN_H)
 
     want := app.media_fit_rect(AREA, 200, 100, 2, {0, 0})
     image: gfx.Rect
-    tex: u32
+    handle: u32
     depth, image_depth := 0, -1
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
         #partial switch c.commandType {
         case .Image:
             image = ui.clay_rect(c.boundingBox)
-            tex = u32(uintptr(c.renderData.image.imageData))
+            handle = (^gfx.Image)(c.renderData.image.imageData).handle
             image_depth = depth
         case .ScissorStart:
             depth += 1
@@ -99,25 +97,25 @@ test_media_declares_the_image_at_its_fit_rect :: proc(t: ^testing.T) {
     }
 
     testing.expect_value(t, image, want)
-    testing.expect_value(t, tex, u32(FAKE_TEX))
+    testing.expect_value(t, handle, u32(FAKE_HANDLE))
     testing.expect(t, want.w > AREA.w, "the fixture must actually overflow its pane")
     testing.expect(t, image_depth > 0, "the image painted outside every clip group")
     testing.expect_value(t, depth, 0) // balanced, or the bridge latches a scissor
 }
 
-// A placeholder and no image command. Clay skips an Image whose imageData is null and a GL
-// texture name of 0 IS null, so "no image" needs no branch in the bridge — but it needs one
-// here, because a placeholder says something an empty picture does not.
+// A placeholder and no image command. The declare only puts up an Image when the backend holds
+// one, so an empty surface reaches the bridge as no Image at all — and the placeholder says
+// something an empty picture does not.
 @(test)
 test_media_declares_a_placeholder_when_empty :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a := media_app(100, 100)
     a.media = app.Media{zoom = 1} // nothing decoded
-    cmds := app.media_layout(&a, &f, PANE, WIN_W, WIN_H)
+    cmds := app.media_layout(&a, f, PANE, WIN_W, WIN_H)
 
     images, texts := 0, 0
     label: gfx.Rect

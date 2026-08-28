@@ -34,6 +34,7 @@ WLBL :: 100
 @(private = "file")
 fake_prompt :: proc(a: ^app.App, n: int) {
     a.scale = 1
+    a.face = clay_test_face()
     a.aux_mode = .FileTree
     a.focus = .Aux
     a.tree.dir = "/home/me/src"
@@ -59,8 +60,8 @@ fake_prompt_free :: proc(a: ^app.App) {
 test_wsfind_declared_in_ls :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fake_prompt(&a, 3)
@@ -68,7 +69,7 @@ test_wsfind_declared_in_ls :: proc(t: ^testing.T) {
     append(&a.tree.entries, app.FileEntry{name = "e", path = "/home/me/src/e", display = "-rw-  e"})
     defer delete(a.tree.entries)
 
-    cmds := app.filetree_layout(&a, &f, WPANE, 600, 300)
+    cmds := app.filetree_layout(&a, f, WPANE, 600, 300)
 
     // The line fills the header past its one-cell margin and the label.
     edit, ok := box_of(&cmds, clay.ID("ws_edit"), .Custom)
@@ -96,8 +97,8 @@ test_wsfind_declared_in_ls :: proc(t: ^testing.T) {
 test_wsfind_declared_in_browser :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fake_prompt(&a, 3)
@@ -106,7 +107,7 @@ test_wsfind_declared_in_browser :: proc(t: ^testing.T) {
     append(&a.tree.entries, app.FileEntry{name = "e", path = "/home/me/src/e", display = "-rw-  e"})
     defer delete(a.tree.entries)
 
-    cmds := app.filebrowser_layout(&a, &f, WPANE, 600, 300)
+    cmds := app.filebrowser_layout(&a, f, WPANE, 600, 300)
 
     path := gfx.Rect{WAREA.x + 3 * WBAR, WAREA.y, WAREA.w - 4 * WBAR, WBAR}
     edit, ok := box_of(&cmds, clay.ID("ws_edit"), .Custom)

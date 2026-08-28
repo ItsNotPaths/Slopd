@@ -22,9 +22,9 @@ FT_ROW_PAD :: 2
 
 // The content area inside the focus ring, the row height, and how many rows fit under the
 // header. Shared by every phase of the frame. `rows` is at least 1 even in a too-short pane.
-filetree_geom :: proc(pane: gfx.Rect, scale: f32, line_h: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
-    area = ui.inset(pane, i32(2 * scale))
-    row_h = i32(line_h) + i32(FT_ROW_PAD * scale)
+filetree_geom :: proc(pane: gfx.Rect, line_h: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
+    area = ui.inset(pane, gfx.hairline(line_h))
+    row_h = i32(line_h) + gfx.pad(line_h, FT_ROW_PAD)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {
         return area, row_h, 0
     }
@@ -107,12 +107,12 @@ filetree_rclick :: proc(a: ^App, row: int) {
 //         ft_pre/i   the two-cell prefix column, so names start on a fixed cell
 //     ch_bar   the Ctrl-held chord cheat-sheet, a floating child so it inherits the pane's
 //              clip and covers the rows rather than being laid out under them
-filetree_declare :: proc(u: ui.UI_Ctx, a: ^App, f: ^gfx.Font, pane: gfx.Rect, top: int, off: i32, now: f64 = 0) {
+filetree_declare :: proc(u: ui.UI_Ctx, a: ^App, face: gfx.Face, pane: gfx.Rect, top: int, off: i32, now: f64 = 0) {
     ft := &a.tree
     th := u.theme
-    area, row_h, _ := filetree_geom(pane, u.scale, f.line_height)
-    cw := f.cell_w
-    lh := i32(f.line_height)
+    area, row_h, _ := filetree_geom(pane, face.line_height)
+    cw := face.cell_w
+    lh := i32(face.line_height)
 
     // No backgroundColor: panel() filled the pane, so the fills that appear mean something.
     if clay.UI(clay.ID("ft_pane"))(ui.clay_pane_box(area)) {
@@ -144,7 +144,7 @@ filetree_declare :: proc(u: ui.UI_Ctx, a: ^App, f: ^gfx.Font, pane: gfx.Rect, to
         // Last and inside the pane: `attachTo = .Parent` takes ft_pane off the open clip
         // stack, so the bar gets its own scissor group and its backdrop covers the names.
         if chord_shown(a) {
-            chord_declare(ctx_of(a), &a.tree, chord_hints(a), &a.chord_anim, f, area, now)
+            chord_declare(ctx_of(a), &a.tree, chord_hints(a), &a.chord_anim, face, area, now)
         }
     }
 }
@@ -220,29 +220,29 @@ filetree_declare_rows :: proc(u: ui.UI_Ctx, ft: ^FileTree, dirty: ui.Path_Dirty,
 // a pane's boxes are the same whether or not another is declared beside it.
 filetree_layout :: proc(
     a: ^App,
-    f: ^gfx.Font,
+    face: gfx.Face,
     pane: gfx.Rect,
     win_w, win_h: i32,
     now: f64 = 0,
 ) -> clay.ClayArray(clay.RenderCommand) {
-    _, row_h, _ := filetree_geom(pane, a.scale, f.line_height)
+    _, row_h, _ := filetree_geom(pane, face.line_height)
     top, off := ui.smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, row_h)
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        filetree_declare(ctx_of(a), a, f, pane, top, off, now)
+        filetree_declare(ctx_of(a), a, face, pane, top, off, now)
     }
     return clay.EndLayout(0)
 }
 
 // A dired-style header then rows, each prefixed '+' (marked), '*' (in the unsaved ring) or '-'.
 // The phases and their order ARE the pane template.
-filetree_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect, now: f64) {
+filetree_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect, now: f64) {
     u := ctx_of(a)
-    area, row_h, rows := filetree_geom(pane, u.scale, t.font.line_height)
+    area, row_h, rows := filetree_geom(pane, gfx.face(t).line_height)
     if area.w <= 0 || area.h <= 0 {
         return
     }
-    cw := t.font.cell_w
+    cw := gfx.face(t).cell_w
     wsfind_sync(a)
     top, off := a.tree.scroll, i32(0) // the listing's window; the prompt's is its own
 
@@ -268,5 +268,5 @@ filetree_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect, now: f64) {
         // frame.
         top, off = ui.smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, row_h)
     }
-    filetree_declare(u, a, &t.font, pane, top, off, now)
+    filetree_declare(u, a, gfx.face(t), pane, top, off, now)
 }

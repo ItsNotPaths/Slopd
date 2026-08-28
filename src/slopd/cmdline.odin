@@ -404,7 +404,7 @@ cl_run_builtin :: proc(a: ^App, text: string) -> bool {
         open_embedded_doc(a, .License)
     case "zen", "zm":
         view_toggle_zen(a)
-    case "full", "fm":
+    case "full", "face":
         view_toggle_full(a)
     case "normal", "nm":
         view_normal(a) // not a toggle: the arrangement by name, from any view

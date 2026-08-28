@@ -162,6 +162,7 @@ picker_app :: proc(text: string, col: int) -> app.App {
     a: app.App
     a.main = .Text
     a.scale = 1
+    a.face = clay_test_face()
     a.color.buf_idx = -1
     b: edit.Buffer
     edit.buffer_set_text(&b, text)

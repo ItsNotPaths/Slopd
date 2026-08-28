@@ -40,8 +40,8 @@ strip_mode :: proc(a: ^App) -> Strip_Mode {
 
 // The region and the margin, in Clay's units. No inset: the strip has no focus ring, being
 // nothing you can focus.
-strip_geom :: proc(strip: gfx.Rect, scale: f32) -> (area: gfx.Rect, pad: u16) {
-    return strip, u16(max(0.0, STRIP_PAD * scale))
+strip_geom :: proc(strip: gfx.Rect, line_h: f32) -> (area: gfx.Rect, pad: u16) {
+    return strip, u16(gfx.pad(line_h, STRIP_PAD))
 }
 
 // Pinned to one corner, out of the flow — see the header. The offset is the margin: a floating
@@ -68,15 +68,15 @@ Strip_Edit :: struct {
 
 // The typed runes, a selection span per cursor and a caret per cursor. A caret is an over-quad
 // and must land above the glyphs, which a Clay Rectangle cannot do.
-strip_paint_cl :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
+strip_paint_cl :: proc(t: ^gfx.Draw, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
     a := (^App)(host)
     e := (^Strip_Edit)(user)
     if e == nil || e.doc == nil || txt.doc_line_count(e.doc) == 0 {
         return
     }
     th := &a.theme
-    cw := t.font.cell_w
-    lh := t.font.line_height
+    cw := gfx.face(t).cell_w
+    lh := gfx.face(t).line_height
     ox := f32(r.x)
     ty := f32(r.y) + (f32(r.h) - lh) / 2
     y := i32(ty) // selection and caret share the glyph cell's top
@@ -94,7 +94,7 @@ strip_paint_cl :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host:
     if ui.caret_blink_on(ctx_of(a), e.now) {
         for c in e.doc.cursors {
             cx := ox + cw * f32(txt.cells_col(cells, c.head.col))
-            gfx.caret(t, gfx.Rect{i32(cx), y, i32(2 * a.scale), i32(lh)}, th.fg)
+            gfx.caret(t, gfx.Rect{i32(cx), y, max(1, gfx.hairline(lh)), i32(lh)}, th.fg)
         }
     }
     // The ClayCustom contract: the painter ends with its own flush.
@@ -112,20 +112,20 @@ strip_paint_cl :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host:
 //     .Status    st_left    the modified marker and file name, pinned left
 //                st_root    the project root, centred
 //                st_right   language / caret / line count / cursors / scroll, pinned right
-strip_declare :: proc(a: ^App, f: ^gfx.Font, strip: gfx.Rect, now: f64 = 0) {
+strip_declare :: proc(a: ^App, face: gfx.Face, strip: gfx.Rect, now: f64 = 0) {
     th := &a.theme
-    area, pad := strip_geom(strip, a.scale)
+    area, pad := strip_geom(strip, a.face.line_height)
     if area.w <= 0 || area.h <= 0 {
         return
     }
-    cw := f.cell_w
-    lh := i32(f.line_height)
+    cw := face.cell_w
+    lh := i32(face.line_height)
     mode := strip_mode(a)
 
     // Rung in the alert colour when it holds an untouched injected line. Any edit bumps
     // doc.version past the mark and the ring clears itself.
     ring := mode == .Command && a.cl.injected && a.cl.doc.version == a.cl.inject_ver
-    bw := u16(2 * a.scale)
+    bw := u16(max(1, gfx.hairline(a.face.line_height)))
 
     box := ui.clay_pane_box(area)
     box.layout.layoutDirection = .LeftToRight
@@ -203,7 +203,7 @@ strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
         m := &a.media
         left = fmt.tprintf("  %s", m.path == "" ? "(no image)" : filepath.base(m.path))
         left_col = th.muted
-        right = fmt.tprintf("image   %dx%d   %d%%", m.w, m.h, int(m.zoom * 100 + 0.5))
+        right = fmt.tprintf("image   %dx%d   %d%%", m.img.w, m.img.h, int(m.zoom * 100 + 0.5))
     } else {
         b := edit.editor_current(&a.editor)
         name := b.path == "" ? "untitled" : filepath.base(b.path)
@@ -240,18 +240,18 @@ strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
 }
 
 // Test-facing wrapper; see filetree_layout.
-strip_layout :: proc(a: ^App, f: ^gfx.Font, strip: gfx.Rect, win_w, win_h: i32, now: f64 = 0) -> clay.ClayArray(clay.RenderCommand) {
+strip_layout :: proc(a: ^App, face: gfx.Face, strip: gfx.Rect, win_w, win_h: i32, now: f64 = 0) -> clay.ClayArray(clay.RenderCommand) {
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        strip_declare(a, f, strip, now)
+        strip_declare(a, face, strip, now)
     }
     return clay.EndLayout(0)
 }
 
 // Shorter than any pane's: with no list, no viewport and no click there is nothing to do
 // before declaring.
-strip_frame :: proc(t: ^gfx.Text, a: ^App, strip: gfx.Rect, now: f64) {
-    strip_declare(a, &t.font, strip, now)
+strip_frame :: proc(t: ^gfx.Draw, a: ^App, strip: gfx.Rect, now: f64) {
+    strip_declare(a, gfx.face(t), strip, now)
 }
 
 // /home/me/src -> ~/src. Borrows `path` when nothing changes, else a fresh string in `alloc`.

@@ -66,7 +66,7 @@ test_clay_isect :: proc(t: ^testing.T) {
 // otherwise measure wide by the bytes UTF-8 spends on it.
 @(test)
 test_clay_measure :: proc(t: ^testing.T) {
-    f := gfx.Font {
+    f := gfx.Face {
         cell_w      = 10,
         line_height = 16,
     }
@@ -140,11 +140,11 @@ clay_test_tree :: proc() {
 test_clay_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(100, 60)
     defer clay_test_context_free(raw)
-    f := gfx.Font {
+    f := gfx.Face {
         cell_w      = 10,
         line_height = 16,
     }
-    ui.clay_use_font(&f)
+    ui.clay_use_face(&f)
 
     clay_test_tree()
     cmds := clay.EndLayout(0)
@@ -202,11 +202,11 @@ test_clay_command_list :: proc(t: ^testing.T) {
 test_clay_pointer_over_row :: proc(t: ^testing.T) {
     raw := clay_test_context(100, 60)
     defer clay_test_context_free(raw)
-    f := gfx.Font {
+    f := gfx.Face {
         cell_w      = 10,
         line_height = 16,
     }
-    ui.clay_use_font(&f)
+    ui.clay_use_face(&f)
 
     clay_test_tree() // frame 1: boxes to hit-test against
     _ = clay.EndLayout(0)

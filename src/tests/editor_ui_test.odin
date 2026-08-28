@@ -33,6 +33,7 @@ TEXT_X :: AREA.x + 40 // margin + 2 gutter digits + gap, at cw = 10
 fake_editor :: proc(a: ^app.App, text: string) {
     edit.editor_init(&a.editor)
     a.scale = 1
+    a.face = clay_test_face()
     a.mouse_on = true
     a.mouse.known = true
     edit.buffer_set_text(edit.editor_current(&a.editor), text)
@@ -60,21 +61,21 @@ mkview :: proc(top: int, off: i32, gutter := 2, hoff: f32 = 0) -> app.Editor_Vie
 // Same shape and the same degenerate cases as every other pane's geom.
 @(test)
 test_editor_geom :: proc(t: ^testing.T) {
-    area, row_h, rows := app.editor_geom(PANE, 1, 16)
+    area, row_h, rows := app.editor_geom(PANE, 16)
     testing.expect_value(t, area, AREA) // inside the 2px focus ring
     testing.expect_value(t, row_h, i32(ROW_H))
     testing.expect_value(t, rows, ROWS) // 196 / 18, floored
 
     // A hidden pane is a zero rect and must report no rows.
-    _, _, none := app.editor_geom(gfx.Rect{}, 1, 16)
+    _, _, none := app.editor_geom(gfx.Rect{}, 16)
     testing.expect_value(t, none, 0)
 
     // Too short for a whole row still reports one: the clip keeps it inside, not the count.
-    _, _, tiny := app.editor_geom(gfx.Rect{0, 0, 300, 20}, 1, 16)
+    _, _, tiny := app.editor_geom(gfx.Rect{0, 0, 300, 20}, 16)
     testing.expect_value(t, tiny, 1)
 
     // DPI scale reaches the inset and the row padding both.
-    area2, row_h2, _ := app.editor_geom(PANE, 2, 32)
+    area2, row_h2, _ := app.editor_geom(PANE, 32)
     testing.expect_value(t, area2, gfx.Rect{104, 54, 292, 192})
     testing.expect_value(t, row_h2, i32(36))
 }
@@ -193,17 +194,17 @@ test_editor_pos_at_folded :: proc(t: ^testing.T) {
 test_editor_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fake_editor(&a, "alpha\nbravo\ncharlie")
     defer edit.editor_destroy(&a.editor)
     b := edit.editor_current(&a.editor)
 
-    area, row_h, rows := app.editor_geom(PANE, 1, f.line_height)
-    v := app.editor_view(b, &f, area, row_h, rows, 0)
-    cmds := app.editor_layout(&a, &f, PANE, 500, 300, v, 0)
+    area, row_h, rows := app.editor_geom(PANE, f.line_height)
+    v := app.editor_view(b, f, area, row_h, rows, 0)
+    cmds := app.editor_layout(&a, f, PANE, 500, 300, v, 0)
 
     customs, others, scissors := 0, 0, 0
     box, clip: gfx.Rect
@@ -285,8 +286,8 @@ test_editor_hit :: proc(t: ^testing.T) {
 test_editor_hit_survives_the_aux_pane :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fake_editor(&a, "alpha\nbravo\ncharlie")
@@ -297,23 +298,23 @@ test_editor_hit_survives_the_aux_pane :: proc(t: ^testing.T) {
     append(&a.tree.entries, app.FileEntry{name = "e", path = "/tmp/ft/e", display = "e"})
     defer delete(a.tree.entries)
 
-    area, row_h, rows := app.editor_geom(PANE, 1, f.line_height)
-    v := app.editor_view(b, &f, area, row_h, rows, 0)
+    area, row_h, rows := app.editor_geom(PANE, f.line_height)
+    v := app.editor_view(b, f, area, row_h, rows, 0)
 
     // One frame in render()'s order: editor first, aux pane second, one tree.
-    frame :: proc(a: ^app.App, f: ^gfx.Font, v: app.Editor_View) {
+    frame :: proc(a: ^app.App, face: gfx.Face, v: app.Editor_View) {
         app.clay_window_begin(500, 300)
         if clay.UI(clay.ID(app.WIN_ROOT))(app.clay_window_root(500, 300)) {
-            app.editor_declare(a, f, PANE, v, 0)
+            app.editor_declare(a, face, PANE, v, 0)
                     }
         _ = clay.EndLayout(0)
     }
-    frame(&a, &f, v)
+    frame(&a, f, v)
 
     // The next frame's pointer, over the editor; the aux pane no longer takes the tree.
     a.mouse.x, a.mouse.y = TEXT_X + 22, AREA.y + ROW_H + 4
     clay.SetPointerState({f32(a.mouse.x), f32(a.mouse.y)}, false)
-    frame(&a, &f, v)
+    frame(&a, f, v)
     testing.expect(
         t,
         clay.PointerOver(clay.ID("ed_body")),

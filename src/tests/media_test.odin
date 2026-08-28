@@ -69,21 +69,20 @@ test_media_fit_pane_offset_and_degenerate :: proc(t: ^testing.T) {
 test_media_zoom_at_pins_the_pointer :: proc(t: ^testing.T) {
     pane := gfx.Rect{0, 0, 100, 100}
     m := app.Media {
-        w    = 200,
-        h    = 100,
+        img  = gfx.Image{w = 200, h = 100},
         zoom = 1,
     }
 
     // Fit at zoom 1: {0, 25, 100, 50}. A spot well off centre, so a zero correction is wrong.
     px, py := i32(25), i32(37)
-    before := app.media_fit_rect(pane, m.w, m.h, m.zoom, m.pan)
+    before := app.media_fit_rect(pane, m.img.w, m.img.h, m.zoom, m.pan)
     ux := f32(px - before.x) / f32(before.w) // the image coordinate under the pointer
     uy := f32(py - before.y) / f32(before.h)
 
     app.media_zoom_at(&m, 2, pane, px, py)
     testing.expect_value(t, m.zoom, f32(2))
 
-    after := app.media_fit_rect(pane, m.w, m.h, m.zoom, m.pan)
+    after := app.media_fit_rect(pane, m.img.w, m.img.h, m.zoom, m.pan)
     gx := f32(after.x) + ux * f32(after.w)
     gy := f32(after.y) + uy * f32(after.h)
     // One pixel of slack: media_fit_rect rounds its placement twice.
@@ -97,11 +96,10 @@ test_media_zoom_at_pins_the_pointer :: proc(t: ^testing.T) {
 test_media_zoom_at_centre_leaves_the_pan_alone :: proc(t: ^testing.T) {
     pane := gfx.Rect{0, 0, 100, 100}
     m := app.Media {
-        w    = 200,
-        h    = 100,
+        img  = gfx.Image{w = 200, h = 100},
         zoom = 1,
     }
-    fit := app.media_fit_rect(pane, m.w, m.h, m.zoom, m.pan)
+    fit := app.media_fit_rect(pane, m.img.w, m.img.h, m.zoom, m.pan)
 
     app.media_zoom_at(&m, 2, pane, fit.x + fit.w / 2, fit.y + fit.h / 2)
     testing.expect_value(t, m.zoom, f32(2))
@@ -114,8 +112,7 @@ test_media_zoom_at_centre_leaves_the_pan_alone :: proc(t: ^testing.T) {
 test_media_zoom_at_respects_the_clamp :: proc(t: ^testing.T) {
     pane := gfx.Rect{0, 0, 100, 100}
     m := app.Media {
-        w    = 200,
-        h    = 100,
+        img  = gfx.Image{w = 200, h = 100},
         zoom = app.MEDIA_ZOOM_MAX,
     }
     pan := m.pan

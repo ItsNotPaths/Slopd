@@ -1,19 +1,20 @@
 package gfx
 
 import "core:math"
-import "core:unicode/utf8"
 import gl "vendor:OpenGL"
 import stbtt "vendor:stb/truetype"
 
-// Two batches, each accumulating across a whole pane and flushed in one draw: solid colour
+// The GL arm of Draw. Two batches, each accumulating across a whole pane and flushed in one
+// draw: solid colour
 // quads and textured glyph quads sampling the font atlas. Colour is per-vertex in both, which
-// is what lets a syntax-highlighted line batch into a single glyph draw.
+// is what lets a syntax-highlighted line batch into a single glyph draw. Nothing outside gfx
+// calls these: draw.odin dispatches to them.
 //
 // A pane composites in three ordered layers under one scissor: under-quads (backgrounds,
 // selection, the current-line bar), glyphs, then over-quads (carets, which must land above the
 // text). Positions are physical pixels in Rect's top-left space; both shaders flip y to NDC.
 
-Text :: struct {
+GL_Draw :: struct {
     font:        Font,
     glyph_prog:  u32,
     glyph_vao:   u32,
@@ -39,7 +40,7 @@ Text :: struct {
     ttf:         []u8, // retained so the atlas can re-bake on DPI change
     logical_px:  f32, // atlas is baked at logical_px * scale physical pixels
     scale:       f32, // DPI scale the atlas is currently baked for
-    frame_verts: int, // reset in render, read by the perf log
+    verts:       int, // vertices submitted this frame; read by the perf log
 }
 
 @(private = "file")
@@ -117,7 +118,8 @@ ImageQuad :: struct {
     dst: Rect,
 }
 
-text_init :: proc(t: ^Text, ttf: []u8, logical_px, scale: f32) -> bool {
+@(private)
+gl_text_init :: proc(t: ^GL_Draw, ttf: []u8, logical_px, scale: f32) -> bool {
     t.ttf = ttf
     t.logical_px = logical_px
     t.scale = scale
@@ -181,7 +183,8 @@ text_init :: proc(t: ^Text, ttf: []u8, logical_px, scale: f32) -> bool {
 
 // When the logical font size or the DPI scale changes, so glyphs stay crisp; a no-op otherwise.
 // Reports a re-bake, since the cell advance moved and cached measurements must be dropped.
-text_apply :: proc(t: ^Text, logical_px, scale: f32) -> (rebaked: bool) {
+@(private)
+gl_text_apply :: proc(t: ^GL_Draw, logical_px, scale: f32) -> (rebaked: bool) {
     if logical_px <= 0 || scale <= 0 {
         return false
     }
@@ -195,14 +198,16 @@ text_apply :: proc(t: ^Text, logical_px, scale: f32) -> (rebaked: bool) {
 }
 
 // Backgrounds, bars, selection.
-fill :: proc(t: ^Text, r: Rect, c: [3]f32) {
+@(private)
+gl_fill :: proc(t: ^GL_Draw, r: Rect, c: [3]f32) {
     if r.w > 0 && r.h > 0 {
         push_quad(&t.under, r, c)
     }
 }
 
 // Above the glyphs: carets, which sit on top of the text on their column.
-caret :: proc(t: ^Text, r: Rect, c: [3]f32) {
+@(private)
+gl_caret :: proc(t: ^GL_Draw, r: Rect, c: [3]f32) {
     if r.w > 0 && r.h > 0 {
         push_quad(&t.over, r, c)
     }
@@ -219,15 +224,17 @@ push_quad :: proc(buf: ^[dynamic]f32, r: Rect, c: [3]f32) {
     )
 }
 
-// Drawn in flush_pane between the under-quads and the glyphs.
-image_push :: proc(t: ^Text, tex: u32, dst: Rect) {
+// Drawn in gl_flush_pane between the under-quads and the glyphs.
+@(private)
+gl_image_push :: proc(t: ^GL_Draw, tex: u32, dst: Rect) {
     if tex != 0 && dst.w > 0 && dst.h > 0 {
         append(&t.images, ImageQuad{tex, dst})
     }
 }
 
 // Unknown glyphs advance by one cell and draw nothing.
-text_draw :: proc(t: ^Text, s: string, x, y: f32, color: [3]f32) {
+@(private)
+gl_text_draw :: proc(t: ^GL_Draw, s: string, x, y: f32, color: [3]f32) {
     xpos := math.round(x) // start the cell grid on a whole pixel
     ypos := y + t.font.ascent // stb positions glyphs from the baseline
     for r in s {
@@ -235,14 +242,9 @@ text_draw :: proc(t: ^Text, s: string, x, y: f32, color: [3]f32) {
     }
 }
 
-// Monospace, so the RUNE count: `len` counts bytes, which right-aligns a label carrying
-// anything non-ASCII one cell short per byte.
-text_w :: proc(s: string, cell_w: f32) -> f32 {
-    return f32(utf8.rune_count_in_string(s)) * cell_w
-}
-
-// text_draw for an already-decoded rune slice.
-text_draw_runes :: proc(t: ^Text, runes: []rune, x, y: f32, color: [3]f32) {
+// gl_text_draw for an already-decoded rune slice.
+@(private)
+gl_text_draw_runes :: proc(t: ^GL_Draw, runes: []rune, x, y: f32, color: [3]f32) {
     xpos := math.round(x)
     ypos := y + t.font.ascent
     for r in runes {
@@ -254,7 +256,8 @@ text_draw_runes :: proc(t: ^Text, runes: []rune, x, y: f32, color: [3]f32) {
 // size it was baked, so the tile size gets its own cache (font_icon_big) — the same atlas,
 // batch and draw call. Centred on the INK rather than the advance box, since an icon face's
 // glyphs are not uniformly placed within their em. False when there is no icon face.
-icon_draw :: proc(t: ^Text, r: rune, box: Rect, px: f32, color: [3]f32) -> bool {
+@(private)
+gl_icon_draw :: proc(t: ^GL_Draw, r: rune, box: Rect, px: f32, color: [3]f32) -> bool {
     pc, ok := font_icon_big(&t.font, r, px)
     if !ok {
         return false
@@ -275,20 +278,12 @@ icon_draw :: proc(t: ^Text, r: rune, box: Rect, px: f32, color: [3]f32) -> bool 
     return true
 }
 
-// The body cell scaled by the size ratio. Text at a second bake size is still monospace, so a
-// caller can centre a string without measuring it.
-text_sized_cell :: proc(t: ^Text, px: f32) -> f32 {
-    if t.font.px <= 0 {
-        return t.font.cell_w
-    }
-    return t.font.cell_w * (px / t.font.px)
-}
-
 // The browser's tile captions, deliberately smaller than the body text. The pen steps by the
 // SCALED cell for the reason the body steps by the whole one: a fixed advance keeps the run on
 // a predictable grid, and lets the caller centre from the rune count alone.
-text_draw_sized :: proc(t: ^Text, s: string, x, y, px: f32, color: [3]f32) {
-    cw := text_sized_cell(t, px)
+@(private)
+gl_text_draw_sized :: proc(t: ^GL_Draw, s: string, x, y, px: f32, color: [3]f32) {
+    cw := text_sized_cell(t.font.face, px)
     // The baseline scales with the bake; ascent is the body's, so scale by the same ratio.
     ratio := t.font.px > 0 ? px / t.font.px : 1
     xpos := math.round(x)
@@ -317,7 +312,7 @@ text_draw_sized :: proc(t: ^Text, s: string, x, y, px: f32, color: [3]f32) {
 
 // Two triangles into the glyph batch, then advance the pen.
 @(private = "file")
-glyph_push :: proc(t: ^Text, r: rune, xpos, ypos: ^f32, c: [3]f32) {
+glyph_push :: proc(t: ^GL_Draw, r: rune, xpos, ypos: ^f32, c: [3]f32) {
     pc, ok := font_glyph(&t.font, r) // bakes into the atlas on first use
     if !ok { // nothing to draw: hold the cell anyway
         xpos^ += t.font.cell_w
@@ -340,7 +335,8 @@ glyph_push :: proc(t: ^Text, r: rune, xpos, ypos: ^f32, c: [3]f32) {
 
 // Under-quads, glyphs, over-quads, clipped to `clip`, then the scratch batches are emptied.
 // The scissor uses a bottom-left origin where our rects are top-left, so y flips.
-flush_pane :: proc(t: ^Text, clip: Rect, win_w, win_h: i32) {
+@(private)
+gl_flush_pane :: proc(t: ^GL_Draw, clip: Rect, win_w, win_h: i32) {
     gl.Enable(gl.BLEND)
     gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
     gl.Enable(gl.SCISSOR_TEST)
@@ -361,7 +357,7 @@ flush_pane :: proc(t: ^Text, clip: Rect, win_w, win_h: i32) {
 // dst rect maps onto the whole texture, and uv (0,0) is the image top, since stb loads
 // top-down.
 @(private = "file")
-image_flush :: proc(t: ^Text, win_w, win_h: i32) {
+image_flush :: proc(t: ^GL_Draw, win_w, win_h: i32) {
     if len(t.images) == 0 {
         return
     }
@@ -380,12 +376,12 @@ image_flush :: proc(t: ^Text, win_w, win_h: i32) {
         gl.BindTexture(gl.TEXTURE_2D, im.tex)
         vbo_upload(&t.image_cap, &verts[0], size_of(verts))
         gl.DrawArrays(gl.TRIANGLES, 0, 6)
-        t.frame_verts += 6
+        t.verts += 6
     }
 }
 
 @(private = "file")
-quad_flush :: proc(t: ^Text, buf: ^[dynamic]f32, win_w, win_h: i32) {
+quad_flush :: proc(t: ^GL_Draw, buf: ^[dynamic]f32, win_w, win_h: i32) {
     if len(buf) == 0 {
         return
     }
@@ -395,11 +391,11 @@ quad_flush :: proc(t: ^Text, buf: ^[dynamic]f32, win_w, win_h: i32) {
     gl.BindBuffer(gl.ARRAY_BUFFER, t.quad_vbo)
     vbo_upload(&t.quad_cap, raw_data(buf^), len(buf) * size_of(f32))
     gl.DrawArrays(gl.TRIANGLES, 0, i32(len(buf) / 5))
-    t.frame_verts += len(buf) / 5
+    t.verts += len(buf) / 5
 }
 
 @(private = "file")
-glyph_flush :: proc(t: ^Text, win_w, win_h: i32) {
+glyph_flush :: proc(t: ^GL_Draw, win_w, win_h: i32) {
     if len(t.glyphs) == 0 {
         return
     }
@@ -412,7 +408,7 @@ glyph_flush :: proc(t: ^Text, win_w, win_h: i32) {
     gl.BindBuffer(gl.ARRAY_BUFFER, t.glyph_vbo)
     vbo_upload(&t.glyph_cap, raw_data(t.glyphs), len(t.glyphs) * size_of(f32))
     gl.DrawArrays(gl.TRIANGLES, 0, i32(len(t.glyphs) / 7))
-    t.frame_verts += len(t.glyphs) / 7
+    t.verts += len(t.glyphs) / 7
 }
 
 // Into the bound ARRAY_BUFFER. The store is grown by doubling and kept, so a steady frame stops

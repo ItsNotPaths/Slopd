@@ -2,14 +2,18 @@ package main
 import "../gfx"
 import "../ui"
 
-// Window pixel size + app state -> pane rectangles. Knows nothing about fonts, cells or
-// rendering; a view hosting a glyph grid snaps these rects to whole cells itself.
+// Window size + app state -> pane rectangles, in whatever unit the backend measures in: pixels
+// under GL, cells in a terminal. Everything smaller than a text row comes from the Face, so the
+// same arithmetic lands on both. A view hosting a glyph grid snaps these rects itself.
 //
 // The strip spans the bottom; the editor and aux panes split the space above. A hidden pane
 // gets a zero rect rather than any stored state — see panes_visible.
 
 // Named here because there are two writers — Alt+[ / Alt+] and the divider drag — and a
 // pointer must not reach a width the keyboard cannot.
+// The strip is a text row plus this, in layout units. 9 reproduces the 24px it has always
+// been at the default font, and it tracks a zoom because the command line lives in it.
+STRIP_H_PAD :: 9
 SPLIT_MIN :: 0.15
 SPLIT_MAX :: 0.85
 
@@ -21,13 +25,13 @@ Layout :: struct {
     vis:    Pane_Vis, // which panes these rects are for; computed once, here
 }
 
-compute_layout :: proc(win_w, win_h: i32, a: ^App, now: f64) -> Layout {
+compute_layout :: proc(win_w, win_h: i32, a: ^App, line_h: f32, now: f64) -> Layout {
     out: Layout
-    out.gutter = i32(2 * a.scale)
+    out.gutter = gfx.hairline(line_h)
 
-    // The strip's height tracks the font zoom as well as the DPI, since the command line
-    // lives in it.
-    strip_h := i32(24 * a.scale * font_zoom_ratio(a))
+    // One text row plus the padding above and below it. Derived from the line box rather than
+    // from the DPI scale and the font zoom separately, since the line box already tracks both.
+    strip_h := i32(line_h) + gfx.pad(line_h, STRIP_H_PAD)
     if strip_h > win_h {
         strip_h = win_h
     }

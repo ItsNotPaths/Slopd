@@ -5,7 +5,6 @@ import "core:math"
 import "core:path/filepath"
 import "core:strings"
 import "core:time"
-import gl "vendor:OpenGL"
 import "vendor:glfw"
 import stbi "vendor:stb/image"
 import "../gfx"
@@ -19,8 +18,7 @@ import "../edit"
 
 Media :: struct {
     path: string, // owned; "" = nothing loaded
-    tex:  u32, // GL RGBA texture (0 = none)
-    w, h: i32, // image pixel dimensions
+    img:  gfx.Image, // the backend's copy of the pixels, and their size; zero = none
     zoom:  f32, // 1 = fit-to-pane; >1 zooms in
     pan:   [2]f32, // view offset in physical pixels, applied after centring
     mtime: time.Time, // mtime when decoded; a change re-decodes
@@ -81,7 +79,7 @@ media_zoom_at :: proc(m: ^Media, factor: f32, pane: gfx.Rect, mx, my: i32) {
     if m.zoom == before {
         return
     }
-    fit := media_fit_rect(pane, m.w, m.h, before, m.pan)
+    fit := media_fit_rect(pane, m.img.w, m.img.h, before, m.pan)
     if fit.w <= 0 || fit.h <= 0 {
         return // nothing on screen to keep under the pointer
     }
@@ -101,10 +99,10 @@ media_fit :: proc(m: ^Media) {
     m.pan = {0, 0}
 }
 
-// stb_image, forced RGBA, uploaded to a GL texture; the CPU pixels are freed once uploaded.
-// Must run on the GL thread. ok=false on a decode failure, and the caller leaves the surface
-// unchanged.
-media_load :: proc(path: string) -> (Media, bool) {
+// stb_image, forced RGBA, handed to the backend; the CPU pixels are freed once it has them.
+// ok=false on a decode failure or a backend that cannot hold an image, and the caller leaves the
+// surface unchanged.
+media_load :: proc(d: ^gfx.Draw, path: string) -> (Media, bool) {
     cpath := strings.clone_to_cstring(path, context.temp_allocator)
     w, h, comp: c.int
     pixels := stbi.load(cpath, &w, &h, &comp, 4) // 4 = force RGBA
@@ -113,24 +111,18 @@ media_load :: proc(path: string) -> (Media, bool) {
     }
     defer stbi.image_free(pixels)
 
-    tex: u32
-    gl.GenTextures(1, &tex)
-    gl.BindTexture(gl.TEXTURE_2D, tex)
-    gl.PixelStorei(gl.UNPACK_ALIGNMENT, 1)
-    gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, rawptr(pixels))
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    gl.BindTexture(gl.TEXTURE_2D, 0)
+    img, ok := gfx.image_upload(d, rawptr(pixels), i32(w), i32(h))
+    if !ok {
+        return {}, false
+    }
 
     mtime := edit.file_mtime(path) or_else time.Time{}
-    return Media{path = strings.clone(path), tex = tex, w = i32(w), h = i32(h), zoom = 1, mtime = mtime}, true
+    return Media{path = strings.clone(path), img = img, zoom = 1, mtime = mtime}, true
 }
 
 // Keeps the current zoom and pan, so a background change does not reset the view. A no-op when
 // nothing is loaded or the file is unchanged.
-media_reload_if_changed :: proc(m: ^Media) -> bool {
+media_reload_if_changed :: proc(d: ^gfx.Draw, m: ^Media) -> bool {
     if m.path == "" {
         return false
     }
@@ -138,22 +130,20 @@ media_reload_if_changed :: proc(m: ^Media) -> bool {
     if mt == m.mtime {
         return false
     }
-    nm, ok := media_load(m.path) // carries the new mtime
+    nm, ok := media_load(d, m.path) // carries the new mtime
     if !ok {
         m.mtime = mt // mid-write or corrupt: adopt the stamp, or we re-decode every tick
         return false
     }
     nm.zoom, nm.pan = m.zoom, m.pan // keep the viewer where the user left it
-    media_destroy(m)
+    media_destroy(d, m)
     m^ = nm
     return true
 }
 
 // Safe on an empty Media.
-media_destroy :: proc(m: ^Media) {
-    if m.tex != 0 {
-        gl.DeleteTextures(1, &m.tex)
-    }
+media_destroy :: proc(d: ^gfx.Draw, m: ^Media) {
+    gfx.image_free(d, &m.img)
     delete(m.path)
     m^ = {}
 }

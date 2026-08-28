@@ -58,6 +58,7 @@ X_OPT :: AREA.x + 50
 fixture :: proc(a: ^app.App) {
     app.config_pane_init(&a.config_pane, nil)
     a.scale = 1
+    a.face = clay_test_face()
     a.theme = gfx.default_theme() // a zero palette is all black, which hides colour bugs
     clear(&a.config_pane.langs)
     append(
@@ -71,7 +72,7 @@ fixture :: proc(a: ^app.App) {
 
 @(test)
 test_config_geom :: proc(t: ^testing.T) {
-    area, row_h, rows, cols := app.config_geom(PANE, 1, 16, 10)
+    area, row_h, rows, cols := app.config_geom(PANE, 16, 10)
     testing.expect_value(t, area, AREA)
     testing.expect_value(t, row_h, i32(ROW_H))
     // No row is reserved for a header: the first row is already a section rule, which is the
@@ -79,7 +80,7 @@ test_config_geom :: proc(t: ^testing.T) {
     testing.expect_value(t, rows, MAX_ROWS) // 196 / 18
     testing.expect_value(t, cols, COLS) // 296 / 10
 
-    _, _, none, _ := app.config_geom(gfx.Rect{}, 1, 16, 10)
+    _, _, none, _ := app.config_geom(gfx.Rect{}, 16, 10)
     testing.expect_value(t, none, 0)
 
     testing.expect_value(t, app.config_val_off(), f32(VAL_OFF))
@@ -302,8 +303,8 @@ test_config_selected_and_anchor :: proc(t: ^testing.T) {
 test_config_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fixture(&a)
@@ -317,7 +318,7 @@ test_config_command_list :: proc(t: ^testing.T) {
     cp.scroll = INSTALL_ROWS // frame the settings block
 
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
-    cmds := app.config_layout(&a, &f, PANE, rows, 500, 300)
+    cmds := app.config_layout(&a, f, PANE, rows, 500, 300)
 
     Seen :: struct {
         text: string,
@@ -381,8 +382,8 @@ test_config_command_list :: proc(t: ^testing.T) {
 test_config_search_is_custom :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fixture(&a)
@@ -393,7 +394,7 @@ test_config_search_is_custom :: proc(t: ^testing.T) {
     // Scroll the syntax section into view: the search row is the fourth visible.
     cp.scroll = INSTALL_ROWS + 3 + sc + BINDS_ROWS
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
-    cmds := app.config_layout(&a, &f, PANE, rows, 500, 300)
+    cmds := app.config_layout(&a, f, PANE, rows, 500, 300)
 
     customs := 0
     box: gfx.Rect
@@ -420,8 +421,8 @@ test_config_search_is_custom :: proc(t: ^testing.T) {
 test_config_text_setting_is_custom_when_selected :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fixture(&a)
@@ -433,7 +434,7 @@ test_config_text_setting_is_custom_when_selected :: proc(t: ^testing.T) {
     // fold, so any Custom seen here is this row's.
     cp.scroll = INSTALL_ROWS + 5
     cp.sel = app.ROW_SETTINGS
-    customs, x := text_field_probe(&a, &f, "lazygit")
+    customs, x := text_field_probe(&a, f, "lazygit")
     testing.expect_value(t, customs, 0)
     testing.expect_value(t, x, i32(X_VALUE)) // the stored value, at the shared column
 
@@ -441,7 +442,7 @@ test_config_text_setting_is_custom_when_selected :: proc(t: ^testing.T) {
     // drawn as text.
     cp.sel = app.ROW_SETTINGS + int(app.Setting.GitTool)
     app.config_edit_sync(&a)
-    customs, x = text_field_probe(&a, &f, "lazygit")
+    customs, x = text_field_probe(&a, f, "lazygit")
     testing.expect_value(t, customs, 1)
     testing.expect_value(t, x, i32(-1)) // not drawn as text anywhere
 }
@@ -449,10 +450,10 @@ test_config_text_setting_is_custom_when_selected :: proc(t: ^testing.T) {
 // Lays the pane out and reports how many Customs it declared plus the x of `want` if it was
 // drawn as text (-1 when it wasn't) — the two halves of "is this row a field or a label".
 @(private = "file")
-text_field_probe :: proc(a: ^app.App, f: ^gfx.Font, want: string) -> (customs: int, x: i32) {
+text_field_probe :: proc(a: ^app.App, face: gfx.Face, want: string) -> (customs: int, x: i32) {
     x = -1
     rows := app.config_rows(&a.config_pane, a, COLS, context.temp_allocator)
-    cmds := app.config_layout(a, f, PANE, rows, 500, 300)
+    cmds := app.config_layout(a, face, PANE, rows, 500, 300)
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
         #partial switch c.commandType {
@@ -474,8 +475,8 @@ text_field_probe :: proc(a: ^app.App, f: ^gfx.Font, want: string) -> (customs: i
 test_config_hover_is_toggleable :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fixture(&a)
@@ -497,16 +498,16 @@ test_config_hover_is_toggleable :: proc(t: ^testing.T) {
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
 
     a.hover_on = false
-    off := app.config_layout(&a, &f, PANE, rows, 500, 300)
+    off := app.config_layout(&a, f, PANE, rows, 500, 300)
     testing.expect_value(t, count_rects(&off), 1) // the selection, and nothing else
 
     a.hover_on = true
-    on := app.config_layout(&a, &f, PANE, rows, 500, 300)
+    on := app.config_layout(&a, f, PANE, rows, 500, 300)
     testing.expect_value(t, count_rects(&on), 2)
 
     // Chrome never hovers: there is nothing there to click.
     cp.hover = 1 // the "slopd" title
-    only_sel := app.config_layout(&a, &f, PANE, rows, 500, 300)
+    only_sel := app.config_layout(&a, f, PANE, rows, 500, 300)
     testing.expect_value(t, count_rects(&only_sel), 1)
 
     // The tint is a hint, not a second selection: strictly between the pane background and
@@ -521,8 +522,8 @@ test_config_hover_is_toggleable :: proc(t: ^testing.T) {
 test_config_hit_with_scroll :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fixture(&a)
@@ -531,26 +532,26 @@ test_config_hit_with_scroll :: proc(t: ^testing.T) {
 
     cp.scroll = INSTALL_ROWS + 1 // the "settings" title, a rule, then the settings rows
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
-    _ = app.config_layout(&a, &f, PANE, rows, 500, 300) // frame 1: boxes to hit
+    _ = app.config_layout(&a, f, PANE, rows, 500, 300) // frame 1: boxes to hit
 
-    hit_at :: proc(a: ^app.App, f: ^gfx.Font, rows: []app.ConfigRow, visible_row: int) -> int {
+    hit_at :: proc(a: ^app.App, face: gfx.Face, rows: []app.ConfigRow, visible_row: int) -> int {
         clay.SetPointerState({f32(AREA.x + 30), f32(AREA.y + i32(visible_row) * ROW_H + 4)}, false)
-        _ = app.config_layout(a, f, PANE, rows, 500, 300)
+        _ = app.config_layout(a, face, PANE, rows, 500, 300)
         drawn := app.config_draw_rows(a, rows, context.temp_allocator)
         return ui.pane_hit(ui.CONFIG_IDS, drawn, a.config_pane.scroll, MAX_ROWS)
     }
 
     // The third visible row is the first setting: a display row, not a visible-row index.
-    testing.expect_value(t, hit_at(&a, &f, rows, 2), INSTALL_ROWS + 3)
-    testing.expect_value(t, hit_at(&a, &f, rows, 3), INSTALL_ROWS + 4)
+    testing.expect_value(t, hit_at(&a, f, rows, 2), INSTALL_ROWS + 3)
+    testing.expect_value(t, hit_at(&a, f, rows, 3), INSTALL_ROWS + 4)
 
     // The section title and the rule under it are chrome.
-    testing.expect_value(t, hit_at(&a, &f, rows, 0), -1)
-    testing.expect_value(t, hit_at(&a, &f, rows, 1), -1)
+    testing.expect_value(t, hit_at(&a, f, rows, 0), -1)
+    testing.expect_value(t, hit_at(&a, f, rows, 1), -1)
 
     // Below the last declared row, and off the pane entirely.
     clay.SetPointerState({f32(AREA.x + 30), f32(AREA.y + AREA.h + 20)}, false)
-    _ = app.config_layout(&a, &f, PANE, rows, 500, 300)
+    _ = app.config_layout(&a, f, PANE, rows, 500, 300)
     drawn := app.config_draw_rows(&a, rows, context.temp_allocator)
     testing.expect_value(t, ui.pane_hit(ui.CONFIG_IDS, drawn, cp.scroll, MAX_ROWS), -1)
 }

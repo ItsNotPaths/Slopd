@@ -115,12 +115,12 @@ test_grep_anchor :: proc(t: ^testing.T) {
 // GREP_ROW_PAD, not the filetree's: the panes are deliberately not the same density.
 @(test)
 test_grep_geom :: proc(t: ^testing.T) {
-    area, row_h, rows := app.grep_geom(PANE, 1, 16)
+    area, row_h, rows := app.grep_geom(PANE, 16)
     testing.expect_value(t, area, AREA)
     testing.expect_value(t, row_h, i32(ROW_H))
     testing.expect_value(t, rows, MAX_ROWS) // (196 - 21) / 21
 
-    _, _, none := app.grep_geom(gfx.Rect{}, 1, 16)
+    _, _, none := app.grep_geom(gfx.Rect{}, 16)
     testing.expect_value(t, none, 0)
 }
 
@@ -130,11 +130,12 @@ test_grep_geom :: proc(t: ^testing.T) {
 test_grep_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     a.scale = 1
+    a.face = clay_test_face()
     c0 := [?]string{"aa", "bb", "cc"}
     c1 := [?]string{"dd", "ee"}
     fixture(&a, c0[:], c1[:])
@@ -143,7 +144,7 @@ test_grep_command_list :: proc(t: ^testing.T) {
     a.grep.selected = 0
 
     rows := search.grep_rows(&a.grep, a.project_root, context.temp_allocator)
-    cmds := app.grep_layout(&a, &f, PANE, rows, 500, 300)
+    cmds := app.grep_layout(&a, f, PANE, rows, 500, 300)
 
     rects, borders, texts := 0, 0, 0
     scissor, border_box: gfx.Rect
@@ -215,39 +216,40 @@ test_grep_command_list :: proc(t: ^testing.T) {
 test_grep_hit_resolves_to_block :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     a.scale = 1
+    a.face = clay_test_face()
     c0 := [?]string{"aa", "bb", "cc"}
     c1 := [?]string{"dd", "ee"}
     fixture(&a, c0[:], c1[:])
     defer delete(a.grep.hits)
 
     rows := search.grep_rows(&a.grep, a.project_root, context.temp_allocator)
-    _ = app.grep_layout(&a, &f, PANE, rows, 500, 300) // frame 1: boxes to hit
+    _ = app.grep_layout(&a, f, PANE, rows, 500, 300) // frame 1: boxes to hit
 
     body_y :: AREA.y + ROW_H // the first display row
 
     // Row 3, the LAST context line of block 0, still resolves to block 0.
     clay.SetPointerState({f32(AREA.x + 50), f32(body_y + 3 * ROW_H + 4)}, false)
-    _ = app.grep_layout(&a, &f, PANE, rows, 500, 300)
+    _ = app.grep_layout(&a, f, PANE, rows, 500, 300)
     testing.expect_value(t, app.grep_hit(rows, 0, MAX_ROWS), 0)
 
     // Row 6, a context line of the second block, resolves to block 1.
     clay.SetPointerState({f32(AREA.x + 50), f32(body_y + 6 * ROW_H + 4)}, false)
-    _ = app.grep_layout(&a, &f, PANE, rows, 500, 300)
+    _ = app.grep_layout(&a, f, PANE, rows, 500, 300)
     testing.expect_value(t, app.grep_hit(rows, 0, MAX_ROWS), 1)
 
     // Row 4, the blank spacer, is dead space.
     clay.SetPointerState({f32(AREA.x + 50), f32(body_y + 4 * ROW_H + 4)}, false)
-    _ = app.grep_layout(&a, &f, PANE, rows, 500, 300)
+    _ = app.grep_layout(&a, f, PANE, rows, 500, 300)
     testing.expect_value(t, app.grep_hit(rows, 0, MAX_ROWS), -1)
 
     // The query header is not a row, and neither is anywhere off the pane.
     clay.SetPointerState({f32(AREA.x + 50), f32(AREA.y + 4)}, false)
-    _ = app.grep_layout(&a, &f, PANE, rows, 500, 300)
+    _ = app.grep_layout(&a, f, PANE, rows, 500, 300)
     testing.expect_value(t, app.grep_hit(rows, 0, MAX_ROWS), -1)
 }
 

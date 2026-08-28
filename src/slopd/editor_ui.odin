@@ -26,9 +26,9 @@ EDITOR_FOLD_HIT_CELLS :: 2
 
 // The buffer-dependent half (gutter, animated top) is editor_view. `rows` is at least 1 even
 // in a pane too short — the clip keeps an overflowing row inside, not the count.
-editor_geom :: proc(pane: gfx.Rect, scale: f32, line_h: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
-    area = ui.inset(pane, i32(2 * scale))
-    row_h = i32(line_h) + i32(EDITOR_ROW_PAD * scale)
+editor_geom :: proc(pane: gfx.Rect, line_h: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
+    area = ui.inset(pane, gfx.hairline(line_h))
+    row_h = i32(line_h) + gfx.pad(line_h, EDITOR_ROW_PAD)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {
         return area, row_h, 0
     }
@@ -90,10 +90,10 @@ Editor_View :: struct {
 //
 // `text_x` carries the horizontal offset already subtracted, so every column-to-pixel
 // conversion downstream stays `text_x + cw * col`.
-editor_view :: proc(b: ^edit.Buffer, f: ^gfx.Font, area: gfx.Rect, row_h: i32, rows: int, now: f64) -> Editor_View {
+editor_view :: proc(b: ^edit.Buffer, face: gfx.Face, area: gfx.Rect, row_h: i32, rows: int, now: f64) -> Editor_View {
     top, off := ui.smooth_scroll(&b.scroll_anim, b.scroll, now, row_h)
     gutter := editor_gutter_w(b)
-    hoff := ui.smooth_hscroll(&b.hscroll_anim, b.hscroll, now, f.cell_w)
+    hoff := ui.smooth_hscroll(&b.hscroll_anim, b.hscroll, now, face.cell_w)
     return Editor_View {
         area   = area,
         row_h  = row_h,
@@ -101,11 +101,11 @@ editor_view :: proc(b: ^edit.Buffer, f: ^gfx.Font, area: gfx.Rect, row_h: i32, r
         top    = top,
         off    = off,
         gutter = gutter,
-        text_x = editor_text_x(area.x, gutter, f.cell_w) - hoff,
-        cols   = editor_cols(area, gutter, f.cell_w),
+        text_x = editor_text_x(area.x, gutter, face.cell_w) - hoff,
+        cols   = editor_cols(area, gutter, face.cell_w),
         hoff   = hoff,
-        cw     = f.cell_w,
-        lh     = f.line_height,
+        cw     = face.cell_w,
+        lh     = face.line_height,
     }
 }
 
@@ -353,7 +353,7 @@ Editor_Body :: struct {
 // of the row grid in the tree for hit targets the surface already resolves.
 //   ed_pane    the content area inside the focus ring, clipping its own content
 //     ed_body    the text surface, as a Custom — the element editor_hit points at
-editor_declare :: proc(a: ^App, f: ^gfx.Font, pane: gfx.Rect, v: Editor_View, now: f64) {
+editor_declare :: proc(a: ^App, face: gfx.Face, pane: gfx.Rect, v: Editor_View, now: f64) {
     b := edit.editor_current(&a.editor)
     area := v.area
 
@@ -377,7 +377,7 @@ editor_declare :: proc(a: ^App, f: ^gfx.Font, pane: gfx.Rect, v: Editor_View, no
 // Gutter, coloured lines, current-line bar, selections, indent guides, whitespace, fold markers
 // and a caret per cursor. Positions come from `r`, the box the solver resolved, not v.area
 // (tests/editor_ui_test.odin pins the equality). Two scissored passes; see the split below.
-editor_paint_body :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
+editor_paint_body :: proc(t: ^gfx.Draw, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
     a := (^App)(host)
     e := (^Editor_Body)(user)
     if e == nil || e.b == nil {
@@ -386,8 +386,8 @@ editor_paint_body :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, ho
     b := e.b
     v := e.v
     th := &a.theme
-    cw := t.font.cell_w
-    lh := t.font.line_height
+    cw := gfx.face(t).cell_w
+    lh := gfx.face(t).line_height
     row_h := v.row_h
     edge := editor_text_x(r.x, v.gutter, cw) // gutter/text boundary, where the two clips meet
     text_x := edge - v.hoff // where column 0 actually lands
@@ -458,7 +458,7 @@ editor_paint_body :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, ho
             draw_indent_guides(t, b, line, text_x, y, row_h, cw, unit, th, scope)
         }
         if a.show_whitespace {
-            draw_whitespace(t, cells.runes, text_x, f32(y), row_h, cw, a.scale, th.whitespace)
+            draw_whitespace(t, cells.runes, text_x, f32(y), row_h, cw, lh, th.whitespace)
         }
 
         // Culled to the visible columns. The colour row is one entry per rune, so the same
@@ -475,7 +475,7 @@ editor_paint_body :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, ho
         }
 
         if edit.buffer_fold_index(b, line) >= 0 {
-            draw_fold_marker(t, text_x + cw * (f32(ncells) + 0.5), f32(y), lh, a.scale, th.accent)
+            draw_fold_marker(t, text_x + cw * (f32(ncells) + 0.5), f32(y), lh, th.accent)
         }
 
         if ui.caret_blink_on(ctx_of(a), e.now) {
@@ -483,7 +483,7 @@ editor_paint_body :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, ho
                 if c.head.line == line {
                     // Align with the glyph cell (ty), not the padded row top.
                     cx := text_x + cw * f32(txt.cells_col(cells, c.head.col))
-                    gfx.caret(t, gfx.Rect{i32(cx), i32(ty), i32(2 * a.scale), i32(lh)}, th.fg)
+                    gfx.caret(t, gfx.Rect{i32(cx), i32(ty), max(1, gfx.hairline(lh)), i32(lh)}, th.fg)
                 }
             }
         }
@@ -514,9 +514,9 @@ editor_paint_body :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, ho
 // Keeps the cursor visible on both axes — there is no soft wrap, so a long line is reached
 // sideways. Tabs advance one cell; proper tab width is a TODO, and it is the one thing that
 // would stop a column being a rune index. See editor_view for why the view is built twice.
-editor_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect, now: f64) {
+editor_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect, now: f64) {
     b := edit.editor_current(&a.editor)
-    area, row_h, rows := editor_geom(pane, a.scale, t.font.line_height)
+    area, row_h, rows := editor_geom(pane, gfx.face(t).line_height)
     if area.w <= 0 || area.h <= 0 {
         return
     }
@@ -524,7 +524,7 @@ editor_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect, now: f64) {
 
     // The pointer is over what the LAST frame painted, so the click resolves against a view
     // built before this frame's scroll policy runs.
-    v := editor_view(b, &t.font, area, row_h, rows, now)
+    v := editor_view(b, gfx.face(t), area, row_h, rows, now)
     editor_click(a, editor_hit(a, b, v), now)
     editor_drag(a, b, v, now) // extend a capture the press already made
 
@@ -533,15 +533,15 @@ editor_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect, now: f64) {
     // the page settled on (buffer_hscroll_apply).
     edit.buffer_scroll_apply(b, rows, a.scroll_mode == .Middle, a.last_input_at)
     edit.buffer_hscroll_apply(b, v.cols, editor_longest_visible(b, b.scroll, rows + 2), a.last_input_at)
-    v = editor_view(b, &t.font, area, row_h, rows, now)
+    v = editor_view(b, gfx.face(t), area, row_h, rows, now)
 
-    editor_declare(a, &t.font, pane, v, now)
+    editor_declare(a, gfx.face(t), pane, v, now)
 }
 
 // Test-facing wrapper; see filetree_layout.
 editor_layout :: proc(
     a: ^App,
-    f: ^gfx.Font,
+    face: gfx.Face,
     pane: gfx.Rect,
     win_w, win_h: i32,
     v: Editor_View,
@@ -549,7 +549,7 @@ editor_layout :: proc(
 ) -> clay.ClayArray(clay.RenderCommand) {
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        editor_declare(a, f, pane, v, now)
+        editor_declare(a, face, pane, v, now)
     }
     return clay.EndLayout(0)
 }
@@ -559,7 +559,7 @@ editor_layout :: proc(
 // A thin rail at each indent level the line sits at; the cursor's enclosing scope is drawn in
 // the active colour.
 @(private = "file")
-draw_indent_guides :: proc(t: ^gfx.Text, b: ^edit.Buffer, line: int, text_x: f32, y, row_h: i32, cw: f32, unit: int, th: ^gfx.Theme, scope: edit.Scope) {
+draw_indent_guides :: proc(t: ^gfx.Draw, b: ^edit.Buffer, line: int, text_x: f32, y, row_h: i32, cw: f32, unit: int, th: ^gfx.Theme, scope: edit.Scope) {
     levels := edit.buffer_indent_levels(b, line, unit)
     gw := max(i32(1), i32(cw) / 16) // hairline, ~1px
     aw := gw * 2 // the active rail is thicker so it reads as the focus
@@ -578,7 +578,7 @@ draw_indent_guides :: proc(t: ^gfx.Text, b: ^edit.Buffer, line: int, text_x: f32
 // bar. The list is in line order, so the row's first hit comes from a binary search — a common
 // word in a large file is thousands of matches and only this line's can be drawn.
 @(private = "file")
-draw_find_marks :: proc(t: ^gfx.Text, f: ^Find, line: int, cells: txt.Cells, text_x: f32, y, row_h: i32, cw: f32, th: ^gfx.Theme) {
+draw_find_marks :: proc(t: ^gfx.Draw, f: ^Find, line: int, cells: txt.Cells, text_x: f32, y, row_h: i32, cw: f32, th: ^gfx.Theme) {
     if !f.show {
         return
     }
@@ -598,19 +598,19 @@ draw_find_marks :: proc(t: ^gfx.Text, f: ^Find, line: int, cells: txt.Cells, tex
 // Over a line's LEADING indentation only: a centred dot per space, a short stroke per tab.
 // y is the row top; row_h the padded row height.
 @(private = "file")
-draw_whitespace :: proc(t: ^gfx.Text, runes: []rune, text_x, y: f32, row_h: i32, cw, scale: f32, color: [3]f32) {
+draw_whitespace :: proc(t: ^gfx.Draw, runes: []rune, text_x, y: f32, row_h: i32, cw, line_h: f32, color: [3]f32) {
     for r, col in runes {
         if r != ' ' && r != '\t' {
             break
         }
         cx := text_x + cw * f32(col)
         if r == ' ' {
-            d := max(i32(2), i32(2 * scale))
+            d := max(1, gfx.hairline(line_h))
             dx := i32(cx + (cw - f32(d)) / 2)
             dy := i32(y) + (row_h - d) / 2
             gfx.fill(t, gfx.Rect{dx, dy, d, d}, color)
         } else { // tab: a short centred stroke
-            h := max(i32(1), i32(scale))
+            h := max(1, gfx.hairline(line_h))
             sx := i32(cx + cw * 0.2)
             sy := i32(y) + (row_h - h) / 2
             gfx.fill(t, gfx.Rect{sx, sy, i32(cw * 0.6), h}, color)
@@ -620,11 +620,11 @@ draw_whitespace :: proc(t: ^gfx.Text, runes: []rune, text_x, y: f32, row_h: i32,
 
 // Three dots trailing a folded header line.
 @(private = "file")
-draw_fold_marker :: proc(t: ^gfx.Text, x, y, lh: f32, scale: f32, color: [3]f32) {
-    d := max(i32(2), i32(2 * scale))
+draw_fold_marker :: proc(t: ^gfx.Draw, x, y, lh: f32, color: [3]f32) {
+    d := max(1, gfx.hairline(lh))
     cy := i32(y + lh / 2) - d / 2
     for k in 0 ..< 3 {
-        dx := i32(x + f32(k) * (f32(d) + 2 * scale))
+        dx := i32(x + f32(k) * f32(d + gfx.hairline(lh)))
         gfx.fill(t, gfx.Rect{dx, cy, d, d}, color)
     }
 }
@@ -632,12 +632,12 @@ draw_fold_marker :: proc(t: ^gfx.Text, x, y, lh: f32, scale: f32, color: [3]f32)
 // Runs of one colour each; monospace makes each run's x pure arithmetic. A mismatched colour
 // count falls back to a single plain draw.
 @(private = "file")
-draw_runes_colored :: proc(t: ^gfx.Text, runes: []rune, colors: Row_Colors, x, y: f32, fallback: [3]f32) {
+draw_runes_colored :: proc(t: ^gfx.Draw, runes: []rune, colors: Row_Colors, x, y: f32, fallback: [3]f32) {
     if len(colors) != len(runes) {
         gfx.text_draw_runes(t, runes, x, y, fallback)
         return
     }
-    cw := t.font.cell_w
+    cw := gfx.face(t).cell_w
     for i := 0; i < len(runes); {
         j := i + 1
         for j < len(runes) && colors[j] == colors[i] {

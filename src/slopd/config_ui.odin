@@ -23,13 +23,13 @@ CONFIG_ROW_PAD :: 2
 // reserved for a header: the first row is already a section rule.
 config_geom :: proc(
     pane: gfx.Rect,
-    scale, line_h, cell_w: f32,
+    line_h, cell_w: f32,
 ) -> (
     area: gfx.Rect,
     row_h: i32,
     rows, cols: int,
 ) {
-    return ui.list_geom(pane, scale, line_h, cell_w, CONFIG_ROW_PAD)
+    return ui.list_geom(pane, line_h, cell_w)
 }
 
 // The widest setting key plus ": ". Every value and inline editor starts here, so the value
@@ -174,11 +174,11 @@ config_draw_rows :: proc(
     return out
 }
 
-config_declare :: proc(u: ui.UI_Ctx, cp: ^ConfigPane, f: ^gfx.Font, pane: gfx.Rect, rows: []ui.Pane_Row, now: f64 = 0) {
-    area, row_h, max_rows, _ := config_geom(pane, u.scale, f.line_height, f.cell_w)
+config_declare :: proc(u: ui.UI_Ctx, cp: ^ConfigPane, face: gfx.Face, pane: gfx.Rect, rows: []ui.Pane_Row, now: f64 = 0) {
+    area, row_h, max_rows, _ := config_geom(pane, face.line_height, face.cell_w)
     ui.pane_declare(
         u,
-        f,
+        face,
         {
             ids = ui.CONFIG_IDS,
             area = area,
@@ -196,9 +196,9 @@ config_declare :: proc(u: ui.UI_Ctx, cp: ^ConfigPane, f: ^gfx.Font, pane: gfx.Re
 // A "settings" block of key: value rows, then a "syntax" block listing each language's grammar
 // status with its install-options dropdown nested under an opened row. The search row filters
 // that list live.
-config_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect, now: f64) {
+config_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect, now: f64) {
     u := ctx_of(a)
-    area, _, max_rows, cols := config_geom(pane, u.scale, t.font.line_height, t.font.cell_w)
+    area, _, max_rows, cols := config_geom(pane, gfx.face(t).line_height, gfx.face(t).cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }
@@ -223,13 +223,13 @@ config_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect, now: f64) {
     drawn = config_draw_rows(a, rows, context.temp_allocator)
     center := u.scroll_mode == .Middle
     config_scroll_apply(cp, ui.pane_anchor(drawn), max_rows, len(drawn), center, ui.pane_input_at(u))
-    config_declare(u, cp, &t.font, pane, drawn, now)
+    config_declare(u, cp, gfx.face(t), pane, drawn, now)
 }
 
 // Test-facing wrapper; see filetree_layout.
 config_layout :: proc(
     a: ^App,
-    f: ^gfx.Font,
+    face: gfx.Face,
     pane: gfx.Rect,
     rows: []ConfigRow,
     win_w, win_h: i32,
@@ -238,7 +238,7 @@ config_layout :: proc(
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
         drawn := config_draw_rows(a, rows, context.temp_allocator)
-        config_declare(ctx_of(a), &a.config_pane, f, pane, drawn, now)
+        config_declare(ctx_of(a), &a.config_pane, face, pane, drawn, now)
     }
     return clay.EndLayout(0)
 }

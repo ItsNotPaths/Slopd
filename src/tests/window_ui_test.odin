@@ -36,18 +36,19 @@ FT_ROW_H :: 18
 // Into ONE tree, in window_frame's order. The declarations are the app's own procs; only the
 // pair of calls is written out, which is what window_frame's aux_mode switch does.
 @(private = "file")
-two_panes :: proc(a: ^app.App, f: ^gfx.Font, v: app.Editor_View) {
+two_panes :: proc(a: ^app.App, face: gfx.Face, v: app.Editor_View) {
     app.clay_window_begin(WIN_W, WIN_H)
     if clay.UI(clay.ID(app.WIN_ROOT))(app.clay_window_root(WIN_W, WIN_H)) {
-        app.editor_declare(a, f, ED_PANE, v, 0)
-        app.filetree_declare(app.ctx_of(a), a, f, AUX_PANE, a.tree.scroll, 0, 0)
+        app.editor_declare(a, face, ED_PANE, v, 0)
+        app.filetree_declare(app.ctx_of(a), a, face, AUX_PANE, a.tree.scroll, 0, 0)
     }
 }
 
 @(private = "file")
-fixture :: proc(a: ^app.App, f: ^gfx.Font) -> app.Editor_View {
+fixture :: proc(a: ^app.App, face: gfx.Face) -> app.Editor_View {
     edit.editor_init(&a.editor)
     a.scale = 1
+    a.face = clay_test_face()
     a.mouse_on = true
     a.mouse.known = true
     edit.buffer_set_text(edit.editor_current(&a.editor), "alpha\nbravo\ncharlie")
@@ -57,8 +58,8 @@ fixture :: proc(a: ^app.App, f: ^gfx.Font) -> app.Editor_View {
         append(&a.tree.entries, app.FileEntry{name = "e", path = "/tmp/ft/e", display = "e"})
     }
 
-    area, row_h, rows := app.editor_geom(ED_PANE, 1, f.line_height)
-    return app.editor_view(edit.editor_current(&a.editor), f, area, row_h, rows, 0)
+    area, row_h, rows := app.editor_geom(ED_PANE, face.line_height)
+    return app.editor_view(edit.editor_current(&a.editor), face, area, row_h, rows, 0)
 }
 
 @(private = "file")
@@ -74,14 +75,14 @@ teardown :: proc(a: ^app.App) {
 test_window_places_both_panes :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
-    v := fixture(&a, &f)
+    v := fixture(&a, f)
     defer teardown(&a)
 
-    two_panes(&a, &f, v)
+    two_panes(&a, f, v)
     cmds := clay.EndLayout(0)
 
     ed_clip, aux_clip: gfx.Rect
@@ -119,14 +120,14 @@ test_window_places_both_panes :: proc(t: ^testing.T) {
 test_window_pane_clips_do_not_interleave :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
-    v := fixture(&a, &f)
+    v := fixture(&a, f)
     defer teardown(&a)
 
-    two_panes(&a, &f, v)
+    two_panes(&a, f, v)
     cmds := clay.EndLayout(0)
 
     depth := 0
@@ -155,20 +156,20 @@ test_window_pane_clips_do_not_interleave :: proc(t: ^testing.T) {
 test_window_one_tree_answers_for_every_pane :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
-    v := fixture(&a, &f)
+    v := fixture(&a, f)
     defer teardown(&a)
 
-    two_panes(&a, &f, v) // frame 1: boxes to hit-test against
+    two_panes(&a, f, v) // frame 1: boxes to hit-test against
     _ = clay.EndLayout(0)
 
     // Over the editor's second text row. The aux pane is declared AFTER the editor, which is
     // exactly the arrangement that used to make this `false`.
     clay.SetPointerState({100, f32(ED_AREA.y + 20)}, false)
-    two_panes(&a, &f, v)
+    two_panes(&a, f, v)
     _ = clay.EndLayout(0)
     testing.expect(t, clay.PointerOver(clay.ID("ed_pane")), "the editor cannot see its own pane")
     testing.expect(t, clay.PointerOver(clay.ID("ed_body")), "the editor cannot see its own body")
@@ -177,7 +178,7 @@ test_window_one_tree_answers_for_every_pane :: proc(t: ^testing.T) {
     // The filetree's third entry row. The list panes were always right about this; what is new
     // is that they are right for a reason rather than by draw order.
     clay.SetPointerState({f32(AUX_AREA.x + 20), f32(AUX_AREA.y + 2 * FT_ROW_H + 4)}, false)
-    two_panes(&a, &f, v)
+    two_panes(&a, f, v)
     _ = clay.EndLayout(0)
     testing.expect(t, clay.PointerOver(clay.ID("ft_row", 1)), "the filetree lost its own row")
     testing.expect(t, !clay.PointerOver(clay.ID("ft_row", 0)), "the hit spilled onto the row above")
@@ -185,7 +186,7 @@ test_window_one_tree_answers_for_every_pane :: proc(t: ^testing.T) {
 
     // The gutter belongs to neither, and a pane that captured the pointer would swallow it.
     clay.SetPointerState({f32(ED_AREA.x + ED_AREA.w + 1), 100}, false)
-    two_panes(&a, &f, v)
+    two_panes(&a, f, v)
     _ = clay.EndLayout(0)
     testing.expect(t, !clay.PointerOver(clay.ID("ed_pane")), "the editor claimed the gutter")
     testing.expect(t, !clay.PointerOver(clay.ID("ft_pane")), "the aux pane claimed the gutter")

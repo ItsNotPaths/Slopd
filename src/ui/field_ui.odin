@@ -171,14 +171,14 @@ field_span :: proc(d: ^txt.Doc) -> (lo, hi: txt.Pos) {
 
 
 // Per-cursor selection spans under the runes and carets over them. Only the window is drawn.
-field_paint :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
+field_paint :: proc(t: ^gfx.Draw, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
     e := (^Field)(user)
     if e == nil || e.doc == nil || txt.doc_line_count(e.doc) == 0 {
         return
     }
     th := e.ui.theme
-    cw := t.font.cell_w
-    lh := t.font.line_height
+    cw := gfx.face(t).cell_w
+    lh := gfx.face(t).line_height
     ex := f32(r.x)
     ty := f32(r.y) + (f32(r.h) - lh) / 2
     y := i32(ty) // selection and caret share the glyph cell's top
@@ -210,7 +210,7 @@ field_paint :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: ra
     if e.caret && caret_blink_on(e.ui, e.now) {
         for c in e.doc.cursors {
             cx := ex + cw * f32(field_col(off, clamp(txt.cells_col(cells, c.head.col), off, hi)))
-            gfx.caret(t, gfx.Rect{i32(cx), y, i32(2 * e.ui.scale), i32(lh)}, th.fg)
+            gfx.caret(t, gfx.Rect{i32(cx), y, max(1, gfx.hairline(lh)), i32(lh)}, th.fg)
         }
     }
     // The ClayCustom contract: the painter ends with its own flush.

@@ -37,6 +37,7 @@ PAD :: 8
 fixture :: proc(a: ^app.App, text: string) {
     edit.editor_init(&a.editor)
     a.scale = 1
+    a.face = clay_test_face()
     a.focus = .Editor
     a.project_root = "/zz/proj" // no $HOME prefix, so home_abbrev leaves it alone
     app.cl_init(&a.cl)
@@ -100,14 +101,14 @@ test_strip_mode :: proc(t: ^testing.T) {
 test_strip_status_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fixture(&a, "alpha\nbravo")
     defer teardown(&a)
 
-    cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
+    cmds := app.strip_layout(&a, f, STRIP, WIN_W, WIN_H)
 
     // Left: the modified marker, a space, then the name.
     left := text_box(&cmds, "  untitled")
@@ -159,8 +160,8 @@ test_strip_status_command_list :: proc(t: ^testing.T) {
 test_strip_labels_are_anchored_not_a_row :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fixture(&a, "alpha\nbravo")
@@ -169,7 +170,7 @@ test_strip_labels_are_anchored_not_a_row :: proc(t: ^testing.T) {
     // A file name far wider than its share: 45 characters in a 50-cell window.
     b := edit.editor_current(&a.editor)
     b.path = strings.clone("/tmp/a-very-long-file-name-that-eats-the-strip.odin") // owned
-    cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
+    cmds := app.strip_layout(&a, f, STRIP, WIN_W, WIN_H)
 
     left := text_box(&cmds, "  a-very-long-file-name-that-eats-the-strip.odin")
     right := text_box(&cmds, "odin   L1:1   2 lines   Top")
@@ -190,8 +191,8 @@ test_strip_labels_are_anchored_not_a_row :: proc(t: ^testing.T) {
 test_strip_command_line_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fixture(&a, "alpha")
@@ -199,7 +200,7 @@ test_strip_command_line_command_list :: proc(t: ^testing.T) {
     a.cl_active = true
     txt.doc_set_text(&a.cl.doc, ":reload")
 
-    cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
+    cmds := app.strip_layout(&a, f, STRIP, WIN_W, WIN_H)
 
     testing.expect_value(t, text_box(&cmds, "> "), gfx.Rect{PAD, TEXT_Y, 20, 16})
 
@@ -219,7 +220,7 @@ test_strip_command_line_command_list :: proc(t: ^testing.T) {
 
     // An argument makes the hint go away, so the field grows into its space.
     txt.doc_set_text(&a.cl.doc, ":reload y")
-    cmds2 := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
+    cmds2 := app.strip_layout(&a, f, STRIP, WIN_W, WIN_H)
     testing.expect_value(t, text_box(&cmds2, "(y/n)"), gfx.Rect{})
 }
 
@@ -230,8 +231,8 @@ test_strip_command_line_command_list :: proc(t: ^testing.T) {
 test_strip_injected_ring :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fixture(&a, "alpha")
@@ -240,7 +241,7 @@ test_strip_injected_ring :: proc(t: ^testing.T) {
     app.cl_inject(&a, ":reload ")
     testing.expect(t, a.cl.injected, "cl_inject did not stage the line")
 
-    cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
+    cmds := app.strip_layout(&a, f, STRIP, WIN_W, WIN_H)
     ring := false
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
@@ -254,7 +255,7 @@ test_strip_injected_ring :: proc(t: ^testing.T) {
     testing.expect(t, ring, "a pristine injected line drew no ring")
 
     txt.doc_insert_rune(&a.cl.doc, 'y')
-    cmds2 := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
+    cmds2 := app.strip_layout(&a, f, STRIP, WIN_W, WIN_H)
     testing.expect_value(t, count_of(&cmds2, .Border), 0)
 }
 
@@ -264,8 +265,8 @@ test_strip_injected_ring :: proc(t: ^testing.T) {
 test_strip_conflict_marks_the_modeline :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fixture(&a, "alpha")
@@ -274,11 +275,11 @@ test_strip_conflict_marks_the_modeline :: proc(t: ^testing.T) {
     b.path = strings.clone("/tmp/x.odin") // owned
     b.dirty = true
 
-    cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
+    cmds := app.strip_layout(&a, f, STRIP, WIN_W, WIN_H)
     testing.expect_value(t, text_box(&cmds, "* x.odin"), gfx.Rect{PAD, TEXT_Y, 80, 16})
 
     b.conflict = true
-    cmds2 := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
+    cmds2 := app.strip_layout(&a, f, STRIP, WIN_W, WIN_H)
     testing.expect_value(t, text_box(&cmds2, "! x.odin"), gfx.Rect{PAD, TEXT_Y, 80, 16})
     testing.expect_value(t, text_box(&cmds2, "* x.odin"), gfx.Rect{}) // one marker, not two
     testing.expect_value(t, count_of(&cmds2, .Border), 0) // no ring: nothing wants an answer
@@ -290,8 +291,8 @@ test_strip_conflict_marks_the_modeline :: proc(t: ^testing.T) {
 test_strip_status_without_an_editor :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fixture(&a, "alpha")
@@ -300,7 +301,7 @@ test_strip_status_without_an_editor :: proc(t: ^testing.T) {
     a.focus = .Aux
     a.aux_mode = .Config
 
-    cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
+    cmds := app.strip_layout(&a, f, STRIP, WIN_W, WIN_H)
     testing.expect_value(t, text_box(&cmds, "config"), gfx.Rect{PAD, TEXT_Y, 60, 16})
     testing.expect_value(t, text_box(&cmds, "/zz/proj"), gfx.Rect{}) // no document, no root
     testing.expect_value(t, count_of(&cmds, .Text), 1)
@@ -311,13 +312,13 @@ test_strip_status_without_an_editor :: proc(t: ^testing.T) {
 test_strip_degenerate :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fixture(&a, "alpha")
     defer teardown(&a)
 
-    cmds := app.strip_layout(&a, &f, gfx.Rect{0, 300, 500, 0}, WIN_W, WIN_H)
+    cmds := app.strip_layout(&a, f, gfx.Rect{0, 300, 500, 0}, WIN_W, WIN_H)
     testing.expect_value(t, cmds.length, i32(0))
 }

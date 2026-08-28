@@ -58,6 +58,7 @@ feed :: proc(term: ^pty.Terminal, s: string) {
 @(private = "file")
 fake_app :: proc(a: ^app.App) {
     a.scale = 1
+    a.face = clay_test_face()
     a.mouse_on = true
     a.mouse.known = true
     a.aux_mode = .Terminal
@@ -125,7 +126,7 @@ tui_wants_mouse :: proc(term: ^pty.Terminal, sk: ^Sink, mode := "1000") {
 
 @(test)
 test_terminal_geom :: proc(t: ^testing.T) {
-    area, row_h, cols, rows := app.terminal_geom(PANE, 1, 16, 10)
+    area, row_h, cols, rows := app.terminal_geom(PANE, 16, 10)
     testing.expect_value(t, area, AREA) // inside the 2px focus ring
     testing.expect_value(t, row_h, i32(ROW_H)) // no padding: a row IS the line height
     testing.expect_value(t, cols, COLS) // 296 / 10, floored
@@ -133,12 +134,12 @@ test_terminal_geom :: proc(t: ^testing.T) {
 
     // A hidden pane is a zero rect and must report NO grid, not one row the way the list panes
     // round up: this number goes to a child process through TIOCSWINSZ.
-    _, _, ncols, nrows := app.terminal_geom(gfx.Rect{}, 1, 16, 10)
+    _, _, ncols, nrows := app.terminal_geom(gfx.Rect{}, 16, 10)
     testing.expect_value(t, ncols, 0)
     testing.expect_value(t, nrows, 0)
 
     // DPI scale reaches the inset and the row height both.
-    area2, row_h2, cols2, rows2 := app.terminal_geom(PANE, 2, 32, 20)
+    area2, row_h2, cols2, rows2 := app.terminal_geom(PANE, 32, 20)
     testing.expect_value(t, area2, gfx.Rect{104, 54, 292, 192})
     testing.expect_value(t, row_h2, i32(32))
     testing.expect_value(t, cols2, 14) // 292 / 20
@@ -245,17 +246,17 @@ test_terminal_hit_scrollback_is_not_live :: proc(t: ^testing.T) {
 test_terminal_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fake_app(&a)
     term := mkterm()
     defer killterm(term)
 
-    area, row_h, cols, rows := app.terminal_geom(PANE, 1, f.line_height, f.cell_w)
+    area, row_h, cols, rows := app.terminal_geom(PANE, f.line_height, f.cell_w)
     v := app.terminal_view(term, area, row_h, f.cell_w, cols, rows)
-    cmds := app.terminal_layout(&a, &f, term, 500, 300, v)
+    cmds := app.terminal_layout(&a, f, term, 500, 300, v)
 
     customs, others, scissors := 0, 0, 0
     box, clip: gfx.Rect

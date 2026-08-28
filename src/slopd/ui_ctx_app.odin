@@ -11,7 +11,7 @@ ctx_of :: proc(a: ^App) -> ui.UI_Ctx {
         drag          = &a.drag,
         focus         = a.focus,
         scroll_mode   = a.scroll_mode,
-        scale         = a.scale,
+        face          = a.face,
         mouse_on      = a.mouse_on,
         hover_on      = a.hover_on,
         blink_base    = &a.blink_base,

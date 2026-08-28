@@ -51,6 +51,13 @@ Pane_Vis :: struct {
 }
 
 App :: struct {
+    // The live backend, borrowed from main. Product code that must reach the paint target
+    // outside a frame goes through this — loading an image is the only such path today. Nil
+    // until the backend is up, which is before anything can open a file.
+    draw:     ^gfx.Draw,
+    // The backend's face for this frame, refreshed by render. Every pane reaches it through
+    // UI_Ctx, so no declare has to know which backend is up to size itself.
+    face:     gfx.Face,
     view:     View, // pane arrangement (Split / Zen / Full)
     aux_mode: AuxMode,
     focus:    ui.Focus,
@@ -260,7 +267,7 @@ view_refresh :: proc(a: ^App) {
             }
         }
     case .Image:
-        media_reload_if_changed(&a.media)
+        media_reload_if_changed(a.draw, &a.media)
     }
 }
 
@@ -299,7 +306,7 @@ view_toggle_zen :: proc(a: ^App) {
     set_focus(a, .Editor) // so zen collapses to full-width at once
 }
 
-// `:full` / `:fm`, keeping the current surface so the toggle never loses your place.
+// `:full` / `:face`, keeping the current surface so the toggle never loses your place.
 view_toggle_full :: proc(a: ^App) {
     a.view = a.view == .Full ? .Split : .Full
     set_focus(a, a.focus)
@@ -377,7 +384,7 @@ font_zoom_ratio :: proc(a: ^App) -> f32 {
 app_destroy :: proc(a: ^App) {
     term_destroy_all(a) // kill child shells and join readers before GLFW shuts down
     grep_worker_stop(&a.grep_worker)
-    media_destroy(&a.media)
+    media_destroy(a.draw, &a.media)
     cl_chain_clear(a)
     cl_destroy(a)
     cl_preview_destroy(a)

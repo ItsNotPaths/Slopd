@@ -17,9 +17,9 @@ import "../search"
 GREP_ROW_PAD :: 5
 
 // filetree_geom's twin: content area, row height, and display rows under the header.
-grep_geom :: proc(pane: gfx.Rect, scale: f32, line_h: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
-    area = ui.inset(pane, i32(2 * scale))
-    row_h = i32(line_h) + i32(GREP_ROW_PAD * scale)
+grep_geom :: proc(pane: gfx.Rect, line_h: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
+    area = ui.inset(pane, gfx.hairline(line_h))
+    row_h = i32(line_h) + gfx.pad(line_h, GREP_ROW_PAD)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {
         return area, row_h, 0
     }
@@ -76,12 +76,12 @@ grep_click :: proc(a: ^App, hit: int) {
 //       gp_empty            the "(no matches)" placeholder
 //       gp_row/i            one per visible DISPLAY row, keyed by row index
 //         gp_gut/i            the right-aligned line-number gutter (context rows only)
-grep_declare :: proc(u: ui.UI_Ctx, g: ^search.GrepPane, f: ^gfx.Font, pane: gfx.Rect, rows: []search.GrepRow) {
+grep_declare :: proc(u: ui.UI_Ctx, g: ^search.GrepPane, face: gfx.Face, pane: gfx.Rect, rows: []search.GrepRow) {
     th := u.theme
-    area, row_h, max_rows := grep_geom(pane, u.scale, f.line_height)
-    cw := f.cell_w
-    lh := i32(f.line_height)
-    rail := u16(2 * u.scale)
+    area, row_h, max_rows := grep_geom(pane, face.line_height)
+    cw := face.cell_w
+    lh := i32(face.line_height)
+    rail := u16(gfx.hairline(u.face.line_height))
     gutw := search.grep_gutter_w(rows)
 
     first := clamp(g.scroll, 0, max(0, len(rows)))
@@ -193,9 +193,9 @@ grep_declare :: proc(u: ui.UI_Ctx, g: ^search.GrepPane, f: ^gfx.Font, pane: gfx.
 // A header naming the query and hit count, then each hit as a context block: a
 // project-relative "path:line" title over the lines around the match, blocks parted by a
 // blank row.
-grep_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect) {
+grep_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect) {
     u := ctx_of(a)
-    area, _, max_rows := grep_geom(pane, u.scale, t.font.line_height)
+    area, _, max_rows := grep_geom(pane, gfx.face(t).line_height)
     if area.w <= 0 || area.h <= 0 {
         return
     }
@@ -209,20 +209,20 @@ grep_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect) {
     grep_click(a, hit)
     grep_scroll_apply(g, search.grep_anchor(rows, g.selected), max_rows, len(rows), u.scroll_mode == .Middle, ui.pane_input_at(u))
 
-    grep_declare(u, g, &t.font, pane, rows)
+    grep_declare(u, g, gfx.face(t), pane, rows)
 }
 
 // Test-facing wrapper; see filetree_layout.
 grep_layout :: proc(
     a: ^App,
-    f: ^gfx.Font,
+    face: gfx.Face,
     pane: gfx.Rect,
     rows: []search.GrepRow,
     win_w, win_h: i32,
 ) -> clay.ClayArray(clay.RenderCommand) {
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        grep_declare(ctx_of(a), &a.grep, f, pane, rows)
+        grep_declare(ctx_of(a), &a.grep, face, pane, rows)
     }
     return clay.EndLayout(0)
 }

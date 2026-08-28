@@ -873,7 +873,7 @@ test_cl_parse_bare_sigil_is_nothing :: proc(t: ^testing.T) {
 // a missing case here would have quietly run THAT instead of rearranging the panes.
 @(test)
 test_cl_view_commands_are_builtins :: proc(t: ^testing.T) {
-    for name in ([]string{"zen", "zm", "full", "fm", "normal", "nm"}) {
+    for name in ([]string{"zen", "zm", "full", "face", "normal", "nm"}) {
         a: app.App
         fake_sessions(&a, 1) // an unrecognised name would echo into t1; never spawn one
         defer {app.cl_chain_clear(&a);free_sessions(&a)}

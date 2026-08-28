@@ -11,17 +11,20 @@ import "../gfx"
 // only it knows and must carry no selection, which a click changes mid-frame. Once the selection
 // has settled they convert to Pane_Row, the drawable view.
 
+// Every list pane agrees on this, so a row is the same height whichever one is up.
+LIST_ROW_PAD :: 2
+
 // What every phase of a pane's frame sizes itself from.
 list_geom :: proc(
     pane: gfx.Rect,
-    scale, line_h, cell_w, pad: f32,
+    line_h, cell_w: f32,
 ) -> (
     area: gfx.Rect,
     row_h: i32,
     rows, cols: int,
 ) {
-    area = inset(pane, i32(2 * scale))
-    row_h = i32(line_h) + i32(pad * scale)
+    area = inset(pane, gfx.hairline(line_h))
+    row_h = i32(line_h) + gfx.hairline(line_h)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 || cell_w <= 0 {
         return area, row_h, 0, 0
     }
@@ -100,10 +103,10 @@ pane_anchor :: proc(rows: []Pane_Row) -> int {
 //         <p>_edit/i   a text field's Custom, where the row carries one
 //
 // No backgroundColor: panel() filled the pane, so every fill here means something.
-pane_declare :: proc(u: UI_Ctx, f: ^gfx.Font, d: Pane_Draw, rows: []Pane_Row) {
+pane_declare :: proc(u: UI_Ctx, face: gfx.Face, d: Pane_Draw, rows: []Pane_Row) {
     th := u.theme
-    cw := f.cell_w
-    lh := i32(f.line_height)
+    cw := face.cell_w
+    lh := i32(face.line_height)
     first := clamp(d.scroll, 0, max(0, len(rows)))
     visible := max(0, min(len(rows) - first, d.max_rows))
 

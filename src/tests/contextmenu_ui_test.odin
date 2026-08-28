@@ -27,6 +27,7 @@ MENU :: gfx.Rect{10, 10, 136, 65}
 @(private = "file")
 menu_app :: proc(a: ^app.App, x: i32 = 10, y: i32 = 10) {
     a.scale = 1
+    a.face = clay_test_face()
     a.mouse_on = true
     app.ctxmenu_open(a, .FileOps, ITEMS[:], x, y, {"/tmp", .Dir})
 }
@@ -37,21 +38,21 @@ menu_app :: proc(a: ^app.App, x: i32 = 10, y: i32 = 10) {
 test_ctxmenu_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     menu_app(&a)
     defer app.ctxmenu_destroy(&a)
 
-    rect, row_h, sep_h, pad := app.ctxmenu_geom(&a.ctxmenu, 1, 16, 10, 600, 300)
+    rect, row_h, sep_h, pad := app.ctxmenu_geom(&a.ctxmenu, 16, 10, 600, 300)
     testing.expect_value(t, rect, MENU)
     testing.expect_value(t, row_h, i32(20))
     testing.expect_value(t, sep_h, i32(5))
     testing.expect_value(t, pad, u16(8))
     testing.expect_value(t, ui.ctxmenu_width_cells(&a.ctxmenu), 12) // "Open" + 3 + "Enter"
 
-    cmds := app.ctxmenu_layout(&a, &f, 600, 300)
+    cmds := app.ctxmenu_layout(&a, f, 600, 300)
 
     box, ok := box_of(&cmds, clay.ID("cm_pane"), .Rectangle)
     testing.expect(t, ok, "the popup drew no background — it is not inside a panel()")
@@ -98,8 +99,8 @@ test_ctxmenu_command_list :: proc(t: ^testing.T) {
 test_ctxmenu_paints_over_a_pane :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     menu_app(&a, 100, 100)
@@ -113,8 +114,8 @@ test_ctxmenu_paints_over_a_pane :: proc(t: ^testing.T) {
     // A pane and the popup in one tree, in window_frame's order.
     app.clay_window_begin(600, 300)
     if clay.UI(clay.ID(app.WIN_ROOT))(app.clay_window_root(600, 300)) {
-        app.filetree_declare(app.ctx_of(&a), &a, &f, gfx.Rect{0, 0, 300, 300}, 0, 0)
-        app.ctxmenu_declare(app.ctx_of(&a), &a.ctxmenu, &f, 600, 300)
+        app.filetree_declare(app.ctx_of(&a), &a, f, gfx.Rect{0, 0, 300, 300}, 0, 0)
+        app.ctxmenu_declare(app.ctx_of(&a), &a.ctxmenu, f, 600, 300)
     }
     cmds := clay.EndLayout(0)
 
@@ -161,22 +162,22 @@ test_ctxmenu_paints_over_a_pane :: proc(t: ^testing.T) {
 test_ctxmenu_hit_and_click :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     menu_app(&a)
     defer app.ctxmenu_destroy(&a)
     a.ctxmenu.rect = MENU
 
-    _ = app.ctxmenu_layout(&a, &f, 600, 300) // frame 1: boxes for the pointer
+    _ = app.ctxmenu_layout(&a, f, 600, 300) // frame 1: boxes for the pointer
     clay.SetPointerState({50, 45}, false) // the third row
-    _ = app.ctxmenu_layout(&a, &f, 600, 300)
+    _ = app.ctxmenu_layout(&a, f, 600, 300)
     testing.expect_value(t, app.ctxmenu_hit(&a.ctxmenu), 2)
 
     // The separator band is dead space, as chrome rows are everywhere else.
     clay.SetPointerState({50, 32}, false)
-    _ = app.ctxmenu_layout(&a, &f, 600, 300)
+    _ = app.ctxmenu_layout(&a, f, 600, 300)
     testing.expect_value(t, app.ctxmenu_hit(&a.ctxmenu), -1)
 
     // A press on a separator is claimed anyway, swallowed rather than passed down.

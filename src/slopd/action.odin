@@ -552,7 +552,7 @@ nav_run :: proc(a: ^App, n: Nav, extend, all: bool) -> bool {
     }
 
     if m := media_target(a); m != nil {
-        step := 40 * a.scale
+        step := a.face.line_height * 2
         switch n {
         case .Left:
             media_pan(m, step, 0) // reveal the left edge: content slides right

@@ -49,22 +49,22 @@ fake_tree_free :: proc(a: ^app.App) {
 // Every phase sizes itself from this one proc, so its numbers are worth pinning outright.
 @(test)
 test_filetree_geom :: proc(t: ^testing.T) {
-    area, row_h, rows := app.filetree_geom(PANE, 1, 16)
+    area, row_h, rows := app.filetree_geom(PANE, 16)
     testing.expect_value(t, area, AREA) // inside the 2px focus ring
     testing.expect_value(t, row_h, i32(ROW_H))
     testing.expect_value(t, rows, ROWS) // (96 - 18) / 18, the header taking the first row
 
     // A hidden pane is a zero rect and must report no rows, not a negative count.
-    _, _, none := app.filetree_geom(gfx.Rect{}, 1, 16)
+    _, _, none := app.filetree_geom(gfx.Rect{}, 16)
     testing.expect_value(t, none, 0)
 
     // Too short for even one row still reports one: the clip keeps it inside the pane.
-    _, _, tiny := app.filetree_geom(gfx.Rect{0, 0, 300, 24}, 1, 16)
+    _, _, tiny := app.filetree_geom(gfx.Rect{0, 0, 300, 24}, 16)
     testing.expect_value(t, tiny, 1)
 
     // DPI scale reaches the inset and the row padding both, so the whole pane stays on the
     // cell grid at 2x.
-    area2, row_h2, _ := app.filetree_geom(PANE, 2, 32)
+    area2, row_h2, _ := app.filetree_geom(PANE, 32)
     testing.expect_value(t, area2, gfx.Rect{104, 54, 292, 92})
     testing.expect_value(t, row_h2, i32(36))
 }
@@ -99,11 +99,12 @@ test_filetree_scroll_apply :: proc(t: ^testing.T) {
 test_filetree_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     a.scale = 1
+    a.face = clay_test_face()
     fake_tree(&a, 20) // more than fits: only the visible window may be declared
     defer fake_tree_free(&a)
     // Scrolled AND settled: the view is where the tween is, not where the target is, so a
@@ -113,7 +114,7 @@ test_filetree_command_list :: proc(t: ^testing.T) {
     a.tree.scroll_anim = {to = 5}
     a.tree.selected = 6
 
-    cmds := app.filetree_layout(&a, &f, PANE, 500, 300)
+    cmds := app.filetree_layout(&a, f, PANE, 500, 300)
 
     counts: [10]int
     head_text, scissor, pane_clip: gfx.Rect
@@ -173,7 +174,7 @@ test_filetree_command_list :: proc(t: ^testing.T) {
     // The partial row at the bottom edge IS declared and runs past the body: the clip cuts it,
     // which is the point of declaring it.
     a.tree.selected = 5 + ROWS // the fifth row of the window
-    partial := app.filetree_layout(&a, &f, PANE, 500, 300, 0)
+    partial := app.filetree_layout(&a, f, PANE, 500, 300, 0)
     pbox, pok := box_of(&partial, clay.ID("ft_row", u32(5 + ROWS)), .Rectangle)
     testing.expect(t, pok, "the partially-visible bottom row was not declared")
     testing.expect(t, pbox.y + pbox.h > AREA.y + AREA.h, "the bottom row was not the partial one")
@@ -197,32 +198,33 @@ test_filetree_command_list :: proc(t: ^testing.T) {
 test_filetree_hit :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     a.scale = 1
+    a.face = clay_test_face()
     fake_tree(&a, 20)
     defer fake_tree_free(&a)
     a.tree.scroll = 5 // rows 5..8 are on screen
     a.tree.scroll_anim = {to = 5} // settled, so the boxes are at the target
 
-    _ = app.filetree_layout(&a, &f, PANE, 500, 300) // frame 1: boxes to hit
+    _ = app.filetree_layout(&a, f, PANE, 500, 300) // frame 1: boxes to hit
 
     // The body's second row: area.y + header + one row, plus a few pixels.
     y := AREA.y + ROW_H + ROW_H + 4
     clay.SetPointerState({f32(AREA.x + 50), f32(y)}, false)
-    _ = app.filetree_layout(&a, &f, PANE, 500, 300) // frame 2: pointer resolves against frame 1
+    _ = app.filetree_layout(&a, f, PANE, 500, 300) // frame 2: pointer resolves against frame 1
 
     testing.expect_value(t, app.filetree_hit(&a.tree, a.tree.scroll, ROWS), 6)
 
     // The header is not a row, and neither is the pane's focus-ring inset.
     clay.SetPointerState({f32(AREA.x + 50), f32(AREA.y + 4)}, false)
-    _ = app.filetree_layout(&a, &f, PANE, 500, 300)
+    _ = app.filetree_layout(&a, f, PANE, 500, 300)
     testing.expect_value(t, app.filetree_hit(&a.tree, a.tree.scroll, ROWS), -1)
 
     clay.SetPointerState({10, 10}, false)
-    _ = app.filetree_layout(&a, &f, PANE, 500, 300)
+    _ = app.filetree_layout(&a, f, PANE, 500, 300)
     testing.expect_value(t, app.filetree_hit(&a.tree, a.tree.scroll, ROWS), -1)
 }
 
@@ -307,11 +309,12 @@ test_filetree_click_double_activates :: proc(t: ^testing.T) {
 test_filetree_scroll_eases :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     a.scale = 1
+    a.face = clay_test_face()
     fake_tree(&a, 40)
     defer fake_tree_free(&a)
     // app_next_wake asks the editor for its own scroll tween, so the ring has to exist.
@@ -321,13 +324,13 @@ test_filetree_scroll_eases :: proc(t: ^testing.T) {
     a.tree.scroll = 10   // the TARGET; the tween starts from the settled 0
 
     // Frame one, at t=1: the tween is aimed but has not moved, so the window is still row 0.
-    first := app.filetree_layout(&a, &f, PANE, 500, 300, 1)
+    first := app.filetree_layout(&a, f, PANE, 500, 300, 1)
     _, shown := box_of(&first, clay.ID("ft_row", 10), .Rectangle)
     testing.expect(t, !shown, "the view teleported to the target on the first frame")
 
     // Halfway through SCROLL_DUR the ease-out cubic is 0.875 of the way, so the view sits at
     // row 8.75: the window starts at 8 and every row lifts by 0.75 of a row (13px of 18).
-    mid := app.filetree_layout(&a, &f, PANE, 500, 300, 1 + ui.SCROLL_DUR / 2)
+    mid := app.filetree_layout(&a, f, PANE, 500, 300, 1 + ui.SCROLL_DUR / 2)
     box, ok := box_of(&mid, clay.ID("ft_row", 10), .Rectangle)
     testing.expect(t, ok, "the target row was not declared mid-scroll")
     testing.expect_value(t, box.y, AREA.y + ROW_H + 2 * ROW_H - 13)
@@ -347,12 +350,12 @@ test_filetree_scroll_eases :: proc(t: ^testing.T) {
     // The hit test resolves against the PAINTED window: mid-scroll the top row on screen is 8
     // while the target is 10, so a probe aimed at the target misses entirely.
     clay.SetPointerState({f32(AREA.x + 50), f32(AREA.y + ROW_H + 2)}, false)
-    _ = app.filetree_layout(&a, &f, PANE, 500, 300, 1 + ui.SCROLL_DUR / 2)
+    _ = app.filetree_layout(&a, f, PANE, 500, 300, 1 + ui.SCROLL_DUR / 2)
     testing.expect_value(t, app.filetree_hit(&a.tree, 8, ROWS), 8)
     testing.expect_value(t, app.filetree_hit(&a.tree, a.tree.scroll, ROWS), -1)
 
     // Once the tween is spent the row lands exactly on the first body row.
-    done := app.filetree_layout(&a, &f, PANE, 500, 300, 1 + ui.SCROLL_DUR)
+    done := app.filetree_layout(&a, f, PANE, 500, 300, 1 + ui.SCROLL_DUR)
     settled, sok := box_of(&done, clay.ID("ft_row", 10), .Rectangle)
     testing.expect(t, sok, "the target row vanished once the scroll finished")
     testing.expect_value(t, settled, gfx.Rect{AREA.x, AREA.y + ROW_H, AREA.w, ROW_H})

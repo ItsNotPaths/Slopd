@@ -1,6 +1,5 @@
 package main
 
-import gl "vendor:OpenGL"
 import "../gfx"
 import "../ui"
 
@@ -36,7 +35,7 @@ aux_mode_name :: proc(m: AuxMode) -> string {
 
 
 // Four edge bars of `w` thickness just inside `r`, leaving the middle untouched.
-outline :: proc(t: ^gfx.Text, r: gfx.Rect, color: [3]f32, w: i32) {
+outline :: proc(t: ^gfx.Draw, r: gfx.Rect, color: [3]f32, w: i32) {
     gfx.fill(t, gfx.Rect{r.x, r.y, r.w, w}, color)                 // top
     gfx.fill(t, gfx.Rect{r.x, r.y + r.h - w, r.w, w}, color)       // bottom
     gfx.fill(t, gfx.Rect{r.x, r.y, w, r.h}, color)                 // left
@@ -44,22 +43,19 @@ outline :: proc(t: ^gfx.Text, r: gfx.Rect, color: [3]f32, w: i32) {
 }
 
 
-render :: proc(a: ^App, t: ^gfx.Text, win_w, win_h: i32, now: f64) {
+render :: proc(a: ^App, t: ^gfx.Draw, win_w, win_h: i32, now: f64) {
     th := &a.theme
-    t.frame_verts = 0 // the perf log tallies this frame's submitted vertices
-    // Must track the framebuffer or the shaders distort on resize.
-    gl.Viewport(0, 0, win_w, win_h)
-
-    // Shows through the inter-pane gutter the panels leave.
-    gl.Disable(gl.SCISSOR_TEST)
-    gl.ClearColor(th.border_dark.r, th.border_dark.g, th.border_dark.b, 1)
-    gl.Clear(gl.COLOR_BUFFER_BIT)
+    a.face = gfx.face(t) // every pane sizes itself from this, through UI_Ctx
+    gfx.frame_verts_reset(t) // the perf log tallies this frame's submitted vertices
+    // Tracks the framebuffer, or the shaders distort on resize. border_dark shows through the
+    // inter-pane gutter the panels leave.
+    gfx.frame_begin(t, win_w, win_h, th.border_dark)
 
     // Before the layout is solved, because what they write is what compute_layout reads:
     // `a.split` is its input and focus decides which panes exist. Resolves against `a.lay`.
     window_pointer(a, win_w)
 
-    lay := compute_layout(win_w, win_h, a, now)
+    lay := compute_layout(win_w, win_h, a, a.face.line_height, now)
     a.lay = lay // pointer events before the next frame route against these
 
     // Before anything is declared: SetPointerState resolves against the tree Clay already
@@ -68,8 +64,8 @@ render :: proc(a: ^App, t: ^gfx.Text, win_w, win_h: i32, now: f64) {
 
     // Both pane backgrounds and rings in one flush. The strip has no panel(): the element
     // owning that region paints it (strip_ui.odin).
-    ui.panel(t, lay.editor, th.bg, th.accent, focus_ring(a, lay.vis, .Editor), a.scale)
-    ui.panel(t, lay.aux, th.bg, th.accent, focus_ring(a, lay.vis, .Aux), a.scale)
+    ui.panel(t, lay.editor, th.bg, th.accent, focus_ring(a, lay.vis, .Editor))
+    ui.panel(t, lay.aux, th.bg, th.accent, focus_ring(a, lay.vis, .Aux))
     gfx.flush_pane(t, gfx.Rect{0, 0, win_w, win_h}, win_w, win_h)
 
     // Every live pane claims its click, moves its viewport and declares itself into one tree,

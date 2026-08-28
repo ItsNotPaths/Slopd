@@ -7,6 +7,7 @@ import "../ui"
 import "../search"
 import "../pty"
 import "../edit"
+import "../gfx"
 
 // The routing decision table. wheel_target is pure — App state plus the frame's Layout in, a
 // target out — so "which pane owns this notch" is settled here. Headless throughout.
@@ -191,8 +192,7 @@ test_wheel_apply_media_zooms :: proc(t: ^testing.T) {
     a.main = .Image
     a.lay = LAY
     a.media = app.Media {
-        w    = 200,
-        h    = 100,
+        img  = gfx.Image{w = 200, h = 100},
         zoom = 1,
     }
     a.mouse.x, a.mouse.y = 250, 280 // the editor pane's centre-ish

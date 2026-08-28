@@ -40,13 +40,13 @@ BindsRow :: struct {
 
 binds_geom :: proc(
     pane: gfx.Rect,
-    scale, line_h, cell_w: f32,
+    line_h, cell_w: f32,
 ) -> (
     area: gfx.Rect,
     row_h: i32,
     rows, cols: int,
 ) {
-    return ui.list_geom(pane, scale, line_h, cell_w, BINDS_ROW_PAD)
+    return ui.list_geom(pane, line_h, cell_w)
 }
 
 // The widest action name plus ": ", so every chord list starts on one column.
@@ -266,11 +266,11 @@ binds_draw_rows :: proc(u: ui.UI_Ctx, bp: ^BindsPane, rows: []BindsRow, alloc :=
     return out
 }
 
-binds_declare :: proc(u: ui.UI_Ctx, bp: ^BindsPane, f: ^gfx.Font, pane: gfx.Rect, rows: []ui.Pane_Row) {
-    area, row_h, max_rows, _ := binds_geom(pane, u.scale, f.line_height, f.cell_w)
+binds_declare :: proc(u: ui.UI_Ctx, bp: ^BindsPane, face: gfx.Face, pane: gfx.Rect, rows: []ui.Pane_Row) {
+    area, row_h, max_rows, _ := binds_geom(pane, face.line_height, face.cell_w)
     ui.pane_declare(
         u,
-        f,
+        face,
         {
             ids = ui.BINDS_IDS,
             area = area,
@@ -284,9 +284,9 @@ binds_declare :: proc(u: ui.UI_Ctx, bp: ^BindsPane, f: ^gfx.Font, pane: gfx.Rect
     )
 }
 
-binds_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect) {
+binds_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect) {
     u := ctx_of(a)
-    area, _, max_rows, cols := binds_geom(pane, u.scale, t.font.line_height, t.font.cell_w)
+    area, _, max_rows, cols := binds_geom(pane, gfx.face(t).line_height, gfx.face(t).cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }
@@ -308,13 +308,13 @@ binds_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect) {
         u.scroll_mode == .Middle,
         ui.pane_input_at(u),
     )
-    binds_declare(u, bp, &t.font, pane, drawn)
+    binds_declare(u, bp, gfx.face(t), pane, drawn)
 }
 
 // Test-facing wrapper; see filetree_layout.
 binds_layout :: proc(
     a: ^App,
-    f: ^gfx.Font,
+    face: gfx.Face,
     pane: gfx.Rect,
     rows: []BindsRow,
     win_w, win_h: i32,
@@ -322,7 +322,7 @@ binds_layout :: proc(
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
         u := ctx_of(a)
-        binds_declare(u, &a.binds_pane, f, pane, binds_draw_rows(u, &a.binds_pane, rows, context.temp_allocator))
+        binds_declare(u, &a.binds_pane, face, pane, binds_draw_rows(u, &a.binds_pane, rows, context.temp_allocator))
     }
     return clay.EndLayout(0)
 }

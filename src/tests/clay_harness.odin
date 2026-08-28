@@ -68,8 +68,8 @@ clay_test_unlock :: proc() {
 }
 
 // A 10x16 cell, so any fractional box in the output is a real finding rather than noise.
-clay_test_font :: proc() -> gfx.Font {
-    return gfx.Font{cell_w = 10, line_height = 16}
+clay_test_face :: proc() -> gfx.Face {
+    return gfx.Face{cell_w = 10, line_height = 16}
 }
 
 // One command per element id, by type: what most declaration assertions want, since a surface is

@@ -37,6 +37,7 @@ PATH :: gfx.Rect{AREA.x + 3 * BAR_H, AREA.y, AREA.w - 4 * BAR_H, BAR_H}
 @(private = "file")
 fake_browser :: proc(a: ^app.App, n: int) {
     a.scale = 1
+    a.face = clay_test_face()
     a.tree.dir = "/home/me/src"
     for i in 0 ..< n {
         append(&a.tree.entries, app.FileEntry{name = "entry", path = "/home/me/src/entry", display = "-rw-r--r--  entry"})
@@ -55,7 +56,7 @@ fake_browser_free :: proc(a: ^app.App) {
 // The three regions tile the content area exactly: a gap would be a band no hit test owns.
 @(test)
 test_filebrowser_geom :: proc(t: ^testing.T) {
-    area, bar, side, content, row_h, bar_h := app.filebrowser_geom(PANE, 1, 16, 10)
+    area, bar, side, content, row_h, bar_h := app.filebrowser_geom(PANE, 16, 10)
     testing.expect_value(t, area, AREA)
     testing.expect_value(t, row_h, i32(ROW_H))
     testing.expect_value(t, bar_h, i32(BAR_H))
@@ -66,13 +67,13 @@ test_filebrowser_geom :: proc(t: ^testing.T) {
 
     // Capped at half the pane: a fixed 16 cells in a narrow split would leave the contents
     // narrower than a single tile.
-    _, _, narrow, ncontent, _, _ := app.filebrowser_geom(gfx.Rect{0, 0, 200, 300}, 1, 16, 10)
+    _, _, narrow, ncontent, _, _ := app.filebrowser_geom(gfx.Rect{0, 0, 200, 300}, 16, 10)
     testing.expect_value(t, narrow.w, 98) // (200 - 4) / 2
     testing.expect_value(t, ncontent.w, 98)
 
     // A hidden pane is a zero rect (compute_layout leaves them so) and must report no rows
     // rather than a negative count that would index the listing backwards.
-    _, _, _, empty, _, _ := app.filebrowser_geom(gfx.Rect{}, 1, 16, 10)
+    _, _, _, empty, _, _ := app.filebrowser_geom(gfx.Rect{}, 16, 10)
     testing.expect_value(t, empty, gfx.Rect{})
 
     // List rows count entries, grid rows count TILES, and the column count comes from the same
@@ -83,7 +84,7 @@ test_filebrowser_geom :: proc(t: ^testing.T) {
 
     // A tile is 140x59: 14 cells wide, an icon band of round(16 * 2.4) = 38 over a caption row
     // of round(16 * 0.8) = 13, with 4px of padding either side.
-    tw, th := app.filebrowser_tile(1, 16, 10, CONTENT.w)
+    tw, th := app.filebrowser_tile(16, 10, CONTENT.w)
     testing.expect_value(t, tw, f32(140))
     testing.expect_value(t, th, f32(59))
     icon_h, name_h := app.filebrowser_tile_bands(16)
@@ -135,8 +136,8 @@ test_filebrowser_scroll_unit :: proc(t: ^testing.T) {
 test_filebrowser_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fake_browser(&a, 40) // more than fits: only the visible window may be declared
@@ -146,7 +147,7 @@ test_filebrowser_command_list :: proc(t: ^testing.T) {
     a.tree.scroll_anim = {to = 5}
     a.tree.selected = 6
 
-    cmds := app.filebrowser_layout(&a, &f, PANE, 600, 300)
+    cmds := app.filebrowser_layout(&a, f, PANE, 600, 300)
 
     // Square, left to right along the bar, which keeps the icons on a common baseline.
     back, ok := box_of(&cmds, clay.ID("fb_btn", u32(app.Browse_Btn.Back)), .Rectangle)
@@ -192,8 +193,8 @@ test_filebrowser_command_list :: proc(t: ^testing.T) {
 test_filebrowser_grid_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fake_browser(&a, 10)
@@ -201,7 +202,7 @@ test_filebrowser_grid_command_list :: proc(t: ^testing.T) {
     a.filebrowser.view = .Grid
     a.tree.selected = 4
 
-    cmds := app.filebrowser_layout(&a, &f, PANE, 600, 300)
+    cmds := app.filebrowser_layout(&a, f, PANE, 600, 300)
 
     // Entry 4 is the second tile of the second row, placed at one PITCH in each axis. The tile
     // does not grow: the gap is the solver's spacing, so a selected tile's highlight stops at
@@ -226,8 +227,8 @@ test_filebrowser_grid_command_list :: proc(t: ^testing.T) {
 test_filebrowser_hit_kinds :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fake_browser(&a, 40)
@@ -236,38 +237,38 @@ test_filebrowser_hit_kinds :: proc(t: ^testing.T) {
     a.tree.scroll_anim = {to = 5}
 
     segs := app.filebrowser_segments(a.tree.dir)
-    probe :: proc(a: ^app.App, f: ^gfx.Font, segs: []app.Path_Seg, x, y: i32) -> app.FB_Hit {
-        _ = app.filebrowser_layout(a, f, PANE, 600, 300) // frame 1: boxes for the pointer
+    probe :: proc(a: ^app.App, face: gfx.Face, segs: []app.Path_Seg, x, y: i32) -> app.FB_Hit {
+        _ = app.filebrowser_layout(a, face, PANE, 600, 300) // frame 1: boxes for the pointer
         clay.SetPointerState({f32(x), f32(y)}, false)
-        _ = app.filebrowser_layout(a, f, PANE, 600, 300) // frame 2: resolves against frame 1
+        _ = app.filebrowser_layout(a, face, PANE, 600, 300) // frame 2: resolves against frame 1
         return app.filebrowser_hit(&a.filebrowser, &a.tree, segs, 0, a.tree.scroll, 15, 1)
     }
 
-    back := probe(&a, &f, segs, AREA.x + 5, AREA.y + 5)
+    back := probe(&a, f, segs, AREA.x + 5, AREA.y + 5)
     testing.expect_value(t, back.kind, app.FB_Hit_Kind.Button)
     testing.expect_value(t, back.btn, app.Browse_Btn.Back)
 
     // The view toggle is last on the bar, hard against the right edge.
-    view := probe(&a, &f, segs, AREA.x + AREA.w - 5, AREA.y + 5)
+    view := probe(&a, f, segs, AREA.x + AREA.w - 5, AREA.y + 5)
     testing.expect_value(t, view.kind, app.FB_Hit_Kind.Button)
     testing.expect_value(t, view.btn, app.Browse_Btn.View)
 
     // A path segment: past the three buttons, on the "/" root button.
-    seg := probe(&a, &f, segs, AREA.x + 3 * BAR_H + 5, AREA.y + 5)
+    seg := probe(&a, f, segs, AREA.x + 3 * BAR_H + 5, AREA.y + 5)
     testing.expect_value(t, seg.kind, app.FB_Hit_Kind.Segment)
     testing.expect_value(t, seg.index, 0)
 
     // The whitespace after the last segment is the path bar itself: the press that turns the
     // bar into a text line.
-    blank := probe(&a, &f, segs, PATH.x + PATH.w - 5, AREA.y + 5)
+    blank := probe(&a, f, segs, PATH.x + PATH.w - 5, AREA.y + 5)
     testing.expect_value(t, blank.kind, app.FB_Hit_Kind.PathBar)
 
-    place := probe(&a, &f, segs, AREA.x + 20, AREA.y + BAR_H + ROW_H + 4)
+    place := probe(&a, f, segs, AREA.x + 20, AREA.y + BAR_H + ROW_H + 4)
     testing.expect_value(t, place.kind, app.FB_Hit_Kind.Place)
     testing.expect_value(t, place.index, 1)
 
     // A row, resolving to the ENTRY index rather than the visible row.
-    row := probe(&a, &f, segs, CONTENT.x + 50, CONTENT.y + ROW_H + 4)
+    row := probe(&a, f, segs, CONTENT.x + 50, CONTENT.y + ROW_H + 4)
     testing.expect_value(t, row.kind, app.FB_Hit_Kind.Row)
     testing.expect_value(t, row.index, 6)
 
@@ -275,7 +276,7 @@ test_filebrowser_hit_kinds :: proc(t: ^testing.T) {
     // lets a right press there open the DIRECTORY's menu.
     resize(&a.tree.entries, 3)
     a.tree.scroll = 0
-    below := probe(&a, &f, segs, CONTENT.x + 50, CONTENT.y + 3 * ROW_H + 4)
+    below := probe(&a, f, segs, CONTENT.x + 50, CONTENT.y + 3 * ROW_H + 4)
     testing.expect_value(t, below.kind, app.FB_Hit_Kind.None)
 }
 
@@ -370,8 +371,8 @@ test_filebrowser_path_line :: proc(t: ^testing.T) {
 test_filebrowser_path_line_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fake_browser(&a, 4)
@@ -382,7 +383,7 @@ test_filebrowser_path_line_command_list :: proc(t: ^testing.T) {
     // they landed — which is the claim anyway.
     toggle :: gfx.Rect{PATH.x + PATH.w, AREA.y, BAR_H, BAR_H}
 
-    cmds := app.filebrowser_layout(&a, &f, PANE, 600, 300)
+    cmds := app.filebrowser_layout(&a, f, PANE, 600, 300)
     _, edit_off := box_of(&cmds, clay.ID("fb_edit"), .Custom)
     testing.expect(t, texts_in(&cmds, PATH) == 4, "the closed bar drew no segment") // 4 segments
     testing.expect(t, !edit_off, "the closed bar declared a text field")
@@ -390,7 +391,7 @@ test_filebrowser_path_line_command_list :: proc(t: ^testing.T) {
     // Open: the field fills the path region and nothing is laid out inside it — the runes are
     // the painter's, since a caret and a cut head are not things Clay lays out.
     app.filebrowser_path_open(&a)
-    open := app.filebrowser_layout(&a, &f, PANE, 600, 300)
+    open := app.filebrowser_layout(&a, f, PANE, 600, 300)
     edit, eok := box_of(&open, clay.ID("fb_edit"), .Custom)
     testing.expect(t, eok, "the open bar declared no text field")
     testing.expect_value(t, edit, PATH)
@@ -406,10 +407,10 @@ test_filebrowser_path_line_command_list :: proc(t: ^testing.T) {
 // pane's edge, so the tile caps at the content width.
 @(test)
 test_filebrowser_tile_capped_to_the_content :: proc(t: ^testing.T) {
-    wide, _ := app.filebrowser_tile(1, 16, 10, CONTENT.w)
+    wide, _ := app.filebrowser_tile(16, 10, CONTENT.w)
     testing.expect_value(t, wide, f32(140)) // 14 cells, room to spare
 
-    narrow, _ := app.filebrowser_tile(1, 16, 10, 90)
+    narrow, _ := app.filebrowser_tile(16, 10, 90)
     testing.expect_value(t, narrow, f32(90)) // capped, not overflowing
 
     // The column count stays at least one, so the grid degrades to a single column.
@@ -419,21 +420,21 @@ test_filebrowser_tile_capped_to_the_content :: proc(t: ^testing.T) {
 }
 
 // Icons are glyphs, so a list row gains a column and nothing else. The synthetic font carries no
-// icon face, so `icons_ok` is set by hand — the same switch a build without fontTools flips.
+// icon face, so `Face.icons` is set by hand — the same switch a build without fontTools flips.
 @(test)
 test_filebrowser_list_icon_column :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fake_browser(&a, 4)
     defer fake_browser_free(&a)
     a.file_icons = true
-    f.icons_ok = true
+    f.icons = true
 
-    cmds := app.filebrowser_layout(&a, &f, PANE, 600, 300)
+    cmds := app.filebrowser_layout(&a, f, PANE, 600, 300)
     ico, ok := box_of(&cmds, clay.ID("fb_ico", 0), .Rectangle)
     testing.expect(t, !ok, "the icon cell must declare no background of its own (rule 3)")
     _ = ico
@@ -450,7 +451,7 @@ test_filebrowser_list_icon_column :: proc(t: ^testing.T) {
     testing.expect_value(t, texts_in(&cmds, CONTENT), 8) // 4 rows x (icon + row)
 
     a.file_icons = false
-    plain := app.filebrowser_layout(&a, &f, PANE, 600, 300)
+    plain := app.filebrowser_layout(&a, f, PANE, 600, 300)
     first_x, _ := first_two_texts_in(&plain, CONTENT)
     testing.expect_value(t, first_x, CONTENT.x + 10)
     testing.expect_value(t, texts_in(&plain, CONTENT), 4) // the column is gone, not blank
@@ -495,22 +496,22 @@ first_two_texts_in :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), region: gf
 test_filebrowser_tile_icon_or_swatch :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fake_browser(&a, 4)
     defer fake_browser_free(&a)
     a.filebrowser.view = .Grid
 
-    plain := app.filebrowser_layout(&a, &f, PANE, 600, 300)
+    plain := app.filebrowser_layout(&a, f, PANE, 600, 300)
     swatch, sok := box_of(&plain, clay.ID("fb_swatch", 0), .Rectangle)
     testing.expect(t, sok, "without an icon face the tile must draw its swatch")
 
     // With one: the same box, as a Custom rather than a Rectangle.
     a.file_icons = true
-    f.icons_ok = true
-    iconed := app.filebrowser_layout(&a, &f, PANE, 600, 300)
+    f.icons = true
+    iconed := app.filebrowser_layout(&a, f, PANE, 600, 300)
     _, still := box_of(&iconed, clay.ID("fb_swatch", 0), .Rectangle)
     testing.expect(t, !still, "the swatch must give way to the icon, not sit under it")
     custom, cok := box_of(&iconed, clay.ID("fb_swatch", 0), .Custom)
@@ -525,8 +526,8 @@ test_filebrowser_tile_icon_or_swatch :: proc(t: ^testing.T) {
 test_filebrowser_declares_the_partial_bottom_row :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     fake_browser(&a, 40)
@@ -537,7 +538,7 @@ test_filebrowser_declares_the_partial_bottom_row :: proc(t: ^testing.T) {
     testing.expect_value(t, rows, 4) // whole rows: what the policy counts
     testing.expect_value(t, ui.list_visible_rows(CONTENT.h, 0, 59), 5) // …and what is on screen
 
-    cmds := app.filebrowser_layout(&a, &f, PANE, 600, 300)
+    cmds := app.filebrowser_layout(&a, f, PANE, 600, 300)
 
     // Probed by SWATCH: a tile paints no background unless selected, but every tile carries
     // its picture.
@@ -571,16 +572,16 @@ test_filebrowser_list_partial_bottom_row :: proc(t: ^testing.T) {
 test_filebrowser_tile_caption :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
+    f := clay_test_face()
     f.px = 16 // so the caption's size is derived from something real
-    ui.clay_use_font(&f)
+    ui.clay_use_face(&f)
 
     a: app.App
     fake_browser(&a, 4)
     defer fake_browser_free(&a)
     a.filebrowser.view = .Grid
 
-    cmds := app.filebrowser_layout(&a, &f, PANE, 600, 300)
+    cmds := app.filebrowser_layout(&a, f, PANE, 600, 300)
 
     // Under the icon band, spanning the tile, taking its remaining height.
     name, ok := box_of(&cmds, clay.ID("fb_name", 0), .Custom)
@@ -596,7 +597,5 @@ test_filebrowser_tile_caption :: proc(t: ^testing.T) {
     }
 
     // The advance scales with the bake, which lets the painter centre from the rune count.
-    tx: gfx.Text
-    tx.font = f
-    testing.expect_value(t, gfx.text_sized_cell(&tx, f.px * 0.8), f32(8))
+    testing.expect_value(t, gfx.text_sized_cell(f, f.px * 0.8), f32(8))
 }

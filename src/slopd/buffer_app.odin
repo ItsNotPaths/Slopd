@@ -23,8 +23,8 @@ open_file :: proc(a: ^App, path: string) {
 
     // A failed decode leaves the current surface untouched.
     if is_media_path(path) {
-        if m, ok := media_load(path); ok {
-            media_destroy(&a.media)
+        if m, ok := media_load(a.draw, path); ok {
+            media_destroy(a.draw, &a.media)
             a.media = m
             a.main = .Image
         } else {

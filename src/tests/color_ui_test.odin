@@ -22,6 +22,7 @@ LH :: f32(16) // the test font's line height; a row is sized from it, not from a
 color_app :: proc(x, y: i32, has_alpha := false) -> app.App {
     a := app.App {
         scale    = 1,
+        face     = gfx.Face{cell_w = 10, line_height = LH},
         mouse_on = true,
         aux_mode = .Color,
         focus    = .Aux,

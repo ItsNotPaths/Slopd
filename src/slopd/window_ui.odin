@@ -143,7 +143,7 @@ clay_window_root :: proc(win_w, win_h: i32) -> clay.ElementDeclaration {
 
 // Every live pane claims its click, moves its viewport and declares itself into one tree. The
 // editor goes first so a press over the boundary is offered to it first.
-window_frame :: proc(t: ^gfx.Text, a: ^App, lay: Layout, win_w, win_h: i32, now: f64) {
+window_frame :: proc(t: ^gfx.Draw, a: ^App, lay: Layout, win_w, win_h: i32, now: f64) {
     clay_window_begin(win_w, win_h)
 
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {

@@ -16,7 +16,7 @@ IOSEVKA_TTF := #load("../../vendor/fonts/IosevkaFixed-Latin.ttf")
 // subset to Seti-UI + Devicons. stb's packer takes the font bytes per call, so an icon bakes
 // into the same atlas and lands in the same batch, texture and draw call — an icon is just a
 // rune. May legitimately be EMPTY: without fontTools download-deps.sh vendors a zero-byte file,
-// `icons_ok` is false and the browser falls back to plain tiles.
+// `Face.icons` is false and the browser falls back to plain tiles.
 ICONS_TTF := #load("../../vendor/fonts/SymbolsNerdFont-Icons.ttf")
 
 // Glyphs bake lazily: the first draw of a codepoint rasterizes it into the shared atlas and
@@ -29,6 +29,7 @@ Glyph :: struct {
 }
 
 Font :: struct {
+    using face: Face,                  // cell_w, line_height, ascent, px, icons — the seam's type
     pc:     stbtt.pack_context,        // kept open for the font's life; lazy bakes pack into it
     info:   stbtt.fontinfo,            // for glyph-presence checks
     ttf:    []u8,                      // borrowed font bytes (owned by Text), to bake on demand
@@ -38,21 +39,16 @@ Font :: struct {
     // one of these (a terminal grid is ~12k a frame), and this spares each the map hash.
     ascii:    [95]Glyph,
     ascii_ok: bool,
-    px:     f32,                       // bake size, physical px
     dirty:  bool,                      // pixels changed since the last GPU upload
     dy0, dy1:    int,                       // the row band to re-upload, valid when dirty
     ready:       bool,                      // pc/pixels/tex initialized
     tex:         u32,
-    cell_w:      f32, // monospace advance, physical px
-    line_height: f32, // physical px
-    ascent:      f32, // baseline offset from the top, physical px
 
     // Baked into the SAME atlas as a fallback for codepoints the text font lacks. `icon_px` is
     // the bake size that makes an icon's advance match the text cell, so an icon occupies one
     // column rather than overhanging its neighbour.
-    icons:      []u8,
+    icons_ttf:  []u8,
     icons_info: stbtt.fontinfo,
-    icons_ok:   bool,
     icon_px:    f32,
 
     // Glyphs baked at a size that is NOT the cell: icons large (a tile's) and text small (a
@@ -126,10 +122,11 @@ font_load :: proc(f: ^Font, ttf: []u8, px: f32) -> bool {
 
     // Sized so an icon's advance is the text cell: bake at px, measure, scale by the ratio.
     // After cell_w is known and before any glyph lookup, since font_glyph falls back to it.
-    f.icons = ICONS_TTF
-    f.icons_ok = len(f.icons) > 0 && bool(stbtt.InitFont(&f.icons_info, raw_data(f.icons), 0))
+    f.icons_ttf = ICONS_TTF
+    // The seam's capability bit: layout picks icon tiles or plain swatches from it.
+    f.icons = len(f.icons_ttf) > 0 && bool(stbtt.InitFont(&f.icons_info, raw_data(f.icons_ttf), 0))
     f.icon_px = px
-    if f.icons_ok {
+    if f.icons {
         iscale := stbtt.ScaleForPixelHeight(&f.icons_info, px)
         iadv, ilsb: c.int
         stbtt.GetCodepointHMetrics(&f.icons_info, ICON_REF, &iadv, &ilsb)
@@ -226,10 +223,10 @@ font_bake_at :: proc(f: ^Font, info: ^stbtt.fontinfo, ttf: []u8, r: rune, px: f3
 
 @(private = "file")
 font_icon_bake :: proc(f: ^Font, r: rune, px: f32) -> (g: Glyph, ok: bool) {
-    if !f.icons_ok {
+    if !f.icons {
         return {}, false
     }
-    return font_bake_at(f, &f.icons_info, f.icons, r, px)
+    return font_bake_at(f, &f.icons_info, f.icons_ttf, r, px)
 }
 
 // The browser's tile captions, deliberately smaller than the body text. font_icon_big's twin
@@ -253,7 +250,7 @@ font_text_small :: proc(f: ^Font, r: rune, px: f32) -> (pc: stbtt.packedchar, ok
 // For the browser's grid tiles, cached apart from the one-cell bake. A size change empties the
 // cache rather than keying by size: a tile has one size at a time.
 font_icon_big :: proc(f: ^Font, r: rune, px: f32) -> (pc: stbtt.packedchar, ok: bool) {
-    if !f.ready || !f.icons_ok || px <= 0 {
+    if !f.ready || !f.icons || px <= 0 {
         return {}, false
     }
     if px != f.big_px {

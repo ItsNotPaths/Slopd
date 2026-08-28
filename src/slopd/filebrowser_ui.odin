@@ -69,14 +69,14 @@ FB_Hit :: struct {
 // contents narrower than one tile.
 filebrowser_geom :: proc(
     pane: gfx.Rect,
-    scale, line_h, cell_w: f32,
+    line_h, cell_w: f32,
 ) -> (
     area, bar, side, content: gfx.Rect,
     row_h, bar_h: i32,
 ) {
-    area = ui.inset(pane, i32(2 * scale))
-    row_h = i32(line_h) + i32(FB_ROW_PAD * scale)
-    bar_h = i32(line_h) + i32(2 * FB_BAR_PAD * scale)
+    area = ui.inset(pane, gfx.hairline(line_h))
+    row_h = i32(line_h) + gfx.pad(line_h, FB_ROW_PAD)
+    bar_h = i32(line_h) + 2 * gfx.pad(line_h, FB_BAR_PAD)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {
         return area, {}, {}, {}, row_h, bar_h
     }
@@ -95,10 +95,10 @@ filebrowser_geom :: proc(
 //
 // Capped at the content width (rule 8): a fixed box that outgrows its parent is still a hit box,
 // clickable beyond the pane's edge while the clip group hides the overflow.
-filebrowser_tile :: proc(scale, line_h, cell_w: f32, max_w: i32) -> (w, h: f32) {
+filebrowser_tile :: proc(line_h, cell_w: f32, max_w: i32) -> (w, h: f32) {
     w = min(f32(FB_TILE_CELLS) * cell_w, f32(max(0, max_w)))
     icon_h, name_h := filebrowser_tile_bands(line_h)
-    h = icon_h + name_h + 2 * math.round(FB_TILE_PAD * scale)
+    h = icon_h + name_h + f32(2 * gfx.pad(line_h, FB_TILE_PAD))
     return
 }
 
@@ -108,8 +108,8 @@ filebrowser_tile_bands :: proc(line_h: f32) -> (icon_h, name_h: f32) {
 
 // Whole pixels, in one place: the column count, the scroll unit and the declaration must agree
 // or the tween lands a few pixels off the row it is easing to.
-filebrowser_tile_gap :: proc(scale: f32) -> f32 {
-    return math.round(max(0, FB_TILE_GAP * scale))
+filebrowser_tile_gap :: proc(line_h: f32) -> f32 {
+    return f32(gfx.pad(line_h, FB_TILE_GAP))
 }
 
 // Runes of a caption across a tile at the caption's reduced size.
@@ -133,8 +133,8 @@ filebrowser_rows :: proc(
     if view == .List {
         return row_h > 0 ? max(0, int(content.h / row_h)) : 0, 1
     }
-    tw, th := filebrowser_tile(scale, line_h, cell_w, content.w)
-    gap := filebrowser_tile_gap(scale)
+    tw, th := filebrowser_tile(line_h, cell_w, content.w)
+    gap := filebrowser_tile_gap(line_h)
     if th <= 0 {
         return 0, 1
     }
@@ -148,8 +148,8 @@ filebrowser_row_h :: proc(view: Browse_View, row_h: i32, scale, line_h, cell_w: 
         return row_h
     }
     // A tile's height does not depend on the width cap, so the cap here is immaterial.
-    _, tile_h := filebrowser_tile(scale, line_h, cell_w, max(i32))
-    return i32(tile_h + filebrowser_tile_gap(scale)) // pitch: the tile plus the gap under it
+    _, tile_h := filebrowser_tile(line_h, cell_w, max(i32))
+    return i32(tile_h + filebrowser_tile_gap(line_h)) // pitch: the tile plus the gap under it
 }
 
 // Follow the selection under the shared `scroll_mode` policy. The unit is the content row, so
@@ -400,22 +400,22 @@ filebrowser_place_open :: proc(a: ^App, n: int) {
 //       fb_content   the clip group the contents scroll inside
 //         fb_item/i    List: one row per visible entry, keyed by entry index
 //         fb_grow/r    Grid: one row of tiles, holding fb_item/i tiles keyed the same
-filebrowser_declare :: proc(a: ^App, f: ^gfx.Font, pane: gfx.Rect, top: int, off: i32, now: f64 = 0) {
+filebrowser_declare :: proc(a: ^App, face: gfx.Face, pane: gfx.Rect, top: int, off: i32, now: f64 = 0) {
     u := ctx_of(a)
     br := &a.filebrowser
     ft := &a.tree
     th := u.theme
     dirty := edit.ring_dirty(&a.editor)
-    area, bar, side, content, row_h, bar_h := filebrowser_geom(pane, u.scale, f.line_height, f.cell_w)
+    area, bar, side, content, row_h, bar_h := filebrowser_geom(pane, face.line_height, face.cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }
-    cw := f.cell_w
-    lh := i32(f.line_height)
-    _, cols := filebrowser_rows(content, br.view, row_h, a.scale, f.line_height, cw)
+    cw := face.cell_w
+    lh := i32(face.line_height)
+    _, cols := filebrowser_rows(content, br.view, row_h, a.scale, face.line_height, cw)
     // Rows the region TOUCHES, one more than fit whenever it does not divide evenly or a scroll
     // is in progress. Whole rows alone leaves the bottom tile row undeclared but on screen.
-    unit := filebrowser_row_h(br.view, row_h, a.scale, f.line_height, cw)
+    unit := filebrowser_row_h(br.view, row_h, a.scale, face.line_height, cw)
     visible := ui.list_visible_rows(content.h, off, unit)
 
     if clay.UI(clay.ID("fb_pane"))(ui.clay_pane_box(area)) {
@@ -475,7 +475,7 @@ filebrowser_declare :: proc(a: ^App, f: ^gfx.Font, pane: gfx.Rect, top: int, off
                         sizing          = {clay.SizingGrow(), clay.SizingFixed(f32(max(0, content.h)))},
                         layoutDirection = .TopToBottom,
                         // Solver-spaced, which is what makes filebrowser_row_h's pitch real.
-                        childGap        = br.view == .Grid ? u16(filebrowser_tile_gap(a.scale)) : 0,
+                        childGap        = br.view == .Grid ? u16(filebrowser_tile_gap(face.line_height)) : 0,
                     },
                     // The tween's remainder rides on the clip, not each row's y (rule 9).
                     clip = {horizontal = true, vertical = true, childOffset = {0, -f32(off)}},
@@ -483,9 +483,9 @@ filebrowser_declare :: proc(a: ^App, f: ^gfx.Font, pane: gfx.Rect, top: int, off
             ) {
                 switch br.view {
                 case .List:
-                    filebrowser_declare_list(u, br, ft, dirty, a.file_icons, f, top, visible, row_h, lh, cw)
+                    filebrowser_declare_list(u, br, ft, dirty, a.file_icons, face, top, visible, row_h, lh, cw)
                 case .Grid:
-                    filebrowser_declare_grid(u, br, ft, dirty, a.file_icons, f, top, visible, cols, lh, cw, content.w)
+                    filebrowser_declare_grid(u, br, ft, dirty, a.file_icons, face, top, visible, cols, lh, cw, content.w)
                 }
             }
         }
@@ -493,7 +493,7 @@ filebrowser_declare :: proc(a: ^App, f: ^gfx.Font, pane: gfx.Rect, top: int, off
         // Last and inside the pane — the same overlay the listing face puts up, over the same
         // chords. See filetree_declare.
         if chord_shown(a) {
-            chord_declare(u, &a.tree, chord_hints(a), &a.chord_anim, f, area, now)
+            chord_declare(u, &a.tree, chord_hints(a), &a.chord_anim, face, area, now)
         }
     }
 }
@@ -609,7 +609,7 @@ filebrowser_declare_btn :: proc(u: ui.UI_Ctx, br: ^FileBrowser, b: Browse_Btn, i
 // The filetree's row with a type icon in front. The icon is one cell and a glyph like any other
 // (src/gfx bakes the icon face into the same atlas) — no image, no second texture.
 @(private = "file")
-filebrowser_declare_list :: proc(u: ui.UI_Ctx, br: ^FileBrowser, ft: ^FileTree, dirty: ui.Path_Dirty, icons: bool, f: ^gfx.Font, top, visible: int, row_h, lh: i32, cw: f32) {
+filebrowser_declare_list :: proc(u: ui.UI_Ctx, br: ^FileBrowser, ft: ^FileTree, dirty: ui.Path_Dirty, icons: bool, face: gfx.Face, top, visible: int, row_h, lh: i32, cw: f32) {
     th := u.theme
     first := clamp(top, 0, max(0, len(ft.entries)))
     shown := max(0, min(len(ft.entries) - first, visible))
@@ -636,7 +636,7 @@ filebrowser_declare_list :: proc(u: ui.UI_Ctx, br: ^FileBrowser, ft: ^FileTree, 
             },
         ) {
             col := filebrowser_entry_color(u, dirty, e)
-            if icon, ok := filebrowser_icon(icons, f, e); ok {
+            if icon, ok := filebrowser_icon(icons, face, e); ok {
                 if clay.UI(clay.ID("fb_ico", u32(i)))(
                     {layout = {sizing = {width = clay.SizingFixed(2 * cw)}}},
                 ) {
@@ -650,8 +650,8 @@ filebrowser_declare_list :: proc(u: ui.UI_Ctx, br: ^FileBrowser, ft: ^FileTree, 
 
 // ok=false when icons are off or no icon face was vendored. Temp-allocated: Clay's command list
 // points at it, and the frame's arena outlives EndLayout.
-filebrowser_icon :: proc(icons: bool, f: ^gfx.Font, e: ^FileEntry) -> (s: string, ok: bool) {
-    if !icons || !f.icons_ok {
+filebrowser_icon :: proc(icons: bool, face: gfx.Face, e: ^FileEntry) -> (s: string, ok: bool) {
+    if !icons || !face.icons {
         return "", false
     }
     r := gfx.file_icon(e.name, e.is_dir)
@@ -673,7 +673,7 @@ FB_Name :: struct {
 
 // Baked at the tile's own size. A Custom because a glyph can only be drawn at the size it was
 // baked, and Clay's Text command is the atlas's one size.
-filebrowser_paint_icon :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
+filebrowser_paint_icon :: proc(t: ^gfx.Draw, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
     a := (^App)(host)
     ic := (^FB_Icon)(user)
     if ic != nil {
@@ -685,14 +685,14 @@ filebrowser_paint_icon :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i3
 
 // A Custom for the icon's reason, from the other side: Clay lays text out at the atlas size and
 // this is smaller. Centred from the rune count, which a fixed advance makes exact.
-filebrowser_paint_name :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
+filebrowser_paint_name :: proc(t: ^gfx.Draw, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
     a := (^App)(host)
     nm := (^FB_Name)(user)
     if nm != nil && nm.text != "" {
         n := utf8.rune_count_in_string(nm.text)
-        w := f32(n) * gfx.text_sized_cell(t, nm.px)
+        w := f32(n) * gfx.text_sized_cell(gfx.face(t), nm.px)
         x := f32(r.x) + (f32(r.w) - w) / 2
-        y := f32(r.y) + (f32(r.h) - t.font.line_height * FB_TILE_NAME_SCALE) / 2
+        y := f32(r.y) + (f32(r.h) - gfx.face(t).line_height * FB_TILE_NAME_SCALE) / 2
         gfx.text_draw_sized(t, nm.text, x, y, nm.px, nm.color)
     }
     gfx.flush_pane(t, clip, win_w, win_h)
@@ -701,11 +701,11 @@ filebrowser_paint_name :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i3
 // Rows of tiles, each a coloured swatch over an elided name. No thumbnails to decode: a filled
 // block says "directory / program / file" at any zoom.
 @(private = "file")
-filebrowser_declare_grid :: proc(u: ui.UI_Ctx, br: ^FileBrowser, ft: ^FileTree, dirty: ui.Path_Dirty, icons: bool, f: ^gfx.Font, top, visible, cols: int, lh: i32, cw: f32, max_w: i32) {
+filebrowser_declare_grid :: proc(u: ui.UI_Ctx, br: ^FileBrowser, ft: ^FileTree, dirty: ui.Path_Dirty, icons: bool, face: gfx.Face, top, visible, cols: int, lh: i32, cw: f32, max_w: i32) {
     th := u.theme
-    tw, thh := filebrowser_tile(u.scale, f.line_height, cw, max_w)
+    tw, thh := filebrowser_tile(face.line_height, cw, max_w)
     first := clamp(top, 0, max(0, filebrowser_grid_rows(len(ft.entries), cols)))
-    pad := u16(max(0.0, FB_TILE_PAD * u.scale))
+    pad := u16(gfx.pad(u.face.line_height, FB_TILE_PAD))
 
     for r in first ..< min(first + visible, filebrowser_grid_rows(len(ft.entries), cols)) {
         if clay.UI(clay.ID("fb_grow", u32(r)))(
@@ -713,7 +713,7 @@ filebrowser_declare_grid :: proc(u: ui.UI_Ctx, br: ^FileBrowser, ft: ^FileTree, 
                 layout = {
                     sizing          = {clay.SizingGrow(), clay.SizingFixed(thh)},
                     layoutDirection = .LeftToRight,
-                    childGap        = u16(filebrowser_tile_gap(u.scale)),
+                    childGap        = u16(filebrowser_tile_gap(face.line_height)),
                 },
             },
         ) {
@@ -744,10 +744,10 @@ filebrowser_declare_grid :: proc(u: ui.UI_Ctx, br: ^FileBrowser, ft: ^FileTree, 
                 ) {
                     // The type icon where there is an icon face, a plain swatch where there is
                     // not. Same box either way, so the grid does not reflow.
-                    icon_h, name_h := filebrowser_tile_bands(f.line_height)
+                    icon_h, name_h := filebrowser_tile_bands(face.line_height)
                     icon_w := min(cw * f32(FB_TILE_CELLS - 6), tw)
                     col := filebrowser_entry_color(u, dirty, e)
-                    if icons && f.icons_ok {
+                    if icons && face.icons {
                         ic := new(FB_Icon, context.temp_allocator)
                         cu := new(ui.ClayCustom, context.temp_allocator)
                         ic^ = {icon = gfx.file_icon(e.name, e.is_dir), px = icon_h, color = col}
@@ -769,7 +769,7 @@ filebrowser_declare_grid :: proc(u: ui.UI_Ctx, br: ^FileBrowser, ft: ^FileTree, 
                     ncu := new(ui.ClayCustom, context.temp_allocator)
                     nm^ = {
                         text  = filebrowser_elide(e.name, filebrowser_tile_name_cells()),
-                        px    = f.px * FB_TILE_NAME_SCALE,
+                        px    = face.px * FB_TILE_NAME_SCALE,
                         color = i == ft.selected ? th.fg : th.muted,
                     }
                     ncu^ = {paint = filebrowser_paint_name, user = nm}
@@ -803,34 +803,34 @@ filebrowser_entry_color :: proc(u: ui.UI_Ctx, dirty: ui.Path_Dirty, e: ^FileEntr
 // Test-facing wrapper; see filetree_layout.
 filebrowser_layout :: proc(
     a: ^App,
-    f: ^gfx.Font,
+    face: gfx.Face,
     pane: gfx.Rect,
     win_w, win_h: i32,
     now: f64 = 0,
 ) -> clay.ClayArray(clay.RenderCommand) {
-    _, _, _, _, row_h, _ := filebrowser_geom(pane, a.scale, f.line_height, f.cell_w)
-    unit := filebrowser_row_h(a.filebrowser.view, row_h, a.scale, f.line_height, f.cell_w)
+    _, _, _, _, row_h, _ := filebrowser_geom(pane, face.line_height, face.cell_w)
+    unit := filebrowser_row_h(a.filebrowser.view, row_h, a.scale, face.line_height, face.cell_w)
     top, off := ui.smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        filebrowser_declare(a, f, pane, top, off, now)
+        filebrowser_declare(a, face, pane, top, off, now)
     }
     return clay.EndLayout(0)
 }
 
 // The template's four phases, with the hover written per kind of target from the one hit the
 // click consumes. `cols` is published for the keyboard, since only the geometry knows it.
-filebrowser_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect, now: f64) {
+filebrowser_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect, now: f64) {
     u := ctx_of(a)
     br := &a.filebrowser
-    area, bar, _, content, row_h, bar_h := filebrowser_geom(pane, u.scale, t.font.line_height, t.font.cell_w)
+    area, bar, _, content, row_h, bar_h := filebrowser_geom(pane, gfx.face(t).line_height, gfx.face(t).cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }
-    rows, cols := filebrowser_rows(content, br.view, row_h, a.scale, t.font.line_height, t.font.cell_w)
+    rows, cols := filebrowser_rows(content, br.view, row_h, a.scale, gfx.face(t).line_height, gfx.face(t).cell_w)
     br.cols = cols
     wsfind_sync(a)
-    cw := t.font.cell_w
+    cw := gfx.face(t).cell_w
     path := filebrowser_path_rect(bar, bar_h)
     top, off := a.tree.scroll, i32(0) // the listing's window; the prompt's is its own
 
@@ -839,13 +839,13 @@ filebrowser_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect, now: f64) {
     if wsfind_shown(a) {
         br.hover_row, br.hover_place, br.hover_seg, br.hover_btn = -1, -1, -1, .None
         wsfind_frame(a, wsfind_field_rect(path, cw), content, row_h, cw, now)
-        filebrowser_declare(a, &t.font, pane, top, off, now)
+        filebrowser_declare(a, gfx.face(t), pane, top, off, now)
         return
     }
 
     // The pointer is over what the LAST frame painted, so the hit resolves against the animated
     // top. Read twice for the editor's reason (editor_frame).
-    unit := filebrowser_row_h(br.view, row_h, a.scale, t.font.line_height, cw)
+    unit := filebrowser_row_h(br.view, row_h, a.scale, gfx.face(t).line_height, cw)
     top0, off0 := ui.smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
 
     // The line belongs to the pane: losing the keyboard closes it.
@@ -878,5 +878,5 @@ filebrowser_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect, now: f64) {
     }
 
     top, off = ui.smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
-    filebrowser_declare(a, &t.font, pane, top, off, now)
+    filebrowser_declare(a, gfx.face(t), pane, top, off, now)
 }

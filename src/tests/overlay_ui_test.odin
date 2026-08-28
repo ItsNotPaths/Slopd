@@ -73,6 +73,7 @@ faded_in :: proc(an: ^ui.Anim) {
 @(private = "file")
 chord_app :: proc(a: ^app.App, n: int) {
     a.scale = 1
+    a.face = clay_test_face()
     a.aux_mode = .FileTree
     a.focus = .Aux
     a.ctrl_held = true
@@ -90,6 +91,7 @@ chord_app :: proc(a: ^app.App, n: int) {
 @(private = "file")
 switcher_app :: proc(a: ^app.App, n, active: int) {
     a.scale = 1
+    a.face = clay_test_face()
     a.aux_mode = .Terminal
     a.alt_held = true
     a.term_active = active
@@ -159,20 +161,20 @@ test_overlay_shown_predicates :: proc(t: ^testing.T) {
 test_chord_bar_in_both_faces :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 400)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     chord_app(&a, 20)
     defer delete(a.tree.entries)
     a.filebrowser.hover_row, a.filebrowser.hover_place, a.filebrowser.hover_seg = -1, -1, -1
 
-    ls := app.filetree_layout(&a, &f, PANE, 500, 400)
+    ls := app.filetree_layout(&a, f, PANE, 500, 400)
     ls_bar, lok := box_of(&ls, clay.ID("ch_bar"), .Rectangle)
     testing.expect(t, lok, "the listing face declared no chord bar")
 
     a.file_pane = .Browser
-    br := app.filebrowser_layout(&a, &f, PANE, 500, 400)
+    br := app.filebrowser_layout(&a, f, PANE, 500, 400)
     br_bar, bok := box_of(&br, clay.ID("ch_bar"), .Rectangle)
     testing.expect(t, bok, "the browser face declared no chord bar")
 
@@ -241,14 +243,14 @@ chord_items :: proc(state: string, maxw: int) -> ([]app.Chord_Item, int) {
 test_chord_bar_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 400)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     chord_app(&a, 20)
     defer delete(a.tree.entries)
 
-    cmds := app.chord_layout(&a, &f, AREA, 500, 400)
+    cmds := app.chord_layout(&a, f, AREA, 500, 400)
 
     bar, ok := box_of(&cmds, clay.ID("ch_bar"), .Rectangle)
     testing.expect(t, ok, "the bar drew no backdrop")
@@ -314,15 +316,15 @@ test_chord_bar_command_list :: proc(t: ^testing.T) {
 test_chord_bar_paints_over_the_rows :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 400)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     chord_app(&a, 20)
     defer delete(a.tree.entries)
 
     // The real pane, not chord_layout: what is covered is the filetree's own rows.
-    cmds := app.filetree_layout(&a, &f, PANE, 500, 400)
+    cmds := app.filetree_layout(&a, f, PANE, 500, 400)
 
     open_at: [8]int
     open_box: [8]gfx.Rect
@@ -371,25 +373,25 @@ test_chord_bar_paints_over_the_rows :: proc(t: ^testing.T) {
 test_chord_bar_captures_the_pointer :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 400)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     chord_app(&a, 20)
     defer delete(a.tree.entries)
 
-    _, _, rows := app.filetree_geom(PANE, 1, f.line_height)
-    _ = app.filetree_layout(&a, &f, PANE, 500, 400) // frame 1: boxes to hit against
+    _, _, rows := app.filetree_geom(PANE, f.line_height)
+    _ = app.filetree_layout(&a, f, PANE, 500, 400) // frame 1: boxes to hit against
 
     // The first entry row, well clear of the bar.
     clay.SetPointerState({f32(AREA.x + 50), f32(AREA.y + FT_ROW_H + 4)}, false)
-    _ = app.filetree_layout(&a, &f, PANE, 500, 400)
+    _ = app.filetree_layout(&a, f, PANE, 500, 400)
     testing.expect_value(t, app.filetree_hit(&a.tree, a.tree.scroll, rows), 0)
     testing.expect(t, !clay.PointerOver(clay.ID("ch_bar")), "the bar claimed a pointer above it")
 
     // A row the bar sits on top of: row 11 starts at 268, the bar at 260.
     clay.SetPointerState({f32(AREA.x + 50), f32(BAR_Y + 12)}, false)
-    _ = app.filetree_layout(&a, &f, PANE, 500, 400)
+    _ = app.filetree_layout(&a, f, PANE, 500, 400)
     testing.expect(t, clay.PointerOver(clay.ID("ch_bar")), "the bar did not answer for its own box")
     testing.expect(t, !clay.PointerOver(clay.ID("ft_row", 11)), "a row under the bar still answers")
     testing.expect_value(t, app.filetree_hit(&a.tree, a.tree.scroll, rows), -1)
@@ -405,17 +407,17 @@ test_chord_bar_captures_the_pointer :: proc(t: ^testing.T) {
 // session centred" is a derivation, and pinning it pins the whole of the pane's scrolling.
 @(test)
 test_switcher_geom_and_window :: proc(t: ^testing.T) {
-    colw, row_h, rows := app.switcher_geom(TERM_AREA, 1, 16, 10)
+    colw, row_h, rows := app.switcher_geom(TERM_AREA, 16, 10)
     testing.expect_value(t, colw, i32(COLW)) // two cells plus the padding
     testing.expect_value(t, row_h, i32(ROW_H))
     testing.expect_value(t, rows, SW_ROWS) // 196 / 22
 
     // Never wider than the pane it is inside.
-    narrow, _, _ := app.switcher_geom(gfx.Rect{0, 0, 12, 196}, 1, 16, 10)
+    narrow, _, _ := app.switcher_geom(gfx.Rect{0, 0, 12, 196}, 16, 10)
     testing.expect_value(t, narrow, i32(12))
 
     // A hidden pane is a zero rect and reports no rows.
-    _, _, none := app.switcher_geom(gfx.Rect{}, 1, 16, 10)
+    _, _, none := app.switcher_geom(gfx.Rect{}, 16, 10)
     testing.expect_value(t, none, 0)
 
     // Centred on the active session, then clamped at both ends.
@@ -447,15 +449,15 @@ test_switcher_geom_and_window :: proc(t: ^testing.T) {
 test_switcher_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     switcher_app(&a, 12, 7)
     defer switcher_app_free(&a)
     a.terminals[9].locked = true
 
-    cmds := app.switcher_layout(&a, &f, TERM_AREA, 500, 300)
+    cmds := app.switcher_layout(&a, f, TERM_AREA, 500, 300)
 
     col, ok := box_of(&cmds, clay.ID("sw_col"), .Rectangle)
     testing.expect(t, ok, "the switcher drew no column")
@@ -507,14 +509,14 @@ test_switcher_command_list :: proc(t: ^testing.T) {
 test_switcher_is_a_group_of_its_own :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     switcher_app(&a, 12, 7)
     defer switcher_app_free(&a)
 
-    cmds := app.switcher_layout(&a, &f, TERM_AREA, 500, 300)
+    cmds := app.switcher_layout(&a, f, TERM_AREA, 500, 300)
 
     open_at: [8]int
     open_box: [8]gfx.Rect
@@ -563,8 +565,8 @@ test_switcher_is_a_group_of_its_own :: proc(t: ^testing.T) {
 test_overlay_outranks_everything_declared_after_it :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 400)
     defer clay_test_context_free(raw)
-    f := clay_test_font()
-    ui.clay_use_font(&f)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
 
     a: app.App
     chord_app(&a, 20)
@@ -575,14 +577,14 @@ test_overlay_outranks_everything_declared_after_it :: proc(t: ^testing.T) {
 
     ed_pane := gfx.Rect{0, 0, 90, 380}
     strip := gfx.Rect{0, 380, 500, 20}
-    ed_area, ed_row_h, ed_rows := app.editor_geom(ed_pane, 1, f.line_height)
-    v := app.editor_view(edit.editor_current(&a.editor), &f, ed_area, ed_row_h, ed_rows, 0)
+    ed_area, ed_row_h, ed_rows := app.editor_geom(ed_pane, f.line_height)
+    v := app.editor_view(edit.editor_current(&a.editor), f, ed_area, ed_row_h, ed_rows, 0)
 
     app.clay_window_begin(500, 400)
     if clay.UI(clay.ID(app.WIN_ROOT))(app.clay_window_root(500, 400)) {
-        app.editor_declare(&a, &f, ed_pane, v, 0)
-        app.filetree_declare(app.ctx_of(&a), &a, &f, AREA, a.tree.scroll, 0, 0)
-        app.strip_declare(&a, &f, strip, 0)
+        app.editor_declare(&a, f, ed_pane, v, 0)
+        app.filetree_declare(app.ctx_of(&a), &a, f, AREA, a.tree.scroll, 0, 0)
+        app.strip_declare(&a, f, strip, 0)
     }
     cmds := clay.EndLayout(0)
 

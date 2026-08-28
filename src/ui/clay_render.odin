@@ -54,20 +54,20 @@ clay_isect :: proc(a, b: gfx.Rect) -> gfx.Rect {
 
 // Monospace: the RUNE count times the cell advance, not the byte count, or a box-drawing
 // character measures wide. `contextless` because Clay calls the shim on its own C stack.
-clay_measure_dims :: proc "contextless" (f: ^gfx.Font, s: string, line_h: u16) -> (w, h: f32) {
-    if f == nil {
+clay_measure_dims :: proc "contextless" (face: ^gfx.Face, s: string, line_h: u16) -> (w, h: f32) {
+    if face == nil {
         return 0, 0
     }
     n := 0
     for _ in s {
         n += 1
     }
-    h = line_h > 0 ? f32(line_h) : f.line_height
-    return f32(n) * f.cell_w, h
+    h = line_h > 0 ? f32(line_h) : face.line_height
+    return f32(n) * face.cell_w, h
 }
 
-// `userData` is the live ^Font, so a re-baked atlas is picked up without re-registering. Clay
-// caches measurements, hence clay_font_changed.
+// `userData` is the live ^Face, so a re-baked atlas is picked up without re-registering.
+// Clay caches measurements, hence clay_font_changed.
 @(private = "file")
 clay_measure :: proc "c" (
     text: clay.StringSlice,
@@ -75,13 +75,13 @@ clay_measure :: proc "c" (
     userData: rawptr,
 ) -> clay.Dimensions {
     line_h: u16 = config != nil ? config.lineHeight : 0
-    w, h := clay_measure_dims((^gfx.Font)(userData), string(text.chars[:text.length]), line_h)
+    w, h := clay_measure_dims((^gfx.Face)(userData), string(text.chars[:text.length]), line_h)
     return {width = w, height = h}
 }
 
-// Against a font that outlives the program (Text.font). Once, after text_init.
-clay_use_font :: proc(f: ^gfx.Font) {
-    clay.SetMeasureTextFunction(clay_measure, f)
+// Against a face that outlives the program. Once, after the backend is up.
+clay_use_face :: proc(face: ^gfx.Face) {
+    clay.SetMeasureTextFunction(clay_measure, face)
 }
 
 // The atlas was re-baked, so every cached width is wrong. Clay cannot notice on its own.
@@ -101,13 +101,13 @@ ClayCustom :: struct {
     // `host` is whatever clay_paint was handed — the front-end's own state, opaque here. A
     // painter casts it back to what it knows it is, the same trade `user` already makes. It is
     // what keeps the bridge from naming any one application.
-    paint: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr),
+    paint: proc(t: ^gfx.Draw, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr),
     user:  rawptr,
 }
 
 // `root` is the clip outside any clip element: a pane rect, or the whole window.
 clay_paint :: proc(
-    t: ^gfx.Text,
+    t: ^gfx.Draw,
     host: rawptr,
     cmds: ^clay.ClayArray(clay.RenderCommand),
     root: gfx.Rect,
@@ -157,8 +157,10 @@ clay_paint :: proc(
             }
 
         case .Image:
-            // The pane stuffs its GL texture name into imageData; the name is the payload.
-            gfx.image_push(t, u32(uintptr(cmd.renderData.image.imageData)), r)
+            // The pane points imageData at its own gfx.Image, which outlives EndLayout.
+            if img := (^gfx.Image)(cmd.renderData.image.imageData); img != nil {
+                gfx.image_push(t, img^, r)
+            }
 
         case .Custom:
             cu := (^ClayCustom)(cmd.renderData.custom.customData)

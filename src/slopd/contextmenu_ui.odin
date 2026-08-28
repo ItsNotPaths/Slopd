@@ -30,16 +30,16 @@ CM_SEP_H :: 5
 // swallows presses and the box a press is measured against are one number.
 ctxmenu_geom :: proc(
     m: ^ui.ContextMenu,
-    scale, line_h, cell_w: f32,
+    line_h, cell_w: f32,
     win_w, win_h: i32,
 ) -> (
     rect: gfx.Rect,
     row_h, sep_h: i32,
     pad: u16,
 ) {
-    row_h = i32(line_h) + i32(CM_ROW_PAD * scale)
-    sep_h = max(1, i32(CM_SEP_H * scale))
-    p := i32(max(0.0, CM_PAD * scale))
+    row_h = i32(line_h) + gfx.pad(line_h, CM_ROW_PAD)
+    sep_h = max(1, gfx.pad(line_h, CM_SEP_H))
+    p := gfx.pad(line_h, CM_PAD)
     pad = u16(p)
 
     h: i32 = 0
@@ -88,17 +88,17 @@ ctxmenu_click :: proc(a: ^App, i: int) {
 //                that draws its own frame, being the only one not inside a panel()
 //     cm_item/i  a verb: its label, then its chord hint pushed right by the solver
 //     cm_sep/i   a separator band, a single top border rather than a filled bar
-ctxmenu_declare :: proc(u: ui.UI_Ctx, m: ^ui.ContextMenu, f: ^gfx.Font, win_w, win_h: i32) {
+ctxmenu_declare :: proc(u: ui.UI_Ctx, m: ^ui.ContextMenu, face: gfx.Face, win_w, win_h: i32) {
     th := u.theme
     if m.kind == .None || len(m.items) == 0 {
         return
     }
-    rect, row_h, sep_h, pad := ctxmenu_geom(m, u.scale, f.line_height, f.cell_w, win_w, win_h)
+    rect, row_h, sep_h, pad := ctxmenu_geom(m, face.line_height, face.cell_w, win_w, win_h)
     if rect.w <= 0 || rect.h <= 0 {
         return
     }
-    lh := i32(f.line_height)
-    bw := u16(max(i32(1), i32(u.scale)))
+    lh := i32(face.line_height)
+    bw := u16(max(1, gfx.hairline(u.face.line_height)))
 
     box := ui.clay_pane_box(rect)
     box.floating.zIndex = CM_Z
@@ -162,10 +162,10 @@ ctxmenu_declare :: proc(u: ui.UI_Ctx, m: ^ui.ContextMenu, f: ^gfx.Font, win_w, w
 }
 
 // Test-facing wrapper; see filetree_layout.
-ctxmenu_layout :: proc(a: ^App, f: ^gfx.Font, win_w, win_h: i32) -> clay.ClayArray(clay.RenderCommand) {
+ctxmenu_layout :: proc(a: ^App, face: gfx.Face, win_w, win_h: i32) -> clay.ClayArray(clay.RenderCommand) {
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        ctxmenu_declare(ctx_of(a), &a.ctxmenu, f, win_w, win_h)
+        ctxmenu_declare(ctx_of(a), &a.ctxmenu, face, win_w, win_h)
     }
     return clay.EndLayout(0)
 }
@@ -173,7 +173,7 @@ ctxmenu_layout :: proc(a: ^App, f: ^gfx.Font, win_w, win_h: i32) -> clay.ClayArr
 // Declared LAST in the window, so nothing can paint over it. The stored rect is this frame's,
 // written before the click is claimed: the press was made against the menu the LAST frame
 // painted, and the two are the same box unless the window resized under it.
-ctxmenu_frame :: proc(t: ^gfx.Text, a: ^App, win_w, win_h: i32) {
+ctxmenu_frame :: proc(t: ^gfx.Draw, a: ^App, win_w, win_h: i32) {
     m := &a.ctxmenu
     if m.kind == .None {
         return
@@ -184,6 +184,6 @@ ctxmenu_frame :: proc(t: ^gfx.Text, a: ^App, win_w, win_h: i32) {
     if m.kind == .None {
         return // the chosen item closed the menu
     }
-    m.rect, _, _, _ = ctxmenu_geom(m, a.scale, t.font.line_height, t.font.cell_w, win_w, win_h)
-    ctxmenu_declare(ctx_of(a), m, &t.font, win_w, win_h)
+    m.rect, _, _, _ = ctxmenu_geom(m, gfx.face(t).line_height, gfx.face(t).cell_w, win_w, win_h)
+    ctxmenu_declare(ctx_of(a), m, gfx.face(t), win_w, win_h)
 }

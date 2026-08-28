@@ -3,7 +3,6 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
-import gl "vendor:OpenGL"
 import "vendor:glfw"
 import "../perf"
 import "../system"
@@ -20,9 +19,6 @@ HEIGHT :: 760
 TITLE :: "Slopd"
 APP_ID :: "slopd" // Wayland app-id / X11 instance name
 
-GL_MAJOR :: 3
-GL_MINOR :: 3
-
 main :: proc() {
     // The headless CLI, handled before a window opens and before the `--<path>` launch
     // argument below is read, so a flag is never mistaken for a folder to open.
@@ -30,6 +26,7 @@ main :: proc() {
        syntax.grammar_cli(os.args[1:]) ||
        install_cli(os.args[1:]) ||
        desktop_cli(os.args[1:]) ||
+       cell_dump_cli(os.args[1:]) ||
        system.sysbus_cli(os.args[1:]) {
         return
     }
@@ -41,8 +38,8 @@ main :: proc() {
     }
     defer glfw.Terminate()
 
-    glfw.WindowHint(glfw.CONTEXT_VERSION_MAJOR, GL_MAJOR)
-    glfw.WindowHint(glfw.CONTEXT_VERSION_MINOR, GL_MINOR)
+    glfw.WindowHint(glfw.CONTEXT_VERSION_MAJOR, gfx.GL_MAJOR)
+    glfw.WindowHint(glfw.CONTEXT_VERSION_MINOR, gfx.GL_MINOR)
     glfw.WindowHint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
     glfw.WindowHint(glfw.OPENGL_FORWARD_COMPAT, true) // required on macOS
 
@@ -61,7 +58,6 @@ main :: proc() {
     defer glfw.DestroyWindow(window)
 
     glfw.MakeContextCurrent(window)
-    gl.load_up_to(GL_MAJOR, GL_MINOR, glfw.gl_set_proc_address)
     window_pacing_init()
 
     app: App
@@ -111,7 +107,7 @@ main :: proc() {
     app.file_pane = cfg.file_pane
     app.file_icons = cfg.file_icons
     app.filebrowser.view = cfg.file_view
-    app.font_px = cfg.font_px // text_init bakes the atlas at it
+    app.font_px = cfg.font_px // draw_init_gl bakes the atlas at it
     app.binds, app.bind_errors = load_binds()
     app.macros, app.macro_errors = load_macros(app.binds[:]) // after them: they hold the chords
     binds_pane_init(&app.binds_pane, app.binds[:], app.bind_errors)
@@ -131,30 +127,32 @@ main :: proc() {
     highlighter_init(&app.hl)
     defer highlighter_destroy(&app.hl)
 
-    // Now that the editor and the file panes it moves are up. Before --util, because opening a
-    // file focuses the main pane and --util asked for the aux one.
+    if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {
+        app.scale = sx
+    }
+
+    // The backend, BEFORE anything can open a file: a launch path may be an image, and the
+    // decode hands its pixels straight to whichever backend is up. Its atlas bakes at physical
+    // pixels and BORROWS these bytes for the program's life, re-baking on a zoom or DPI change.
+    ttf, ttf_owned := gfx.choose_font()
+    defer if ttf_owned {
+        delete(ttf)
+    }
+    draw: gfx.Draw
+    if !gfx.draw_init_gl(&draw, glfw.gl_set_proc_address, ttf, app.font_px, app.scale) {
+        fmt.eprintln("draw_init_gl failed (font/shader)")
+        return
+    }
+    app.draw = &draw
+
+    // Now that the editor, the file panes it moves and the backend are up. Before --util,
+    // because opening a file focuses the main pane and --util asked for the aux one.
     if launch != "" && !cl_launch_path(&app, launch) {
         fmt.eprintfln("slopd: no such path: %s", launch)
     }
     if util {
         app.view = .Full
         app.focus = .Aux
-    }
-
-    if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {
-        app.scale = sx
-    }
-
-    // The atlas bakes at physical pixels. Text.ttf BORROWS these bytes for the program's life,
-    // re-baking from them on a zoom or DPI change.
-    ttf, ttf_owned := gfx.choose_font()
-    defer if ttf_owned {
-        delete(ttf)
-    }
-    text: gfx.Text
-    if !gfx.text_init(&text, ttf, app.font_px, app.scale) {
-        fmt.eprintln("text_init failed (font/shader)")
-        return
     }
 
     // At the real framebuffer size, so the first frame is correctly dimensioned. Clay
@@ -164,7 +162,7 @@ main :: proc() {
         return // clay_init reported why
     }
     // By pointer, so a re-baked atlas is picked up without re-registering.
-    ui.clay_use_font(&text.font)
+    ui.clay_use_face(gfx.face_live(&draw))
 
     // No-op unless --perflog. Needs the GL context for its timer queries.
     plog: perf.Perf
@@ -211,7 +209,7 @@ main :: proc() {
         if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {
             app.scale = sx
         }
-        if gfx.text_apply(&text, app.font_px, app.scale) {
+        if gfx.draw_apply(&draw, app.font_px, app.scale) {
             ui.clay_font_changed() // every cached width is stale at the new cell size
         }
 
@@ -223,14 +221,14 @@ main :: proc() {
         // perf.frame reads back the previous frame's gpu timer. No-ops unless --perflog.
         build_start := glfw.GetTime()
         perf.gpu_begin(&plog)
-        render(&app, &text, w, h, now)
+        render(&app, &draw, w, h, now)
         perf.gpu_end(&plog)
         cpu_ms := f32((glfw.GetTime() - build_start) * 1000)
 
         swap_start := glfw.GetTime()
         glfw.SwapBuffers(window)
         swap_ms := f32((glfw.GetTime() - swap_start) * 1000)
-        perf.frame(&plog, glfw.GetTime(), cpu_ms, swap_ms, w, h, text.frame_verts, app.last_input_at)
+        perf.frame(&plog, glfw.GetTime(), cpu_ms, swap_ms, w, h, gfx.frame_verts(&draw), app.last_input_at)
 
         // Once the size has sat unchanged for FONT_SAVE_DELAY, write it and disarm.
         if app.font_save_at > 0 && now >= app.font_save_at {

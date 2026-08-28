@@ -13,7 +13,7 @@ import "../ui"
 // The rows are font-sized rather than a fixed 28px: a row is a label line with its rail under
 // it, so its height has to follow the line height or the labels grow into the rails.
 
-COLOR_PAD :: 8 // pane margin
+COLOR_PAD :: 8 // pane margin, in layout units (gfx.pad)
 COLOR_GAP :: 10 // preview -> format line -> rails
 COLOR_PREVIEW_H :: 36
 COLOR_TRACK_H :: 6
@@ -22,8 +22,8 @@ COLOR_LABEL_GAP :: 4 // label line -> its rail
 COLOR_ROW_GAP :: 8 // rail -> the next label line
 COLOR_CHECKER :: 6 // alpha checkerboard square
 
-color_geom :: proc(pane: gfx.Rect, scale: f32) -> gfx.Rect {
-    return ui.inset(pane, i32(2 * scale))
+color_geom :: proc(pane: gfx.Rect, line_h: f32) -> gfx.Rect {
+    return ui.inset(pane, gfx.hairline(line_h))
 }
 
 color_slider_count :: proc(cp: ^ColorPane) -> int {
@@ -62,26 +62,27 @@ color_set_slider :: proc(a: ^App, i: int, v: f32) {
 // --- geometry ---
 
 color_preview_rect :: proc(u: ui.UI_Ctx, pane: gfx.Rect) -> gfx.Rect {
-    area := color_geom(pane, u.scale)
-    pad := i32(COLOR_PAD * u.scale)
-    return gfx.Rect{area.x + pad, area.y + pad, max(0, area.w - 2 * pad), i32(COLOR_PREVIEW_H * u.scale)}
+    area := color_geom(pane, u.face.line_height)
+    p := gfx.pad(u.face.line_height, COLOR_PAD)
+    return gfx.Rect{area.x + p, area.y + p, max(0, area.w - 2 * p), gfx.pad(u.face.line_height, COLOR_PREVIEW_H)}
 }
 
 // The strip one channel owns: a label line plus the gap under its rail.
-color_row_h :: proc(lh, scale: f32) -> i32 {
-    return i32(lh) + i32((COLOR_LABEL_GAP + COLOR_TRACK_H + COLOR_ROW_GAP) * scale)
+color_row_h :: proc(lh: f32) -> i32 {
+    // a label line, its rail, and the gap under it
+    return i32(lh) + gfx.pad(lh, COLOR_LABEL_GAP + COLOR_ROW_GAP) + max(1, gfx.pad(lh, COLOR_TRACK_H))
 }
 
 // `row` is the hit target: a press anywhere on it grabs the rail, which is 6px tall and would
 // otherwise be a pixel hunt.
 color_row :: proc(u: ui.UI_Ctx, cp: ^ColorPane, pane: gfx.Rect, idx: int, lh: f32) -> (row, track: gfx.Rect) {
     pr := color_preview_rect(u, pane)
-    y := pr.y + pr.h + i32(COLOR_GAP * u.scale)
+    y := pr.y + pr.h + gfx.pad(u.face.line_height, COLOR_GAP)
     if cp.live { // the format line sits between the swatch and the rails
-        y += i32(lh) + i32(COLOR_GAP * u.scale)
+        y += i32(lh) + gfx.pad(u.face.line_height, COLOR_GAP)
     }
-    row = gfx.Rect{pr.x, y + i32(idx) * color_row_h(lh, u.scale), pr.w, color_row_h(lh, u.scale)}
-    track = gfx.Rect{row.x, row.y + i32(lh) + i32(COLOR_LABEL_GAP * u.scale), row.w, i32(COLOR_TRACK_H * u.scale)}
+    row = gfx.Rect{pr.x, y + i32(idx) * color_row_h(lh), pr.w, color_row_h(lh)}
+    track = gfx.Rect{row.x, row.y + i32(lh) + gfx.pad(lh, COLOR_LABEL_GAP), row.w, max(1, gfx.pad(lh, COLOR_TRACK_H))}
     return
 }
 
@@ -143,8 +144,8 @@ Color_Body :: struct {
 // Declare the pane into the window's tree:
 //   co_pane  the content area inside the focus ring, clipping its own content
 //     co_body  the picker surface, as a Custom — rails are gradients, not Clay rectangles
-color_declare :: proc(u: ui.UI_Ctx, cp: ^ColorPane, f: ^gfx.Font, pane: gfx.Rect) {
-    area := color_geom(pane, u.scale)
+color_declare :: proc(u: ui.UI_Ctx, cp: ^ColorPane, face: gfx.Face, pane: gfx.Rect) {
+    area := color_geom(pane, u.face.line_height)
     if area.w <= 0 || area.h <= 0 {
         return
     }
@@ -162,14 +163,14 @@ color_declare :: proc(u: ui.UI_Ctx, cp: ^ColorPane, f: ^gfx.Font, pane: gfx.Rect
 
 // From the pane rect rather than `r`, the box the solver resolved. The two are the same box, and
 // taking the pane keeps the paint and the hit test on one geometry.
-color_paint :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
+color_paint :: proc(t: ^gfx.Draw, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
     a := (^App)(host)
     b := (^Color_Body)(user)
     if b == nil {
         return
     }
     u, cp := ctx_of(a), &a.color
-    cw, lh := t.font.cell_w, t.font.line_height
+    cw, lh := gfx.face(t).cell_w, gfx.face(t).line_height
     color_paint_preview(t, u, cp, b.pane, cw, lh)
     for i in 0 ..< color_slider_count(cp) {
         color_paint_row(t, u, cp, b.pane, i, cw, lh)
@@ -180,7 +181,7 @@ color_paint :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: ra
 // The colour, its hex in whichever of black/white reads on it, and the live token's own text
 // under it when the picker is writing back into a buffer.
 @(private = "file")
-color_paint_preview :: proc(t: ^gfx.Text, u: ui.UI_Ctx, cp: ^ColorPane, pane: gfx.Rect, cw, lh: f32) {
+color_paint_preview :: proc(t: ^gfx.Draw, u: ui.UI_Ctx, cp: ^ColorPane, pane: gfx.Rect, cw, lh: f32) {
     th := u.theme
     pr := color_preview_rect(u, pane)
     if pr.w <= 0 || pr.h <= 0 {
@@ -188,11 +189,11 @@ color_paint_preview :: proc(t: ^gfx.Text, u: ui.UI_Ctx, cp: ^ColorPane, pane: gf
     }
     col := color_over(cp.rgba, th.bg)
     if cp.style.has_alpha && cp.rgba[3] < 1 {
-        color_checker(t, pr, i32(COLOR_CHECKER * u.scale), cp.rgba, th.bg, th.separator)
+        color_checker(t, pr, max(1, gfx.pad(u.face.line_height, COLOR_CHECKER)), cp.rgba, th.bg, th.separator)
     } else {
         gfx.fill(t, pr, col)
     }
-    outline(t, pr, th.separator, i32(max(1, u.scale)))
+    outline(t, pr, th.separator, max(1, gfx.hairline(u.face.line_height)))
 
     hex := color_format(cp.rgba, {kind = .Hex, has_alpha = cp.style.has_alpha}, context.temp_allocator)
     lum := col.r * 0.299 + col.g * 0.587 + col.b * 0.114
@@ -205,12 +206,12 @@ color_paint_preview :: proc(t: ^gfx.Text, u: ui.UI_Ctx, cp: ^ColorPane, pane: gf
     )
     if cp.live {
         label := color_format(cp.rgba, cp.style, context.temp_allocator)
-        gfx.text_draw(t, label, f32(pr.x), f32(pr.y + pr.h + i32(COLOR_GAP * u.scale)), th.muted)
+        gfx.text_draw(t, label, f32(pr.x), f32(pr.y + pr.h + gfx.pad(u.face.line_height, COLOR_GAP)), th.muted)
     }
 }
 
 @(private = "file")
-color_paint_row :: proc(t: ^gfx.Text, u: ui.UI_Ctx, cp: ^ColorPane, pane: gfx.Rect, i: int, cw, lh: f32) {
+color_paint_row :: proc(t: ^gfx.Draw, u: ui.UI_Ctx, cp: ^ColorPane, pane: gfx.Rect, i: int, cw, lh: f32) {
     th := u.theme
     row, track := color_row(u, cp, pane, i, lh)
     if track.w <= 0 {
@@ -227,18 +228,18 @@ color_paint_row :: proc(t: ^gfx.Text, u: ui.UI_Ctx, cp: ^ColorPane, pane: gfx.Re
 
     // Centred on the value, kept whole inside the rail's ends, on a bg ring so it stays visible
     // where it matches the gradient under it.
-    w := i32(COLOR_THUMB_W * u.scale)
+    w := max(1, gfx.pad(u.face.line_height, COLOR_THUMB_W))
     x := clamp(track.x + i32(f32(track.w) * val) - w / 2, track.x, track.x + track.w - w)
-    thumb := gfx.Rect{x, track.y - i32(3 * u.scale), w, track.h + i32(6 * u.scale)}
-    gfx.fill(t, ui.inset(thumb, -i32(max(1, u.scale))), th.bg)
+    thumb := gfx.Rect{x, track.y - gfx.hairline(u.face.line_height), w, track.h + 2 * gfx.hairline(u.face.line_height)}
+    gfx.fill(t, ui.inset(thumb, -max(1, gfx.hairline(u.face.line_height))), th.bg)
     gfx.fill(t, thumb, held ? th.accent : th.fg) // always solid: a dim thumb is a lost one
 }
 
 // In slices: it shows the colour you would get by dropping the thumb at each point, so the bar
 // is its own legend.
 @(private = "file")
-color_paint_track :: proc(t: ^gfx.Text, u: ui.UI_Ctx, cp: ^ColorPane, track: gfx.Rect, i: int) {
-    step := max(1, i32(3 * u.scale))
+color_paint_track :: proc(t: ^gfx.Draw, u: ui.UI_Ctx, cp: ^ColorPane, track: gfx.Rect, i: int) {
+    step := max(1, gfx.hairline(u.face.line_height))
     for x := track.x; x < track.x + track.w; x += step {
         pos := f32(x - track.x) / f32(track.w)
         gfx.fill(t, gfx.Rect{x, track.y, min(step, track.x + track.w - x), track.h}, color_track_at(u, cp, i, pos))
@@ -269,7 +270,7 @@ color_over :: proc(c: [4]f32, bg: [3]f32) -> [3]f32 {
 
 // Each square blended separately, so alpha reads as alpha rather than a darker pane.
 @(private = "file")
-color_checker :: proc(t: ^gfx.Text, r: gfx.Rect, sz: i32, over: [4]f32, lo, hi: [3]f32) {
+color_checker :: proc(t: ^gfx.Draw, r: gfx.Rect, sz: i32, over: [4]f32, lo, hi: [3]f32) {
     for y := r.y; y < r.y + r.h; y += sz {
         for x := r.x; x < r.x + r.w; x += sz {
             base := ((x - r.x) / sz + (y - r.y) / sz) % 2 == 0 ? lo : hi
@@ -280,13 +281,13 @@ color_checker :: proc(t: ^gfx.Text, r: gfx.Rect, sz: i32, over: [4]f32, lo, hi: 
 }
 
 // Input runs before the declaration, so a drag lands in the frame it happened.
-color_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect) {
+color_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect) {
     if pane.w <= 0 || pane.h <= 0 {
         return
     }
     u, cp := ctx_of(a), &a.color
-    lh := t.font.line_height
+    lh := gfx.face(t).line_height
     color_click(u, a, pane, lh)
     color_drag(u, a, pane, lh)
-    color_declare(u, cp, &t.font, pane)
+    color_declare(u, cp, gfx.face(t), pane)
 }

@@ -82,7 +82,7 @@ test_view_full_swaps_surface :: proc(t: ^testing.T) {
 }
 
 // `zen` / `zm` toggles in and out of Split, and switches into Zen from any view
-// (including Full). `full` / `fm` toggles Full, keeping whichever surface is current.
+// (including Full). `full` / `face` toggles Full, keeping whichever surface is current.
 @(test)
 test_view_toggles :: proc(t: ^testing.T) {
     a: app.App // .Split
