@@ -52,6 +52,8 @@ Pane_Vis :: struct {
 }
 
 App :: struct {
+    // The system clipboard, installed by whichever front-end is up. See Clipboard.
+    clipboard: Clipboard,
     // Set by :q and friends. A front-end ends its own session on it: the window closes, the
     // terminal leaves the alternate screen. Neither knows how the other stops.
     quit:     bool,

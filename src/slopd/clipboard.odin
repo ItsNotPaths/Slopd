@@ -8,6 +8,27 @@ import "../edit"
 
 // The system clipboard, plus our memory of the last copy so a multi-cursor paste can put one
 // piece back per caret. Every surface's copy/cut/paste ends here (clip_take / clip_put).
+//
+// The system half is the front-end's, because the two have nothing in common: a window asks its
+// window system, and a terminal writes OSC 52 and cannot read at all. `user` is that front-end's
+// own handle, opaque here — the same trade ClayCustom.paint makes, and for the same reason.
+Clipboard :: struct {
+    get:  proc(user: rawptr) -> string, // "" when the front-end has no way to read one
+    set:  proc(user: rawptr, s: string),
+    user: rawptr,
+}
+
+// Falls back to our own last copy, which is what a terminal answers with: OSC 52 is write-only,
+// so the system's clipboard is not readable and ours is the only one there is.
+clipboard_get :: proc(a: ^App) -> string {
+    if a.clipboard.get == nil {
+        return a.clip_joined
+    }
+    if s := a.clipboard.get(a.clipboard.user); s != "" {
+        return s
+    }
+    return a.clip_joined
+}
 
 // Selections, or whole lines when nothing is selected. The pieces are remembered so a later
 // equal-count paste can distribute them.
@@ -30,7 +51,7 @@ editor_cut :: proc(a: ^App) {
 // up; otherwise the whole text at every caret.
 editor_paste :: proc(a: ^App) {
     b := edit.editor_current(&a.editor)
-    clip := glfw.GetClipboardString(a.window)
+    clip := clipboard_get(a)
     changed: bool
     if len(a.clip_pieces) > 1 && clip == a.clip_joined && len(a.clip_pieces) == len(b.cursors) {
         changed = txt.doc_paste_pieces(&b.doc, a.clip_pieces)
@@ -61,12 +82,14 @@ term_paste :: proc(a: ^App, t: ^pty.Terminal) {
     if !pty.terminal_alive(t) {
         return
     }
-    pty.terminal_paste(t, glfw.GetClipboardString(a.window))
+    pty.terminal_paste(t, clipboard_get(a))
 }
 
 // Takes ownership of `joined` and `pieces`, freeing the previous remembered copy.
 clipboard_set :: proc(a: ^App, joined: string, pieces: []string) {
-    glfw.SetClipboardString(a.window, strings.clone_to_cstring(joined, context.temp_allocator))
+    if a.clipboard.set != nil {
+        a.clipboard.set(a.clipboard.user, joined)
+    }
     delete(a.clip_joined)
     for p in a.clip_pieces {
         delete(p)

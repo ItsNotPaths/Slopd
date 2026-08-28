@@ -22,7 +22,7 @@ field_copy :: proc(a: ^App, d: ^txt.Doc, cut: bool) -> (changed: bool) {
 
 // Cut at the first newline: a second line would be text you can neither see nor delete.
 field_paste :: proc(a: ^App, d: ^txt.Doc) -> bool {
-    clip := glfw.GetClipboardString(a.window)
+    clip := clipboard_get(a)
     if i := strings.index_byte(clip, '\n'); i >= 0 {
         clip = clip[:i]
     }

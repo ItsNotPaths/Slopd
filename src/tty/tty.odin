@@ -2,6 +2,7 @@ package tty
 
 import "base:runtime"
 import "core:c"
+import "core:encoding/base64"
 import "core:sys/posix"
 
 // The HOST terminal: the one Slopd is running inside when it draws itself as a grid. src/pty is
@@ -147,6 +148,23 @@ wait :: proc(t: ^Tty, seconds: f64) -> bool {
 read :: proc(t: ^Tty, buf: []u8) -> int {
     n := posix.read(posix.STDIN_FILENO, raw_data(buf), uint(len(buf)))
     return n > 0 ? int(n) : 0
+}
+
+// OSC 52: hands `s` to the terminal, which puts it on the system clipboard for us. Best effort
+// and unacknowledged — a terminal that does not implement it, or has it switched off, silently
+// ignores the sequence, and there is no reply to wait for either way.
+//
+// There is deliberately no read. The OSC 52 query lets any program on the terminal read your
+// clipboard, so terminals disable it by default and the ones that do not should. Pasting FROM the
+// system belongs to bracketed paste, which arrives through input like typing does.
+clipboard_set :: proc(t: ^Tty, s: string) {
+    b64, err := base64.encode(transmute([]u8)s, allocator = context.temp_allocator)
+    if err != nil {
+        return
+    }
+    write(t, "\e]52;c;")
+    write(t, b64)
+    write(t, "\a")
 }
 
 @(private)

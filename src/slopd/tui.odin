@@ -50,6 +50,8 @@ tui_run :: proc(args: []string) {
         fmt.eprintfln("slopd: no such path: %s", launch.path)
     }
 
+    a.clipboard = {set = tui_clipboard_set, user = &host} // no get: OSC 52 is write-only
+
     ui.frame_budget = TUI_FRAME_BUDGET
     buf: [256]u8
 
@@ -100,6 +102,14 @@ tui_wants_quit :: proc(n: int, buf: []u8) -> bool {
         }
     }
     return false
+}
+
+// Out to the terminal, which puts it on the system clipboard. Reading back is not offered, so
+// clipboard_get falls through to our own last copy; a paste FROM another program arrives as
+// bracketed paste through input instead.
+@(private = "file")
+tui_clipboard_set :: proc(user: rawptr, s: string) {
+    tty.clipboard_set((^tty.Tty)(user), s)
 }
 
 // `--tui` anywhere in the arguments. Checked before the window is opened, and it is a front-end

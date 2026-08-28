@@ -107,6 +107,8 @@ main :: proc() {
     perf.init(&plog, launch.perflog, paths.data_asset("perf.log", context.temp_allocator))
     defer perf.destroy(&plog)
 
+    app.clipboard = {get = glfw_clipboard_get, set = glfw_clipboard_set, user = rawptr(window)}
+
     // The window owns the App so the "c" key callback can reach it.
     app.window = window
     glfw.SetWindowUserPointer(window, &app)
@@ -242,4 +244,15 @@ content_scale_callback :: proc "c" (window: glfw.WindowHandle, xscale, yscale: f
 @(private = "file")
 window_focus_callback :: proc "c" (window: glfw.WindowHandle, focused: i32) {
     wake.mark()
+}
+
+// The window system's own clipboard, both ways. `user` is the GLFW window.
+@(private = "file")
+glfw_clipboard_get :: proc(user: rawptr) -> string {
+    return glfw.GetClipboardString(glfw.WindowHandle(user))
+}
+
+@(private = "file")
+glfw_clipboard_set :: proc(user: rawptr, s: string) {
+    glfw.SetClipboardString(glfw.WindowHandle(user), strings.clone_to_cstring(s, context.temp_allocator))
 }
