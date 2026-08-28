@@ -12,8 +12,17 @@ import "../edit"
 // COPY to accompany it, not a link), and an embedded copy the `license` builtin opens is
 // that copy.
 
-// Stamped by the build (`-define:SLOPD_VERSION=v1.2.3`); "dev" for a plain `odin build`.
+// Stamped by the build (`-define:SLOPD_VERSION=1.2.3`); "dev" for a plain `odin build`.
+//
+// `-define` PARSES its value, so a tag that reads as a number arrives as one: `2.0` became
+// f64(2) and every numbered release printed `%!s(f64=2)`. `dev-local` never did, which is
+// why a local build looked fine. The build quotes the tag and Odin keeps the quotes, so
+// version_text takes them off; the numeric branch stays for a build that passes it bare.
 SLOPD_VERSION :: #config(SLOPD_VERSION, "dev")
+
+version_text :: proc() -> string {
+    return strings.trim(fmt.tprintf("%v", SLOPD_VERSION), `"`)
+}
 
 LICENSE_SRC := string(#load("../../LICENSE"))
 README_SRC := string(#load("../../README.md"))
@@ -70,7 +79,7 @@ open_embedded_doc :: proc(a: ^App, k: Embedded_Doc) {
 about_cli :: proc(args: []string) -> (handled: bool) {
     for arg in args {
         if arg == "--version" || arg == "-v" {
-            fmt.printfln("Slopd %s", SLOPD_VERSION)
+            fmt.printfln("Slopd %s", version_text())
             return true
         }
     }

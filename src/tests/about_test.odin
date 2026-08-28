@@ -117,3 +117,18 @@ test_license_command_opens_the_doc :: proc(t: ^testing.T) {
     testing.expect_value(t, len(a.editor.buffers), n)
     testing.expect_value(t, edit.editor_current(&a.editor).path, "README.md")
 }
+
+// `slopd --version`. The value comes in through `-define`, which PARSES it: a tag like
+// `2.0` arrives as f64 and used to print `%!s(f64=2)` because the format said `%s`. Every
+// numbered release shipped that, and no local build ever showed it, because `dev-local` is
+// not a number. So the check is on the SHAPE: a version never carries a format escape and
+// never carries the quotes the build wraps it in.
+@(test)
+test_version_text_is_printable :: proc(t: ^testing.T) {
+    v := app.version_text()
+    testing.expect(t, v != "", "the version stamp is empty")
+    testing.expect(t, !strings.contains(v, "%"), "the version did not format")
+    testing.expect(t, !strings.contains(v, "\""), "the build's quotes reached the output")
+    // A plain `odin build` passes no define at all.
+    testing.expect_value(t, v, "dev")
+}

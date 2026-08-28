@@ -73,9 +73,11 @@ jobs:
           # -define:GLFW_SHARED=false links vendor/glfw/lib/libglfw3.a, so the release
           # binary uses the GLFW we vendor rather than whatever libglfw the runner has
           # (and users then need at run time). Matches release.sh --local.
-          # SLOPD_VERSION stamps the tag into `slopd --version`.
+          # SLOPD_VERSION stamps the tag into `slopd --version`. The quotes are ESCAPED so
+          # Odin receives them: -define parses its value, and a tag like `2.0` read bare
+          # becomes a float. about.odin takes the quotes back off.
           odin build src/slopd -out:"$BIN_NAME" -o:speed -define:GLFW_SHARED=false \
-              -define:SLOPD_VERSION="${{ inputs.version }}"
+              -define:SLOPD_VERSION='"${{ inputs.version }}"'
           strip --strip-all "$BIN_NAME"
 
       - name: Stage artifacts

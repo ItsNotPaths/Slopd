@@ -54,9 +54,12 @@ if [ $DO_LOCAL -eq 1 ]; then
     # loaded at runtime from the GPU driver; there is nothing to link for it.)
     # Requires ./download-deps.sh to have built the static archive first.
     # SLOPD_VERSION stamps `slopd --version`; a local build is not a tagged one, so it
-    # says so rather than claiming a release number.
+    # says so rather than claiming a release number. Quoted the same way release.yml
+    # quotes the tag: -define PARSES its value, so anything that reads as a number
+    # arrives as one. `dev-local` never would, and it is quoted anyway so the two build
+    # paths are the same shape and neither is a trap for the next edit.
     odin build "$PROJECT_DIR/src/slopd" -out:"$RELEASE_DIR/$BIN_NAME" \
-        -o:speed -define:GLFW_SHARED=false -define:SLOPD_VERSION="dev-local"
+        -o:speed -define:GLFW_SHARED=false -define:SLOPD_VERSION='"dev-local"'
     # ~150KB of a ~1.9MB binary is .symtab/.strtab. A -o:speed build carries no .debug_*
     # sections to begin with, so --strip-all costs no debuggability that this build had.
     # release.yml already strips; do it here too so a local build matches the download.
