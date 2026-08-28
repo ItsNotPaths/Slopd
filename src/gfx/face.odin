@@ -49,3 +49,10 @@ pad :: proc(line_height: f32, n: i32) -> i32 {
 hairline :: proc(line_height: f32) -> i32 {
     return pad(line_height, 2)
 }
+
+// A gap that SEPARATES TEXT, as opposed to one that decorates. Padding is free to round away to
+// nothing in a grid; this is not, because two labels with no gap between them read as one word.
+// One cell is the least a grid can put there.
+gap :: proc(size: f32) -> i32 {
+    return max(1, i32(size))
+}

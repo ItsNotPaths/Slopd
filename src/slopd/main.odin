@@ -60,72 +60,11 @@ main :: proc() {
     glfw.MakeContextCurrent(window)
     window_pacing_init()
 
+    launch := parse_launch_args(os.args[1:])
+
     app: App
-    app_init(&app)
-    defer app_destroy(&app)
-
-    // --util     launch into Full on the aux pane, so the filetree fills the window
-    // --perflog  append a per-second frame-timing line to perf.log
-    // --<path>   a directory becomes the workspace, a file opens with its folder as one.
-    //            Read here, applied below once the panes it loads into exist.
-    perflog, util := false, false
-    launch: string
-    for arg in os.args[1:] {
-        switch {
-        case arg == "--util":
-            util = true
-        case arg == "--perflog":
-            perflog = true
-        case len(arg) > 2 && strings.has_prefix(arg, "--"):
-            launch = arg[2:]
-        }
-    }
-
-    cfg := load_config()
-    defer config_destroy(&cfg)
-    app.theme = theme_load(cfg.theme_path)
-    app.theme_path = strings.clone(cfg.theme_path) // the raw value, for the settings pane
-    app.indent = cfg.indent
-    app.line_numbers = cfg.line_numbers
-    app.scroll_mode = cfg.scroll_mode
-    app.jump_lines = cfg.jump_lines
-    app.show_whitespace = cfg.show_whitespace
-    app.show_guides = cfg.show_guides
-    app.folding = cfg.folding
-    app.folder_cd_run = cfg.folder_cd_run
-    app.discard_run = cfg.discard_run
-    app.git_tool = strings.clone(cfg.git_tool) // owned: the Config pane can rewrite it
-    app.exclude = strings.clone(cfg.exclude) // likewise
-    app.git_term = cfg.git_term
-    app.run_term = cfg.run_term
-    app.grep_pane_always = cfg.grep_pane_always
-    app.cl_preview_on = cfg.cl_preview
-    app.conflict_prompt = cfg.conflict_prompt
-    app.conflict_stage = cfg.conflict_stage
-    app.mouse_on = cfg.mouse
-    app.hover_on = cfg.hover
-    app.file_pane = cfg.file_pane
-    app.file_icons = cfg.file_icons
-    app.filebrowser.view = cfg.file_view
-    app.font_px = cfg.font_px // draw_init_gl bakes the atlas at it
-    app.binds, app.bind_errors = load_binds()
-    app.macros, app.macro_errors = load_macros(app.binds[:]) // after them: they hold the chords
-    binds_pane_init(&app.binds_pane, app.binds[:], app.bind_errors)
-
-    edit.editor_init(&app.editor)
-    defer edit.editor_destroy(&app.editor)
-    filetree_init(&app.tree)
-    defer filetree_destroy(&app.tree)
-    filebrowser_init(&app.filebrowser) // reads the config's [places] block
-    defer filebrowser_destroy(&app.filebrowser)
-    app.grammars = syntax.load_grammars() // shared by the config pane and the highlighter
-    defer syntax.grammars_destroy(app.grammars)
-    app.gram_ext = syntax.grammar_ext_index(app.grammars)
-    defer delete(app.gram_ext) // borrowed keys/values, freed with the registry
-    config_pane_init(&app.config_pane, app.grammars)
-    defer config_pane_destroy(&app.config_pane)
-    highlighter_init(&app.hl)
-    defer highlighter_destroy(&app.hl)
+    cfg := app_boot(&app)
+    defer app_shutdown(&app, &cfg)
 
     if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {
         app.scale = sx
@@ -145,14 +84,8 @@ main :: proc() {
     }
     app.draw = &draw
 
-    // Now that the editor, the file panes it moves and the backend are up. Before --util,
-    // because opening a file focuses the main pane and --util asked for the aux one.
-    if launch != "" && !cl_launch_path(&app, launch) {
-        fmt.eprintfln("slopd: no such path: %s", launch)
-    }
-    if util {
-        app.view = .Full
-        app.focus = .Aux
+    if !app_launch(&app, launch) {
+        fmt.eprintfln("slopd: no such path: %s", launch.path)
     }
 
     // At the real framebuffer size, so the first frame is correctly dimensioned. Clay
@@ -166,7 +99,7 @@ main :: proc() {
 
     // No-op unless --perflog. Needs the GL context for its timer queries.
     plog: perf.Perf
-    perf.init(&plog, perflog, paths.data_asset("perf.log", context.temp_allocator))
+    perf.init(&plog, launch.perflog, paths.data_asset("perf.log", context.temp_allocator))
     defer perf.destroy(&plog)
 
     // The window owns the App so the "c" key callback can reach it.

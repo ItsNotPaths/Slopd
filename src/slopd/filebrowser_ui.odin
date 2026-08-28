@@ -573,7 +573,7 @@ filebrowser_declare_segs :: proc(u: ui.UI_Ctx, br: ^FileBrowser, segs: []Path_Se
             {
                 layout = {
                     sizing         = {height = clay.SizingGrow()},
-                    padding        = {left = u16(cw / 2), right = u16(cw / 2)},
+                    padding        = {left = u16(gfx.gap(cw / 2)), right = u16(gfx.gap(cw / 2))},
                     childAlignment = {y = .Center},
                 },
                 backgroundColor = bg,

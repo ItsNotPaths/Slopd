@@ -4,17 +4,15 @@ import "core:fmt"
 import "core:os"
 import "core:strconv"
 import "core:strings"
-import "../edit"
 import "../gfx"
 import "../ui"
 
-// `slopd --cell-dump[=COLSxROWS]`, the cell backend's smoke test: one frame of the real render
-// path into a grid, written to stdout as ANSI. No window, no GL, no input — this exists to
-// answer whether Clay laying out at one unit per cell produces a usable screen, which every
-// later piece of terminal mode depends on.
+// `slopd --cell-dump[=COLSxROWS]`, the cell backend's smoke test: one frame into a grid, written
+// to stdout as ANSI. No window, no GL, no input.
 //
-// Deliberately a REDUCED setup: theme, an editor and a filetree, and nothing that reads the
-// user's config. What is being looked at is geometry, not settings.
+// The same app_boot the window uses, so what it shows is the configured UI and not an
+// approximation of it. This is the shape a live terminal mode takes: boot, open a backend, run
+// the frame. What it is missing is the loop and the input.
 CELL_DUMP_COLS :: 100
 CELL_DUMP_ROWS :: 30
 
@@ -25,15 +23,9 @@ cell_dump_cli :: proc(args: []string) -> bool {
     }
 
     a: App
-    app_init(&a)
-    defer app_destroy(&a)
-    a.theme = theme_load("")
-    a.scale = 1
-
-    edit.editor_init(&a.editor)
-    defer edit.editor_destroy(&a.editor)
-    filetree_init(&a.tree)
-    defer filetree_destroy(&a.tree)
+    cfg := app_boot(&a)
+    defer app_shutdown(&a, &cfg)
+    a.scale = 1 // a grid has no DPI; every size comes from the Face
 
     draw: gfx.Draw
     if !gfx.draw_init_cells(&draw, size.x, size.y) {
@@ -47,6 +39,11 @@ cell_dump_cli :: proc(args: []string) -> bool {
         return true
     }
     ui.clay_use_face(gfx.face_live(&draw))
+
+    launch := parse_launch_args(args)
+    if !app_launch(&a, launch) {
+        fmt.eprintfln("slopd: no such path: %s", launch.path)
+    }
 
     render(&a, &draw, size.x, size.y, 0)
     os.write(os.stdout, gfx.frame_bytes(&draw))
