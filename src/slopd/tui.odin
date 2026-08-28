@@ -1,11 +1,11 @@
 package main
 
 import "core:fmt"
-import "core:time"
 import "../gfx"
 import "../tty"
 import "../wake"
 import "../ui"
+import "../clock"
 
 // `slopd --tui`, the terminal front-end. Same binary, same app_boot, same render: what differs is
 // the backend under gfx.Draw, the surface the size comes from, and how the loop waits.
@@ -51,13 +51,12 @@ tui_run :: proc(args: []string) {
     }
 
     ui.frame_budget = TUI_FRAME_BUDGET
-    started := time.now()
     buf: [256]u8
 
-    for {
+    for !a.quit {
         free_all(context.temp_allocator) // nothing temp escapes a frame
 
-        now := time.duration_seconds(time.since(started))
+        now := clock.now()
         app_poll(&a, now)
         render(&a, &draw, cols, rows, now)
         tty.write_bytes(&host, gfx.frame_bytes(&draw))
@@ -69,7 +68,7 @@ tui_run :: proc(args: []string) {
             if wake.take() { // a pty reader marked it while the frame was drawing
                 break
             }
-            timeout := app_next_wake(&a, time.duration_seconds(time.since(started)))
+            timeout := app_next_wake(&a, clock.now())
             ready := tty.wait(&host, timeout)
             if tty.resized() {
                 cols, rows = tty.size(&host)

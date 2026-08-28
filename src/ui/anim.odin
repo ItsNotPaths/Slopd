@@ -2,7 +2,7 @@ package ui
 
 import "vendor:glfw"
 
-// An Anim is a one-shot scalar tween on the glfw.GetTime() clock: state that moves embeds
+// An Anim is a one-shot scalar tween on the clock.now() clock: state that moves embeds
 // one, starts it, and reads anim_value() each frame.
 //
 // The main loop polls app_next_wake() after every frame: a non-negative result is a timeout,
@@ -20,7 +20,7 @@ SPLIT_DUR :: 0.12 // editor/aux split adjustment (Alt+[ / Alt+]), zen-paced
 SWITCHER_DUR :: 0.10 // terminal switcher fade-in
 
 Anim :: struct {
-    start:    f64, // glfw.GetTime() when it began
+    start:    f64, // clock.now() when it began
     duration: f64, // <= 0 means inactive, and anim_value returns `to`
     from, to: f32,
 }

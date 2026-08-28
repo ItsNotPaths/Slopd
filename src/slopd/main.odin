@@ -11,6 +11,7 @@ import "../gfx"
 import "../paths"
 import "../syntax"
 import "../ui"
+import "../clock"
 WIDTH :: 1200
 HEIGHT :: 760
 TITLE :: "Slopd"
@@ -125,11 +126,11 @@ main :: proc() {
 
     // Render first, then wait for the next thing worth drawing — an event or a deadline, never
     // the display server's chatter (see the gate at the foot of the loop).
-    for !glfw.WindowShouldClose(window) {
+    for !glfw.WindowShouldClose(window) && !app.quit {
         // Nothing temp escapes into App state, so one free_all per frame keeps it bounded.
         free_all(context.temp_allocator)
 
-        now := glfw.GetTime()
+        now := clock.now()
         app_poll(&app, now)
 
         w, h := glfw.GetFramebufferSize(window)
@@ -148,16 +149,16 @@ main :: proc() {
 
         // cpu = vertex assembly, gpu = a timer query around the draws, swap = the vsync block.
         // perf.frame reads back the previous frame's gpu timer. No-ops unless --perflog.
-        build_start := glfw.GetTime()
+        build_start := clock.now()
         perf.gpu_begin(&plog)
         render(&app, &draw, w, h, now)
         perf.gpu_end(&plog)
-        cpu_ms := f32((glfw.GetTime() - build_start) * 1000)
+        cpu_ms := f32((clock.now() - build_start) * 1000)
 
-        swap_start := glfw.GetTime()
+        swap_start := clock.now()
         glfw.SwapBuffers(window)
-        swap_ms := f32((glfw.GetTime() - swap_start) * 1000)
-        perf.frame(&plog, glfw.GetTime(), cpu_ms, swap_ms, w, h, gfx.frame_verts(&draw), app.last_input_at)
+        swap_ms := f32((clock.now() - swap_start) * 1000)
+        perf.frame(&plog, clock.now(), cpu_ms, swap_ms, w, h, gfx.frame_verts(&draw), app.last_input_at)
 
         // Once the size has sat unchanged for FONT_SAVE_DELAY, write it and disarm.
         if app.font_save_at > 0 && now >= app.font_save_at {
@@ -170,22 +171,22 @@ main :: proc() {
         // per-frame traffic wakes GLFW every time we present, and drawing for that presents
         // again. A frame is earned by a marked event or by the deadline actually coming due;
         // the close box is the third way out, and it sets no mark.
-        for !glfw.WindowShouldClose(window) {
+        for !glfw.WindowShouldClose(window) && !app.quit {
             // Before the wait as well as after: a reader thread can mark while the frame above
             // is still drawing, leaving only its PostEmptyEvent to end a deadline-less wait.
             if wake.take() {
                 break
             }
-            timeout := app_next_wake(&app, glfw.GetTime())
+            timeout := app_next_wake(&app, clock.now())
             if timeout < 0 {
                 glfw.WaitEvents()
                 continue
             }
-            deadline := glfw.GetTime() + timeout
+            deadline := clock.now() + timeout
             glfw.WaitEventsTimeout(timeout)
             // WAKE_SLACK absorbs the wait returning early (ppoll rounds to the timer's
             // granularity); without it the deadline needs a second, tiny wait.
-            if glfw.GetTime() >= deadline - WAKE_SLACK {
+            if clock.now() >= deadline - WAKE_SLACK {
                 break
             }
         }

@@ -8,6 +8,7 @@ import "../txt"
 import "../gfx"
 import "../ui"
 import "../pty"
+import "../clock"
 
 // The terminal pane's UI half. Clay owns the frame, we own the body: a 200x60 grid is 12k
 // cells, so the pane declares one `Custom` and the painter fills the box Clay reserves.
@@ -410,7 +411,7 @@ terminal_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect, now: f64) {
     v := terminal_view(term, area, row_h, gfx.face(t).cell_w, cols, rows)
     hit := terminal_hit(u, term, v)
     terminal_click(u, term, a.term_active, hit)
-    terminal_drag(u, term, v, a.term_active, glfw.GetTime()) // extend a capture the press already made
+    terminal_drag(u, term, v, a.term_active, clock.now()) // extend a capture the press already made
     terminal_track(term, hit)
 
     terminal_sync(term, &a.theme, cols, rows)

@@ -7,6 +7,7 @@ import "../txt"
 import "../ui"
 import "../pty"
 import "../edit"
+import "../clock"
 
 // GLFW events in, one Action out. No verbs and no chords here: this tracks what is held, asks
 // bind.odin which Action a keystroke names, and hands it to action.odin.
@@ -28,16 +29,26 @@ key_callback :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods
     handle_key(a, key, action, mods)
 }
 
-// The focused editable owns it — the same one the Text binds act on, so typing and editing
-// cannot disagree about which box they are in.
 char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
     context = runtime.default_context()
     a := (^App)(glfw.GetWindowUserPointer(window))
-    if a == nil || a.alt_held || codepoint < 32 {
+    if a == nil {
+        return
+    }
+    handle_char(a, codepoint)
+}
+
+// The focused editable owns it — the same one the Text binds act on, so typing and editing
+// cannot disagree about which box they are in.
+//
+// Takes a rune rather than an event, so a front-end that decodes its own text (a terminal reading
+// UTF-8 off stdin) reaches the same body the window's char callback does.
+handle_char :: proc(a: ^App, codepoint: rune) {
+    if a.alt_held || codepoint < 32 {
         return
     }
     wake.mark()
-    a.last_input_at = glfw.GetTime()
+    a.last_input_at = clock.now()
     a.blink_base = a.last_input_at // caret solid, then blinking
     a.move_all_armed = false // typing is not a motion
     mouse_stand_down(a)
@@ -68,7 +79,7 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
 
 handle_key :: proc(a: ^App, key, action, mods: i32) {
     if action == glfw.PRESS || action == glfw.REPEAT {
-        now := glfw.GetTime()
+        now := clock.now()
         a.blink_base = now
         a.last_input_at = now // the perf log's keystroke->present timestamp
 
@@ -84,13 +95,13 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     case glfw.KEY_LEFT_ALT, glfw.KEY_RIGHT_ALT:
         a.alt_held = action != glfw.RELEASE
         if action == glfw.PRESS {
-            ui.anim_start(&a.switcher_anim, glfw.GetTime(), 0, 1, ui.SWITCHER_DUR)
+            ui.anim_start(&a.switcher_anim, clock.now(), 0, 1, ui.SWITCHER_DUR)
         }
         return // Alt alone asks for nothing
     case glfw.KEY_LEFT_CONTROL, glfw.KEY_RIGHT_CONTROL:
         a.ctrl_held = action != glfw.RELEASE
         if action == glfw.PRESS {
-            ui.anim_start(&a.chord_anim, glfw.GetTime(), 0, 1, ui.SWITCHER_DUR)
+            ui.anim_start(&a.chord_anim, clock.now(), 0, 1, ui.SWITCHER_DUR)
         }
     case glfw.KEY_LEFT_SHIFT, glfw.KEY_RIGHT_SHIFT:
         a.shift_held = action != glfw.RELEASE

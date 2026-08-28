@@ -123,8 +123,8 @@ test_wheel_apply_list_scrolls_view :: proc(t: ^testing.T) {
     testing.expect_value(t, a.grep.scroll, ui.WHEEL_LINES)
     testing.expect_value(t, a.grep.selected, 4) // the cursor did not move
 
-    // The stamp is not asserted here: wheel_apply reads glfw.GetTime(), which is 0 headless,
-    // and 0 is the value that MEANS attached. scroll_test.odin covers it directly.
+    // The stamp is not asserted here: wheel_apply reads clock.now(), a real monotonic reading
+    // even headless, so the value varies per run. scroll_test.odin covers it directly.
 
     app.wheel_apply(&a, .List, 2)
     testing.expect_value(t, a.grep.scroll, 3 * ui.WHEEL_LINES)
@@ -405,7 +405,7 @@ test_wheel_shift_scrolls_columns :: proc(t: ^testing.T) {
     app.mouse_wheel(&a, -1) // Shift: the column moves…
     testing.expect_value(t, b.hscroll, ui.WHEEL_COLS)
     testing.expect_value(t, b.scroll, ui.WHEEL_LINES) // …and the page is left alone
-    // The detach STAMP is buffer_test's: it comes from glfw.GetTime(), zero with no window.
+    // The detach STAMP is buffer_test's: it comes from clock.now() and varies per run.
 
     // Back the other way, bounded at home rather than running negative. The callback cannot
     // clamp the far end, but it can clamp this one.

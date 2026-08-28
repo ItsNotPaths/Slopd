@@ -8,6 +8,7 @@ import "../gfx"
 import "../ui"
 import "../pty"
 import "../edit"
+import "../clock"
 
 // The GLFW callbacks and the wheel routing: everything about the pointer that has to know
 // which pane it is over, and so belongs to the application rather than to the pane.
@@ -68,7 +69,7 @@ wheel_apply :: proc(a: ^App, target: ui.Wheel_Target, notch: int) {
         if len(a.editor.buffers) == 0 {
             return
         }
-        edit.buffer_scroll_by(edit.editor_current(&a.editor), d, glfw.GetTime())
+        edit.buffer_scroll_by(edit.editor_current(&a.editor), d, clock.now())
     case .Terminal:
         t := term_current(a)
         if t == nil {
@@ -86,7 +87,7 @@ wheel_apply :: proc(a: ^App, target: ui.Wheel_Target, notch: int) {
     case .List:
         // No total: the callback has no font, no pane rect and no flattened row list, so it
         // cannot know where the end is. list_scroll_apply clamps next frame.
-        now := glfw.GetTime()
+        now := clock.now()
         switch a.aux_mode {
         case .FileTree:
             // While the prompt is up its rows are the list on screen, so they are what moves.
@@ -115,7 +116,7 @@ wheel_apply_h :: proc(a: ^App, target: ui.Wheel_Target, notch: int) {
     if notch == 0 || target != .Editor || len(a.editor.buffers) == 0 {
         return
     }
-    edit.buffer_hscroll_by(edit.editor_current(&a.editor), notch * ui.WHEEL_COLS, glfw.GetTime())
+    edit.buffer_hscroll_by(edit.editor_current(&a.editor), notch * ui.WHEEL_COLS, clock.now())
 }
 
 // A press or a wheel can be the first pointer event a window sees, since a cursor already over
@@ -184,7 +185,7 @@ mouse_button_callback :: proc "c" (window: glfw.WindowHandle, button, action, mo
     mouse_wake(a) // before parking, so the click acts with the cursor visible
     mouse_locate(a, window)
     m := &a.mouse
-    now := glfw.GetTime()
+    now := clock.now()
     near := abs(m.x - m.click_x) <= ui.DOUBLE_CLICK_PX && abs(m.y - m.click_y) <= ui.DOUBLE_CLICK_PX
     m.click_count = near && now - m.click_at < ui.DOUBLE_CLICK_S ? m.click_count + 1 : 1
     m.click_at, m.click_x, m.click_y = now, m.x, m.y

@@ -10,6 +10,7 @@ import "../ui"
 import "../search"
 import "../pty"
 import "../edit"
+import "../clock"
 
 // Application state — the single source of truth. Flat and plain on purpose.
 
@@ -51,6 +52,9 @@ Pane_Vis :: struct {
 }
 
 App :: struct {
+    // Set by :q and friends. A front-end ends its own session on it: the window closes, the
+    // terminal leaves the alternate screen. Neither knows how the other stops.
+    quit:     bool,
     // The live backend, borrowed from main. Product code that must reach the paint target
     // outside a frame goes through this — loading an image is the only such path today. Nil
     // until the backend is up, which is before anything can open a file.
@@ -286,7 +290,7 @@ view_poll_disk :: proc(a: ^App, now: f64) {
 set_focus :: proc(a: ^App, who: ui.Focus) {
     a.focus = who
     if a.view == .Zen {
-        now := glfw.GetTime()
+        now := clock.now()
         ui.anim_start(&a.zen_anim, now, ui.anim_value(&a.zen_anim, now), a.focus == .Aux ? 1 : 0, ui.ZEN_DUR)
     }
     // Refresh on gaining focus, so an external edit flows in at once rather than waiting for
@@ -371,7 +375,7 @@ font_set_px :: proc(a: ^App, px: f32) {
         return
     }
     a.font_px = next
-    a.font_save_at = glfw.GetTime() + FONT_SAVE_DELAY
+    a.font_save_at = clock.now() + FONT_SAVE_DELAY
 }
 
 // Text-proportional chrome scales by this to keep pace with the font; DPI-only paddings

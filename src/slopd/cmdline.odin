@@ -557,26 +557,26 @@ cl_quit :: proc(a: ^App, cmd: string, args: string) {
     case "wa":
         cl_write_all(a)
     case "q!":
-        glfw.SetWindowShouldClose(a.window, true)
+        a.quit = true
     case "q":
         if n := edit.ring_dirty_count(&a.editor); n > 0 {
             cl_echo(a, fmt.tprintf(":q: %d unsaved buffer(s) — :wqa saves+quits, :q! drops", n))
         } else {
-            glfw.SetWindowShouldClose(a.window, true)
+            a.quit = true
         }
     case "wq":
         edit.buffer_save(edit.editor_current(&a.editor))
         if n := edit.ring_dirty_count(&a.editor); n > 0 {
             cl_echo(a, fmt.tprintf(":wq: %d other unsaved buffer(s) — :wqa or :q!", n))
         } else {
-            glfw.SetWindowShouldClose(a.window, true)
+            a.quit = true
         }
     case "wqa", "waq":
         cl_write_all(a)
         if n := edit.ring_dirty_count(&a.editor); n > 0 {
             cl_echo(a, fmt.tprintf(":wqa: %d buffer(s) could not be saved — :q! to discard", n))
         } else {
-            glfw.SetWindowShouldClose(a.window, true)
+            a.quit = true
         }
     }
 }
