@@ -10,8 +10,9 @@ import "../clock"
 // `slopd --tui`, the terminal front-end. Same binary, same app_boot, same render: what differs is
 // the backend under gfx.Draw, the surface the size comes from, and how the loop waits.
 //
-// No input yet. `q` and ^C quit, and everything else is ignored — the bind table is keyed on GLFW
-// key codes and the translation from escape sequences is its own job.
+// Input arrives through tui_input.odin, which decodes the kitty keyboard protocol into the same
+// three integers the window's GLFW callback hands handle_key. `:q` ends the session, as it does
+// in a window.
 
 // A terminal has no vsync to block on, so an animating frame is paced here instead. Idle frames
 // are not paced at all: the loop blocks until something asks for one.
@@ -53,7 +54,9 @@ tui_run :: proc(args: []string) {
     a.clipboard = {set = tui_clipboard_set, user = &host} // no get: OSC 52 is write-only
 
     ui.frame_budget = TUI_FRAME_BUDGET
-    buf: [256]u8
+    input: Tui_Input
+    defer tui_input_destroy(&input)
+    buf: [512]u8
 
     for !a.quit {
         free_all(context.temp_allocator) // nothing temp escapes a frame
@@ -78,11 +81,7 @@ tui_run :: proc(args: []string) {
                 break
             }
             if ready {
-                n := tty.read(&host, buf[:])
-                if tui_wants_quit(n, buf[:]) {
-                    return
-                }
-                if n > 0 {
+                if tui_input_pump(&a, &input, &host, buf[:]) {
                     break
                 }
             } else if timeout >= 0 {
@@ -90,18 +89,6 @@ tui_run :: proc(args: []string) {
             }
         }
     }
-}
-
-// The whole input layer for now: q, Q, or ^C. Everything else is dropped rather than guessed at,
-// because a half-translated escape sequence is worse than no input at all.
-@(private = "file")
-tui_wants_quit :: proc(n: int, buf: []u8) -> bool {
-    for b in buf[:n] {
-        if b == 'q' || b == 'Q' || b == 0x03 {
-            return true
-        }
-    }
-    return false
 }
 
 // Out to the terminal, which puts it on the system clipboard. Reading back is not offered, so
