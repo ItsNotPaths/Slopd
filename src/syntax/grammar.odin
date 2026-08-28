@@ -160,10 +160,9 @@ grammar_install :: proc(dir: string, g: Grammar) -> (ok: bool, msg: string) {
     if g.repo == "" {
         return false, fmt.tprintf("%s: no grammar source in the registry", g.name)
     }
-    if !os.exists(dir) {
-        if err := os.make_directory(dir); err != nil {
-            return false, fmt.tprintf("%s: cannot create %s (%v)", g.name, dir, err)
-        }
+    // _all, not one level: the data folder above grammars/ may not exist either.
+    if err := os.make_directory_all(dir); err != nil && !os.exists(dir) {
+        return false, fmt.tprintf("%s: cannot create %s (%v)", g.name, dir, err)
     }
 
     // Clone and compile in a temp dir, then publish atomically by renaming staged files within

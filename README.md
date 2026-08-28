@@ -172,9 +172,10 @@ The release is **one binary**, and everything it needs is inside it. The script 
 application list. On Omarchy it also offers a Hyprland window rule. It writes nothing else.
 Pass `--yes` to take every default, or `--no-desktop` / `--no-omarchy` to skip a step.
 
-You can also just download the binary and run it. Either way Slopd starts **portable**: it
-runs on the defaults baked in, and **cannot save a setting, because it has no config file.**
-The Config pane's first row says so, and the fix is on it:
+You can also just download the binary and run it. Either way Slopd starts with **no config
+file**, so it runs on the defaults baked in and **cannot save a setting.** A binary sitting in
+`~/.local/bin` is not an install on its own — the pane's first row reads `not installed` until
+the step below writes the config and the folders, and the fix is on that row:
 
 ```sh
 slopd --install      # write slopd.config out, create themes/ and grammars/

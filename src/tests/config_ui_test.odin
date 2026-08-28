@@ -146,32 +146,31 @@ test_config_rows_flatten :: proc(t: ^testing.T) {
     testing.expect(t, rows[search + 2].present, "an installed grammar is not marked present")
 }
 
-// A dropdown like any other, with the mode's options: an installed copy can be replaced or
-// removed, anything else installed. `where` is always first, so Enter lands on the harmless
-// option.
+// A dropdown like any other: an installed copy can be replaced or removed, anything else
+// installed. `where` is always first, so Enter lands on the harmless option. The flag is
+// install_complete(), not the mode — a binary at ~/.local/bin with no config is NOT installed,
+// and offering it an uninstall would be a lie in the one place a user reads the state.
 @(test)
 test_install_options :: proc(t: ^testing.T) {
     buf: [len(app.Install_Option)]app.Install_Option
 
-    for m in ([]paths.Install_Mode{.Portable, .ReadOnly}) {
-        opts := app.install_options(m, false, buf[:])
-        testing.expect_value(t, len(opts), 3)
-        testing.expect_value(t, opts[0], app.Install_Option.Where)
-        testing.expect_value(t, opts[1], app.Install_Option.Install)
-    }
+    opts := app.install_options(false, false, buf[:])
+    testing.expect_value(t, len(opts), 3)
+    testing.expect_value(t, opts[0], app.Install_Option.Where)
+    testing.expect_value(t, opts[1], app.Install_Option.Install)
 
-    installed := app.install_options(.Installed, false, buf[:])
+    installed := app.install_options(true, false, buf[:])
     testing.expect_value(t, len(installed), 4)
     testing.expect_value(t, installed[0], app.Install_Option.Where)
     testing.expect_value(t, installed[1], app.Install_Option.Reinstall)
     testing.expect_value(t, installed[2], app.Install_Option.Uninstall)
 
     // The launcher pair is last, and exactly one option: whichever of add / remove the machine
-    // does not have. It does not vary with the install mode.
-    for m in paths.Install_Mode {
-        without := app.install_options(m, false, buf[:])
+    // does not have. It does not vary with the install state.
+    for done in ([]bool{false, true}) {
+        without := app.install_options(done, false, buf[:])
         testing.expect_value(t, without[len(without) - 1], app.Install_Option.DesktopAdd)
-        with := app.install_options(m, true, buf[:])
+        with := app.install_options(done, true, buf[:])
         testing.expect_value(t, len(with), len(without))
         testing.expect_value(t, with[len(with) - 1], app.Install_Option.DesktopRemove)
     }

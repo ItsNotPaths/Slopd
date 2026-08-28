@@ -140,7 +140,7 @@ install_where :: proc() -> string {
     b := strings.builder_make(context.temp_allocator)
     cfg := paths.config_asset("slopd.config", context.temp_allocator)
     entry := desktop_entry_path(context.temp_allocator)
-    fmt.sbprintfln(&b, "mode:      %s", install_mode_label(paths.install_mode()))
+    fmt.sbprintfln(&b, "mode:      %s", install_status_label())
     fmt.sbprintfln(&b, "binary:    %s", paths.exe_path(context.temp_allocator))
     fmt.sbprintfln(&b, "config:    %s%s", cfg, os.exists(cfg) ? "" : "   (not there yet)")
     fmt.sbprintfln(&b, "themes:    %s", paths.data_asset("themes", context.temp_allocator))
@@ -174,6 +174,21 @@ install_mode_label :: proc(m: paths.Install_Mode) -> string {
     return ""
 }
 
+// Installed for real. `.Installed` only means the binary SITS at the install path, which is all
+// install.sh does — it downloads the binary and stops. Everything an install writes is this
+// program's own step, so a path that looks installed is not one until the config is there.
+install_complete :: proc() -> bool {
+    return paths.install_mode() == .Installed && config_writable()
+}
+
+// The word the pane and `--where` use.
+install_status_label :: proc() -> string {
+    if paths.install_mode() == .Installed && !install_complete() {
+        return "not installed"
+    }
+    return install_mode_label(paths.install_mode())
+}
+
 // The mode, the place it chose, and any reason nothing below can be saved. First row of the
 // pane so that reason sits above the settings it applies to. Always a fresh string in
 // `allocator`, since the row it feeds outlives every temp path here.
@@ -191,9 +206,9 @@ install_state_text :: proc(allocator := context.allocator) -> string {
     }
     if !config_writable() {
         // No file to write a change to; the row names the fix as well as the state.
-        return fmt.aprintf("%s · %s · no config file — install to save settings", install_mode_label(paths.install_mode()), short, allocator = allocator)
+        return fmt.aprintf("%s · %s · no config file — install to save settings", install_status_label(), short, allocator = allocator)
     }
-    return fmt.aprintf("%s · %s", install_mode_label(paths.install_mode()), short, allocator = allocator)
+    return fmt.aprintf("%s · %s", install_status_label(), short, allocator = allocator)
 }
 
 // --- the copying, and the PATH check ---

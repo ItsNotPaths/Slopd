@@ -13,8 +13,10 @@ import "core:sys/linux"
 //
 //   Portable   the folder beside the binary is writable — a download, or a build folder.
 //              Everything lives there; move the folder and its world moves with it.
-//   Installed  the binary IS the copy `--install` made at ~/.local/bin/<app_name>, so the files
-//              go to the XDG folders: a bin folder holds programs, not their data.
+//   Installed  the binary sits at ~/.local/bin/<app_name>, so the files go to the XDG folders:
+//              a bin folder holds programs, not their data. A location test, and only that —
+//              install.sh drops the binary there and stops, so whether the install RAN is a
+//              separate question (install_complete, in install.odin).
 //   ReadOnly   the folder beside the binary cannot be written (someone put it in /usr/bin).
 //              What is there is read, and nothing is written.
 //

@@ -297,11 +297,13 @@ lang_option_label :: proc(o: LangOption) -> string {
 }
 
 // lang_options' contract, for Slopd's own row. An installed copy can be replaced or removed;
-// anything else can be installed. `desktop` decides the launcher pair the same way.
-install_options :: proc(m: paths.Install_Mode, desktop: bool, buf: []Install_Option) -> []Install_Option {
+// anything else can be installed. `installed` is install_complete(), NOT the mode: a binary
+// sitting at the install path with none of its files is offered the install, not the uninstall.
+// `desktop` decides the launcher pair the same way.
+install_options :: proc(installed, desktop: bool, buf: []Install_Option) -> []Install_Option {
     n := 0
     buf[n] = .Where;n += 1
-    if m == .Installed {
+    if installed {
         buf[n] = .Reinstall;n += 1
         buf[n] = .Uninstall;n += 1
     } else {
@@ -314,7 +316,7 @@ install_options :: proc(m: paths.Install_Mode, desktop: bool, buf: []Install_Opt
 install_option_label :: proc(o: Install_Option) -> string {
     switch o {
     case .Where:         return "where are my files"
-    case .Install:       return "install to ~/.local/bin"
+    case .Install:       return "install to user"
     case .Reinstall:     return "reinstall (writes any missing config or folder)"
     case .Uninstall:     return "uninstall (settings are kept)"
     case .DesktopAdd:    return "add to the application list"
@@ -377,7 +379,7 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
     )
     if cp.open == .Install {
         buf: [len(Install_Option)]Install_Option
-        for o, oi in install_options(paths.install_mode(), desktop_present(), buf[:]) {
+        for o, oi in install_options(install_complete(), desktop_present(), buf[:]) {
             append(&rows, config_option_row(ROW_INSTALL, oi, install_option_label(o)))
         }
     }
@@ -537,7 +539,7 @@ config_choose :: proc(a: ^App) {
     case .None:
     case .Install:
         buf: [len(Install_Option)]Install_Option
-        opts := install_options(paths.install_mode(), desktop_present(), buf[:])
+        opts := install_options(install_complete(), desktop_present(), buf[:])
         if cp.opt_sel >= 0 && cp.opt_sel < len(opts) {
             config_run_install(a, opts[cp.opt_sel])
         }
@@ -572,7 +574,7 @@ config_dropdown_move :: proc(a: ^App, delta: int) {
             config_pane_move(cp, step)
         case .Install:
             buf: [len(Install_Option)]Install_Option
-            opts := install_options(paths.install_mode(), desktop_present(), buf[:])
+            opts := install_options(install_complete(), desktop_present(), buf[:])
             cp.opt_sel = clamp(cp.opt_sel + step, 0, max(0, len(opts) - 1))
         case .Setting:
             opts := setting_options(a, Setting(cp.open_idx))
