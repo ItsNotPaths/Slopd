@@ -2,6 +2,7 @@ package main
 
 import "core:strings"
 import "../edit"
+import "../pty"
 import "../syntax"
 
 // Everything a running Slopd needs that is NOT a backend: the config applied, the binds and
@@ -72,6 +73,19 @@ app_shutdown :: proc(a: ^App, cfg: ^Config) {
     app_destroy(a)
 }
 
+// What every front-end does before it draws, whichever surface it draws onto. Skipping any of it
+// does not just lose a feature: app_next_wake schedules against disk_poll_at, so a loop that
+// never polls the disk asks to be woken immediately, forever.
+app_poll :: proc(a: ^App, now: f64) {
+    for term in a.terminals {
+        pty.terminal_drain(term) // each session's buffered PTY output into the parser
+    }
+    cl_chain_pump(a) // advance a pending && chain once its exit code arrives
+    view_poll_disk(a, now) // re-read an externally-changed file
+    grep_poll(a) // a finished project search into the pane
+    cl_preview_sync(a, now) // after the reload: a changed file invalidates what a preview found
+}
+
 // The launch flags every front-end reads the same way.
 //
 //   --util     launch into Full on the aux pane, so the filetree fills the surface
@@ -93,6 +107,7 @@ parse_launch_args :: proc(args: []string) -> (out: Launch_Args) {
             out.util = true
         case arg == "--perflog":
             out.perflog = true
+        case arg == "--tui": // the front-end selector, not a path
         case strings.has_prefix(arg, "--cell-dump"): // handled by cell_dump_cli
         case len(arg) > 2 && strings.has_prefix(arg, "--"):
             out.path = arg[2:]

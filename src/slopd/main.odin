@@ -11,9 +11,6 @@ import "../gfx"
 import "../paths"
 import "../syntax"
 import "../ui"
-import "../pty"
-import "../edit"
-
 WIDTH :: 1200
 HEIGHT :: 760
 TITLE :: "Slopd"
@@ -28,6 +25,13 @@ main :: proc() {
        desktop_cli(os.args[1:]) ||
        cell_dump_cli(os.args[1:]) ||
        system.sysbus_cli(os.args[1:]) {
+        return
+    }
+
+    // The terminal front-end. Not a headless command: it boots the same App and runs its own
+    // frame loop, so nothing below this ever opens a window.
+    if tui_requested(os.args[1:]) {
+        tui_run(os.args[1:])
         return
     }
 
@@ -125,17 +129,9 @@ main :: proc() {
         // Nothing temp escapes into App state, so one free_all per frame keeps it bounded.
         free_all(context.temp_allocator)
 
-        // Each session's buffered PTY output into the parser, before drawing.
-        for term in app.terminals {
-            pty.terminal_drain(term)
-        }
-        cl_chain_pump(&app) // advance a pending && chain once its exit code arrives
-
         now := glfw.GetTime()
-        view_poll_disk(&app, now) // re-read an externally-changed file
-        grep_poll(&app) // a finished project search into the pane
-        cl_preview_sync(&app, now) // after the reload: a changed file invalidates what a
-        // preview found in it
+        app_poll(&app, now)
+
         w, h := glfw.GetFramebufferSize(window)
         // Re-bake the atlas if the DPI scale or the font zoom changed. text_apply no-ops
         // otherwise.
