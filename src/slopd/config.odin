@@ -18,6 +18,13 @@ Line_Numbers :: enum {
     Relative,
 }
 
+// Which front-end `slopd` with no front-end flag starts. `--gfx` and `--tui` name one for a
+// single run and override this.
+Display :: enum {
+    Gfx,
+    Tui,
+}
+
 // Follow moves the view only when the target would leave it; Middle pins the target to the
 // middle row. One policy across every line view. ROWS only — the editor's column axis has its
 // own, see buffer_hscroll_target.
@@ -34,6 +41,7 @@ File_Pane :: enum {
 // One `[section]` block exists and is not a setting: `[places]` holds the browser's sidebar
 // shortcuts, `Name: /path` per line. Every reader here stops at the first section header.
 Config :: struct {
+    default_display:  Display, // which front-end a bare `slopd` opens
     theme_path:       string, // absolute (owned), or "" for the baked-in default
     indent:           txt.Indent,
     line_numbers:     Line_Numbers,
@@ -102,6 +110,7 @@ DEFAULT_CONFIG_SRC := string(#load("../../slopd.config"))
 //   3. your slopd.config  if it exists
 load_config :: proc() -> Config {
     cfg := Config {
+        default_display = .Gfx,
         indent          = {.Spaces, 4},
         line_numbers    = .Relative,
         scroll_mode     = .Follow,
@@ -153,6 +162,10 @@ config_parse :: proc(src: string, cfg: ^Config) {
         key := strings.trim_space(s[:colon])
         val := strings.trim_space(s[colon + 1:])
         switch key {
+        case "default_display":
+            if d, ok := parse_display(val); ok {
+                cfg.default_display = d
+            }
         case "theme":
             // A raw token (a themes/ name, "default", or "omarchy"); theme_load resolves it.
             delete(cfg.theme_path)
@@ -296,6 +309,8 @@ theme_resolve :: proc(token: string) -> string {
 // temp-allocated, the fixed ones static.
 setting_options :: proc(a: ^App, s: Setting) -> []string {
     switch s {
+    case .DefaultDisplay:
+        return DISPLAY_OPTS[:]
     case .LineNumbers:
         return LINE_NUMBER_OPTS[:]
     case .ScrollMode:
@@ -329,6 +344,7 @@ ON_OFF_OPTS := [?]string{"on", "off"}
 STAGE_RUN_OPTS := [?]string{"stage", "run"}
 PROMPT_KEEP_OPTS := [?]string{"prompt", "keep"}
 FILE_PANE_OPTS := [?]string{"ls", "browser"}
+DISPLAY_OPTS := [?]string{"gfx", "tui"}
 
 // "default" first, then "omarchy" where a desktop palette exists, then themes/<name>.theme
 // sorted. The pinned entries are not files, so they lead rather than sort in. Names and the
@@ -389,6 +405,7 @@ term_options :: proc(current: int, detached: bool, count: int, allocator := cont
 // grammar paths are data, not knobs, so they stay out. Order is the pane's row order.
 
 Setting :: enum {
+    DefaultDisplay,
     Theme,
     LineNumbers,
     ScrollMode,
@@ -420,6 +437,7 @@ setting_is_text :: proc(s: Setting) -> bool {
 
 setting_key :: proc(s: Setting) -> string {
     switch s {
+    case .DefaultDisplay: return "default_display"
     case .Theme:        return "theme"
     case .LineNumbers:  return "line_numbers"
     case .ScrollMode:   return "scroll_mode"
@@ -449,6 +467,7 @@ setting_key :: proc(s: Setting) -> string {
 // state otherwise.
 setting_value :: proc(a: ^App, s: Setting) -> string {
     switch s {
+    case .DefaultDisplay: return a.default_display == .Tui ? "tui" : "gfx"
     case .Theme:        return a.theme_path
     case .LineNumbers:  return a.line_numbers == .Global ? "global" : "relative"
     case .ScrollMode:   return a.scroll_mode == .Middle ? "middle" : "follow"
@@ -477,6 +496,9 @@ setting_value :: proc(a: ^App, s: Setting) -> string {
 // Validate, apply to the live App, persist. False (changing nothing) on an invalid value.
 setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
     switch s {
+    case .DefaultDisplay:
+        // Read at launch, so this run keeps the front-end it started with.
+        a.default_display = parse_display(val) or_return
     case .Theme:
         delete(a.theme_path)
         a.theme_path = strings.clone(val) // the raw token
@@ -557,6 +579,14 @@ setting_commit :: proc(a: ^App, s: Setting, val: string) -> bool {
     }
     config_set(setting_key(s), val)
     return true
+}
+
+parse_display :: proc(s: string) -> (d: Display, ok: bool) {
+    switch s {
+    case "gfx": return .Gfx, true
+    case "tui": return .Tui, true
+    }
+    return .Gfx, false
 }
 
 // ok=false on anything else, so an invalid edit keeps the old value.

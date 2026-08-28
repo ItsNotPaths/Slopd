@@ -110,6 +110,10 @@ App :: struct {
     // off the config file, so it is initialised in main.
     file_pane:   File_Pane,
     file_icons:  bool, // inert without the vendored icon face
+
+    // Which front-end a bare `slopd` opens (config `default_display`). Read before this App
+    // exists, so it is held only for the Config pane to show and edit.
+    default_display: Display,
     filebrowser: FileBrowser,
 
     // Alt+P: the file pane's top bar as a `WORKSPACE/` line — the unsaved ring until you type,

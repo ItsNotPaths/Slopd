@@ -31,7 +31,7 @@ main :: proc() {
 
     // The terminal front-end. Not a headless command: it boots the same App and runs its own
     // frame loop, so nothing below this ever opens a window.
-    if tui_requested(os.args[1:]) {
+    if display_choose(os.args[1:]) == .Tui {
         tui_run(os.args[1:])
         return
     }

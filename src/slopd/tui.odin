@@ -8,7 +8,8 @@ import "../wake"
 import "../ui"
 import "../clock"
 
-// `slopd --tui`, the terminal front-end. Same binary, same app_boot, same render: what differs is
+// The terminal front-end, which `slopd --tui` asks for and `default_display: tui` makes the
+// default. Same binary, same app_boot, same render: what differs is
 // the backend under gfx.Draw, the surface the size comes from, and how the loop waits.
 //
 // Input arrives through tui_input.odin, which decodes the kitty keyboard protocol into the same
@@ -22,7 +23,7 @@ TUI_FRAME_BUDGET :: 1.0 / 60
 tui_run :: proc(args: []string) {
     host: tty.Tty
     if !tty.enter(&host) {
-        fmt.eprintln("slopd --tui: stdout is not a terminal")
+        fmt.eprintln("slopd: the terminal front-end needs a terminal on stdout")
         return
     }
     defer tty.leave(&host)
@@ -36,7 +37,7 @@ tui_run :: proc(args: []string) {
 
     draw: gfx.Draw
     if !gfx.draw_init_cells(&draw, cols, rows) {
-        fmt.eprintfln("slopd --tui: bad terminal size %dx%d", cols, rows)
+        fmt.eprintfln("slopd: bad terminal size %dx%d", cols, rows)
         return
     }
     defer gfx.draw_destroy(&draw)
@@ -110,15 +111,4 @@ tui_clipboard_set :: proc(user: rawptr, s: string) {
 @(private = "file")
 tui_clipboard_get :: proc(user: rawptr) -> string {
     return clip.get()
-}
-
-// `--tui` anywhere in the arguments. Checked before the window is opened, and it is a front-end
-// rather than a headless command, so it runs the whole session and main returns after it.
-tui_requested :: proc(args: []string) -> bool {
-    for arg in args {
-        if arg == "--tui" {
-            return true
-        }
-    }
-    return false
 }

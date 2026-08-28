@@ -42,6 +42,7 @@ app_boot :: proc(a: ^App) -> Config {
     a.hover_on = cfg.hover
     a.file_pane = cfg.file_pane
     a.file_icons = cfg.file_icons
+    a.default_display = cfg.default_display // already acted on; the pane shows and edits it
     a.filebrowser.view = cfg.file_view
     a.font_px = cfg.font_px // a pixel backend bakes its atlas at it; a grid ignores it
     a.binds, a.bind_errors = load_binds()
@@ -107,13 +108,32 @@ parse_launch_args :: proc(args: []string) -> (out: Launch_Args) {
             out.util = true
         case arg == "--perflog":
             out.perflog = true
-        case arg == "--tui": // the front-end selector, not a path
+        case arg == "--tui", arg == "--gfx": // front-end selectors, not paths
         case strings.has_prefix(arg, "--cell-dump"): // handled by cell_dump_cli
         case len(arg) > 2 && strings.has_prefix(arg, "--"):
             out.path = arg[2:]
         }
     }
     return
+}
+
+// Which front-end this run gets. `--tui` and `--gfx` name one; with neither, the config's
+// `default_display` decides. A flag wins wherever both appear, and the LAST flag wins, so a
+// wrapper script's default can be overridden on the command line.
+//
+// The config is parsed a second time here: the choice is made before app_boot runs, and before
+// anything a front-end owns exists to hold the answer.
+display_choose :: proc(args: []string) -> Display {
+    cfg := load_config()
+    defer config_destroy(&cfg)
+    out := cfg.default_display
+    for arg in args {
+        switch arg {
+        case "--tui": out = .Tui
+        case "--gfx": out = .Gfx
+        }
+    }
+    return out
 }
 
 // After the backend is up, because a launch path may be an image and the decode hands its pixels

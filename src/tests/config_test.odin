@@ -305,3 +305,28 @@ test_config_ignores_a_retired_key :: proc(t: ^testing.T) {
     testing.expect_value(t, cfg.indent.width, 2) // the line after the dead key applies
 }
 
+
+// Which front-end starts: the config says, a flag overrides, and the last flag wins.
+@(test)
+test_display_choose :: proc(t: ^testing.T) {
+    path := "/tmp/slopd_display_choose_test.config"
+    testing.expect(t, os.write_entire_file(path, transmute([]byte)string("default_display: tui\n")) == nil)
+    defer os.remove(path)
+
+    config_override(path)
+    defer config_override_release()
+
+    testing.expect_value(t, app.display_choose(nil), app.Display.Tui)
+    testing.expect_value(t, app.display_choose({"--gfx"}), app.Display.Gfx)
+    testing.expect_value(t, app.display_choose({"--tui"}), app.Display.Tui)
+    testing.expect_value(t, app.display_choose({"--gfx", "--tui"}), app.Display.Tui)
+    testing.expect_value(t, app.display_choose({"--util", "--/tmp"}), app.Display.Tui)
+
+    // A junk value keeps the shipped default rather than picking a front-end at random.
+    testing.expect(t, os.write_entire_file(path, transmute([]byte)string("default_display: cave\n")) == nil)
+    testing.expect_value(t, app.display_choose(nil), app.Display.Gfx)
+
+    // Neither selector is a path to open.
+    args := app.parse_launch_args({"--gfx", "--tui"})
+    testing.expect_value(t, args.path, "")
+}

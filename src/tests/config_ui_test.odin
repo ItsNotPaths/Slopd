@@ -35,11 +35,11 @@ INSTALL_ROWS :: 4
 @(private = "file")
 BINDS_ROWS :: 2 // bindings and macros
 
-// In cells: the widest setting key ("conflict_stage", 14) plus ": ". Pinned, because every
+// In cells: the widest setting key ("default_display", 15) plus ": ". Pinned, because every
 // column assertion below multiplies it out — a longer key fails exactly this assertion rather
 // than a dozen pixel ones.
 @(private = "file")
-VAL_OFF :: 16
+VAL_OFF :: 17
 
 // In framebuffer pixels: chrome at the one-cell margin, an indent-1 row one cell further in, an
 // indent-4 option row three past that.
@@ -123,8 +123,8 @@ test_config_rows_flatten :: proc(t: ^testing.T) {
     first := INSTALL_ROWS + 3
     testing.expect_value(t, rows[first].kind, app.Config_Row_Kind.Setting)
     testing.expect_value(t, rows[first].item, app.ROW_SETTINGS)
-    testing.expect_value(t, rows[first].text, "theme:")
-    testing.expect_value(t, rows[first].value, "(default)") // "" reads as the default
+    testing.expect_value(t, rows[first].text, "default_display:")
+    testing.expect_value(t, rows[first].value, "gfx")
     testing.expect_value(t, rows[first].opt, -1)
 
     // The bindings row closes the settings block; it is the whole of the binds pane's entry.
@@ -347,9 +347,9 @@ test_config_command_list :: proc(t: ^testing.T) {
     // The clip group is the whole content area: no header outside it.
     testing.expect_value(t, scissor, AREA)
 
-    // Exactly one band, on the chosen OPTION at display row 5, not on the open setting row.
+    // Exactly one band, on the chosen OPTION, not on the open setting row.
     testing.expect_value(t, rects, 1)
-    testing.expect_value(t, band, gfx.Rect{AREA.x, AREA.y + 6 * ROW_H, AREA.w, ROW_H})
+    testing.expect_value(t, band, gfx.Rect{AREA.x, AREA.y + 7 * ROW_H, AREA.w, ROW_H})
 
     // Ten rows fit and the search row is far below, so nothing is Custom here.
     testing.expect_value(t, customs, 0)
@@ -359,20 +359,20 @@ test_config_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, len(texts), 15)
     testing.expect_value(t, texts[1].text, "settings")
     testing.expect_value(t, texts[1].x, i32(X_FLUSH))
-    testing.expect_value(t, texts[3].text, "theme:")
-    testing.expect_value(t, texts[3].x, i32(X_ROW))
-    testing.expect_value(t, texts[4].text, "(default)")
+    testing.expect_value(t, texts[3].text, "default_display:")
+    testing.expect_value(t, texts[3].x, i32(X_ROW)) // the longest key starts at the margin
+    testing.expect_value(t, texts[4].text, "gfx")
     testing.expect_value(t, texts[4].x, i32(X_VALUE))
-    testing.expect_value(t, texts[5].text, "line_numbers:")
-    testing.expect_value(t, texts[5].x, i32(X_ROW)) // the longest key starts at the margin
-    testing.expect_value(t, texts[6].text, "global")
-    testing.expect_value(t, texts[6].x, i32(X_VALUE)) // …and its value shares the column
-    testing.expect_value(t, texts[7].text, "global")
-    testing.expect_value(t, texts[7].x, i32(X_OPT)) // the option, nested under it
-    testing.expect_value(t, texts[8].text, "relative")
-    testing.expect_value(t, texts[8].x, i32(X_OPT))
-    testing.expect_value(t, texts[9].text, "scroll_mode:") // the row after the dropdown
-    testing.expect_value(t, texts[9].x, i32(X_ROW))
+    testing.expect_value(t, texts[7].text, "line_numbers:")
+    testing.expect_value(t, texts[7].x, i32(X_ROW))
+    testing.expect_value(t, texts[8].text, "global")
+    testing.expect_value(t, texts[8].x, i32(X_VALUE)) // …and its value shares the column
+    testing.expect_value(t, texts[9].text, "global")
+    testing.expect_value(t, texts[9].x, i32(X_OPT)) // the option, nested under it
+    testing.expect_value(t, texts[10].text, "relative")
+    testing.expect_value(t, texts[10].x, i32(X_OPT))
+    testing.expect_value(t, texts[11].text, "scroll_mode:") // the row after the dropdown
+    testing.expect_value(t, texts[11].x, i32(X_ROW))
 }
 
 // A Custom, because a caret is an over-quad and Clay's rectangles are under-quads. It occupies
