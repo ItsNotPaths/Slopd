@@ -1,7 +1,8 @@
 vendor/
 /build/
 plan.txt
-slopd
+# The built binary at the repo root. Anchored: an unanchored `slopd` also matches src/slopd/.
+/slopd
 /grammars
 docs/
 /tests
