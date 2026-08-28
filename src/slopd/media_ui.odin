@@ -17,7 +17,7 @@ import "../ui"
 MEDIA_LABEL_PAD :: 8 // the "(no image)" indent, in layout units
 
 media_geom :: proc(pane: gfx.Rect, line_h: f32) -> gfx.Rect {
-    return ui.inset(pane, gfx.hairline(line_h))
+    return ui.inset(pane, gfx.edge(line_h))
 }
 
 // rect_hit rather than PointerOver: one box, no tree lookup, and callable from a test that

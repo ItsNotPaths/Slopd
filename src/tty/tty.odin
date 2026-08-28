@@ -80,7 +80,9 @@ enter :: proc(t: ^Tty) -> bool {
     // Alternate screen first, so the restore can put the user's scrollback back untouched.
     // The keyboard protocol is pushed here rather than by the caller, so the signal handlers pop
     // it as part of putting the terminal back.
-    write(t, "\e[?1049h\e[?25l\e[2J")
+    // ?7l turns auto-wrap off: nothing here wants the terminal deciding where a line ends,
+    // and a glyph in the last column must not scroll the screen out from under the next row.
+    write(t, "\e[?1049h\e[?25l\e[?7l\e[2J")
     write(t, KITTY_PUSH)
     return true
 }
@@ -93,7 +95,7 @@ leave :: proc(t: ^Tty) {
     }
     t.entered = false
     write(t, KITTY_POP)
-    write(t, "\e[?25h\e[0m\e[?1049l")
+    write(t, "\e[?7h\e[?25h\e[0m\e[?1049l")
     posix.tcsetattr(t.fd, .TCSAFLUSH, &t.saved)
     if g_tty == t {
         g_tty = nil

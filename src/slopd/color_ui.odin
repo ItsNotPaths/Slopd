@@ -23,7 +23,7 @@ COLOR_ROW_GAP :: 8 // rail -> the next label line
 COLOR_CHECKER :: 6 // alpha checkerboard square
 
 color_geom :: proc(pane: gfx.Rect, line_h: f32) -> gfx.Rect {
-    return ui.inset(pane, gfx.hairline(line_h))
+    return ui.inset(pane, gfx.edge(line_h))
 }
 
 color_slider_count :: proc(cp: ^ColorPane) -> int {

@@ -74,7 +74,7 @@ filebrowser_geom :: proc(
     area, bar, side, content: gfx.Rect,
     row_h, bar_h: i32,
 ) {
-    area = ui.inset(pane, gfx.hairline(line_h))
+    area = ui.inset(pane, gfx.edge(line_h))
     row_h = i32(line_h) + gfx.pad(line_h, FB_ROW_PAD)
     bar_h = i32(line_h) + 2 * gfx.pad(line_h, FB_BAR_PAD)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {

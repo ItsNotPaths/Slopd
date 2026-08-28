@@ -42,12 +42,22 @@ text_sized_cell :: proc(face: Face, px: f32) -> f32 {
 // Scaled THEN rounded, not the other way about: a 15px font has a 15.89px line box, and rounding
 // the unit first floors it to zero and takes every gap in the program with it.
 pad :: proc(line_height: f32, n: i32) -> i32 {
+    if line_height <= 1 {
+        return 0 // a grid: there is no space smaller than a cell for padding to live in
+    }
     return i32(math.round(f32(n) * line_height / 16))
 }
 
 // The thinnest thing worth drawing: a focus ring, a pane gutter, a divider.
 hairline :: proc(line_height: f32) -> i32 {
     return pad(line_height, 2)
+}
+
+// A hairline that has to stay VISIBLE: a pane's own edge. Padding may round away to nothing, but
+// an edge that does leaves two panes touching with no way to tell which one you are in. One cell
+// is the least a grid can draw.
+edge :: proc(line_height: f32) -> i32 {
+    return max(1, hairline(line_height))
 }
 
 // A gap that SEPARATES TEXT, as opposed to one that decorates. Padding is free to round away to

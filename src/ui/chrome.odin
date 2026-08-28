@@ -24,10 +24,12 @@ inset :: proc(r: gfx.Rect, by: i32) -> gfx.Rect {
     return gfx.Rect{r.x + by, r.y + by, r.w - 2 * by, r.h - 2 * by}
 }
 
+// The focus ring, and the rule every pane's own geom follows: content is inset by gfx.edge, the
+// same width this draws, or the pane paints over its own border.
 panel :: proc(t: ^gfx.Draw, r: gfx.Rect, bg, focus: [3]f32, focused: bool) {
     if focused {
         gfx.fill(t, r, focus)
-        gfx.fill(t, inset(r, gfx.hairline(gfx.face(t).line_height)), bg)
+        gfx.fill(t, inset(r, gfx.edge(gfx.face(t).line_height)), bg)
     } else {
         gfx.fill(t, r, bg)
     }

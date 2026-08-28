@@ -23,7 +23,7 @@ FT_ROW_PAD :: 2
 // The content area inside the focus ring, the row height, and how many rows fit under the
 // header. Shared by every phase of the frame. `rows` is at least 1 even in a too-short pane.
 filetree_geom :: proc(pane: gfx.Rect, line_h: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
-    area = ui.inset(pane, gfx.hairline(line_h))
+    area = ui.inset(pane, gfx.edge(line_h))
     row_h = i32(line_h) + gfx.pad(line_h, FT_ROW_PAD)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {
         return area, row_h, 0

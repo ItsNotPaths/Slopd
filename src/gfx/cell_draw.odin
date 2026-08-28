@@ -185,17 +185,18 @@ cell_at :: proc(c: ^Cell_Draw, x, y: i32) -> ^Cell {
     return &c.cells[int(y * c.cols + x)]
 }
 
-// The grid as one write: home, then every row, emitting an SGR pair only where the colour
-// changes. Truecolor throughout — a terminal without it is not one this backend targets.
+// The grid as one write, emitting an SGR pair only where the colour changes. Truecolor
+// throughout — a terminal without it is not one this backend targets.
+//
+// Every row is placed with an explicit cursor move rather than a newline. A row that fills the
+// last column leaves the cursor in the auto-wrap pending state, and the newline after it then
+// counts twice: the whole screen walks downward a row per frame and the bottom of it falls off.
 @(private)
 cell_emit :: proc(c: ^Cell_Draw) -> []u8 {
     clear(&c.out)
-    append(&c.out, "\e[H")
     fg, bg := [3]f32{-1, -1, -1}, [3]f32{-1, -1, -1}
     for y in 0 ..< c.rows {
-        if y > 0 {
-            append(&c.out, "\r\n")
-        }
+        cell_cup(&c.out, y + 1)
         for x in 0 ..< c.cols {
             cell := c.cells[int(y * c.cols + x)]
             if cell.fg != fg || cell.bg != bg {
@@ -208,6 +209,15 @@ cell_emit :: proc(c: ^Cell_Draw) -> []u8 {
     }
     append(&c.out, "\e[0m")
     return c.out[:]
+}
+
+// CUP: place the cursor at the start of row `row`, counting from 1.
+@(private = "file")
+cell_cup :: proc(out: ^[dynamic]u8, row: i32) {
+    buf: [8]u8
+    append(out, "\e[")
+    append(out, strconv.write_int(buf[:], i64(row), 10))
+    append(out, ";1H")
 }
 
 @(private = "file")

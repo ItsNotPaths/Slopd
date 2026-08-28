@@ -27,7 +27,7 @@ EDITOR_FOLD_HIT_CELLS :: 2
 // The buffer-dependent half (gutter, animated top) is editor_view. `rows` is at least 1 even
 // in a pane too short — the clip keeps an overflowing row inside, not the count.
 editor_geom :: proc(pane: gfx.Rect, line_h: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
-    area = ui.inset(pane, gfx.hairline(line_h))
+    area = ui.inset(pane, gfx.edge(line_h))
     row_h = i32(line_h) + gfx.pad(line_h, EDITOR_ROW_PAD)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {
         return area, row_h, 0

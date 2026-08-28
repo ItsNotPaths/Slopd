@@ -18,7 +18,7 @@ GREP_ROW_PAD :: 5
 
 // filetree_geom's twin: content area, row height, and display rows under the header.
 grep_geom :: proc(pane: gfx.Rect, line_h: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
-    area = ui.inset(pane, gfx.hairline(line_h))
+    area = ui.inset(pane, gfx.edge(line_h))
     row_h = i32(line_h) + gfx.pad(line_h, GREP_ROW_PAD)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {
         return area, row_h, 0

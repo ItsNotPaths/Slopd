@@ -23,7 +23,7 @@ list_geom :: proc(
     row_h: i32,
     rows, cols: int,
 ) {
-    area = inset(pane, gfx.hairline(line_h))
+    area = inset(pane, gfx.edge(line_h))
     row_h = i32(line_h) + gfx.hairline(line_h)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 || cell_w <= 0 {
         return area, row_h, 0, 0

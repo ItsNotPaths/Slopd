@@ -27,7 +27,7 @@ Layout :: struct {
 
 compute_layout :: proc(win_w, win_h: i32, a: ^App, line_h: f32, now: f64) -> Layout {
     out: Layout
-    out.gutter = gfx.hairline(line_h)
+    out.gutter = gfx.edge(line_h) // panes that touch are two panes you cannot tell apart
 
     // One text row plus the padding above and below it. Derived from the line box rather than
     // from the DPI scale and the font zoom separately, since the line box already tracks both.
