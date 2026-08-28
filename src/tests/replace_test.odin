@@ -2,6 +2,7 @@ package tests
 
 import app ".."
 import "core:testing"
+import "../txt"
 
 // Workspace-wide find and replace (replace.odin). The two halves are tested apart, because they
 // fail apart: the PARSE and the SCAN are pure, and the EDIT is a buffer in and a buffer out. The
@@ -93,7 +94,7 @@ test_rep_replaces_after_a_multibyte_rune :: proc(t: ^testing.T) {
     defer app.buffer_destroy(&b)
 
     testing.expect_value(t, app.rep_buffer_replace(&b, "foo", "bar"), 2)
-    testing.expect_value(t, app.doc_string(&b.doc, context.temp_allocator), "héllo bar\nbar")
+    testing.expect_value(t, txt.doc_string(&b.doc, context.temp_allocator), "héllo bar\nbar")
 }
 
 // ONE undo step for the whole file, which is what buys the gesture back: doc_commit journals the
@@ -104,11 +105,11 @@ test_rep_is_one_undo_step_per_file :: proc(t: ^testing.T) {
     defer app.buffer_destroy(&b)
 
     testing.expect_value(t, app.rep_buffer_replace(&b, "foo", "bar"), 3)
-    testing.expect_value(t, app.doc_string(&b.doc, context.temp_allocator), "bar\nbar\nbar")
+    testing.expect_value(t, txt.doc_string(&b.doc, context.temp_allocator), "bar\nbar\nbar")
     testing.expect(t, b.dirty, "a replaced buffer joins the unsaved ring")
 
-    testing.expect(t, app.doc_undo(&b.doc), "the batch is journalled")
-    testing.expect_value(t, app.doc_string(&b.doc, context.temp_allocator), "foo\nfoo\nfoo")
+    testing.expect(t, txt.doc_undo(&b.doc), "the batch is journalled")
+    testing.expect_value(t, txt.doc_string(&b.doc, context.temp_allocator), "foo\nfoo\nfoo")
 }
 
 // A replacement holding the pattern does not feed itself: the edits are computed against the
@@ -119,7 +120,7 @@ test_rep_does_not_rescan_its_own_output :: proc(t: ^testing.T) {
     defer app.buffer_destroy(&b)
 
     testing.expect_value(t, app.rep_buffer_replace(&b, "foo", "foofoo"), 2)
-    testing.expect_value(t, app.doc_string(&b.doc, context.temp_allocator), "foofoo foofoo")
+    testing.expect_value(t, txt.doc_string(&b.doc, context.temp_allocator), "foofoo foofoo")
 }
 
 // A miss changes nothing at all — no edit, no undo step, and the buffer stays clean.
@@ -130,7 +131,7 @@ test_rep_leaves_a_missed_buffer_clean :: proc(t: ^testing.T) {
 
     testing.expect_value(t, app.rep_buffer_replace(&b, "foo", "bar"), 0)
     testing.expect(t, !b.dirty, "a buffer with no match is not dirtied")
-    testing.expect(t, !app.doc_undo(&b.doc), "and nothing was journalled")
+    testing.expect(t, !txt.doc_undo(&b.doc), "and nothing was journalled")
 }
 
 // --- the pane ---
@@ -255,7 +256,7 @@ test_preview_rep_borrows_the_pane :: proc(t: ^testing.T) {
     app.grep_set(&a.grep, "older", nil)
     a.aux_mode = .FileTree
 
-    app.doc_set_text(&a.cl.doc, ":rep foo bar")
+    txt.doc_set_text(&a.cl.doc, ":rep foo bar")
     app.cl_preview_sync(&a, 0)
     app.cl_preview_sync(&a, 1) // the search waits for a pause, as `:grep` does
 

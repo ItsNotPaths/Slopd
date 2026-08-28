@@ -2,6 +2,7 @@ package tests
 
 import app ".."
 import "core:testing"
+import "../txt"
 
 @(private = "file")
 mkbuf :: proc(text: string) -> app.Buffer {
@@ -16,11 +17,11 @@ mkbuf :: proc(text: string) -> app.Buffer {
 test_indent_cols_and_blank :: proc(t: ^testing.T) {
     b := mkbuf("    x\n\thi\n   \nfoo")
     defer app.buffer_destroy(&b)
-    testing.expect_value(t, app.line_indent_cols(app.doc_line(&b.doc, 0, context.temp_allocator)), 4) // four spaces
-    testing.expect_value(t, app.line_indent_cols(app.doc_line(&b.doc, 1, context.temp_allocator)), 1) // one tab cell
-    testing.expect_value(t, app.line_indent_cols(app.doc_line(&b.doc, 3, context.temp_allocator)), 0)
-    testing.expect(t, !app.line_is_blank(app.doc_line(&b.doc, 0, context.temp_allocator)))
-    testing.expect(t, app.line_is_blank(app.doc_line(&b.doc, 2, context.temp_allocator))) // whitespace-only
+    testing.expect_value(t, txt.line_indent_cols(txt.doc_line(&b.doc, 0, context.temp_allocator)), 4) // four spaces
+    testing.expect_value(t, txt.line_indent_cols(txt.doc_line(&b.doc, 1, context.temp_allocator)), 1) // one tab cell
+    testing.expect_value(t, txt.line_indent_cols(txt.doc_line(&b.doc, 3, context.temp_allocator)), 0)
+    testing.expect(t, !txt.line_is_blank(txt.doc_line(&b.doc, 0, context.temp_allocator)))
+    testing.expect(t, txt.line_is_blank(txt.doc_line(&b.doc, 2, context.temp_allocator))) // whitespace-only
 }
 
 // A blank line borrows the deeper of its non-blank neighbours, so a guide runs unbroken.
@@ -41,7 +42,7 @@ test_indent_levels_through_blank :: proc(t: ^testing.T) {
 test_active_scope :: proc(t: ^testing.T) {
     b := mkbuf("def f():\n    a = 1\n\n    b = 2\nx = 3")
     defer app.buffer_destroy(&b)
-    all := app.doc_line_count(&b.doc) - 1
+    all := txt.doc_line_count(&b.doc) - 1
     s := app.buffer_active_scope(&b, 1, 4, 0, all)
     testing.expect(t, s.ok)
     testing.expect_value(t, s.lo, 1)
@@ -171,7 +172,7 @@ test_fold_survives_edits :: proc(t: ^testing.T) {
     app.buffer_set_text(b, "import x\nimport y\ndef f():\n    a = 1\n    b = 2\nx = 3")
 
     fold_at :: proc(a: ^app.App, b: ^app.Buffer, line: int) {
-        app.doc_reset_cursor(&b.doc, app.Pos{line, 0})
+        txt.doc_reset_cursor(&b.doc, txt.Pos{line, 0})
         app.buffer_fold_toggle(a, b)
     }
 
@@ -180,36 +181,36 @@ test_fold_survives_edits :: proc(t: ^testing.T) {
     testing.expect_value(t, b.folds[0], app.Fold{line = 2, end = 4})
 
     // Above: two lines at the top slide the whole fold down by two.
-    app.doc_reset_cursor(&b.doc, app.Pos{0, 0})
-    app.doc_insert_text(&b.doc, "// one\n// two\n")
+    txt.doc_reset_cursor(&b.doc, txt.Pos{0, 0})
+    txt.doc_insert_text(&b.doc, "// one\n// two\n")
     app.buffer_sync_folds(b)
     testing.expect_value(t, len(b.folds), 1)
     testing.expect_value(t, b.folds[0], app.Fold{line = 4, end = 6})
 
     // Above, the other way: deleting a line slides it back up.
-    app.doc_reset_cursor(&b.doc, app.Pos{0, 0})
-    app.doc_move(&b.doc, .Down, true)
-    app.doc_delete(&b.doc)
+    txt.doc_reset_cursor(&b.doc, txt.Pos{0, 0})
+    txt.doc_move(&b.doc, .Down, true)
+    txt.doc_delete(&b.doc)
     app.buffer_sync_folds(b)
     testing.expect_value(t, b.folds[0], app.Fold{line = 3, end = 5})
 
     // BELOW: nothing moves.
-    last := app.doc_line_count(&b.doc) - 1
-    app.doc_reset_cursor(&b.doc, app.Pos{last, 0})
-    app.doc_insert_text(&b.doc, "y = 4\n")
+    last := txt.doc_line_count(&b.doc) - 1
+    txt.doc_reset_cursor(&b.doc, txt.Pos{last, 0})
+    txt.doc_insert_text(&b.doc, "y = 4\n")
     app.buffer_sync_folds(b)
     testing.expect_value(t, b.folds[0], app.Fold{line = 3, end = 5})
 
     // An edit WITHIN a line changes no line numbers, so the fold is untouched by it either.
-    app.doc_reset_cursor(&b.doc, app.Pos{0, 0})
-    app.doc_insert_text(&b.doc, "zz")
+    txt.doc_reset_cursor(&b.doc, txt.Pos{0, 0})
+    txt.doc_insert_text(&b.doc, "zz")
     app.buffer_sync_folds(b)
     testing.expect_value(t, b.folds[0], app.Fold{line = 3, end = 5})
 
     // INTO it: splitting the header line changes the block's shape, and a range guessed from
     // here would hide the wrong lines. Let it go rather than keep a stale one.
-    app.doc_reset_cursor(&b.doc, app.Pos{3, 0})
-    app.doc_insert_text(&b.doc, "\n")
+    txt.doc_reset_cursor(&b.doc, txt.Pos{3, 0})
+    txt.doc_insert_text(&b.doc, "\n")
     app.buffer_sync_folds(b)
     testing.expect_value(t, len(b.folds), 0)
 }
@@ -223,14 +224,14 @@ test_fold_dropped_when_log_lost :: proc(t: ^testing.T) {
     defer app.editor_destroy(&a.editor)
     b := app.editor_current(&a.editor)
     app.buffer_set_text(b, "def f():\n    a = 1\n    b = 2\nx = 3")
-    app.doc_reset_cursor(&b.doc, app.Pos{0, 0})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{0, 0})
     app.buffer_fold_toggle(&a, b)
     testing.expect_value(t, len(b.folds), 1)
 
     // Edits with no sync in between: the log fills and drops, and every reader is behind it.
-    app.doc_reset_cursor(&b.doc, app.Pos{3, 0})
-    for _ in 0 ..< app.DOC_CHANGE_MAX + 10 {
-        app.doc_insert_text(&b.doc, "q\n")
+    txt.doc_reset_cursor(&b.doc, txt.Pos{3, 0})
+    for _ in 0 ..< txt.DOC_CHANGE_MAX + 10 {
+        txt.doc_insert_text(&b.doc, "q\n")
     }
     app.buffer_sync_folds(b)
     testing.expect_value(t, len(b.folds), 0)
@@ -246,15 +247,15 @@ test_change_log_drop_spares_current_readers :: proc(t: ^testing.T) {
     defer app.editor_destroy(&a.editor)
     b := app.editor_current(&a.editor)
     app.buffer_set_text(b, "def f():\n    a = 1\n    b = 2\nx = 3")
-    app.doc_reset_cursor(&b.doc, app.Pos{0, 0})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{0, 0})
     app.buffer_fold_toggle(&a, b)
     testing.expect_value(t, len(b.folds), 1)
 
     // Edit below the fold, syncing folds each time (as a frame does) while nothing ever reads
     // the log for the highlighter. Well past the cap, so it drops more than once.
-    for i in 0 ..< app.DOC_CHANGE_MAX * 3 {
-        app.doc_reset_cursor(&b.doc, app.Pos{app.doc_line_count(&b.doc) - 1, 0})
-        app.doc_insert_text(&b.doc, "q\n")
+    for i in 0 ..< txt.DOC_CHANGE_MAX * 3 {
+        txt.doc_reset_cursor(&b.doc, txt.Pos{txt.doc_line_count(&b.doc) - 1, 0})
+        txt.doc_insert_text(&b.doc, "q\n")
         app.buffer_sync_folds(b)
     }
     testing.expect_value(t, len(b.folds), 1)
@@ -262,5 +263,5 @@ test_change_log_drop_spares_current_readers :: proc(t: ^testing.T) {
 
     // And the log stayed small: it trims to the slowest reader, and the stalled one is behind
     // the base rather than pinning the whole list in memory.
-    testing.expect(t, len(b.doc.changes) <= app.DOC_CHANGE_MAX, "the log outgrew its cap")
+    testing.expect(t, len(b.doc.changes) <= txt.DOC_CHANGE_MAX, "the log outgrew its cap")
 }

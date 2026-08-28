@@ -3,6 +3,9 @@ package tests
 import app ".."
 import clay "../../bindings/clay"
 import "core:testing"
+import "../txt"
+import "../gfx"
+import "../ui"
 
 // The editor pane declared in Clay, its body painted through a Custom. What is under test is
 // the SEAM: a pixel read back as a Pos must land on the glyph painted there. editor_pos_at is
@@ -14,9 +17,9 @@ import "core:testing"
 // puts column 0 at 142.
 
 @(private = "file")
-PANE :: app.Rect{100, 50, 300, 200}
+PANE :: gfx.Rect{100, 50, 300, 200}
 @(private = "file")
-AREA :: app.Rect{102, 52, 296, 196}
+AREA :: gfx.Rect{102, 52, 296, 196}
 @(private = "file")
 ROW_H :: 18
 @(private = "file")
@@ -62,16 +65,16 @@ test_editor_geom :: proc(t: ^testing.T) {
     testing.expect_value(t, rows, ROWS) // 196 / 18, floored
 
     // A hidden pane is a zero rect and must report no rows.
-    _, _, none := app.editor_geom(app.Rect{}, 1, 16)
+    _, _, none := app.editor_geom(gfx.Rect{}, 1, 16)
     testing.expect_value(t, none, 0)
 
     // Too short for a whole row still reports one: the clip keeps it inside, not the count.
-    _, _, tiny := app.editor_geom(app.Rect{0, 0, 300, 20}, 1, 16)
+    _, _, tiny := app.editor_geom(gfx.Rect{0, 0, 300, 20}, 1, 16)
     testing.expect_value(t, tiny, 1)
 
     // DPI scale reaches the inset and the row padding both.
     area2, row_h2, _ := app.editor_geom(PANE, 2, 32)
-    testing.expect_value(t, area2, app.Rect{104, 54, 292, 192})
+    testing.expect_value(t, area2, gfx.Rect{104, 54, 292, 192})
     testing.expect_value(t, row_h2, i32(36))
 }
 
@@ -110,12 +113,12 @@ test_editor_pos_at :: proc(t: ^testing.T) {
 
     p, ok := app.editor_pos_at(b, v, TEXT_X + 2, AREA.y + 2)
     testing.expect(t, ok)
-    testing.expect_value(t, p, app.Pos{0, 0})
+    testing.expect_value(t, p, txt.Pos{0, 0})
 
     // Row 2, three cells in. The row is (y - area.y) / row_h.
     p, ok = app.editor_pos_at(b, v, TEXT_X + 32, AREA.y + 2 * ROW_H + 5)
     testing.expect(t, ok)
-    testing.expect_value(t, p, app.Pos{2, 3})
+    testing.expect_value(t, p, txt.Pos{2, 3})
 
     // The column ROUNDS: the right half of a cell puts the caret after that glyph.
     p, _ = app.editor_pos_at(b, v, TEXT_X + 14, AREA.y + 2) // 1.4 cells
@@ -125,12 +128,12 @@ test_editor_pos_at :: proc(t: ^testing.T) {
 
     // Past the end of a line clamps to its length, never to the next line's.
     p, _ = app.editor_pos_at(b, v, TEXT_X + 900, AREA.y + 2)
-    testing.expect_value(t, p, app.Pos{0, 5}) // len("alpha")
+    testing.expect_value(t, p, txt.Pos{0, 5}) // len("alpha")
 
     // A click in the gutter is column 0 of that line, where Home would put you.
     p, ok = app.editor_pos_at(b, v, AREA.x + 5, AREA.y + ROW_H + 2)
     testing.expect(t, ok)
-    testing.expect_value(t, p, app.Pos{1, 0})
+    testing.expect_value(t, p, txt.Pos{1, 0})
 
     // Below the last line is nothing: inventing one would jump the caret to end-of-file.
     _, ok = app.editor_pos_at(b, v, TEXT_X, AREA.y + 5 * ROW_H + 2)
@@ -190,7 +193,7 @@ test_editor_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fake_editor(&a, "alpha\nbravo\ncharlie")
@@ -202,17 +205,17 @@ test_editor_command_list :: proc(t: ^testing.T) {
     cmds := app.editor_layout(&a, &f, PANE, 500, 300, v, 0)
 
     customs, others, scissors := 0, 0, 0
-    box, clip: app.Rect
+    box, clip: gfx.Rect
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
         #partial switch c.commandType {
         case .Custom:
             customs += 1
-            box = app.clay_rect(c.boundingBox)
+            box = ui.clay_rect(c.boundingBox)
         case .ScissorStart:
             scissors += 1
             if c.id == clay.ID("ed_pane").id {
-                clip = app.clay_rect(c.boundingBox)
+                clip = ui.clay_rect(c.boundingBox)
             }
         case .ScissorEnd:
             scissors += 1
@@ -242,7 +245,7 @@ test_editor_hit :: proc(t: ^testing.T) {
     a.mouse.x, a.mouse.y = TEXT_X + 22, AREA.y + ROW_H + 4
     hit := app.editor_hit(&a, b, v)
     testing.expect_value(t, hit.kind, app.Editor_Hit_Kind.Text)
-    testing.expect_value(t, hit.pos, app.Pos{1, 2})
+    testing.expect_value(t, hit.pos, txt.Pos{1, 2})
     testing.expect_value(t, hit.glyph, 2)
 
     // The two columns diverge in a cell's right half: 2.6 cells is boundary 3 but glyph 2.
@@ -282,7 +285,7 @@ test_editor_hit_survives_the_aux_pane :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fake_editor(&a, "alpha\nbravo\ncharlie")
@@ -297,7 +300,7 @@ test_editor_hit_survives_the_aux_pane :: proc(t: ^testing.T) {
     v := app.editor_view(b, &f, area, row_h, rows, 0)
 
     // One frame in render()'s order: editor first, aux pane second, one tree.
-    frame :: proc(a: ^app.App, f: ^app.Font, v: app.Editor_View) {
+    frame :: proc(a: ^app.App, f: ^gfx.Font, v: app.Editor_View) {
         app.clay_window_begin(500, 300)
         if clay.UI(clay.ID(app.WIN_ROOT))(app.clay_window_root(500, 300)) {
             app.editor_declare(a, f, PANE, v, 0)
@@ -318,7 +321,7 @@ test_editor_hit_survives_the_aux_pane :: proc(t: ^testing.T) {
 
     hit := app.editor_hit(&a, b, v)
     testing.expect_value(t, hit.kind, app.Editor_Hit_Kind.Text)
-    testing.expect_value(t, hit.pos, app.Pos{1, 2})
+    testing.expect_value(t, hit.pos, txt.Pos{1, 2})
 }
 
 // A button that happens to sit at the end of a line, so it resolves as its own kind rather than
@@ -364,58 +367,58 @@ test_editor_click_verbs :: proc(t: ^testing.T) {
         a.mouse.click_alt = alt
     }
     hit :: proc(line, col: int, glyph := -1) -> app.Editor_Hit {
-        return app.Editor_Hit{kind = .Text, pos = app.Pos{line, col}, glyph = glyph < 0 ? col : glyph}
+        return app.Editor_Hit{kind = .Text, pos = txt.Pos{line, col}, glyph = glyph < 0 ? col : glyph}
     }
 
     press(&a, 1)
     app.editor_click(&a, hit(1, 4), 100)
     testing.expect_value(t, len(b.cursors), 1)
-    testing.expect_value(t, b.cursors[0].head, app.Pos{1, 4})
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{1, 4})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{1, 4})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{1, 4})
     testing.expect(t, !a.mouse.click, "a click on text must be claimed")
 
     press(&a, 1, shift = true)
     app.editor_click(&a, hit(1, 9), 101)
     testing.expect_value(t, len(b.cursors), 1)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{1, 4})
-    testing.expect_value(t, b.cursors[0].head, app.Pos{1, 9})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{1, 4})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{1, 9})
 
     press(&a, 1, alt = true)
     app.editor_click(&a, hit(0, 2), 102)
     testing.expect_value(t, len(b.cursors), 2)
-    testing.expect_value(t, b.cursors[b.primary].head, app.Pos{0, 2})
+    testing.expect_value(t, b.cursors[b.primary].head, txt.Pos{0, 2})
 
     // Double click selects "bravo", columns 6..11.
     press(&a, 2)
     app.editor_click(&a, hit(0, 8), 103)
     testing.expect_value(t, len(b.cursors), 1)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 6})
-    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 11})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{0, 6})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{0, 11})
 
     // …by the GLYPH pointed at, not the caret boundary: pointing at the last letter of "alpha"
     // rounds the caret to column 5, the space, so a selection taken from the caret column would
     // take the gap. Hence the two columns in Editor_Hit.
     press(&a, 2)
     app.editor_click(&a, hit(0, 5, glyph = 4), 104)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 0})
-    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 5})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{0, 0})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{0, 5})
 
     press(&a, 3)
     app.editor_click(&a, hit(0, 8), 105)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 0})
-    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 11})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{0, 0})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{0, 11})
 
     // A press that hit nothing is left for whoever else is drawing.
     press(&a, 1)
     app.editor_click(&a, app.Editor_Hit{}, 105)
     testing.expect(t, a.mouse.click, "a click that hit nothing must not be claimed")
-    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 11})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{0, 11})
 
     // `mouse: off`: the keyboard path is untouched, a press does nothing.
     a.mouse_on = false
     press(&a, 1)
     app.editor_click(&a, hit(1, 0), 106)
-    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 11})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{0, 11})
 }
 
 // Re-attaches THIS buffer's view only. The global keystroke timestamp is left alone: the aux
@@ -436,12 +439,12 @@ test_editor_click_reattaches_scroll :: proc(t: ^testing.T) {
 
     a.mouse.click = true
     a.mouse.click_count = 1
-    app.editor_click(&a, app.Editor_Hit{kind = .Text, pos = app.Pos{5, 0}}, 60)
+    app.editor_click(&a, app.Editor_Hit{kind = .Text, pos = txt.Pos{5, 0}}, 60)
 
     testing.expect_value(t, b.scroll_detached, 0) // this buffer follows its caret again
     testing.expect_value(t, a.last_input_at, 0) // and nothing global moved
-    testing.expect_value(t, app.pane_input_at(&a), 0) // so the aux pane is not yanked back
-    app.filetree_scroll_apply(&a.tree, 4, false, app.pane_input_at(&a))
+    testing.expect_value(t, ui.pane_input_at(app.ctx_of(&a)), 0) // so the aux pane is not yanked back
+    app.filetree_scroll_apply(&a.tree, 4, false, ui.pane_input_at(app.ctx_of(&a)))
     testing.expect_value(t, a.tree.scroll_detached, 50) // still where the wheel left it
 }
 
@@ -454,13 +457,13 @@ test_editor_click_fold_expands :: proc(t: ^testing.T) {
     b := app.editor_current(&a.editor)
     append(&b.folds, app.Fold{line = 0, end = 1})
 
-    app.doc_reset_cursor(&b.doc, app.Pos{2, 1})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{2, 1})
     a.mouse.click = true
     a.mouse.click_count = 1
-    app.editor_click(&a, app.Editor_Hit{kind = .Fold, pos = app.Pos{0, 6}}, 100)
+    app.editor_click(&a, app.Editor_Hit{kind = .Fold, pos = txt.Pos{0, 6}}, 100)
 
     testing.expect_value(t, len(b.folds), 0)
-    testing.expect_value(t, b.cursors[0].head, app.Pos{2, 1}) // the caret did not move
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{2, 1}) // the caret did not move
     testing.expect(t, !a.mouse.click, "a click on the marker must be claimed")
 }
 
@@ -476,18 +479,18 @@ test_editor_click_begins_a_drag :: proc(t: ^testing.T) {
     a.mouse.down = true
 
     a.mouse.click, a.mouse.click_count = true, 2
-    app.editor_click(&a, app.Editor_Hit{kind = .Text, pos = app.Pos{0, 5}, glyph = 4}, 100)
-    testing.expect(t, app.drag_live(&a, .Editor_Text, 0), "a text press captures")
+    app.editor_click(&a, app.Editor_Hit{kind = .Text, pos = txt.Pos{0, 5}, glyph = 4}, 100)
+    testing.expect(t, ui.drag_live(app.ctx_of(&a), .Editor_Text, 0), "a text press captures")
     testing.expect_value(t, a.drag.grade, 2) // granularity, fixed for the gesture
-    testing.expect_value(t, a.drag.anchor, app.Pos{0, 5}) // the caret boundary
+    testing.expect_value(t, a.drag.anchor, txt.Pos{0, 5}) // the caret boundary
     testing.expect_value(t, a.drag.anchor_glyph, 4) // and the glyph beside it
 
     // A marker is a button, not something you drag out of.
     a.drag = {}
     append(&b.folds, app.Fold{line = 0, end = 0})
     a.mouse.click, a.mouse.click_count = true, 1
-    app.editor_click(&a, app.Editor_Hit{kind = .Fold, pos = app.Pos{0, 11}}, 101)
-    testing.expect_value(t, a.drag.kind, app.Drag_Kind.None)
+    app.editor_click(&a, app.Editor_Hit{kind = .Fold, pos = txt.Pos{0, 11}}, 101)
+    testing.expect_value(t, a.drag.kind, ui.Drag_Kind.None)
 }
 
 // A hit off the pane is refused, since a press there belongs to somebody else; a drag under
@@ -503,7 +506,7 @@ test_editor_drag_pos_past_the_edges :: proc(t: ^testing.T) {
 
     // Above the window: the first visible row, not a refusal or a negative one.
     p, glyph := app.editor_drag_pos(b, v, TEXT_X + 22, AREA.y - 400)
-    testing.expect_value(t, p, app.Pos{0, 2})
+    testing.expect_value(t, p, txt.Pos{0, 2})
     testing.expect_value(t, glyph, 2)
 
     // Below it: the last DRAWN row, 9, not the part-drawn tenth.
@@ -512,12 +515,12 @@ test_editor_drag_pos_past_the_edges :: proc(t: ^testing.T) {
 
     // Left of the text column is column 0, as a click in the gutter already is.
     p, glyph = app.editor_drag_pos(b, v, 0, AREA.y + ROW_H + 4)
-    testing.expect_value(t, p, app.Pos{1, 0})
+    testing.expect_value(t, p, txt.Pos{1, 0})
     testing.expect_value(t, glyph, 0)
 
     // Past the end of a line clamps to its length, per line, as the pointer travels.
     p, _ = app.editor_drag_pos(b, v, TEXT_X + 900, AREA.y + ROW_H + 4)
-    testing.expect_value(t, p, app.Pos{1, 5})
+    testing.expect_value(t, p, txt.Pos{1, 5})
 
     // A buffer shorter than its pane: below the last line is the end of the text, never
     // "nothing".
@@ -526,7 +529,7 @@ test_editor_drag_pos_past_the_edges :: proc(t: ^testing.T) {
     defer app.editor_destroy(&short.editor)
     sb := app.editor_current(&short.editor)
     p, _ = app.editor_drag_pos(sb, v, TEXT_X + 900, AREA.y + 4000)
-    testing.expect_value(t, p, app.Pos{2, 5})
+    testing.expect_value(t, p, txt.Pos{2, 5})
 }
 
 // Moves the HEAD and leaves the anchor alone, which is what makes it compose with the click
@@ -543,32 +546,32 @@ test_editor_drag_extends_by_character :: proc(t: ^testing.T) {
     a.mouse.x, a.mouse.y = TEXT_X + 20, AREA.y + 4
     a.mouse.click, a.mouse.click_count = true, 1
     app.editor_click(&a, app.editor_hit(&a, b, v), 100)
-    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 2})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{0, 2})
 
     // Down and right: one cursor, the anchor pinned at the press.
     a.mouse.x, a.mouse.y = TEXT_X + 70, AREA.y + ROW_H + 4
     app.editor_drag(&a, b, v, 101)
     testing.expect_value(t, len(b.cursors), 1)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 2})
-    testing.expect_value(t, b.cursors[0].head, app.Pos{1, 7})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{0, 2})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{1, 7})
 
     // Back over the press point: the selection reverses rather than collapsing.
     a.mouse.x, a.mouse.y = TEXT_X, AREA.y + 4
     app.editor_drag(&a, b, v, 102)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 2})
-    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 0})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{0, 2})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{0, 0})
 
     // The capture is a buffer's: another buffer current leaves the drag held but inert.
     second: app.Buffer
-    app.doc_init(&second.doc)
+    txt.doc_init(&second.doc)
     append(&a.editor.buffers, second)
     a.editor.active = 1
     b2 := app.editor_current(&a.editor)
     app.buffer_set_text(b2, "second buffer")
     a.mouse.x, a.mouse.y = TEXT_X + 40, AREA.y + 4
     app.editor_drag(&a, b2, v, 103)
-    testing.expect_value(t, b2.cursors[0].head, app.Pos{0, 0})
-    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 0}) // the original stands
+    testing.expect_value(t, b2.cursors[0].head, txt.Pos{0, 0})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{0, 0}) // the original stands
 }
 
 // Re-derives BOTH ends every frame, which is the difference from "double click selects a word":
@@ -587,27 +590,27 @@ test_editor_drag_word_and_line_grades :: proc(t: ^testing.T) {
     a.mouse.x, a.mouse.y = TEXT_X + 72, AREA.y + 4
     a.mouse.click, a.mouse.click_count = true, 2
     app.editor_click(&a, app.editor_hit(&a, b, v), 100)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 6})
-    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 11})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{0, 6})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{0, 11})
 
     // Forward into "delta" on the next line: whole words at both ends.
     a.mouse.x, a.mouse.y = TEXT_X + 100, AREA.y + ROW_H + 4
     app.editor_drag(&a, b, v, 101)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 6}) // still the start of "bravo"
-    testing.expect_value(t, b.cursors[0].head, app.Pos{1, 13}) // the end of "delta"
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{0, 6}) // still the start of "bravo"
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{1, 13}) // the end of "delta"
 
     // Backward past the press: the anchor flips to the END of "bravo".
     a.mouse.x, a.mouse.y = TEXT_X + 22, AREA.y + 4
     app.editor_drag(&a, b, v, 102)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 11})
-    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 0})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{0, 11})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{0, 0})
 
     // Line grade: whole lines at both ends, in the direction of travel.
     a.drag.grade = 3
     a.mouse.x, a.mouse.y = TEXT_X + 30, AREA.y + ROW_H + 4
     app.editor_drag(&a, b, v, 103)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 0})
-    testing.expect_value(t, b.cursors[0].head, app.Pos{1, 13})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{0, 0})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{1, 13})
 }
 
 // Past an edge the drag walks the SELECTION and the viewport policy follows. Nothing here
@@ -641,26 +644,26 @@ test_editor_drag_autoscrolls_past_the_edge :: proc(t: ^testing.T) {
     testing.expect_value(t, b.cursors[0].head.line, 11)
 
     // The next interval walks on from where the drag got to, not from the edge.
-    app.editor_drag(&a, b, v, 100 + app.DRAG_SCROLL_S)
+    app.editor_drag(&a, b, v, 100 + ui.DRAG_SCROLL_S)
     testing.expect_value(t, b.cursors[0].head.line, 13)
 
     // An absolute line, so the view catching up underneath changes nothing — which is what
     // stops the walk double-counting its own scrolling.
     v2 := mkview(3, 0)
-    app.editor_drag(&a, b, v2, 100 + 2 * app.DRAG_SCROLL_S)
+    app.editor_drag(&a, b, v2, 100 + 2 * ui.DRAG_SCROLL_S)
     testing.expect_value(t, b.cursors[0].head.line, 14) // the buffer ran out
 
     // Back inside the pane, the pointer names its own line again, from the scrolled view.
     a.mouse.y = AREA.y + ROW_H + 4
-    app.editor_drag(&a, b, v2, 100 + 3 * app.DRAG_SCROLL_S)
+    app.editor_drag(&a, b, v2, 100 + 3 * ui.DRAG_SCROLL_S)
     testing.expect(t, !a.drag.over_on, "the walk is dropped the moment the pointer is back")
     testing.expect_value(t, b.cursors[0].head.line, 4) // top 3, second row
 
     // Above the top edge it walks the other way, and the anchor holds throughout.
     a.mouse.y = AREA.y - ROW_H
-    app.editor_drag(&a, b, v2, 100 + 4 * app.DRAG_SCROLL_S)
+    app.editor_drag(&a, b, v2, 100 + 4 * ui.DRAG_SCROLL_S)
     testing.expect_value(t, b.cursors[0].head.line, 1)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 0})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{0, 0})
     testing.expect_value(t, b.scroll, 0)
 
     // The wheel may detach the view mid-drag, and a detached view does not chase the caret. So
@@ -668,7 +671,7 @@ test_editor_drag_autoscrolls_past_the_edge :: proc(t: ^testing.T) {
     app.buffer_scroll_by(b, 2, 100) // the wheel, mid-gesture
     testing.expect(t, b.scroll_detached > 0)
     a.mouse.y = AREA.y + AREA.h + ROW_H
-    app.editor_drag(&a, b, v2, 100 + 5 * app.DRAG_SCROLL_S)
+    app.editor_drag(&a, b, v2, 100 + 5 * ui.DRAG_SCROLL_S)
     testing.expect_value(t, b.scroll_detached, 0)
 }
 
@@ -694,13 +697,13 @@ test_editor_drag_composes_with_the_click_that_began_it :: proc(t: ^testing.T) {
     a.mouse.x = TEXT_X + 80
     a.mouse.click, a.mouse.click_shift = true, true
     app.editor_click(&a, app.editor_hit(&a, b, v), 101)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 2})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{0, 2})
 
     // Dragging on keeps THAT anchor, not the press it came from.
     a.mouse.x = TEXT_X + 100
     app.editor_drag(&a, b, v, 102)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 2})
-    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 10})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{0, 2})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{0, 10})
 
     // Alt+click drops a cursor and the drag moves that one.
     a.mouse.x, a.mouse.click, a.mouse.click_shift, a.mouse.click_alt = TEXT_X + 30, true, false, true
@@ -710,8 +713,8 @@ test_editor_drag_composes_with_the_click_that_began_it :: proc(t: ^testing.T) {
     a.mouse.x = TEXT_X + 60
     app.editor_drag(&a, b, v, 104)
     testing.expect_value(t, len(b.cursors), 2) // the trail survives the drag
-    testing.expect_value(t, b.cursors[b.primary].anchor, app.Pos{0, 3})
-    testing.expect_value(t, b.cursors[b.primary].head, app.Pos{0, 6})
+    testing.expect_value(t, b.cursors[b.primary].anchor, txt.Pos{0, 3})
+    testing.expect_value(t, b.cursors[b.primary].head, txt.Pos{0, 6})
 }
 
 // The one-pixel-two-questions split on the DRAG path. Pinned separately, because a press
@@ -739,8 +742,8 @@ test_editor_drag_word_grade_uses_the_glyph :: proc(t: ^testing.T) {
     // Into "bravo". The anchor is the start of "alpha", not of the space the boundary sits in.
     a.mouse.x = TEXT_X + 75
     app.editor_drag(&a, b, v, 101)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{0, 0})
-    testing.expect_value(t, b.cursors[0].head, app.Pos{0, 11})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{0, 0})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{0, 11})
 }
 
 // --- the horizontal scroll, through the same seam --- The same claim on the other axis, with
@@ -793,7 +796,7 @@ test_editor_cols :: proc(t: ^testing.T) {
     // Degenerate geometry pins to zero rather than going negative, and the policy then holds
     // the view at home.
     testing.expect_value(t, app.editor_cols(AREA, 2, 0), 0)
-    testing.expect_value(t, app.editor_cols(app.Rect{102, 52, 10, 196}, 2, 10), 0)
+    testing.expect_value(t, app.editor_cols(gfx.Rect{102, 52, 10, 196}, 2, 10), 0)
 }
 
 // The widest line the window is DRAWING, not the widest in the file. Over the same walk the
@@ -835,18 +838,18 @@ test_editor_pos_at_multibyte :: proc(t: ^testing.T) {
     b := app.editor_current(&a.editor)
     v := mkview(0, 0)
 
-    cells := app.doc_cells(&b.doc, 0, context.temp_allocator)
-    n := app.cells_count(cells)
+    cells := txt.doc_cells(&b.doc, 0, context.temp_allocator)
+    n := txt.cells_count(cells)
     testing.expect_value(t, n, 13) // cells
-    testing.expect_value(t, app.doc_line_len(&b.doc, 0), 17) // bytes
+    testing.expect_value(t, txt.doc_line_len(&b.doc, 0), 17) // bytes
 
     for k in 0 ..= n {
         // Cell k's left edge, where the painter starts glyph k.
         p, ok := app.editor_pos_at(b, v, TEXT_X + i32(10 * k), AREA.y + 2)
         testing.expectf(t, ok, "cell %d did not resolve", k)
         testing.expect_value(t, p.line, 0)
-        testing.expect_value(t, p.col, app.cells_off(cells, k)) // reads back as that byte
-        testing.expect_value(t, app.cells_col(cells, p.col), k) // and paints back at that cell
+        testing.expect_value(t, p.col, txt.cells_off(cells, k)) // reads back as that byte
+        testing.expect_value(t, txt.cells_col(cells, p.col), k) // and paints back at that cell
     }
 
     // The rounding boundary is mid-CELL, not mid-rune: the arrow is three bytes in one cell,
@@ -858,7 +861,7 @@ test_editor_pos_at_multibyte :: proc(t: ^testing.T) {
 
     // Past the end clamps to the line's BYTE length, not its cell count.
     p, _ = app.editor_pos_at(b, v, TEXT_X + 900, AREA.y + 2)
-    testing.expect_value(t, p, app.Pos{0, 17})
+    testing.expect_value(t, p, txt.Pos{0, 17})
 }
 
 // The GLYPH the pointer is over, floored — and over multi-byte runes that has to name a whole
@@ -880,9 +883,9 @@ test_editor_hit_glyph_multibyte :: proc(t: ^testing.T) {
     testing.expect_value(t, hit.glyph, 11) // the glyph: cell 8, the 'w'
 
     // And the word that comes out is whole, umlaut included.
-    app.doc_select_word(&b.doc, app.Pos{0, hit.glyph})
-    lo, hi := app.cursor_range(b.cursors[0])
-    testing.expect_value(t, app.doc_text(&b.doc, lo, hi, context.temp_allocator), "wörld")
+    txt.doc_select_word(&b.doc, txt.Pos{0, hit.glyph})
+    lo, hi := txt.cursor_range(b.cursors[0])
+    testing.expect_value(t, txt.doc_text(&b.doc, lo, hi, context.temp_allocator), "wörld")
 }
 
 // A drag resolves through editor_drag_pos, which clamps by row rather than refusing, so it
@@ -896,7 +899,7 @@ test_editor_drag_pos_multibyte :: proc(t: ^testing.T) {
     v := mkview(0, 0)
 
     p, glyph := app.editor_drag_pos(b, v, TEXT_X + 86, AREA.y + 2)
-    testing.expect_value(t, p, app.Pos{0, 12})
+    testing.expect_value(t, p, txt.Pos{0, 12})
     testing.expect_value(t, glyph, 11)
 
     // Past the right edge: the boundary clamps to the byte length, the glyph to the last rune.
@@ -915,19 +918,19 @@ test_find_marks_multibyte :: proc(t: ^testing.T) {
     defer app.find_destroy(&a.find)
     b := app.editor_current(&a.editor)
 
-    app.find_set(&a.find, b, "wörld", app.Pos{0, 0})
+    app.find_set(&a.find, b, "wörld", txt.Pos{0, 0})
     testing.expect_value(t, len(a.find.matches), 1)
     m := a.find.matches[0]
     testing.expect_value(t, m.col, 11) // bytes in
     testing.expect_value(t, m.n, 6) // w ö(2) r l d
 
-    cells := app.doc_cells(&b.doc, 0, context.temp_allocator)
-    testing.expect_value(t, app.cells_col(cells, m.col), 8) // …cells out
-    testing.expect_value(t, app.cells_col(cells, m.col + m.n), 13) // a 5-cell bar
+    cells := txt.doc_cells(&b.doc, 0, context.temp_allocator)
+    testing.expect_value(t, txt.cells_col(cells, m.col), 8) // …cells out
+    testing.expect_value(t, txt.cells_col(cells, m.col + m.n), 13) // a 5-cell bar
 
     // Smart case still folds across the multi-byte rune.
-    app.find_set(&a.find, b, "WÖRLD", app.Pos{0, 0})
+    app.find_set(&a.find, b, "WÖRLD", txt.Pos{0, 0})
     testing.expect_value(t, len(a.find.matches), 0) // a capital asks for an exact match
-    app.find_set(&a.find, b, "wörld", app.Pos{0, 0})
+    app.find_set(&a.find, b, "wörld", txt.Pos{0, 0})
     testing.expect_value(t, len(a.find.matches), 1)
 }

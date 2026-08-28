@@ -1,6 +1,7 @@
 package main
 
 import "vendor:glfw"
+import "gfx"
 
 // The one place a chord is written down. ACTIONS says what a verb is called and where it is
 // reachable; BIND_DEFAULTS says which key reaches it, and is the half a config file overrides.

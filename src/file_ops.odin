@@ -55,7 +55,7 @@ filetree_edit_selected :: proc(a: ^App) {
 // A file with nothing unsaved has nothing to discard, so this is a no-op on one.
 filetree_discard_selected :: proc(a: ^App) {
     e := filetree_selected(&a.tree)
-    if e == nil || e.is_dir || !ring_contains(a, e.path) {
+    if e == nil || e.is_dir || !ring_contains(&a.editor, e.path) {
         return
     }
     cl_dispatch(a, fmt.tprintf(":discard %s", cl_quote_arg(e.path, context.temp_allocator)), a.discard_run)

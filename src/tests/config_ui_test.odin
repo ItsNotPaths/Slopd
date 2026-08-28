@@ -4,6 +4,9 @@ import app ".."
 import clay "../../bindings/clay"
 import "core:os"
 import "core:testing"
+import "../gfx"
+import "../paths"
+import "../ui"
 
 // The config / syntax pane declared in Clay. The filetree proved a flat list of one-row items
 // and grep one item spanning several rows; this pane adds rows that select NOTHING (section
@@ -14,9 +17,9 @@ import "core:testing"
 // {102, 52, 296, 196}, an 18px row, 10 rows fitting, and 29 whole cells across.
 
 @(private = "file")
-PANE :: app.Rect{100, 50, 300, 200}
+PANE :: gfx.Rect{100, 50, 300, 200}
 @(private = "file")
-AREA :: app.Rect{102, 52, 296, 196}
+AREA :: gfx.Rect{102, 52, 296, 196}
 @(private = "file")
 ROW_H :: 18
 @(private = "file")
@@ -55,7 +58,7 @@ X_OPT :: AREA.x + 50
 fixture :: proc(a: ^app.App) {
     app.config_pane_init(&a.config_pane, nil)
     a.scale = 1
-    a.theme = app.default_theme() // a zero palette is all black, which hides colour bugs
+    a.theme = gfx.default_theme() // a zero palette is all black, which hides colour bugs
     clear(&a.config_pane.langs)
     append(
         &a.config_pane.langs,
@@ -76,7 +79,7 @@ test_config_geom :: proc(t: ^testing.T) {
     testing.expect_value(t, rows, MAX_ROWS) // 196 / 18
     testing.expect_value(t, cols, COLS) // 296 / 10
 
-    _, _, none, _ := app.config_geom(app.Rect{}, 1, 16, 10)
+    _, _, none, _ := app.config_geom(gfx.Rect{}, 1, 16, 10)
     testing.expect_value(t, none, 0)
 
     testing.expect_value(t, app.config_val_off(), f32(VAL_OFF))
@@ -149,7 +152,7 @@ test_config_rows_flatten :: proc(t: ^testing.T) {
 test_install_options :: proc(t: ^testing.T) {
     buf: [len(app.Install_Option)]app.Install_Option
 
-    for m in ([]app.Install_Mode{.Portable, .ReadOnly}) {
+    for m in ([]paths.Install_Mode{.Portable, .ReadOnly}) {
         opts := app.install_options(m, false, buf[:])
         testing.expect_value(t, len(opts), 3)
         testing.expect_value(t, opts[0], app.Install_Option.Where)
@@ -164,7 +167,7 @@ test_install_options :: proc(t: ^testing.T) {
 
     // The launcher pair is last, and exactly one option: whichever of add / remove the machine
     // does not have. It does not vary with the install mode.
-    for m in app.Install_Mode {
+    for m in paths.Install_Mode {
         without := app.install_options(m, false, buf[:])
         testing.expect_value(t, without[len(without) - 1], app.Install_Option.DesktopAdd)
         with := app.install_options(m, true, buf[:])
@@ -182,20 +185,20 @@ test_install_options :: proc(t: ^testing.T) {
 @(test)
 test_install_classify :: proc(t: ^testing.T) {
     home := "/home/me/.local/bin/slopd"
-    testing.expect_value(t, app.install_classify(home, home, false), app.Install_Mode.Installed)
-    testing.expect_value(t, app.install_classify(home, home, true), app.Install_Mode.Installed)
+    testing.expect_value(t, paths.install_classify(home, home, false), paths.Install_Mode.Installed)
+    testing.expect_value(t, paths.install_classify(home, home, true), paths.Install_Mode.Installed)
 
     // An unzipped release folder: not the installed copy, and writable.
-    testing.expect_value(t, app.install_classify("/home/me/slopd/Slopd", home, true), app.Install_Mode.Portable)
+    testing.expect_value(t, paths.install_classify("/home/me/slopd/Slopd", home, true), paths.Install_Mode.Portable)
 
     // Copied into a system bin folder: writes would fail, so nothing is attempted.
-    testing.expect_value(t, app.install_classify("/usr/bin/slopd", home, false), app.Install_Mode.ReadOnly)
+    testing.expect_value(t, paths.install_classify("/usr/bin/slopd", home, false), paths.Install_Mode.ReadOnly)
 
     // No $HOME: there is no installed path to be, so only writability answers.
-    testing.expect_value(t, app.install_classify("/opt/slopd/Slopd", "", true), app.Install_Mode.Portable)
-    testing.expect_value(t, app.install_classify("/opt/slopd/Slopd", "", false), app.Install_Mode.ReadOnly)
+    testing.expect_value(t, paths.install_classify("/opt/slopd/Slopd", "", true), paths.Install_Mode.Portable)
+    testing.expect_value(t, paths.install_classify("/opt/slopd/Slopd", "", false), paths.Install_Mode.ReadOnly)
 
-    for m in app.Install_Mode {
+    for m in paths.Install_Mode {
         testing.expect(t, app.install_mode_label(m) != "")
     }
 }
@@ -256,7 +259,7 @@ test_config_selected_and_anchor :: proc(t: ^testing.T) {
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
     first := INSTALL_ROWS + 3
     testing.expect(t, app.config_row_selected(cp, rows[first]), "the selected setting row is not lit")
-    testing.expect_value(t, app.pane_anchor(app.config_draw_rows(&a, rows, context.temp_allocator)), first)
+    testing.expect_value(t, ui.pane_anchor(app.config_draw_rows(&a, rows, context.temp_allocator)), first)
 
     // Open: the setting row goes dark and the chosen option lights.
     ln := int(app.Setting.LineNumbers)
@@ -267,7 +270,7 @@ test_config_selected_and_anchor :: proc(t: ^testing.T) {
     own := INSTALL_ROWS + 3 + ln
     testing.expect(t, !app.config_row_selected(cp, rows[own]), "an open setting row kept the highlight")
     testing.expect(t, app.config_row_selected(cp, rows[own + 2]), "the chosen option is not lit")
-    testing.expect_value(t, app.pane_anchor(app.config_draw_rows(&a, rows, context.temp_allocator)), own + 2)
+    testing.expect_value(t, ui.pane_anchor(app.config_draw_rows(&a, rows, context.temp_allocator)), own + 2)
 
     // The install row behaves as a setting row does.
     cp.open = .None
@@ -289,7 +292,7 @@ test_config_selected_and_anchor :: proc(t: ^testing.T) {
     rows = app.config_rows(cp, &a, COLS, context.temp_allocator)
     root := INSTALL_ROWS + 3 + sc + BINDS_ROWS + 3 + 1
     testing.expect(t, app.config_row_selected(cp, rows[root]), "an open language root lost the highlight")
-    testing.expect_value(t, app.pane_anchor(app.config_draw_rows(&a, rows, context.temp_allocator)), root)
+    testing.expect_value(t, ui.pane_anchor(app.config_draw_rows(&a, rows, context.temp_allocator)), root)
 }
 
 // The declared tree resolves to the columns the hand-drawn pane used: a one-cell margin, each
@@ -300,7 +303,7 @@ test_config_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fixture(&a)
@@ -322,11 +325,11 @@ test_config_command_list :: proc(t: ^testing.T) {
     }
     texts := make([dynamic]Seen, 0, 32, context.temp_allocator)
     rects := 0
-    scissor, band: app.Rect
+    scissor, band: gfx.Rect
     customs := 0
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
-        r := app.clay_rect(c.boundingBox)
+        r := ui.clay_rect(c.boundingBox)
         #partial switch c.commandType {
         case .ScissorStart:
             scissor = r
@@ -346,7 +349,7 @@ test_config_command_list :: proc(t: ^testing.T) {
 
     // Exactly one band, on the chosen OPTION at display row 5, not on the open setting row.
     testing.expect_value(t, rects, 1)
-    testing.expect_value(t, band, app.Rect{AREA.x, AREA.y + 6 * ROW_H, AREA.w, ROW_H})
+    testing.expect_value(t, band, gfx.Rect{AREA.x, AREA.y + 6 * ROW_H, AREA.w, ROW_H})
 
     // Ten rows fit and the search row is far below, so nothing is Custom here.
     testing.expect_value(t, customs, 0)
@@ -379,7 +382,7 @@ test_config_search_is_custom :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fixture(&a)
@@ -393,12 +396,12 @@ test_config_search_is_custom :: proc(t: ^testing.T) {
     cmds := app.config_layout(&a, &f, PANE, rows, 500, 300)
 
     customs := 0
-    box: app.Rect
+    box: gfx.Rect
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
         if c.commandType == .Custom {
             customs += 1
-            box = app.clay_rect(c.boundingBox)
+            box = ui.clay_rect(c.boundingBox)
         }
     }
     testing.expect_value(t, customs, 1)
@@ -406,7 +409,7 @@ test_config_search_is_custom :: proc(t: ^testing.T) {
     testing.expect_value(
         t,
         box,
-        app.Rect{X_VALUE, AREA.y + 3 * ROW_H, AREA.x + AREA.w - X_VALUE, ROW_H},
+        gfx.Rect{X_VALUE, AREA.y + 3 * ROW_H, AREA.x + AREA.w - X_VALUE, ROW_H},
     )
 }
 
@@ -418,7 +421,7 @@ test_config_text_setting_is_custom_when_selected :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fixture(&a)
@@ -446,7 +449,7 @@ test_config_text_setting_is_custom_when_selected :: proc(t: ^testing.T) {
 // Lays the pane out and reports how many Customs it declared plus the x of `want` if it was
 // drawn as text (-1 when it wasn't) — the two halves of "is this row a field or a label".
 @(private = "file")
-text_field_probe :: proc(a: ^app.App, f: ^app.Font, want: string) -> (customs: int, x: i32) {
+text_field_probe :: proc(a: ^app.App, f: ^gfx.Font, want: string) -> (customs: int, x: i32) {
     x = -1
     rows := app.config_rows(&a.config_pane, a, COLS, context.temp_allocator)
     cmds := app.config_layout(a, f, PANE, rows, 500, 300)
@@ -458,7 +461,7 @@ text_field_probe :: proc(a: ^app.App, f: ^app.Font, want: string) -> (customs: i
         case .Text:
             d := c.renderData.text
             if string(d.stringContents.chars[:d.stringContents.length]) == want {
-                x = app.clay_rect(c.boundingBox).x
+                x = ui.clay_rect(c.boundingBox).x
             }
         }
     }
@@ -472,7 +475,7 @@ test_config_hover_is_toggleable :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fixture(&a)
@@ -509,7 +512,7 @@ test_config_hover_is_toggleable :: proc(t: ^testing.T) {
     // The tint is a hint, not a second selection: strictly between the pane background and
     // the selection bar.
     th := &a.theme
-    testing.expect(t, app.hover_bg(th) != th.bg && app.hover_bg(th) != th.separator)
+    testing.expect(t, ui.hover_bg(th) != th.bg && ui.hover_bg(th) != th.separator)
 }
 
 // To a DISPLAY row, with the list SCROLLED: the case that separates a real row index from a
@@ -519,7 +522,7 @@ test_config_hit_with_scroll :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fixture(&a)
@@ -530,11 +533,11 @@ test_config_hit_with_scroll :: proc(t: ^testing.T) {
     rows := app.config_rows(cp, &a, COLS, context.temp_allocator)
     _ = app.config_layout(&a, &f, PANE, rows, 500, 300) // frame 1: boxes to hit
 
-    hit_at :: proc(a: ^app.App, f: ^app.Font, rows: []app.ConfigRow, visible_row: int) -> int {
+    hit_at :: proc(a: ^app.App, f: ^gfx.Font, rows: []app.ConfigRow, visible_row: int) -> int {
         clay.SetPointerState({f32(AREA.x + 30), f32(AREA.y + i32(visible_row) * ROW_H + 4)}, false)
         _ = app.config_layout(a, f, PANE, rows, 500, 300)
-        ui := app.config_draw_rows(a, rows, context.temp_allocator)
-        return app.pane_hit(app.CONFIG_IDS, ui, a.config_pane.scroll, MAX_ROWS)
+        drawn := app.config_draw_rows(a, rows, context.temp_allocator)
+        return ui.pane_hit(ui.CONFIG_IDS, drawn, a.config_pane.scroll, MAX_ROWS)
     }
 
     // The third visible row is the first setting: a display row, not a visible-row index.
@@ -548,8 +551,8 @@ test_config_hit_with_scroll :: proc(t: ^testing.T) {
     // Below the last declared row, and off the pane entirely.
     clay.SetPointerState({f32(AREA.x + 30), f32(AREA.y + AREA.h + 20)}, false)
     _ = app.config_layout(&a, &f, PANE, rows, 500, 300)
-    ui := app.config_draw_rows(&a, rows, context.temp_allocator)
-    testing.expect_value(t, app.pane_hit(app.CONFIG_IDS, ui, cp.scroll, MAX_ROWS), -1)
+    drawn := app.config_draw_rows(&a, rows, context.temp_allocator)
+    testing.expect_value(t, ui.pane_hit(ui.CONFIG_IDS, drawn, cp.scroll, MAX_ROWS), -1)
 }
 
 // Single click selects a row, double click opens its dropdown, and a press that hit nothing is

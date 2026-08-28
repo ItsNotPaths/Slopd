@@ -5,6 +5,7 @@ import "core:math"
 import "core:strconv"
 import "core:strings"
 import "core:unicode/utf8"
+import "txt"
 
 // Colour literals, and the picker's model. Alt+Enter on a colour edits it IN PLACE, so what
 // comes out has to go back in the form it came from. Three forms, none rewritable as another:
@@ -226,12 +227,12 @@ color_parse_args :: proc(args: []rune, st: Color_Style) -> (rgba: [4]f32, out: C
 
 // A decimal number, and whether it was written with a point — `128` against `0.5`.
 color_field :: proc(s: string) -> (v: f64, dot, ok: bool) {
-    txt := strings.trim_space(s)
-    if txt == "" {
+    body := strings.trim_space(s)
+    if body == "" {
         return 0, false, false
     }
-    v, ok = strconv.parse_f64(txt)
-    return v, strings.contains(txt, "."), ok
+    v, ok = strconv.parse_f64(body)
+    return v, strings.contains(body, "."), ok
 }
 
 // A hex body with no '#': 6/8 digits verbatim, 3/4 expanded to byte pairs.
@@ -478,16 +479,16 @@ color_open_at_caret :: proc(a: ^App) -> bool {
         return false
     }
     cur := b.cursors[b.primary].head
-    if cur.line < 0 || cur.line >= doc_line_count(&b.doc) {
+    if cur.line < 0 || cur.line >= txt.doc_line_count(&b.doc) {
         return false
     }
-    cells := doc_cells(&b.doc, cur.line)
-    rgba, lo, hi, st, ok := color_at(cells.runes, cells_col(cells, cur.col))
+    cells := txt.doc_cells(&b.doc, cur.line)
+    rgba, lo, hi, st, ok := color_at(cells.runes, txt.cells_col(cells, cur.col))
     if !ok {
         return false
     }
     // Byte ranges: the document stores bytes, not the rune columns the classifiers scan.
-    line := string(doc_line(&b.doc, cur.line, context.temp_allocator))
+    line := string(txt.doc_line(&b.doc, cur.line, context.temp_allocator))
     b_lo, b_hi := color_byte_col(line, lo), color_byte_col(line, hi)
     color_open_full(a, rgba, st, a.editor.active, cur.line, b_lo, b_hi, line[b_lo:b_hi])
     return true
@@ -545,7 +546,7 @@ color_live_buffer :: proc(a: ^App) -> ^Buffer {
         return nil
     }
     b := &a.editor.buffers[cp.buf_idx]
-    if cp.line < 0 || cp.line >= doc_line_count(&b.doc) {
+    if cp.line < 0 || cp.line >= txt.doc_line_count(&b.doc) {
         return nil
     }
     return b
@@ -556,9 +557,9 @@ color_live_buffer :: proc(a: ^App) -> ^Buffer {
 @(private = "file")
 color_write :: proc(a: ^App, b: ^Buffer, text: string, journal := false) {
     cp := &a.color
-    cp.hi = min(cp.hi, doc_line_len(&b.doc, cp.line))
-    edits := []Edit{{doc_off(&b.doc, Pos{cp.line, cp.lo}), doc_off(&b.doc, Pos{cp.line, cp.hi}), text, 0}}
-    _ = journal ? doc_commit(&b.doc, edits) : doc_apply(&b.doc, edits)
+    cp.hi = min(cp.hi, txt.doc_line_len(&b.doc, cp.line))
+    edits := []txt.Edit{{txt.doc_off(&b.doc, txt.Pos{cp.line, cp.lo}), txt.doc_off(&b.doc, txt.Pos{cp.line, cp.hi}), text, 0}}
+    _ = journal ? txt.doc_commit(&b.doc, edits) : txt.doc_apply(&b.doc, edits)
     cp.hi = cp.lo + len(text)
 }
 

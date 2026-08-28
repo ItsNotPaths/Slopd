@@ -3,6 +3,10 @@ package main
 import "base:runtime"
 import "core:fmt"
 import "core:strings"
+import "txt"
+import "gfx"
+import "paths"
+import "syntax"
 
 // The Config aux mode's state: navigation across the install row, the settings rows and the
 // language list, the inline editor (a one-line Doc), and each language's grammar status. The
@@ -57,11 +61,11 @@ ConfigPane :: struct {
     open:            Open_Kind,
     open_idx:        int, // Setting(open_idx) when open==.Setting; langs[open_idx] when .Lang
     opt_sel:         int, // within an open dropdown: -1 = the language root, 0.. = options
-    search:          Doc, // the persistent syntax filter query
+    search:          txt.Doc, // the persistent syntax filter query
     // The inline editor for a free-text setting. One Doc, since only the highlighted row can be
     // typed into. `edit_row` names that row and `edit_seed` its seeded value, which is how
     // config_edit_sync tells an edit from a row merely visited.
-    edit:            Doc,
+    edit:            txt.Doc,
     edit_row:        int, // -1 when no text row is highlighted
     edit_seed:       string, // owned: the value `edit` was seeded from
     dir:             string, // grammars directory (owned)
@@ -85,22 +89,22 @@ ROW_LANGS :: ROW_SEARCH + 1 // the first filtered language
 
 // The pane borrows each name from the App-owned registry, which outlives it, so it frees only
 // its own langs array.
-config_pane_init :: proc(cp: ^ConfigPane, grammars: []Grammar) {
-    doc_init(&cp.search)
-    doc_init(&cp.edit)
+config_pane_init :: proc(cp: ^ConfigPane, grammars: []syntax.Grammar) {
+    txt.doc_init(&cp.search)
+    txt.doc_init(&cp.edit)
     cp.edit_row = -1 // until config_edit_sync says otherwise
     cp.open = .None
     cp.hover = -1
-    cp.dir = grammars_dir()
+    cp.dir = syntax.grammars_dir()
     for g in grammars {
-        append(&cp.langs, LangStatus{name = g.name, present = grammar_present(cp.dir, g.name)})
+        append(&cp.langs, LangStatus{name = g.name, present = syntax.grammar_present(cp.dir, g.name)})
     }
     config_pane_filter(cp) // filtered = all languages
 }
 
 config_pane_destroy :: proc(cp: ^ConfigPane) {
-    doc_destroy(&cp.search)
-    doc_destroy(&cp.edit)
+    txt.doc_destroy(&cp.search)
+    txt.doc_destroy(&cp.edit)
     delete(cp.edit_seed)
     delete(cp.langs)
     delete(cp.filtered)
@@ -110,14 +114,14 @@ config_pane_destroy :: proc(cp: ^ConfigPane) {
 // On entering the pane, or after an install/uninstall.
 config_pane_refresh :: proc(cp: ^ConfigPane) {
     for &l in cp.langs {
-        l.present = grammar_present(cp.dir, l.name)
+        l.present = syntax.grammar_present(cp.dir, l.name)
     }
 }
 
 // Case-insensitive substring; empty shows all. Closes any dropdown and clamps the selection.
 config_pane_filter :: proc(cp: ^ConfigPane) {
     clear(&cp.filtered)
-    q := strings.to_lower(strings.trim_space(doc_string(&cp.search, context.temp_allocator)), context.temp_allocator)
+    q := strings.to_lower(strings.trim_space(txt.doc_string(&cp.search, context.temp_allocator)), context.temp_allocator)
     for l, i in cp.langs {
         if q == "" || strings.contains(strings.to_lower(l.name, context.temp_allocator), q) {
             append(&cp.filtered, i)
@@ -210,11 +214,11 @@ config_edit_sync :: proc(a: ^App) {
     cp.edit_row = want
     delete(cp.edit_seed)
     cp.edit_seed = ""
-    doc_clear(&cp.edit)
+    txt.doc_clear(&cp.edit)
     if s, ok := config_pane_setting(want); ok {
         cp.edit_seed = strings.clone(setting_value(a, s)) // a borrow of App state
-        doc_set_text(&cp.edit, cp.edit_seed)
-        doc_cursor_to_end(&cp.edit) // at the end of the value, ready to append
+        txt.doc_set_text(&cp.edit, cp.edit_seed)
+        txt.doc_cursor_to_end(&cp.edit) // at the end of the value, ready to append
     }
 }
 
@@ -226,7 +230,7 @@ config_edit_commit :: proc(a: ^App) -> bool {
     if !ok {
         return false
     }
-    val := strings.trim_space(doc_string(&cp.edit, context.temp_allocator))
+    val := strings.trim_space(txt.doc_string(&cp.edit, context.temp_allocator))
     if val == cp.edit_seed {
         return false
     }
@@ -295,7 +299,7 @@ lang_option_label :: proc(o: LangOption) -> string {
 
 // lang_options' contract, for Slopd's own row. An installed copy can be replaced or removed;
 // anything else can be installed. `desktop` decides the launcher pair the same way.
-install_options :: proc(m: Install_Mode, desktop: bool, buf: []Install_Option) -> []Install_Option {
+install_options :: proc(m: paths.Install_Mode, desktop: bool, buf: []Install_Option) -> []Install_Option {
     n := 0
     buf[n] = .Where;n += 1
     if m == .Installed {
@@ -374,7 +378,7 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
     )
     if cp.open == .Install {
         buf: [len(Install_Option)]Install_Option
-        for o, oi in install_options(install_mode(), desktop_present(), buf[:]) {
+        for o, oi in install_options(paths.install_mode(), desktop_present(), buf[:]) {
             append(&rows, config_option_row(ROW_INSTALL, oi, install_option_label(o)))
         }
     }
@@ -434,7 +438,7 @@ config_rows :: proc(cp: ^ConfigPane, a: ^App, cols: int, alloc := context.alloca
         ConfigRow {
             kind   = .Search,
             text   = "search:",
-            value  = doc_string(&cp.search, alloc),
+            value  = txt.doc_string(&cp.search, alloc),
             item   = ROW_SEARCH,
             opt    = -1,
             indent = 1,
@@ -534,7 +538,7 @@ config_choose :: proc(a: ^App) {
     case .None:
     case .Install:
         buf: [len(Install_Option)]Install_Option
-        opts := install_options(install_mode(), desktop_present(), buf[:])
+        opts := install_options(paths.install_mode(), desktop_present(), buf[:])
         if cp.opt_sel >= 0 && cp.opt_sel < len(opts) {
             config_run_install(a, opts[cp.opt_sel])
         }
@@ -569,7 +573,7 @@ config_dropdown_move :: proc(a: ^App, delta: int) {
             config_pane_move(cp, step)
         case .Install:
             buf: [len(Install_Option)]Install_Option
-            opts := install_options(install_mode(), desktop_present(), buf[:])
+            opts := install_options(paths.install_mode(), desktop_present(), buf[:])
             cp.opt_sel = clamp(cp.opt_sel + step, 0, max(0, len(opts) - 1))
         case .Setting:
             opts := setting_options(a, Setting(cp.open_idx))
@@ -600,7 +604,7 @@ config_dropdown_move :: proc(a: ^App, delta: int) {
 config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
     // By absolute path, quoted, so these work where slopd is not on PATH — and where the path
     // to it carries a quote of its own.
-    self := sh_quote(exe_path(context.temp_allocator), context.temp_allocator)
+    self := sh_quote(paths.exe_path(context.temp_allocator), context.temp_allocator)
     cmd: string
     switch opt {
     case .Health:
@@ -618,7 +622,7 @@ config_run_option :: proc(a: ^App, lang: string, opt: LangOption) {
 // Run the same way a language's are. Installing moves the binary Slopd is running from, which
 // no editor should do behind its own back, so it happens in a terminal you are looking at.
 config_run_install :: proc(a: ^App, opt: Install_Option) {
-    self := sh_quote(exe_path(context.temp_allocator), context.temp_allocator)
+    self := sh_quote(paths.exe_path(context.temp_allocator), context.temp_allocator)
     cmd: string
     switch opt {
     case .Where:

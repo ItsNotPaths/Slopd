@@ -3,23 +3,24 @@ package tests
 import app ".."
 import "core:math/rand"
 import "core:testing"
+import "../txt"
 
 // Multi-cursor editing, and what undo owes it. Every edit fans out to one replacement per
 // cursor, and the two ways that goes wrong are here: carets that name the SAME range, which
 // must edit it once, and carets whose ranges OVERLAP, which must not edit it twice.
 
 @(private = "file")
-mk2 :: proc(s: string, a, b: app.Pos) -> app.Doc {
-    d: app.Doc
-    app.doc_set_text(&d, s)
-    app.doc_reset_cursor(&d, a)
-    app.doc_add_cursor(&d, b)
+mk2 :: proc(s: string, a, b: txt.Pos) -> txt.Doc {
+    d: txt.Doc
+    txt.doc_set_text(&d, s)
+    txt.doc_reset_cursor(&d, a)
+    txt.doc_add_cursor(&d, b)
     return d
 }
 
 @(private = "file")
-text :: proc(d: ^app.Doc) -> string {
-    return app.doc_string(d, context.temp_allocator)
+text :: proc(d: ^txt.Doc) -> string {
+    return txt.doc_string(d, context.temp_allocator)
 }
 
 // Two carets one byte apart delete one rune each. Both deletions land at the same offset in the
@@ -27,12 +28,12 @@ text :: proc(d: ^app.Doc) -> string {
 @(test)
 test_multicursor_backspace_undo :: proc(t: ^testing.T) {
     d := mk2("abcd", {0, 1}, {0, 2})
-    defer app.doc_destroy(&d)
+    defer txt.doc_destroy(&d)
 
-    testing.expect(t, app.doc_backspace(&d))
+    testing.expect(t, txt.doc_backspace(&d))
     testing.expect_value(t, text(&d), "cd")
 
-    testing.expect(t, app.doc_undo(&d))
+    testing.expect(t, txt.doc_undo(&d))
     testing.expect_value(t, text(&d), "abcd")
 }
 
@@ -41,12 +42,12 @@ test_multicursor_backspace_undo :: proc(t: ^testing.T) {
 @(test)
 test_multicursor_word_back_overlap :: proc(t: ^testing.T) {
     d := mk2("abcd", {0, 1}, {0, 2})
-    defer app.doc_destroy(&d)
+    defer txt.doc_destroy(&d)
 
-    testing.expect(t, app.doc_delete_word_back(&d))
+    testing.expect(t, txt.doc_delete_word_back(&d))
     testing.expect_value(t, text(&d), "cd")
 
-    testing.expect(t, app.doc_undo(&d))
+    testing.expect(t, txt.doc_undo(&d))
     testing.expect_value(t, text(&d), "abcd")
 }
 
@@ -54,14 +55,14 @@ test_multicursor_word_back_overlap :: proc(t: ^testing.T) {
 // typed character must appear once.
 @(test)
 test_dropped_anchor_types_once :: proc(t: ^testing.T) {
-    d: app.Doc
-    defer app.doc_destroy(&d)
-    app.doc_set_text(&d, "ab")
-    app.doc_reset_cursor(&d, {0, 1})
-    app.doc_drop_anchor(&d)
+    d: txt.Doc
+    defer txt.doc_destroy(&d)
+    txt.doc_set_text(&d, "ab")
+    txt.doc_reset_cursor(&d, {0, 1})
+    txt.doc_drop_anchor(&d)
     testing.expect_value(t, len(d.cursors), 2)
 
-    testing.expect(t, app.doc_insert_rune(&d, 'X'))
+    testing.expect(t, txt.doc_insert_rune(&d, 'X'))
     testing.expect_value(t, text(&d), "aXb")
 }
 
@@ -80,21 +81,21 @@ test_multicursor_undo_roundtrip :: proc(t: ^testing.T) {
     context.random_generator = rand.default_random_generator(&seeds)
 
     for trial in 0 ..< 200 {
-        d: app.Doc
-        defer app.doc_destroy(&d)
+        d: txt.Doc
+        defer txt.doc_destroy(&d)
         start := "one two\nthree four\n\nfïve six\nseven"
-        app.doc_set_text(&d, start)
+        txt.doc_set_text(&d, start)
 
         for _ in 0 ..< EDIT_OPS {
             scatter_cursors(&d)
             random_edit(&d)
         }
-        end := app.doc_string(&d, context.temp_allocator)
+        end := txt.doc_string(&d, context.temp_allocator)
 
-        for app.doc_undo(&d) {}
+        for txt.doc_undo(&d) {}
         testing.expectf(t, text(&d) == start, "trial %d: undo left %q", trial, text(&d))
 
-        for app.doc_redo(&d) {}
+        for txt.doc_redo(&d) {}
         testing.expectf(t, text(&d) == end, "trial %d: redo left %q", trial, text(&d))
     }
 }
@@ -102,43 +103,43 @@ test_multicursor_undo_roundtrip :: proc(t: ^testing.T) {
 // One to four carets at random positions, each with an even chance of a selection running to
 // another random position. doc_clamp_pos does the snapping, as it does for a real pointer.
 @(private = "file")
-scatter_cursors :: proc(d: ^app.Doc) {
-    app.doc_reset_cursor(d, random_pos(d))
+scatter_cursors :: proc(d: ^txt.Doc) {
+    txt.doc_reset_cursor(d, random_pos(d))
     for _ in 0 ..< rand.int_max(3) {
-        app.doc_add_cursor(d, random_pos(d))
+        txt.doc_add_cursor(d, random_pos(d))
     }
     if rand.int_max(2) == 0 {
-        app.doc_set_head(d, random_pos(d), true)
+        txt.doc_set_head(d, random_pos(d), true)
     }
     if rand.int_max(8) == 0 {
-        app.doc_drop_anchor(d) // the coincident pair
+        txt.doc_drop_anchor(d) // the coincident pair
     }
 }
 
 @(private = "file")
-random_pos :: proc(d: ^app.Doc) -> app.Pos {
-    line := rand.int_max(app.doc_line_count(d))
-    return {line, rand.int_max(app.doc_line_len(d, line) + 1)}
+random_pos :: proc(d: ^txt.Doc) -> txt.Pos {
+    line := rand.int_max(txt.doc_line_count(d))
+    return {line, rand.int_max(txt.doc_line_len(d, line) + 1)}
 }
 
 @(private = "file")
-random_edit :: proc(d: ^app.Doc) {
+random_edit :: proc(d: ^txt.Doc) {
     switch rand.int_max(8) {
     case 0:
-        app.doc_insert_rune(d, rand.choice([]rune{'a', ' ', '(', 'é'}))
+        txt.doc_insert_rune(d, rand.choice([]rune{'a', ' ', '(', 'é'}))
     case 1:
-        app.doc_insert_text(d, rand.choice([]string{"xy", "p\nq", "  "}))
+        txt.doc_insert_text(d, rand.choice([]string{"xy", "p\nq", "  "}))
     case 2:
-        app.doc_newline(d)
+        txt.doc_newline(d)
     case 3:
-        app.doc_backspace(d)
+        txt.doc_backspace(d)
     case 4:
-        app.doc_delete(d)
+        txt.doc_delete(d)
     case 5:
-        app.doc_delete_word_back(d)
+        txt.doc_delete_word_back(d)
     case 6:
-        app.doc_delete_word_forward(d)
+        txt.doc_delete_word_forward(d)
     case 7:
-        app.doc_cut(d)
+        txt.doc_cut(d)
     }
 }

@@ -2,6 +2,7 @@ package tests
 
 import app ".."
 import "core:testing"
+import "../ui"
 
 // Split: both panes are always on screen regardless of focus.
 @(test)
@@ -88,7 +89,7 @@ test_view_toggles :: proc(t: ^testing.T) {
     a.focus = .Aux // browsing the aux pane when zen is invoked
     app.view_toggle_zen(&a)
     testing.expect_value(t, a.view, app.View.Zen)
-    testing.expect_value(t, a.focus, app.Focus.Editor) // zen lands in the editor
+    testing.expect_value(t, a.focus, ui.Focus.Editor) // zen lands in the editor
     app.view_toggle_zen(&a)
     testing.expect_value(t, a.view, app.View.Split)
 
@@ -115,12 +116,12 @@ test_view_normal_names_the_arrangement :: proc(t: ^testing.T) {
 
     app.view_normal(&a)
     testing.expect_value(t, a.view, app.View.Split) // idempotent from Split
-    testing.expect_value(t, a.focus, app.Focus.Aux) // and focus is KEPT, unlike zen's exit
+    testing.expect_value(t, a.focus, ui.Focus.Aux) // and focus is KEPT, unlike zen's exit
 
     a.view = .Zen
     app.view_normal(&a)
     testing.expect_value(t, a.view, app.View.Split)
-    testing.expect_value(t, a.focus, app.Focus.Aux)
+    testing.expect_value(t, a.focus, ui.Focus.Aux)
 
     a.view = .Full
     app.view_normal(&a)

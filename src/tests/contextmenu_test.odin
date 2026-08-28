@@ -3,6 +3,7 @@ package tests
 import app ".."
 import "core:strings"
 import "core:testing"
+import "../gfx"
 
 // Where a popup goes for a press, which rows the keyboard may land on, and what a press outside
 // one does. The placement is the interesting half, and being pure is what lets all four cases be
@@ -22,23 +23,23 @@ ITEMS := [?]app.Menu_Item {
 @(test)
 test_ctxmenu_place :: proc(t: ^testing.T) {
     // Room for it: the press is the top-left corner.
-    testing.expect_value(t, app.ctxmenu_place(100, 100, 120, 80, 800, 600), app.Rect{100, 100, 120, 80})
+    testing.expect_value(t, app.ctxmenu_place(100, 100, 120, 80, 800, 600), gfx.Rect{100, 100, 120, 80})
 
     // Against the right edge: flipped left, not slid back along the edge.
-    testing.expect_value(t, app.ctxmenu_place(750, 100, 120, 80, 800, 600), app.Rect{630, 100, 120, 80})
+    testing.expect_value(t, app.ctxmenu_place(750, 100, 120, 80, 800, 600), gfx.Rect{630, 100, 120, 80})
 
     // Against the bottom: flipped above it.
-    testing.expect_value(t, app.ctxmenu_place(100, 560, 120, 80, 800, 600), app.Rect{100, 480, 120, 80})
+    testing.expect_value(t, app.ctxmenu_place(100, 560, 120, 80, 800, 600), gfx.Rect{100, 480, 120, 80})
 
     // The corner does both at once.
-    testing.expect_value(t, app.ctxmenu_place(750, 560, 120, 80, 800, 600), app.Rect{630, 480, 120, 80})
+    testing.expect_value(t, app.ctxmenu_place(750, 560, 120, 80, 800, 600), gfx.Rect{630, 480, 120, 80})
 
     // Exactly touching the edge is not an overflow: a flip would be a jump for one pixel.
-    testing.expect_value(t, app.ctxmenu_place(680, 520, 120, 80, 800, 600), app.Rect{680, 520, 120, 80})
+    testing.expect_value(t, app.ctxmenu_place(680, 520, 120, 80, 800, 600), gfx.Rect{680, 520, 120, 80})
 
     // A press near the left edge with no room either side clamps into the window rather than
     // resolving to a negative origin.
-    testing.expect_value(t, app.ctxmenu_place(10, 10, 120, 80, 100, 60), app.Rect{0, 0, 120, 80})
+    testing.expect_value(t, app.ctxmenu_place(10, 10, 120, 80, 100, 60), gfx.Rect{0, 0, 120, 80})
 }
 
 // Separators and disabled rows are skipped both ways, and an open menu lands on something
@@ -80,7 +81,7 @@ test_ctxmenu_dismiss_consumes_the_press :: proc(t: ^testing.T) {
     defer app.ctxmenu_destroy(&a)
 
     app.ctxmenu_open(&a, .FileOps, ITEMS[:], 10, 10, {"/tmp", .Dir})
-    a.ctxmenu.rect = app.Rect{10, 10, 100, 60} // as the declaration would have left it
+    a.ctxmenu.rect = gfx.Rect{10, 10, 100, 60} // as the declaration would have left it
 
     // Inside: the menu keeps it, for its own item click to claim.
     a.mouse.click = true
@@ -96,7 +97,7 @@ test_ctxmenu_dismiss_consumes_the_press :: proc(t: ^testing.T) {
 
     // With the pointer off, nothing happens: the menu is only ever a second route to a chord.
     app.ctxmenu_open(&a, .FileOps, ITEMS[:], 10, 10, {"/tmp", .Dir})
-    a.ctxmenu.rect = app.Rect{10, 10, 100, 60}
+    a.ctxmenu.rect = gfx.Rect{10, 10, 100, 60}
     a.mouse_on = false
     a.mouse.click = true
     app.ctxmenu_dismiss_click(&a)
@@ -139,7 +140,7 @@ test_ctxmenu_discard_only_for_unsaved :: proc(t: ^testing.T) {
     testing.expect_value(t, it.hint, "^k") // the chord it stands for, never a verb of its own
 
     // The '*' in the listing and the menu row are one question asked twice.
-    testing.expect(t, app.ring_contains(&a, "/tmp/ft/f.txt"))
+    testing.expect(t, app.ring_contains(&a.editor, "/tmp/ft/f.txt"))
 }
 
 // Cut to what the TARGET can have, and only then greyed for what it cannot do yet: a verb

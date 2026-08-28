@@ -2,6 +2,7 @@ package tests
 
 import app ".."
 import "core:testing"
+import "../txt"
 
 // Line-wise editing: which lines a selection reaches (doc_cursor_lines), block indent and its
 // undo (buffer_indent_block), and the one thing both rest on — the selection SURVIVING the edit,
@@ -13,20 +14,20 @@ SRC :: "one\n  two\n    three\nfour"
 @(private = "file")
 mk :: proc(src := SRC) -> app.Buffer {
     b: app.Buffer
-    app.doc_init(&b.doc)
+    txt.doc_init(&b.doc)
     app.buffer_set_text(&b, src)
     return b
 }
 
 @(private = "file")
-sel :: proc(b: ^app.Buffer, anchor, head: app.Pos) {
-    app.doc_reset_cursor(&b.doc, anchor)
-    app.doc_set_head(&b.doc, head, true)
+sel :: proc(b: ^app.Buffer, anchor, head: txt.Pos) {
+    txt.doc_reset_cursor(&b.doc, anchor)
+    txt.doc_set_head(&b.doc, head, true)
 }
 
 @(private = "file")
 text :: proc(b: ^app.Buffer) -> string {
-    return app.doc_string(&b.doc, context.temp_allocator)
+    return txt.doc_string(&b.doc, context.temp_allocator)
 }
 
 // A caret reaches its own line; a selection reaches every line it crosses. The exception is the
@@ -37,23 +38,23 @@ test_cursor_lines_of_a_selection :: proc(t: ^testing.T) {
     b := mk()
     defer app.buffer_destroy(&b)
 
-    app.doc_reset_cursor(&b.doc, app.Pos{2, 1})
-    testing.expect_value(t, len(app.doc_cursor_lines(&b.doc)), 1)
-    testing.expect_value(t, app.doc_cursor_lines(&b.doc)[0], 2)
+    txt.doc_reset_cursor(&b.doc, txt.Pos{2, 1})
+    testing.expect_value(t, len(txt.doc_cursor_lines(&b.doc)), 1)
+    testing.expect_value(t, txt.doc_cursor_lines(&b.doc)[0], 2)
 
-    sel(&b, app.Pos{0, 1}, app.Pos{2, 2})
-    testing.expect_value(t, len(app.doc_cursor_lines(&b.doc)), 3)
+    sel(&b, txt.Pos{0, 1}, txt.Pos{2, 2})
+    testing.expect_value(t, len(txt.doc_cursor_lines(&b.doc)), 3)
 
     // Line 2 is where the caret stands, not text it covers.
-    sel(&b, app.Pos{0, 0}, app.Pos{2, 0})
-    lines := app.doc_cursor_lines(&b.doc)
+    sel(&b, txt.Pos{0, 0}, txt.Pos{2, 0})
+    lines := txt.doc_cursor_lines(&b.doc)
     testing.expect_value(t, len(lines), 2)
     testing.expect_value(t, lines[1], 1)
 
     // Two carets on one line name it once.
-    app.doc_reset_cursor(&b.doc, app.Pos{1, 0})
-    app.doc_add_cursor(&b.doc, app.Pos{1, 3})
-    testing.expect_value(t, len(app.doc_cursor_lines(&b.doc)), 1)
+    txt.doc_reset_cursor(&b.doc, txt.Pos{1, 0})
+    txt.doc_add_cursor(&b.doc, txt.Pos{1, 3})
+    testing.expect_value(t, len(txt.doc_cursor_lines(&b.doc)), 1)
 }
 
 // Tab over a selection crossing lines indents the block and KEEPS the selection, so a second
@@ -64,7 +65,7 @@ test_block_indent_keeps_the_selection :: proc(t: ^testing.T) {
     defer app.buffer_destroy(&b)
     ind := app.Indent{.Spaces, 2}
 
-    sel(&b, app.Pos{0, 0}, app.Pos{2, 1})
+    sel(&b, txt.Pos{0, 0}, txt.Pos{2, 1})
     app.buffer_tab(&b, ind)
     testing.expect_value(t, text(&b), "  a\n\n  b")
     testing.expect(t, b.dirty)
@@ -74,8 +75,8 @@ test_block_indent_keeps_the_selection :: proc(t: ^testing.T) {
 
     // And it is still a selection over the same lines, its columns carried along.
     c := b.doc.cursors[b.doc.primary]
-    testing.expect_value(t, c.anchor, app.Pos{0, 4})
-    testing.expect_value(t, c.head, app.Pos{2, 5})
+    testing.expect_value(t, c.anchor, txt.Pos{0, 4})
+    testing.expect_value(t, c.head, txt.Pos{2, 5})
 }
 
 // Shift+Tab takes one level off, by the indent in force: a tab, or up to that many spaces. A line
@@ -85,23 +86,23 @@ test_block_dedent :: proc(t: ^testing.T) {
     b := mk()
     defer app.buffer_destroy(&b)
 
-    sel(&b, app.Pos{0, 0}, app.Pos{2, 5})
+    sel(&b, txt.Pos{0, 0}, txt.Pos{2, 5})
     app.buffer_indent_block(&b, app.Indent{.Spaces, 2}, true)
     testing.expect_value(t, text(&b), "one\ntwo\n  three\nfour")
 
     // Fewer spaces than a level is all of them, never a wrap onto the line above.
     b2 := mk(" x")
     defer app.buffer_destroy(&b2)
-    app.doc_reset_cursor(&b2.doc, app.Pos{0, 0})
+    txt.doc_reset_cursor(&b2.doc, txt.Pos{0, 0})
     app.buffer_indent_block(&b2, app.Indent{.Spaces, 4}, true)
     testing.expect_value(t, text(&b2), "x")
 
     b3 := mk("\t\tx")
     defer app.buffer_destroy(&b3)
-    app.doc_reset_cursor(&b3.doc, app.Pos{0, 3})
+    txt.doc_reset_cursor(&b3.doc, txt.Pos{0, 3})
     app.buffer_indent_block(&b3, app.Indent{.Tab, 4}, true)
     testing.expect_value(t, text(&b3), "\tx")
-    testing.expect_value(t, b3.doc.cursors[0].head, app.Pos{0, 2}) // carried with the line
+    testing.expect_value(t, b3.doc.cursors[0].head, txt.Pos{0, 2}) // carried with the line
 }
 
 // With no selection Shift+Tab is the caret's own line, which is how a single line is pulled back.
@@ -111,10 +112,10 @@ test_dedent_without_a_selection :: proc(t: ^testing.T) {
     b := mk()
     defer app.buffer_destroy(&b)
 
-    app.doc_reset_cursor(&b.doc, app.Pos{1, 1})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{1, 1})
     app.buffer_indent_block(&b, app.Indent{.Spaces, 2}, true)
     testing.expect_value(t, text(&b), "one\ntwo\n    three\nfour")
-    testing.expect_value(t, b.doc.cursors[0].head, app.Pos{1, 0})
+    testing.expect_value(t, b.doc.cursors[0].head, txt.Pos{1, 0})
 
     // Nothing to take off is not an edit at all.
     b.dirty = false
@@ -129,18 +130,18 @@ test_block_indent_undoes_as_one :: proc(t: ^testing.T) {
     b := mk()
     defer app.buffer_destroy(&b)
 
-    sel(&b, app.Pos{0, 0}, app.Pos{3, 4})
+    sel(&b, txt.Pos{0, 0}, txt.Pos{3, 4})
     app.buffer_tab(&b, app.Indent{.Spaces, 2})
     testing.expect_value(t, text(&b), "  one\n    two\n      three\n  four")
 
-    testing.expect(t, app.doc_undo(&b.doc))
+    testing.expect(t, txt.doc_undo(&b.doc))
     testing.expect_value(t, text(&b), SRC)
     testing.expect_value(t, len(b.doc.cursors), 1)
-    testing.expect_value(t, b.doc.cursors[0].head, app.Pos{3, 4})
+    testing.expect_value(t, b.doc.cursors[0].head, txt.Pos{3, 4})
 
-    testing.expect(t, app.doc_redo(&b.doc))
+    testing.expect(t, txt.doc_redo(&b.doc))
     testing.expect_value(t, text(&b), "  one\n    two\n      three\n  four")
-    testing.expect_value(t, b.doc.cursors[0].head, app.Pos{3, 6})
+    testing.expect_value(t, b.doc.cursors[0].head, txt.Pos{3, 6})
 }
 
 // A selection inside ONE line is not the block gesture: Tab stays the caret's own insert.
@@ -149,7 +150,7 @@ test_tab_within_one_line_is_not_a_block :: proc(t: ^testing.T) {
     b := mk("hello")
     defer app.buffer_destroy(&b)
 
-    sel(&b, app.Pos{0, 1}, app.Pos{0, 3})
+    sel(&b, txt.Pos{0, 1}, txt.Pos{0, 3})
     app.buffer_tab(&b, app.Indent{.Spaces, 2})
     testing.expect_value(t, text(&b), "hel  lo")
 }

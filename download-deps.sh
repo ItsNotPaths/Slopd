@@ -326,7 +326,7 @@ echo "==> file-type icons (Symbols Nerd Font Mono, subset — Seti-UI + Devicons
 # Devicons (U+E700-E7C5, the language and tool logos). BOTH ARE MIT — deliberately, so the
 # embed carries one licence note; Font Awesome, Material and Codicons are CC-BY/Apache and are
 # left out, as are Octicons, which would push this past the size line below for glyphs the
-# other two already cover. Taking whole blocks is what lets src/icons.odin's ext -> icon table
+# other two already cover. Taking whole blocks is what lets src/gfx/icons.odin's ext -> icon table
 # grow later without re-running this script.
 #
 # ~174KB for 391 glyphs, against 2.5MB for the full face. Unlike Iosevka, this font is
@@ -391,7 +391,7 @@ echo "==> language registry (parsed down from Helix's languages.toml)"
 # Slopd's tree-sitter language set follows Helix: tools/gen-languages.py fetches
 # Helix's languages.toml (pinned) and relabels it into our tiny `languages` file
 # (name + grammar repo/rev/subpath + file extensions). Generated, but COMMITTED —
-# src/grammar.odin #loads it into the binary, and #load resolves at compile time,
+# src/syntax/grammar.odin #loads it into the binary, and #load resolves at compile time,
 # so a fresh clone has to build without ever running this script. This step is a
 # refresh, not a bootstrap. Grammars themselves are NOT fetched here — they install
 # at runtime via `slopd --grammar`. Bump HELIX_REF and re-run to update the set.

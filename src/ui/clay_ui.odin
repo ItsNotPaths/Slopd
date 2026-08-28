@@ -1,8 +1,8 @@
-package main
+package ui
 
 import "base:runtime"
 import "core:fmt"
-import clay "../bindings/clay"
+import clay "../../bindings/clay"
 
 // Clay bring-up. Clay is the layout and hit-test engine behind the chrome: panes, rows,
 // fields, dropdowns, overlays and the strip are declared as a tree, and Clay hands back a flat
@@ -50,7 +50,7 @@ clay_error :: proc "c" (e: clay.ErrorData) {
 }
 
 // Once from main, after the window exists. Clay keeps the context globally, so nothing is
-// stored on App.
+// stored by the caller.
 clay_init :: proc(w, h: i32) -> bool {
     if !clay_arena_fits() {
         fmt.eprintfln(

@@ -1,4 +1,4 @@
-package main
+package gfx
 
 import "core:path/filepath"
 import "core:strings"

@@ -4,10 +4,12 @@ import app ".."
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "../txt"
+import "../ui"
 
 @(private = "file")
 val :: proc(a: ^app.App) -> string {
-    return app.doc_string(&a.cl.doc, context.temp_allocator)
+    return txt.doc_string(&a.cl.doc, context.temp_allocator)
 }
 
 // Stand in N sessions without spawning real shells: term_focus only lazily spawns
@@ -130,7 +132,7 @@ test_a_buffer_with_no_file_does_not_guard_the_quit :: proc(t: ^testing.T) {
 
     // One with a file behind it guards as it always did.
     named: app.Buffer
-    app.doc_init(&named.doc)
+    txt.doc_init(&named.doc)
     named.path = strings.clone("/tmp/slopd_guard.txt")
     named.dirty = true
     append(&a.editor.buffers, named)
@@ -169,12 +171,12 @@ test_cl_discard :: proc(t: ^testing.T) {
     app.buffer_set_text(b, "my edits")
     b.dirty = true
     testing.expect_value(t, app.ring_dirty_count(&a.editor), 1)
-    testing.expect(t, app.ring_contains(&a, path))
+    testing.expect(t, app.ring_contains(&a.editor, path))
 
     app.cl_exec(&a, strings.concatenate({":discard ", path}, context.temp_allocator))
     testing.expect_value(t, app.ring_dirty_count(&a.editor), 0)
-    testing.expect_value(t, app.doc_string(&b.doc, context.temp_allocator), "on disk")
-    testing.expect(t, !app.ring_contains(&a, path))
+    testing.expect_value(t, txt.doc_string(&b.doc, context.temp_allocator), "on disk")
+    testing.expect(t, !app.ring_contains(&a.editor, path))
 }
 
 @(test)
@@ -182,7 +184,7 @@ test_cl_goto :: proc(t: ^testing.T) {
     a: app.App
     app.cl_exec(&a, ":ls")
     testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree)
-    testing.expect_value(t, a.focus, app.Focus.Aux)
+    testing.expect_value(t, a.focus, ui.Focus.Aux)
 }
 
 @(test)
@@ -196,7 +198,7 @@ test_cl_jump :: proc(t: ^testing.T) {
 
     app.cl_exec(&a, ":j 3") // absolute, 1-based -> line index 2
     testing.expect_value(t, b.cursors[b.primary].head.line, 2)
-    testing.expect_value(t, a.focus, app.Focus.Editor)
+    testing.expect_value(t, a.focus, ui.Focus.Editor)
 
     app.cl_exec(&a, ":jump 6") // `:jump` alias, line index 5
     testing.expect_value(t, b.cursors[b.primary].head.line, 5)
@@ -275,9 +277,9 @@ test_cl_history :: proc(t: ^testing.T) {
     a: app.App
     defer app.cl_destroy(&a)
 
-    app.doc_set_text(&a.cl.doc, ":ls")
+    txt.doc_set_text(&a.cl.doc, ":ls")
     app.cl_submit(&a)
-    app.doc_set_text(&a.cl.doc, ":cf")
+    txt.doc_set_text(&a.cl.doc, ":cf")
     app.cl_submit(&a)
 
     app.cl_open(&a) // hist_idx parked at the live edit
@@ -355,20 +357,20 @@ test_cl_reload_conflict :: proc(t: ^testing.T) {
     // `:reload n` keeps my edits and clears the conflict.
     app.cl_exec(&a, ":reload n")
     testing.expect(t, !b.conflict)
-    testing.expect_value(t, string(app.doc_line(&b.doc, 0, context.temp_allocator)), "mine")
+    testing.expect_value(t, string(txt.doc_line(&b.doc, 0, context.temp_allocator)), "mine")
 
     // Re-raise, then `:reload y` takes the disk version (edits discarded, buffer clean).
     b.conflict = true
     app.cl_exec(&a, ":reload y")
     testing.expect(t, !b.conflict)
     testing.expect(t, !b.dirty)
-    testing.expect_value(t, string(app.doc_line(&b.doc, 0, context.temp_allocator)), "disk")
+    testing.expect_value(t, string(txt.doc_line(&b.doc, 0, context.temp_allocator)), "disk")
 
     // With no conflict, a bare `:reload` is a manual re-read from disk (discards edits).
     app.buffer_set_text(b, "scratch")
     b.dirty = true
     app.cl_exec(&a, ":reload")
-    testing.expect_value(t, string(app.doc_line(&b.doc, 0, context.temp_allocator)), "disk")
+    testing.expect_value(t, string(txt.doc_line(&b.doc, 0, context.temp_allocator)), "disk")
 }
 
 // An open command line owns keys even when a live terminal is focused (it overlays
@@ -381,7 +383,7 @@ test_cl_active_owns_keys_over_terminal :: proc(t: ^testing.T) {
     append(&a.terminals, tm)
     defer {free(tm);delete(a.terminals)}
     a.aux_mode = app.AuxMode.Terminal
-    a.focus = app.Focus.Aux
+    a.focus = ui.Focus.Aux
     a.term_active = 0
 
     testing.expect(t, app.term_focused(&a) == tm, "terminal owns keys when the CL is closed")
@@ -526,7 +528,7 @@ test_cl_launch_path_file :: proc(t: ^testing.T) {
     testing.expect_value(t, a.project_root, dir) // the folder, not the file
     testing.expect_value(t, a.tree.dir, dir)
     testing.expect_value(t, app.editor_current(&a.editor).path, path)
-    testing.expect_value(t, a.focus, app.Focus.Editor) // the opened file is what you look at
+    testing.expect_value(t, a.focus, ui.Focus.Editor) // the opened file is what you look at
 }
 
 // A path that is not there is reported (main prints it), and changes nothing: the launch cwd
@@ -1071,7 +1073,7 @@ test_save_stage_sudo :: proc(t: ^testing.T) {
     testing.expect(t, a.cl.injected)
     testing.expect_value(
         t,
-        app.doc_string(&a.cl.doc, context.temp_allocator),
+        txt.doc_string(&a.cl.doc, context.temp_allocator),
         app.sudo_save_command(tmp, b.path, context.temp_allocator),
     )
 

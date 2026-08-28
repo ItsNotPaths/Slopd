@@ -1,9 +1,10 @@
-package main
+package ui
 
 import "core:math"
-import clay "../bindings/clay"
+import clay "../../bindings/clay"
+import "../gfx"
 
-// The renderer bridge: Clay's flat command list turned into the calls text.odin exposes —
+// The renderer bridge: Clay's flat command list turned into the calls src/gfx exposes —
 // `fill`, `text_draw`, `image_push`, `flush_pane`. Nothing here decides layout, and it is the
 // only place that knows Clay's command shape. Two renderer properties leak through:
 //
@@ -35,25 +36,25 @@ clay_text_config :: proc(color: [3]f32, line_h: i32) -> clay.TextElementConfig {
 
 // Round the EDGES, not the origin and size independently: two rects sharing a boundary at
 // x=100.5 must round to the same pixel from both sides, or the seam shows.
-clay_rect :: proc(b: clay.BoundingBox) -> Rect {
+clay_rect :: proc(b: clay.BoundingBox) -> gfx.Rect {
     x0 := i32(math.round(b.x))
     y0 := i32(math.round(b.y))
     x1 := i32(math.round(b.x + b.width))
     y1 := i32(math.round(b.y + b.height))
-    return Rect{x0, y0, x1 - x0, y1 - y0}
+    return gfx.Rect{x0, y0, x1 - x0, y1 - y0}
 }
 
 // GL's scissor is a single rect, so nesting is intersection.
-clay_isect :: proc(a, b: Rect) -> Rect {
+clay_isect :: proc(a, b: gfx.Rect) -> gfx.Rect {
     x0, y0 := max(a.x, b.x), max(a.y, b.y)
     x1 := min(a.x + a.w, b.x + b.w)
     y1 := min(a.y + a.h, b.y + b.h)
-    return Rect{x0, y0, max(0, x1 - x0), max(0, y1 - y0)}
+    return gfx.Rect{x0, y0, max(0, x1 - x0), max(0, y1 - y0)}
 }
 
 // Monospace: the RUNE count times the cell advance, not the byte count, or a box-drawing
 // character measures wide. `contextless` because Clay calls the shim on its own C stack.
-clay_measure_dims :: proc "contextless" (f: ^Font, s: string, line_h: u16) -> (w, h: f32) {
+clay_measure_dims :: proc "contextless" (f: ^gfx.Font, s: string, line_h: u16) -> (w, h: f32) {
     if f == nil {
         return 0, 0
     }
@@ -74,12 +75,12 @@ clay_measure :: proc "c" (
     userData: rawptr,
 ) -> clay.Dimensions {
     line_h: u16 = config != nil ? config.lineHeight : 0
-    w, h := clay_measure_dims((^Font)(userData), string(text.chars[:text.length]), line_h)
+    w, h := clay_measure_dims((^gfx.Font)(userData), string(text.chars[:text.length]), line_h)
     return {width = w, height = h}
 }
 
 // Against a font that outlives the program (Text.font). Once, after text_init.
-clay_use_font :: proc(f: ^Font) {
+clay_use_font :: proc(f: ^gfx.Font) {
     clay.SetMeasureTextFunction(clay_measure, f)
 }
 
@@ -97,19 +98,22 @@ clay_resize :: proc(w, h: i32) {
 // EndLayout. The bridge flushes first and hands over `r` (where the surface starts) and `clip`
 // (what may reach the screen); the painter ends with its own flush_pane.
 ClayCustom :: struct {
-    paint: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr),
+    // `host` is whatever clay_paint was handed — the front-end's own state, opaque here. A
+    // painter casts it back to what it knows it is, the same trade `user` already makes. It is
+    // what keeps the bridge from naming any one application.
+    paint: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr),
     user:  rawptr,
 }
 
 // `root` is the clip outside any clip element: a pane rect, or the whole window.
 clay_paint :: proc(
-    t: ^Text,
-    a: ^App,
+    t: ^gfx.Text,
+    host: rawptr,
     cmds: ^clay.ClayArray(clay.RenderCommand),
-    root: Rect,
+    root: gfx.Rect,
     win_w, win_h: i32,
 ) {
-    stack: [CLAY_CLIP_DEPTH]Rect
+    stack: [CLAY_CLIP_DEPTH]gfx.Rect
     depth := 0 // counts past CLAY_CLIP_DEPTH on purpose
     clip := root
 
@@ -120,7 +124,7 @@ clay_paint :: proc(
         switch cmd.commandType {
         case .Rectangle:
             if col, ok := clay_color(cmd.renderData.rectangle.backgroundColor); ok {
-                fill(t, r, col)
+                gfx.fill(t, r, col)
             }
 
         case .Border:
@@ -129,16 +133,16 @@ clay_paint :: proc(
             b := cmd.renderData.border
             if col, ok := clay_color(b.color); ok {
                 if b.width.top > 0 {
-                    fill(t, Rect{r.x, r.y, r.w, i32(b.width.top)}, col)
+                    gfx.fill(t, gfx.Rect{r.x, r.y, r.w, i32(b.width.top)}, col)
                 }
                 if b.width.bottom > 0 {
-                    fill(t, Rect{r.x, r.y + r.h - i32(b.width.bottom), r.w, i32(b.width.bottom)}, col)
+                    gfx.fill(t, gfx.Rect{r.x, r.y + r.h - i32(b.width.bottom), r.w, i32(b.width.bottom)}, col)
                 }
                 if b.width.left > 0 {
-                    fill(t, Rect{r.x, r.y, i32(b.width.left), r.h}, col)
+                    gfx.fill(t, gfx.Rect{r.x, r.y, i32(b.width.left), r.h}, col)
                 }
                 if b.width.right > 0 {
-                    fill(t, Rect{r.x + r.w - i32(b.width.right), r.y, i32(b.width.right), r.h}, col)
+                    gfx.fill(t, gfx.Rect{r.x + r.w - i32(b.width.right), r.y, i32(b.width.right), r.h}, col)
                 }
             }
 
@@ -149,22 +153,22 @@ clay_paint :: proc(
                 // text_draw adds the baseline offset itself. The slice points into Clay's
                 // arena and is valid until the next BeginLayout.
                 s := string(d.stringContents.chars[:d.stringContents.length])
-                text_draw(t, s, f32(r.x), f32(r.y), col)
+                gfx.text_draw(t, s, f32(r.x), f32(r.y), col)
             }
 
         case .Image:
             // The pane stuffs its GL texture name into imageData; the name is the payload.
-            image_push(t, u32(uintptr(cmd.renderData.image.imageData)), r)
+            gfx.image_push(t, u32(uintptr(cmd.renderData.image.imageData)), r)
 
         case .Custom:
             cu := (^ClayCustom)(cmd.renderData.custom.customData)
             if cu != nil && cu.paint != nil {
-                flush_pane(t, clip, win_w, win_h) // hand the painter empty batches
-                cu.paint(t, r, clay_isect(r, clip), win_w, win_h, a, cu.user)
+                gfx.flush_pane(t, clip, win_w, win_h) // hand the painter empty batches
+                cu.paint(t, r, clay_isect(r, clip), win_w, win_h, host, cu.user)
             }
 
         case .ScissorStart:
-            flush_pane(t, clip, win_w, win_h) // what is queued belongs to the OUTER clip
+            gfx.flush_pane(t, clip, win_w, win_h) // what is queued belongs to the OUTER clip
             if depth < CLAY_CLIP_DEPTH {
                 stack[depth] = clip
                 clip = clay_isect(clip, r)
@@ -172,7 +176,7 @@ clay_paint :: proc(
             depth += 1
 
         case .ScissorEnd:
-            flush_pane(t, clip, win_w, win_h)
+            gfx.flush_pane(t, clip, win_w, win_h)
             if depth > 0 {
                 depth -= 1
                 if depth < CLAY_CLIP_DEPTH {
@@ -189,5 +193,5 @@ clay_paint :: proc(
         }
     }
 
-    flush_pane(t, clip, win_w, win_h)
+    gfx.flush_pane(t, clip, win_w, win_h)
 }

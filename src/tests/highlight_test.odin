@@ -1,6 +1,7 @@
 package tests
 
 import app ".."
+import "../txt"
 import "core:fmt"
 import "core:strings"
 import "core:testing"
@@ -105,7 +106,7 @@ test_highlight_scroll_stable :: proc(t: ^testing.T) {
     b := mkbuf()
     defer app.buffer_destroy(&b)
 
-    n := app.doc_line_count(&b.doc)
+    n := txt.doc_line_count(&b.doc)
     // Snapshot the full-buffer paint (deep copy — the next highlight_visible frees it).
     full := hl_rows(&a, &b)
     baseline := make([dynamic][3]f32, 0, 256, context.temp_allocator)
@@ -172,7 +173,7 @@ test_highlight_dump :: proc(t: ^testing.T) {
     defer hl_app_destroy(&a)
     b := mkbuf()
     defer app.buffer_destroy(&b)
-    app.highlight_dump_captures(&a, &b, 0, app.doc_line_count(&b.doc))
+    app.highlight_dump_captures(&a, &b, 0, txt.doc_line_count(&b.doc))
 }
 
 // --- incremental reparse ---
@@ -187,7 +188,7 @@ test_highlight_dump :: proc(t: ^testing.T) {
 // asserts on one paint must wait for the tree first. Shared with highlight_stress_test.
 hl_rows :: proc(a: ^app.App, b: ^app.Buffer) -> []app.Row_Colors {
     app.hl_settle(a, b)
-    return app.highlight_visible(a, b, 0, app.doc_line_count(&b.doc))
+    return app.highlight_visible(a, b, 0, txt.doc_line_count(&b.doc))
 }
 
 clone_rows :: proc(rows: []app.Row_Colors) -> []app.Row_Colors {
@@ -225,8 +226,8 @@ expect_rows_equal :: proc(t: ^testing.T, got, want: []app.Row_Colors, what: stri
 // How far behind the highlighter's reader slot is. The log is shared (Doc_Reader), so "is it
 // empty" is not the question — "has THIS reader seen everything" is.
 @(private = "file")
-hl_pending :: proc(d: ^app.Doc) -> (n: int, lost: bool) {
-    c, l := app.doc_changes_since(d, app.Doc_Reader.Highlight)
+hl_pending :: proc(d: ^txt.Doc) -> (n: int, lost: bool) {
+    c, l := txt.doc_changes_since(d, txt.Doc_Reader.Highlight)
     return len(c), l
 }
 
@@ -252,13 +253,13 @@ test_highlight_incremental_matches_full :: proc(t: ^testing.T) {
 
     // Rename `add` -> `addend` (a token grows), split a line, and delete a whole line — an
     // insert, a line-count change up and a line-count change down.
-    app.doc_reset_cursor(&live.doc, app.Pos{10, 3})
-    app.doc_insert_text(&live.doc, "end")
-    app.doc_reset_cursor(&live.doc, app.Pos{2, 0})
-    app.doc_insert_text(&live.doc, "\n// inserted\n")
-    app.doc_reset_cursor(&live.doc, app.Pos{0, 0})
-    app.doc_move(&live.doc, .Down, true)
-    app.doc_delete(&live.doc) // takes the first line and its break
+    txt.doc_reset_cursor(&live.doc, txt.Pos{10, 3})
+    txt.doc_insert_text(&live.doc, "end")
+    txt.doc_reset_cursor(&live.doc, txt.Pos{2, 0})
+    txt.doc_insert_text(&live.doc, "\n// inserted\n")
+    txt.doc_reset_cursor(&live.doc, txt.Pos{0, 0})
+    txt.doc_move(&live.doc, .Down, true)
+    txt.doc_delete(&live.doc) // takes the first line and its break
     n1, lost1 := hl_pending(&live.doc)
     testing.expect(t, n1 > 0, "no changes recorded")
     testing.expect(t, !lost1)
@@ -266,11 +267,11 @@ test_highlight_incremental_matches_full :: proc(t: ^testing.T) {
     // The same text, loaded fresh: nothing to be incremental about, so it parses whole.
     ref: app.Buffer
     defer app.buffer_destroy(&ref)
-    app.buffer_set_text(&ref, app.doc_string(&live.doc, context.temp_allocator))
+    app.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
     ref.path = strings.clone("demo.odin")
 
-    n := app.doc_line_count(&live.doc)
-    testing.expect_value(t, n, app.doc_line_count(&ref.doc))
+    n := txt.doc_line_count(&live.doc)
+    testing.expect_value(t, n, txt.doc_line_count(&ref.doc))
 
     // live goes through tree_edit + an incremental parse; the row cache is replaced by the
     // second call, so the first result is cloned before it is freed under us.
@@ -293,19 +294,19 @@ test_highlight_incremental_through_typing :: proc(t: ^testing.T) {
 
     live := mkbuf()
     defer app.buffer_destroy(&live)
-    app.doc_reset_cursor(&live.doc, app.Pos{11, 4}) // inside the `return a + b` body
+    txt.doc_reset_cursor(&live.doc, txt.Pos{11, 4}) // inside the `return a + b` body
 
     // Reparse after EVERY keystroke, as the painter does — so each one is an incremental step
     // off the tree the previous one left.
     for r in "count := 0; " {
-        app.doc_insert_rune(&live.doc, r)
+        txt.doc_insert_rune(&live.doc, r)
         _ = hl_rows(&a, &live)
     }
     got := clone_rows(hl_rows(&a, &live))
 
     ref: app.Buffer
     defer app.buffer_destroy(&ref)
-    app.buffer_set_text(&ref, app.doc_string(&live.doc, context.temp_allocator))
+    app.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
     ref.path = strings.clone("demo.odin")
     want := hl_rows(&a, &ref)
     expect_rows_equal(t, got, want, "after a typed run")
@@ -323,13 +324,13 @@ test_highlight_incremental_through_undo :: proc(t: ^testing.T) {
 
     live := mkbuf()
     defer app.buffer_destroy(&live)
-    n0 := app.doc_line_count(&live.doc)
+    n0 := txt.doc_line_count(&live.doc)
     base := clone_rows(hl_rows(&a, &live))
 
-    app.doc_reset_cursor(&live.doc, app.Pos{5, 0})
-    app.doc_insert_text(&live.doc, "// gone\nBox :: struct {}\n")
+    txt.doc_reset_cursor(&live.doc, txt.Pos{5, 0})
+    txt.doc_insert_text(&live.doc, "// gone\nBox :: struct {}\n")
     _ = hl_rows(&a, &live)
-    app.doc_undo(&live.doc)
+    txt.doc_undo(&live.doc)
 
     got := clone_rows(hl_rows(&a, &live))
     expect_rows_equal(t, got, base, "after undo")
@@ -351,9 +352,9 @@ test_highlight_full_parse_when_changes_lost :: proc(t: ^testing.T) {
 
     // Edit past the cap with no reader keeping up — exactly what a buffer edited off-screen
     // does, since nothing is painting or syncing its folds.
-    app.doc_reset_cursor(&live.doc, app.Pos{11, 4})
-    for _ in 0 ..< app.DOC_CHANGE_MAX + 10 {
-        app.doc_insert_rune(&live.doc, 'z')
+    txt.doc_reset_cursor(&live.doc, txt.Pos{11, 4})
+    for _ in 0 ..< txt.DOC_CHANGE_MAX + 10 {
+        txt.doc_insert_rune(&live.doc, 'z')
     }
     _, lost := hl_pending(&live.doc)
     testing.expect(t, lost, "the cap did not drop the log")
@@ -364,7 +365,7 @@ test_highlight_full_parse_when_changes_lost :: proc(t: ^testing.T) {
 
     ref: app.Buffer
     defer app.buffer_destroy(&ref)
-    app.buffer_set_text(&ref, app.doc_string(&live.doc, context.temp_allocator))
+    app.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
     ref.path = strings.clone("demo.odin")
     want := hl_rows(&a, &ref)
     expect_rows_equal(t, got, want, "after a lost change list")

@@ -2,6 +2,7 @@ package main
 
 import "core:strings"
 import "vendor:glfw"
+import "txt"
 
 // The system clipboard, plus our memory of the last copy so a multi-cursor paste can put one
 // piece back per caret. Every surface's copy/cut/paste ends here (clip_take / clip_put).
@@ -10,15 +11,15 @@ import "vendor:glfw"
 // equal-count paste can distribute them.
 editor_copy :: proc(a: ^App) {
     b := editor_current(&a.editor)
-    joined, pieces := doc_copy(&b.doc)
+    joined, pieces := txt.doc_copy(&b.doc)
     clipboard_set(a, joined, pieces)
 }
 
 editor_cut :: proc(a: ^App) {
     b := editor_current(&a.editor)
-    joined, pieces := doc_copy(&b.doc)
+    joined, pieces := txt.doc_copy(&b.doc)
     clipboard_set(a, joined, pieces)
-    if doc_cut(&b.doc) {
+    if txt.doc_cut(&b.doc) {
         b.dirty = true
     }
 }
@@ -30,9 +31,9 @@ editor_paste :: proc(a: ^App) {
     clip := glfw.GetClipboardString(a.window)
     changed: bool
     if len(a.clip_pieces) > 1 && clip == a.clip_joined && len(a.clip_pieces) == len(b.cursors) {
-        changed = doc_paste_pieces(&b.doc, a.clip_pieces)
+        changed = txt.doc_paste_pieces(&b.doc, a.clip_pieces)
     } else {
-        changed = doc_paste(&b.doc, clip)
+        changed = txt.doc_paste(&b.doc, clip)
     }
     if changed {
         b.dirty = true

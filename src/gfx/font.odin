@@ -1,4 +1,4 @@
-package main
+package gfx
 
 import "core:c"
 import "core:math"
@@ -10,14 +10,14 @@ import stbtt "vendor:stb/truetype"
 // a strictly uniform advance, so every glyph lands on the fixed cell grid. The script strips the
 // CJK and rare blocks but keeps the symbol set a terminal needs — box drawing, block elements,
 // braille, arrows, math — so a TUI renders its borders and spinners. SLOPD_FONT overrides it.
-IOSEVKA_TTF := #load("../vendor/fonts/IosevkaFixed-Latin.ttf")
+IOSEVKA_TTF := #load("../../vendor/fonts/IosevkaFixed-Latin.ttf")
 
 // The browser's type icons, as a second FACE rather than a second atlas: Symbols Nerd Font Mono
 // subset to Seti-UI + Devicons. stb's packer takes the font bytes per call, so an icon bakes
 // into the same atlas and lands in the same batch, texture and draw call — an icon is just a
 // rune. May legitimately be EMPTY: without fontTools download-deps.sh vendors a zero-byte file,
 // `icons_ok` is false and the browser falls back to plain tiles.
-ICONS_TTF := #load("../vendor/fonts/SymbolsNerdFont-Icons.ttf")
+ICONS_TTF := #load("../../vendor/fonts/SymbolsNerdFont-Icons.ttf")
 
 // Glyphs bake lazily: the first draw of a codepoint rasterizes it into the shared atlas and
 // caches the quad. A terminal shows a small alphabet, so the atlas stays small.

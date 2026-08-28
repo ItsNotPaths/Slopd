@@ -2,6 +2,7 @@ package main
 
 import "core:path/filepath"
 import "core:strings"
+import "txt"
 
 // Ctrl+/ over the lines the cursors touch. The token comes from the extension, the way a grammar
 // does; a file we have no token for is left alone rather than guessed at.
@@ -52,15 +53,15 @@ buffer_comment_toggle :: proc(b: ^Buffer) -> bool {
         return false
     }
     d := &b.doc
-    lines := doc_cursor_lines(d)
+    lines := txt.doc_cursor_lines(d)
 
     // One pass for both questions: is every line with text already commented, and how far in does
     // the shallowest one start? The token goes at that column, so a block keeps its shape.
     commented, found := true, false
     col := max(int)
     for line in lines {
-        src := doc_line(d, line)
-        lead := line_indent_cols(src)
+        src := txt.doc_line(d, line)
+        lead := txt.line_indent_cols(src)
         if lead == len(src) {
             continue // blank
         }
@@ -74,31 +75,31 @@ buffer_comment_toggle :: proc(b: ^Buffer) -> bool {
         return false
     }
 
-    edits := make([dynamic]Edit, 0, len(lines), context.temp_allocator)
+    edits := make([dynamic]txt.Edit, 0, len(lines), context.temp_allocator)
     deltas := make([]int, len(lines), context.temp_allocator)
     opener := strings.concatenate({token, " "}, context.temp_allocator)
     for line, i in lines {
-        src := doc_line(d, line)
-        lead := line_indent_cols(src)
+        src := txt.doc_line(d, line)
+        lead := txt.line_indent_cols(src)
         if lead == len(src) {
             continue
         }
-        anchor, _ := line_span(d, line)
-        start := doc_off(d, anchor)
+        anchor, _ := txt.line_span(d, line)
+        start := txt.doc_off(d, anchor)
         if commented {
             // The token, and the one space a comment pass put after it.
             n := len(token)
             if lead + n < len(src) && src[lead + n] == ' ' {
                 n += 1
             }
-            append(&edits, Edit{start + lead, start + lead + n, "", 0})
+            append(&edits, txt.Edit{start + lead, start + lead + n, "", 0})
             deltas[i] = -n
         } else {
-            append(&edits, Edit{start + col, start + col, opener, 0})
+            append(&edits, txt.Edit{start + col, start + col, opener, 0})
             deltas[i] = len(opener)
         }
     }
-    changed := doc_line_commit(d, edits[:], lines, deltas)
+    changed := txt.doc_line_commit(d, edits[:], lines, deltas)
     b.dirty |= changed
     return changed
 }

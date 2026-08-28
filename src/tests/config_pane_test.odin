@@ -4,6 +4,8 @@ import app ".."
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "../txt"
+import "../syntax"
 
 @(test)
 test_config_pane_nav :: proc(t: ^testing.T) {
@@ -62,11 +64,11 @@ test_config_pane_filter :: proc(t: ^testing.T) {
     app.config_pane_filter(&cp)
     testing.expect_value(t, len(cp.filtered), 4) // empty query -> all langs
 
-    app.doc_set_text(&cp.search, "script")
+    txt.doc_set_text(&cp.search, "script")
     app.config_pane_filter(&cp)
     testing.expect_value(t, len(cp.filtered), 2) // javascript, typescript
 
-    app.doc_set_text(&cp.search, "PY") // case-insensitive
+    txt.doc_set_text(&cp.search, "PY") // case-insensitive
     app.config_pane_filter(&cp)
     testing.expect_value(t, len(cp.filtered), 1)
 
@@ -75,7 +77,7 @@ test_config_pane_filter :: proc(t: ^testing.T) {
     testing.expect(t, l != nil)
     testing.expect_value(t, l.name, "python")
 
-    app.doc_set_text(&cp.search, "nomatch")
+    txt.doc_set_text(&cp.search, "nomatch")
     app.config_pane_filter(&cp)
     testing.expect_value(t, len(cp.filtered), 0)
 }
@@ -235,7 +237,7 @@ test_config_text_setting_edit :: proc(t: ^testing.T) {
     cp.sel = row
     app.config_edit_sync(&a)
     testing.expect_value(t, cp.edit_row, row)
-    testing.expect_value(t, app.doc_string(&cp.edit, context.temp_allocator), "tig")
+    testing.expect_value(t, txt.doc_string(&cp.edit, context.temp_allocator), "tig")
 
     // A visit that changes nothing must not rewrite the file — the mtime would churn and
     // every "did I edit this?" answer would be yes.
@@ -249,7 +251,7 @@ test_config_text_setting_edit :: proc(t: ^testing.T) {
     // Type a full command line — spaces, flags and all — and leave the row.
     cp.sel = row
     app.config_edit_sync(&a)
-    app.doc_set_text(&cp.edit, "sublime_merge -n")
+    txt.doc_set_text(&cp.edit, "sublime_merge -n")
     cp.sel = 0
     app.config_edit_sync(&a)
     testing.expect_value(t, a.git_tool, "sublime_merge -n")
@@ -282,14 +284,14 @@ test_config_text_setting_rejects_comment :: proc(t: ^testing.T) {
 
     cp.sel = app.ROW_SETTINGS + int(app.Setting.GitTool)
     app.config_edit_sync(&a)
-    app.doc_set_text(&cp.edit, "sh -c foo # bar")
+    txt.doc_set_text(&cp.edit, "sh -c foo # bar")
     testing.expect(t, !app.config_edit_commit(&a))
     testing.expect_value(t, a.git_tool, "tig") // unchanged
     out, _ := os.read_entire_file_from_path(path, context.temp_allocator)
     testing.expect_value(t, string(out), "git_tool: tig\n") // and unwritten
 
     // A '#' glued to a token is part of the value, not a comment, so it commits.
-    app.doc_set_text(&cp.edit, "sh -c foo#bar")
+    txt.doc_set_text(&cp.edit, "sh -c foo#bar")
     testing.expect(t, app.config_edit_commit(&a))
     testing.expect_value(t, a.git_tool, "sh -c foo#bar")
 }
@@ -357,15 +359,15 @@ test_lang_options :: proc(t: ^testing.T) {
 test_grammar_status_roundtrip :: proc(t: ^testing.T) {
     dir := "/tmp"
     lang := "slopdtestgrammar" // not a real lang; present/uninstall don't gate on the registry
-    lib := app.grammar_lib_path(dir, lang, context.temp_allocator)
+    lib := syntax.grammar_lib_path(dir, lang, context.temp_allocator)
     testing.expect(t, os.write_entire_file(lib, []u8{0}) == nil)
     defer os.remove(lib)
 
-    testing.expect(t, app.grammar_present(dir, lang))
+    testing.expect(t, syntax.grammar_present(dir, lang))
 
-    ok, _ := app.grammar_uninstall(dir, lang)
+    ok, _ := syntax.grammar_uninstall(dir, lang)
     testing.expect(t, ok)
-    testing.expect(t, !app.grammar_present(dir, lang))
+    testing.expect(t, !syntax.grammar_present(dir, lang))
 }
 
 // Writeback preserves comments + unknown/per-lang lines, replaces a present key in

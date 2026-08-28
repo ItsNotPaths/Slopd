@@ -2,6 +2,9 @@ package tests
 
 import app ".."
 import "core:testing"
+import "../txt"
+import "../gfx"
+import "../ui"
 
 // The command line's live preview (cl_preview.odin): what a `:` line shows while it is typed,
 // and that Esc puts the view back untouched. Driven here the way the frame loop drives it —
@@ -31,7 +34,7 @@ freeapp :: proc(a: ^app.App) {
 // frame's clock — it only matters to `:grep`, whose search waits for a pause in the typing.
 @(private = "file")
 typeln :: proc(a: ^app.App, line: string, now := f64(0)) {
-    app.doc_set_text(&a.cl.doc, line)
+    txt.doc_set_text(&a.cl.doc, line)
     app.cl_preview_sync(a, now)
 }
 
@@ -42,7 +45,7 @@ tick :: proc(a: ^app.App, now: f64) {
 }
 
 @(private = "file")
-caret :: proc(a: ^app.App) -> app.Pos {
+caret :: proc(a: ^app.App) -> txt.Pos {
     b := app.editor_current(&a.editor)
     return b.cursors[b.primary].head
 }
@@ -58,11 +61,11 @@ test_cl_jump_line :: proc(t: ^testing.T) {
     b: app.Buffer
     app.buffer_set_text(&b, PREVIEW_PAGE)
     defer app.buffer_destroy(&b)
-    app.doc_reset_cursor(&b.doc, app.Pos{line = 2, col = 1})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{line = 2, col = 1})
 
     p, ok := app.cl_jump_line(&b, "4") // 1-based in, 0-based out
     testing.expect(t, ok)
-    testing.expect_value(t, p, app.Pos{line = 3, col = 1}) // column kept
+    testing.expect_value(t, p, txt.Pos{line = 3, col = 1}) // column kept
 
     p, ok = app.cl_jump_line(&b, "+2") // relative to the caret's line
     testing.expect(t, ok)
@@ -87,7 +90,7 @@ test_preview_jump_shows_the_target :: proc(t: ^testing.T) {
 
     typeln(&a, ":j 5")
     testing.expect_value(t, caret(&a).line, 4)
-    testing.expect_value(t, a.focus, app.Focus.Editor)
+    testing.expect_value(t, a.focus, ui.Focus.Editor)
 
     typeln(&a, ":j 2") // editing the line re-previews rather than stacking a second one
     testing.expect_value(t, caret(&a).line, 1)
@@ -101,11 +104,11 @@ test_preview_restores_the_cursor_trail :: proc(t: ^testing.T) {
     defer freeapp(&a)
 
     b := app.editor_current(&a.editor)
-    app.doc_reset_cursor(&b.doc, app.Pos{line = 1, col = 0})
-    app.doc_drop_anchor(&b.doc) // Alt+A + Down twice: a trail of three
-    app.doc_move(&b.doc, .Down)
-    app.doc_drop_anchor(&b.doc)
-    before := make([]app.Cursor, len(b.cursors), context.temp_allocator)
+    txt.doc_reset_cursor(&b.doc, txt.Pos{line = 1, col = 0})
+    txt.doc_drop_anchor(&b.doc) // Alt+A + Down twice: a trail of three
+    txt.doc_move(&b.doc, .Down)
+    txt.doc_drop_anchor(&b.doc)
+    before := make([]txt.Cursor, len(b.cursors), context.temp_allocator)
     copy(before, b.cursors[:])
     primary := b.primary
     testing.expect(t, len(before) > 1)
@@ -211,10 +214,10 @@ test_preview_find_takes_every_hit :: proc(t: ^testing.T) {
 
     b := app.editor_current(&a.editor)
     testing.expect_value(t, len(b.cursors), 2)
-    testing.expect_value(t, b.cursors[0].anchor, app.Pos{line = 1, col = 0})
-    testing.expect_value(t, b.cursors[0].head, app.Pos{line = 1, col = 3})
-    testing.expect_value(t, b.cursors[1].anchor, app.Pos{line = 3, col = 0})
-    testing.expect_value(t, b.cursors[1].head, app.Pos{line = 3, col = 3})
+    testing.expect_value(t, b.cursors[0].anchor, txt.Pos{line = 1, col = 0})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{line = 1, col = 3})
+    testing.expect_value(t, b.cursors[1].anchor, txt.Pos{line = 3, col = 0})
+    testing.expect_value(t, b.cursors[1].head, txt.Pos{line = 3, col = 3})
     testing.expect_value(t, b.primary, 1)
     testing.expect(t, !a.find.show) // the marks come down: the cursors say it now
 }
@@ -233,8 +236,8 @@ test_submit_all_finds_with_the_preview_off :: proc(t: ^testing.T) {
 
     b := app.editor_current(&a.editor)
     testing.expect_value(t, len(b.cursors), 2)
-    testing.expect_value(t, b.cursors[1].anchor, app.Pos{line = 3, col = 0})
-    testing.expect_value(t, b.cursors[1].head, app.Pos{line = 3, col = 3})
+    testing.expect_value(t, b.cursors[1].anchor, txt.Pos{line = 3, col = 0})
+    testing.expect_value(t, b.cursors[1].head, txt.Pos{line = 3, col = 3})
     testing.expect(t, !a.find.show)
 }
 
@@ -286,14 +289,14 @@ test_preview_grep_borrows_the_pane :: proc(t: ^testing.T) {
     typeln(&a, ":grep hello")
     tick(&a, 1) // the search waits for a pause in the typing
     testing.expect_value(t, a.aux_mode, app.AuxMode.Grep)
-    testing.expect_value(t, a.focus, app.Focus.Aux)
+    testing.expect_value(t, a.focus, ui.Focus.Aux)
     testing.expect_value(t, a.grep.query, "hello")
     testing.expect_value(t, app.cl_ghost_hint(&a, ":grep hello"), "(no matches)")
     testing.expect_value(t, caret(&a).line, 0) // the page is not touched at all
 
     app.cl_cancel(&a)
     testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree)
-    testing.expect_value(t, a.focus, app.Focus.Editor)
+    testing.expect_value(t, a.focus, ui.Focus.Editor)
     testing.expect_value(t, a.grep.query, "older") // the old results, not the preview's
 }
 

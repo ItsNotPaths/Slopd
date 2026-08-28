@@ -8,6 +8,10 @@ import "vendor:glfw"
 import "perf"
 import "system"
 import "wake"
+import "gfx"
+import "paths"
+import "syntax"
+import "ui"
 
 WIDTH :: 1200
 HEIGHT :: 760
@@ -21,7 +25,7 @@ main :: proc() {
     // The headless CLI, handled before a window opens and before the `--<path>` launch
     // argument below is read, so a flag is never mistaken for a folder to open.
     if about_cli(os.args[1:]) ||
-       grammar_cli(os.args[1:]) ||
+       syntax.grammar_cli(os.args[1:]) ||
        install_cli(os.args[1:]) ||
        desktop_cli(os.args[1:]) ||
        system.sysbus_cli(os.args[1:]) {
@@ -116,9 +120,9 @@ main :: proc() {
     defer filetree_destroy(&app.tree)
     filebrowser_init(&app.filebrowser) // reads the config's [places] block
     defer filebrowser_destroy(&app.filebrowser)
-    app.grammars = load_grammars() // shared by the config pane and the highlighter
-    defer grammars_destroy(app.grammars)
-    app.gram_ext = grammar_ext_index(app.grammars)
+    app.grammars = syntax.load_grammars() // shared by the config pane and the highlighter
+    defer syntax.grammars_destroy(app.grammars)
+    app.gram_ext = syntax.grammar_ext_index(app.grammars)
     defer delete(app.gram_ext) // borrowed keys/values, freed with the registry
     config_pane_init(&app.config_pane, app.grammars)
     defer config_pane_destroy(&app.config_pane)
@@ -141,12 +145,12 @@ main :: proc() {
 
     // The atlas bakes at physical pixels. Text.ttf BORROWS these bytes for the program's life,
     // re-baking from them on a zoom or DPI change.
-    ttf, ttf_owned := choose_font()
+    ttf, ttf_owned := gfx.choose_font()
     defer if ttf_owned {
         delete(ttf)
     }
-    text: Text
-    if !text_init(&text, ttf, app.font_px, app.scale) {
+    text: gfx.Text
+    if !gfx.text_init(&text, ttf, app.font_px, app.scale) {
         fmt.eprintln("text_init failed (font/shader)")
         return
     }
@@ -154,15 +158,15 @@ main :: proc() {
     // At the real framebuffer size, so the first frame is correctly dimensioned. Clay
     // allocates nothing beyond its static arena and touches no GL.
     fb_w, fb_h := glfw.GetFramebufferSize(window)
-    if !clay_init(fb_w, fb_h) {
+    if !ui.clay_init(fb_w, fb_h) {
         return // clay_init reported why
     }
     // By pointer, so a re-baked atlas is picked up without re-registering.
-    clay_use_font(&text.font)
+    ui.clay_use_font(&text.font)
 
     // No-op unless --perflog. Needs the GL context for its timer queries.
     plog: perf.Perf
-    perf.init(&plog, perflog, data_asset("perf.log", context.temp_allocator))
+    perf.init(&plog, perflog, paths.data_asset("perf.log", context.temp_allocator))
     defer perf.destroy(&plog)
 
     // The window owns the App so the "c" key callback can reach it.
@@ -205,8 +209,8 @@ main :: proc() {
         if sx, _ := glfw.GetWindowContentScale(window); sx > 0 {
             app.scale = sx
         }
-        if text_apply(&text, app.font_px, app.scale) {
-            clay_font_changed() // every cached width is stale at the new cell size
+        if gfx.text_apply(&text, app.font_px, app.scale) {
+            ui.clay_font_changed() // every cached width is stale at the new cell size
         }
 
         // Here rather than in the callbacks, so there is one writer and no sequence of events
@@ -286,7 +290,7 @@ window_pacing_init :: proc() {
     }
     // Just under one refresh period: a whole one drifts in and out of phase with the
     // compositor, which reads as a duplicated frame mid-scroll.
-    frame_budget = 0.9 / hz
+    ui.frame_budget = 0.9 / hz
 }
 
 // All handled the same way: mark the gate and let the next frame re-read the state itself.

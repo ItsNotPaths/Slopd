@@ -4,6 +4,8 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:unicode/utf8"
+import "txt"
+import "paths"
 
 // The file-manager presentation of a directory: a top bar of square buttons, a places sidebar,
 // and contents as a list or a grid of tiles. The listing itself is still `FileTree` — entries,
@@ -53,7 +55,7 @@ FileBrowser :: struct {
     // the bar's empty space. `path_off` is the first rune shown — a long line is cut at the
     // START, where the button bar elides too, because the end of a path is what you work in.
     path_edit: bool,
-    path:      Doc,
+    path:      txt.Doc,
     path_off:  int,
 
     // Written where the hit is taken and read by the declaration: the hovered thing, one field
@@ -79,7 +81,7 @@ Browse_Btn :: enum {
 filebrowser_init :: proc(br: ^FileBrowser) {
     br.hover_row, br.hover_place, br.hover_seg = -1, -1, -1
     br.cols = 1
-    doc_init(&br.path)
+    txt.doc_init(&br.path)
     places := config_places(context.allocator)
     if len(places) == 0 {
         places = filebrowser_default_places(context.allocator)
@@ -101,7 +103,7 @@ filebrowser_destroy :: proc(br: ^FileBrowser) {
     delete(br.fwd)
     filebrowser_places_clear(br)
     delete(br.places)
-    doc_destroy(&br.path)
+    txt.doc_destroy(&br.path)
 }
 
 filebrowser_places_clear :: proc(br: ^FileBrowser) {

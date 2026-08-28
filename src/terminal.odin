@@ -10,6 +10,7 @@ import "core:thread"
 import vt "../bindings/libvterm"
 import "vendor:glfw"
 import "wake"
+import "txt"
 
 // A terminal session: the libvterm VT state machine plus the PTY and child shell. A
 // per-session reader thread does the one blocking read() on the master fd; vterm_* stays
@@ -67,7 +68,7 @@ Terminal :: struct {
     // The mouse's per-character selection, beside the keyboard's copy cursor. `Cursor`/`Pos`
     // are the editor's — shared algebra, separate storage. Pos.line is absolute; Pos.col is a
     // boundary between cells, 0..=width.
-    msel:    Cursor,
+    msel:    txt.Cursor,
     msel_on: bool,
     // A TUI on the alt buffer owns its own scrolling, so these route scroll input there.
     on_altscreen: bool,
@@ -346,28 +347,28 @@ terminal_sel_reset :: proc(t: ^Terminal) {
 
 // doc_clamp_pos's twin: a resize between the press and the frame applying it costs a selection
 // end on the wrong line, never an index off the scrollback.
-terminal_clamp_pos :: proc(t: ^Terminal, p: Pos) -> Pos {
+terminal_clamp_pos :: proc(t: ^Terminal, p: txt.Pos) -> txt.Pos {
     floor := t.on_altscreen ? t.sb_total : terminal_oldest(t)
     line := clamp(p.line, floor, terminal_bottom(t))
-    return Pos{line, clamp(p.col, 0, terminal_line_width(t, line))}
+    return txt.Pos{line, clamp(p.col, 0, terminal_line_width(t, line))}
 }
 
 // doc_select_span's twin. Retires the copy cursor and carries the view over: reading through
 // terminal_view_top before msel_on flips keeps a scrolled view where it is.
-terminal_msel_set :: proc(t: ^Terminal, anchor, head: Pos) {
+terminal_msel_set :: proc(t: ^Terminal, anchor, head: txt.Pos) {
     a := terminal_clamp_pos(t, anchor)
     h := terminal_clamp_pos(t, head)
     if !t.msel_on {
         t.view_top = terminal_view_top(t)
     }
     t.sel_active = false
-    t.msel = Cursor{anchor = a, head = h, goal = h.col}
+    t.msel = txt.Cursor{anchor = a, head = h, goal = h.col}
     t.msel_on = true
 }
 
 // doc_set_head with select=true: Shift+click, and every frame of a character-grade drag. With
 // nothing selected it starts an empty one there, to extend from.
-terminal_msel_head :: proc(t: ^Terminal, p: Pos) {
+terminal_msel_head :: proc(t: ^Terminal, p: txt.Pos) {
     if !t.msel_on {
         terminal_msel_set(t, p, p)
         return
@@ -387,10 +388,10 @@ terminal_msel_reset :: proc(t: ^Terminal) {
 // A span, not just a resting caret, so a click that selected nothing does not make
 // Ctrl+Shift+C yield "".
 terminal_msel_has_span :: proc(t: ^Terminal) -> bool {
-    return t.msel_on && cursor_has_selection(t.msel)
+    return t.msel_on && txt.cursor_has_selection(t.msel)
 }
 
-// The run of one character class around `col`, using word.odin's word_span (the editor's double
+// The run of one character class around `col`, using src/txt's word_span (the editor's double
 // click). That answers in bytes, so the row is materialised as a Cells to convert the column in
 // and the span back out. Blanks normalise to spaces.
 terminal_word_span :: proc(t: ^Terminal, n, col: int) -> (lo, hi: int) {
@@ -408,40 +409,40 @@ terminal_word_span :: proc(t: ^Terminal, n, col: int) -> (lo, hi: int) {
         strings.write_rune(&b, rs[i])
     }
     offs[w] = strings.builder_len(b)
-    cells := Cells{rs, offs}
-    blo, bhi := word_span(transmute([]u8)strings.to_string(b), cells_off(cells, col))
-    return cells_col(cells, blo), cells_col(cells, bhi)
+    cells := txt.Cells{rs, offs}
+    blo, bhi := txt.word_span(transmute([]u8)strings.to_string(b), txt.cells_off(cells, col))
+    return txt.cells_col(cells, blo), txt.cells_col(cells, bhi)
 }
 
 // doc_drag_span's twin: word (2) or line (3+). `press` and `at` carry cell columns, not
 // boundaries. Line grade takes the whole logical line, so a triple click gets a wrapped
 // command whole.
-terminal_grade_span :: proc(t: ^Terminal, grade: int, press, at: Pos) -> (anchor, head: Pos) {
+terminal_grade_span :: proc(t: ^Terminal, grade: int, press, at: txt.Pos) -> (anchor, head: txt.Pos) {
     p := terminal_clamp_pos(t, press)
     q := terminal_clamp_pos(t, at)
     if grade >= 3 {
         if q.line >= p.line {
             first, _ := terminal_logical_line(t, p.line)
             _, last := terminal_logical_line(t, q.line)
-            return Pos{first, 0}, Pos{last, terminal_line_width(t, last)}
+            return txt.Pos{first, 0}, txt.Pos{last, terminal_line_width(t, last)}
         }
         _, last := terminal_logical_line(t, p.line)
         first, _ := terminal_logical_line(t, q.line)
-        return Pos{last, terminal_line_width(t, last)}, Pos{first, 0}
+        return txt.Pos{last, terminal_line_width(t, last)}, txt.Pos{first, 0}
     }
     plo, phi := terminal_word_span(t, p.line, p.col)
     qlo, qhi := terminal_word_span(t, q.line, q.col)
-    if !pos_less(q, p) {
-        return Pos{p.line, plo}, Pos{q.line, qhi}
+    if !txt.pos_less(q, p) {
+        return txt.Pos{p.line, plo}, txt.Pos{q.line, qhi}
     }
-    return Pos{p.line, phi}, Pos{q.line, qlo}
+    return txt.Pos{p.line, phi}, txt.Pos{q.line, qlo}
 }
 
 // Caller owns the result. Two selections, one walk: the keyboard's row range becomes the pair
 // of boundaries spanning whole lines, which is what the mouse's already is.
 terminal_selection_text :: proc(t: ^Terminal, alloc := context.allocator) -> string {
     if t.msel_on {
-        lo, hi := cursor_range(t.msel)
+        lo, hi := txt.cursor_range(t.msel)
         return terminal_range_text(t, lo, hi, alloc)
     }
     if !t.sel_active {
@@ -452,13 +453,13 @@ terminal_selection_text :: proc(t: ^Terminal, alloc := context.allocator) -> str
     if lo == hi {
         return ""
     }
-    return terminal_range_text(t, Pos{lo, 0}, Pos{hi - 1, terminal_line_width(t, hi - 1)}, alloc)
+    return terminal_range_text(t, txt.Pos{lo, 0}, txt.Pos{hi - 1, terminal_line_width(t, hi - 1)}, alloc)
 }
 
 // Clipped per line and joined by newlines, except a flow continuation which joins with
 // nothing, or a wrapped shell line comes back unpasteable. The trailing-blank trim applies
 // only where a segment runs to the row's edge.
-terminal_range_text :: proc(t: ^Terminal, lo, hi: Pos, alloc := context.allocator) -> string {
+terminal_range_text :: proc(t: ^Terminal, lo, hi: txt.Pos, alloc := context.allocator) -> string {
     b := strings.builder_make(alloc)
     if hi.line < lo.line {
         return strings.to_string(b)
@@ -907,36 +908,9 @@ TERM_MAX :: 99
 TERM_INIT_ROWS :: 24 // spawn size; terminal_frame resizes to the real pane next frame
 TERM_INIT_COLS :: 80
 
-term_count :: proc(a: ^App) -> int {
-    return len(a.terminals)
-}
 
-term_current :: proc(a: ^App) -> ^Terminal {
-    if a.term_active < 0 || a.term_active >= len(a.terminals) {
-        return nil
-    }
-    return a.terminals[a.term_active]
-}
 
-// Spawn the first session only when the pane is shown, so no terminal costs no shell.
-term_ensure :: proc(a: ^App) {
-    if len(a.terminals) == 0 {
-        term_new(a)
-    }
-}
 
-term_new :: proc(a: ^App) {
-    if len(a.terminals) >= TERM_MAX {
-        return
-    }
-    t := new(Terminal)
-    if !terminal_spawn(t, TERM_INIT_ROWS, TERM_INIT_COLS, a.project_root) {
-        free(t)
-        return
-    }
-    append(&a.terminals, t)
-    a.term_active = len(a.terminals) - 1
-}
 
 // The reader thread clears this at EOF while everyone else reads it per frame, so it crosses
 // threads atomically rather than under t.lock: live-or-dead is the whole answer, and taking the
@@ -945,58 +919,12 @@ terminal_alive :: proc(t: ^Terminal) -> bool {
     return sync.atomic_load(&t.alive)
 }
 
-// Close the active session (Alt+Q), keeping at least one alive.
-term_close_active :: proc(a: ^App) {
-    if len(a.terminals) <= 1 {
-        return
-    }
-    t := a.terminals[a.term_active]
-    if a.cl_chain.wait_term == t {
-        cl_chain_clear(a) // a pending chain was waiting on this session
-    }
-    terminal_close(t)
-    free(t)
-    ordered_remove(&a.terminals, a.term_active)
-    if a.term_active >= len(a.terminals) {
-        a.term_active = len(a.terminals) - 1
-    }
-}
 
-term_destroy_all :: proc(a: ^App) {
-    for t in a.terminals {
-        terminal_close(t)
-        free(t)
-    }
-    delete(a.terminals)
-}
 
 // --- input routing --- A focused live terminal owns bare + Ctrl keys; Alt stays global
 // (input.odin takes it first), so the shell never sees an Alt-chord.
 
-// The focused session if live. `alive` is read without the lock — a stale read only sends a
-// keystroke to an exited shell, where the write to the closed master is dropped.
-term_focused :: proc(a: ^App) -> ^Terminal {
-    if a.cl_active { // the command line overlays the pane and owns keys
-        return nil
-    }
-    if a.focus != .Aux || a.aux_mode != .Terminal {
-        return nil
-    }
-    t := term_current(a)
-    if t == nil || !terminal_alive(t) {
-        return nil
-    }
-    return t
-}
 
-// Owner of the line-selection / copy keys: the active terminal when focused, alive or not
-// (you can still copy a dead shell's output).
-term_sel_target :: proc(a: ^App) -> ^Terminal {
-    if a.cl_active || a.focus != .Aux || a.aux_mode != .Terminal {
-        return nil
-    }
-    return term_current(a)
-}
 
 // From char_callback. Shift is already baked into the codepoint, so the modifier is none.
 terminal_input_rune :: proc(t: ^Terminal, r: rune) {

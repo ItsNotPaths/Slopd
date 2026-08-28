@@ -2,6 +2,8 @@ package main
 
 import "core:slice"
 import "core:strings"
+import "txt"
+import "ui"
 
 // While you type a `:` line the editor shows what that line WOULD do, and Esc puts everything
 // back.
@@ -45,12 +47,12 @@ CLPreview :: struct {
 // Everything a preview may touch is named here, and it may touch nothing else.
 Preview_Save :: struct {
     live:             bool, // a preview is applied right now, and these fields are its picture
-    focus:            Focus,
+    focus:            ui.Focus,
     aux:              AuxMode, // the aux pane it turned away from
     grep:             GrepPane, // for `:grep`, the whole pane it moved aside
     // The WHOLE cursor set: doc_reset_cursor collapses a trail, and one saved Pos could not put
     // it back. Empty when the preview never touched a page.
-    cursors:          []Cursor,
+    cursors:          []txt.Cursor,
     primary:          int,
     scroll:           int,
     hscroll:          int,
@@ -89,7 +91,7 @@ cl_preview_sync :: proc(a: ^App, now: f64) {
 // app_next_wake schedules the frame it comes due in, so a pause in the typing runs the search.
 @(private = "file")
 cl_preview_delay :: proc(a: ^App) -> f64 {
-    name, _, ok := cl_preview_call(doc_string(&a.cl.doc, context.temp_allocator))
+    name, _, ok := cl_preview_call(txt.doc_string(&a.cl.doc, context.temp_allocator))
     return ok && (name == "grep" || name == "rep") ? CL_GREP_DELAY : 0
 }
 
@@ -97,7 +99,7 @@ cl_preview_delay :: proc(a: ^App) -> f64 {
 @(private = "file")
 cl_preview_build :: proc(a: ^App, b: ^Buffer) {
     cl_preview_restore(a)
-    name, args, ok := cl_preview_call(doc_string(&a.cl.doc, context.temp_allocator))
+    name, args, ok := cl_preview_call(txt.doc_string(&a.cl.doc, context.temp_allocator))
     if !ok {
         return
     }
@@ -140,7 +142,7 @@ preview_jump :: proc(a: ^App, b: ^Buffer, args: string) {
     }
     preview_begin(a, b, .Jump)
     set_focus(a, .Editor)
-    doc_reset_cursor(&b.doc, pos)
+    txt.doc_reset_cursor(&b.doc, pos)
 }
 
 @(private = "file")
@@ -155,7 +157,7 @@ preview_find :: proc(a: ^App, b: ^Buffer, args: string) {
     find_set(&a.find, b, query, anchor)
     a.find.show = true
     if pos, ok := find_pos(&a.find); ok {
-        doc_reset_cursor(&b.doc, pos)
+        txt.doc_reset_cursor(&b.doc, pos)
     }
 }
 
@@ -211,7 +213,7 @@ cl_preview_step :: proc(a: ^App, dir: int) -> bool {
     }
     find_step(&a.find, dir)
     if pos, ok := find_pos(&a.find); ok {
-        doc_reset_cursor(&b.doc, pos)
+        txt.doc_reset_cursor(&b.doc, pos)
     }
     return true
 }
@@ -251,9 +253,9 @@ cl_preview_restore :: proc(a: ^App) {
         // the old text must not return pointing past the new end.
         clear(&b.cursors)
         for c in s.cursors {
-            append(&b.cursors, Cursor{
-                anchor = doc_clamp_pos(&b.doc, c.anchor),
-                head   = doc_clamp_pos(&b.doc, c.head),
+            append(&b.cursors, txt.Cursor{
+                anchor = txt.doc_clamp_pos(&b.doc, c.anchor),
+                head   = txt.doc_clamp_pos(&b.doc, c.head),
                 goal   = c.goal,
             })
         }

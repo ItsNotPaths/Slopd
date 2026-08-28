@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "paths"
 
 // The launcher entry: slopd.desktop and the icon it names.
 //
@@ -15,7 +16,9 @@ DESKTOP_ENTRY_SRC := string(#load("../slopd.desktop"))
 DESKTOP_ICON_SRC := string(#load("../slopd.svg"))
 
 // <app-id>.desktop, which is what ties a window back to its entry.
-DESKTOP_ENTRY_NAME :: INSTALL_BIN + ".desktop"
+desktop_entry_name :: proc() -> string {
+    return fmt.tprintf("%s.desktop", paths.app_name)
+}
 
 // Off $XDG_DATA_HOME, but not off Slopd's own folder in it: applications/ and icons/ are shared
 // trees every launcher reads, so an entry under slopd/ would be invisible. hicolor is the
@@ -28,16 +31,16 @@ desktop_apps_dir :: proc(allocator := context.allocator) -> string {
 }
 
 desktop_entry_path :: proc(allocator := context.allocator) -> string {
-    return desktop_join({DESKTOP_APPS_REL, DESKTOP_ENTRY_NAME}, allocator)
+    return desktop_join({DESKTOP_APPS_REL, desktop_entry_name()}, allocator)
 }
 
 desktop_icon_path :: proc(allocator := context.allocator) -> string {
-    return desktop_join({DESKTOP_ICON_REL, INSTALL_BIN + ".svg"}, allocator)
+    return desktop_join({DESKTOP_ICON_REL, fmt.tprintf("%s.svg", paths.app_name)}, allocator)
 }
 
 @(private = "file")
 desktop_join :: proc(parts: []string, allocator := context.allocator) -> string {
-    base := xdg_data_home(context.temp_allocator)
+    base := paths.xdg_data_home(context.temp_allocator)
     if base == "" {
         return strings.clone("", allocator)
     }
@@ -67,7 +70,7 @@ desktop_add :: proc() -> (ok: bool, msg: string) {
     exec := desktop_exec_target(context.temp_allocator)
     body := desktop_entry_text(DESKTOP_ENTRY_SRC, exec, context.temp_allocator)
 
-    ensure_parent(entry)
+    paths.ensure_parent(entry)
     if err := os.write_entire_file(entry, transmute([]byte)body); err != nil {
         return false, fmt.tprintf("desktop: cannot write %s (%v)", entry, err)
     }
@@ -79,7 +82,7 @@ desktop_add :: proc() -> (ok: bool, msg: string) {
     // Best-effort: an entry with no icon still launches, and reporting a failed icon write as
     // a failed add would hide the entry that DID land.
     if icon != "" {
-        ensure_parent(icon)
+        paths.ensure_parent(icon)
         if err := os.write_entire_file(icon, transmute([]byte)DESKTOP_ICON_SRC); err == nil {
             fmt.sbprintfln(&b, "  %s", icon)
         }
@@ -115,10 +118,10 @@ desktop_remove :: proc() -> (ok: bool, msg: string) {
 // otherwise the binary running now. Not simply the running binary, because install.sh downloads
 // to a temp folder and an entry pointing there would break when the script cleaned up.
 desktop_exec_target :: proc(allocator := context.allocator) -> string {
-    if p := install_bin_path(context.temp_allocator); p != "" && os.exists(p) {
+    if p := paths.install_bin_path(context.temp_allocator); p != "" && os.exists(p) {
         return strings.clone(p, allocator)
     }
-    return exe_path(allocator)
+    return paths.exe_path(allocator)
 }
 
 // Pure, so the suite can check the substitution without a $HOME or a launcher. Everything else

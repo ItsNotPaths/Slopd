@@ -6,6 +6,8 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:testing"
+import "../gfx"
+import "../ui"
 
 // The filetree declared in Clay. The claim is not "it draws" but that geometry, hit-testing and
 // paint all come from ONE tree, so a row's box, the row the pointer resolves to and the row that
@@ -16,9 +18,9 @@ import "core:testing"
 // height, an 18px header, and a 78px body holding 4 rows.
 
 @(private = "file")
-PANE :: app.Rect{100, 50, 300, 100}
+PANE :: gfx.Rect{100, 50, 300, 100}
 @(private = "file")
-AREA :: app.Rect{102, 52, 296, 96}
+AREA :: gfx.Rect{102, 52, 296, 96}
 @(private = "file")
 ROW_H :: 18
 @(private = "file")
@@ -52,17 +54,17 @@ test_filetree_geom :: proc(t: ^testing.T) {
     testing.expect_value(t, rows, ROWS) // (96 - 18) / 18, the header taking the first row
 
     // A hidden pane is a zero rect and must report no rows, not a negative count.
-    _, _, none := app.filetree_geom(app.Rect{}, 1, 16)
+    _, _, none := app.filetree_geom(gfx.Rect{}, 1, 16)
     testing.expect_value(t, none, 0)
 
     // Too short for even one row still reports one: the clip keeps it inside the pane.
-    _, _, tiny := app.filetree_geom(app.Rect{0, 0, 300, 24}, 1, 16)
+    _, _, tiny := app.filetree_geom(gfx.Rect{0, 0, 300, 24}, 1, 16)
     testing.expect_value(t, tiny, 1)
 
     // DPI scale reaches the inset and the row padding both, so the whole pane stays on the
     // cell grid at 2x.
     area2, row_h2, _ := app.filetree_geom(PANE, 2, 32)
-    testing.expect_value(t, area2, app.Rect{104, 54, 292, 92})
+    testing.expect_value(t, area2, gfx.Rect{104, 54, 292, 92})
     testing.expect_value(t, row_h2, i32(36))
 }
 
@@ -97,7 +99,7 @@ test_filetree_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     a.scale = 1
@@ -113,14 +115,14 @@ test_filetree_command_list :: proc(t: ^testing.T) {
     cmds := app.filetree_layout(&a, &f, PANE, 500, 300)
 
     counts: [10]int
-    head_text, scissor, pane_clip: app.Rect
-    row_boxes: [20]app.Rect
+    head_text, scissor, pane_clip: gfx.Rect
+    row_boxes: [20]gfx.Rect
     row_seen: [20]bool
     texts := 0
     prefix_x, name_x: i32 = -1, -1
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
-        r := app.clay_rect(c.boundingBox)
+        r := ui.clay_rect(c.boundingBox)
         counts[int(c.commandType)] += 1
         #partial switch c.commandType {
         case .Text:
@@ -160,11 +162,11 @@ test_filetree_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, counts[int(clay.RenderCommandType.ScissorEnd)], 2)
     testing.expect_value(t, pane_clip, AREA)
     // The inner one is the body, under the header and running to the pane's bottom.
-    testing.expect_value(t, scissor, app.Rect{AREA.x, AREA.y + ROW_H, AREA.w, AREA.h - ROW_H})
+    testing.expect_value(t, scissor, gfx.Rect{AREA.x, AREA.y + ROW_H, AREA.w, AREA.h - ROW_H})
 
     // Only the selected row draws a background, at the full width of the pane.
     testing.expect(t, row_seen[6], "the selected row drew no background")
-    testing.expect_value(t, row_boxes[6], app.Rect{AREA.x, AREA.y + ROW_H + ROW_H, AREA.w, ROW_H})
+    testing.expect_value(t, row_boxes[6], gfx.Rect{AREA.x, AREA.y + ROW_H + ROW_H, AREA.w, ROW_H})
     testing.expect(t, !row_seen[5], "an unselected, unmarked row must not paint a background")
 
     // The partial row at the bottom edge IS declared and runs past the body: the clip cuts it,
@@ -195,7 +197,7 @@ test_filetree_hit :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     a.scale = 1
@@ -305,7 +307,7 @@ test_filetree_scroll_eases :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     a.scale = 1
@@ -324,7 +326,7 @@ test_filetree_scroll_eases :: proc(t: ^testing.T) {
 
     // Halfway through SCROLL_DUR the ease-out cubic is 0.875 of the way, so the view sits at
     // row 8.75: the window starts at 8 and every row lifts by 0.75 of a row (13px of 18).
-    mid := app.filetree_layout(&a, &f, PANE, 500, 300, 1 + app.SCROLL_DUR / 2)
+    mid := app.filetree_layout(&a, &f, PANE, 500, 300, 1 + ui.SCROLL_DUR / 2)
     box, ok := box_of(&mid, clay.ID("ft_row", 10), .Rectangle)
     testing.expect(t, ok, "the target row was not declared mid-scroll")
     testing.expect_value(t, box.y, AREA.y + ROW_H + 2 * ROW_H - 13)
@@ -332,27 +334,27 @@ test_filetree_scroll_eases :: proc(t: ^testing.T) {
 
     // The extra row easing in must not stretch the clip group: the body's scissor is the body's
     // box, mid-scroll as much as at rest. A `SizingGrow` would take it past the pane (rule 8).
-    body_clip: app.Rect
+    body_clip: gfx.Rect
     for i in 0 ..< mid.length {
         c := clay.RenderCommandArray_Get(&mid, i)
         if c.commandType == .ScissorStart && c.id != clay.ID("ft_pane").id {
-            body_clip = app.clay_rect(c.boundingBox)
+            body_clip = ui.clay_rect(c.boundingBox)
         }
     }
-    testing.expect_value(t, body_clip, app.Rect{AREA.x, AREA.y + ROW_H, AREA.w, AREA.h - ROW_H})
+    testing.expect_value(t, body_clip, gfx.Rect{AREA.x, AREA.y + ROW_H, AREA.w, AREA.h - ROW_H})
 
     // The hit test resolves against the PAINTED window: mid-scroll the top row on screen is 8
     // while the target is 10, so a probe aimed at the target misses entirely.
     clay.SetPointerState({f32(AREA.x + 50), f32(AREA.y + ROW_H + 2)}, false)
-    _ = app.filetree_layout(&a, &f, PANE, 500, 300, 1 + app.SCROLL_DUR / 2)
+    _ = app.filetree_layout(&a, &f, PANE, 500, 300, 1 + ui.SCROLL_DUR / 2)
     testing.expect_value(t, app.filetree_hit(&a.tree, 8, ROWS), 8)
     testing.expect_value(t, app.filetree_hit(&a.tree, a.tree.scroll, ROWS), -1)
 
     // Once the tween is spent the row lands exactly on the first body row.
-    done := app.filetree_layout(&a, &f, PANE, 500, 300, 1 + app.SCROLL_DUR)
+    done := app.filetree_layout(&a, &f, PANE, 500, 300, 1 + ui.SCROLL_DUR)
     settled, sok := box_of(&done, clay.ID("ft_row", 10), .Rectangle)
     testing.expect(t, sok, "the target row vanished once the scroll finished")
-    testing.expect_value(t, settled, app.Rect{AREA.x, AREA.y + ROW_H, AREA.w, ROW_H})
+    testing.expect_value(t, settled, gfx.Rect{AREA.x, AREA.y + ROW_H, AREA.w, ROW_H})
 
     // The scheduler must keep waking while that runs, or the view freezes part-scrolled.
     // Focused on the aux pane, which silences the disk poll. frame_budget is the smallest wake
@@ -360,10 +362,10 @@ test_filetree_scroll_eases :: proc(t: ^testing.T) {
     // caret's blink edge, which is strictly later.
     a.aux_mode = .FileTree
     a.focus = .Aux
-    testing.expect_value(t, app.app_next_wake(&a, 1 + app.SCROLL_DUR / 2), app.frame_budget)
+    testing.expect_value(t, app.app_next_wake(&a, 1 + ui.SCROLL_DUR / 2), ui.frame_budget)
     testing.expect(
         t,
-        app.app_next_wake(&a, 1 + 2 * app.SCROLL_DUR) > app.frame_budget,
+        app.app_next_wake(&a, 1 + 2 * ui.SCROLL_DUR) > ui.frame_budget,
         "the scroll went on demanding a vsync-paced redraw after it had settled",
     )
 }

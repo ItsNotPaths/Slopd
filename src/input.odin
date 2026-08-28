@@ -3,6 +3,8 @@ package main
 import "base:runtime"
 import "vendor:glfw"
 import "wake"
+import "txt"
+import "ui"
 
 // GLFW events in, one Action out. No verbs and no chords here: this tracks what is held, asks
 // bind.odin which Action a keystroke names, and hands it to action.odin.
@@ -67,11 +69,11 @@ char_callback :: proc "c" (window: glfw.WindowHandle, codepoint: rune) {
             buffer_insert_rune(b, codepoint)
         }
     case .Config_Search:
-        doc_insert_rune(d, codepoint)
+        txt.doc_insert_rune(d, codepoint)
         config_pane_filter(&a.config_pane) // live as you type
     case .Command_Line, .Browse_Path, .Workspace_Find, .Config_Value:
         // Its rows follow the line on a version compare, so this is the plain insert.
-        doc_insert_rune(d, codepoint)
+        txt.doc_insert_rune(d, codepoint)
     }
 }
 
@@ -93,13 +95,13 @@ handle_key :: proc(a: ^App, key, action, mods: i32) {
     case glfw.KEY_LEFT_ALT, glfw.KEY_RIGHT_ALT:
         a.alt_held = action != glfw.RELEASE
         if action == glfw.PRESS {
-            anim_start(&a.switcher_anim, glfw.GetTime(), 0, 1, SWITCHER_DUR)
+            ui.anim_start(&a.switcher_anim, glfw.GetTime(), 0, 1, ui.SWITCHER_DUR)
         }
         return // Alt alone asks for nothing
     case glfw.KEY_LEFT_CONTROL, glfw.KEY_RIGHT_CONTROL:
         a.ctrl_held = action != glfw.RELEASE
         if action == glfw.PRESS {
-            anim_start(&a.chord_anim, glfw.GetTime(), 0, 1, SWITCHER_DUR)
+            ui.anim_start(&a.chord_anim, glfw.GetTime(), 0, 1, ui.SWITCHER_DUR)
         }
     case glfw.KEY_LEFT_SHIFT, glfw.KEY_RIGHT_SHIFT:
         a.shift_held = action != glfw.RELEASE
@@ -265,7 +267,7 @@ cursor_trail :: proc(a: ^App, key: i32) -> bool {
     if kind == .None {
         return false
     }
-    m: Motion
+    m: txt.Motion
     switch key {
     case glfw.KEY_UP:
         m = .Up
@@ -278,7 +280,7 @@ cursor_trail :: proc(a: ^App, key: i32) -> bool {
     case:
         return false
     }
-    doc_move(d, m)
-    doc_drop_anchor(d)
+    txt.doc_move(d, m)
+    txt.doc_drop_anchor(d)
     return true
 }

@@ -1,4 +1,5 @@
-package main
+package ui
+import "../txt"
 
 // Drag capture. A press captures; every motion until the release goes to what the press
 // resolved to, wherever the pointer went since. Clay resolves the target at press time.
@@ -45,7 +46,7 @@ Drag :: struct {
     // Press position in the DOCUMENT, resolved once because the view scrolls during a drag.
     // `anchor` is the caret boundary a character drag extends from, `anchor_glyph` the
     // character a word drag expands around.
-    anchor:       Pos,
+    anchor:       txt.Pos,
     anchor_glyph: int,
 
     // glfw time the next autoscroll step is due. Zero until the first, which is in the past
@@ -61,87 +62,67 @@ Drag :: struct {
 
 // Called by a pane from its `_click`, once it knows what the press meant. Refused when the
 // button is already up: press and release between two frames is a click, not a drag.
-drag_begin :: proc(a: ^App, kind: Drag_Kind, target, grade: int, anchor: Pos, glyph: int, pan: [2]f32 = {}) {
-    if !a.mouse.down {
+drag_begin :: proc(u: UI_Ctx, kind: Drag_Kind, target, grade: int, anchor: txt.Pos, glyph: int, pan: [2]f32 = {}) {
+    if !u.mouse.down {
         return
     }
-    a.drag = Drag {
+    u.drag^ = Drag {
         kind         = kind,
         target       = target,
         grade        = grade,
         anchor       = anchor,
         anchor_glyph = glyph,
-        origin_x     = a.mouse.x,
-        origin_y     = a.mouse.y,
+        origin_x     = u.mouse.x,
+        origin_y     = u.mouse.y,
         origin_pan   = pan,
     }
 }
 
 // `px` is the client's threshold in framebuffer pixels, max-norm. Latches — without it a
 // divider dragged 40px out and back to 1px would refuse the last frame.
-drag_moved :: proc(a: ^App, px: i32) -> bool {
-    if a.drag.moved {
+drag_moved :: proc(u: UI_Ctx, px: i32) -> bool {
+    if u.drag.moved {
         return true
     }
-    if abs(a.mouse.x - a.drag.origin_x) < px && abs(a.mouse.y - a.drag.origin_y) < px {
+    if abs(u.mouse.x - u.drag.origin_x) < px && abs(u.mouse.y - u.drag.origin_y) < px {
         return false
     }
-    a.drag.moved = true
+    u.drag.moved = true
     return true
 }
 
 // The target check is what makes capture safe across a mid-drag subject change: switching
 // buffers with the button down leaves the drag held but stops it writing.
-drag_live :: proc(a: ^App, kind: Drag_Kind, target: int) -> bool {
-    return a.drag.kind == kind && a.drag.target == target
+drag_live :: proc(u: UI_Ctx, kind: Drag_Kind, target: int) -> bool {
+    return u.drag.kind == kind && u.drag.target == target
 }
 
 // Park the release — see the header.
-drag_release :: proc(a: ^App) {
-    if a.drag.kind != .None {
-        a.drag.ending = true
+drag_release :: proc(u: UI_Ctx) {
+    if u.drag.kind != .None {
+        u.drag.ending = true
     }
 }
 
 // End of frame: bury a drag that has had its last frame. `mouse_on` going false buries it
 // too, or the capture outlives the toggle meant to stop it.
-drag_sweep :: proc(a: ^App) {
-    if a.drag.kind == .None {
+drag_sweep :: proc(u: UI_Ctx) {
+    if u.drag.kind == .None {
         return
     }
-    if a.drag.ending || !a.mouse_on {
-        a.drag = {}
+    if u.drag.ending || !u.mouse_on {
+        u.drag^ = {}
     }
 }
 
-// Is the drag pulling the view past an edge right now? Asks `a.lay`, the layout the last
-// frame painted (mouse.odin, trap 2). The scheduler calls this too, which keeps the
-// autoscroll wake off a render->state backchannel.
-drag_autoscrolling :: proc(a: ^App) -> bool {
-    r: Rect
-    switch a.drag.kind {
-    case .None, .Split, .Media_Pan, .Field_Text, .Color_Slider:
-        // No view to run off: the divider has none, a media pan already moves the surface
-        // pixel-for-pixel, a field walks its own window, a colour rail is bounded.
-        return false
-    case .Editor_Text:
-        r = a.lay.editor
-    case .Terminal_Sel:
-        r = a.lay.aux
-    }
-    if r.h <= 0 {
-        return false
-    }
-    return a.mouse.y < r.y || a.mouse.y >= r.y + r.h
-}
 
 // Called only once the pointer is past an edge, so a drag inside its pane leaves `scroll_at`
 // in the past — that is what makes the first frame outside act at once.
-drag_tick :: proc(a: ^App, now: f64) -> bool {
-    if now < a.drag.scroll_at {
+drag_tick :: proc(u: UI_Ctx, now: f64) -> bool {
+    if now < u.drag.scroll_at {
         return false
     }
-    a.drag.scroll_at = now + DRAG_SCROLL_S
+    u.drag.scroll_at = now + DRAG_SCROLL_S
     return true
 }
 
@@ -153,11 +134,3 @@ drag_scroll_step :: proc(past, row_h: int) -> int {
     return clamp(1 + past / row_h, 1, DRAG_SCROLL_MAX)
 }
 
-// The wait an autoscrolling drag asks the loop for, or -1. The one pointer path needing a
-// pump: a drag held still past an edge produces no events but must keep scrolling.
-drag_next_wake :: proc(a: ^App, now: f64) -> f64 {
-    if !drag_autoscrolling(a) {
-        return -1
-    }
-    return max(0, a.drag.scroll_at - now)
-}

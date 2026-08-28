@@ -10,6 +10,9 @@ import "base:runtime"
 import "core:text/regex"
 import "core:unicode/utf8"
 import ts "../vendor/odin-tree-sitter"
+import "txt"
+import "gfx"
+import "syntax"
 
 // Syntax highlighting via tree-sitter. A buffer's language comes from its extension; the
 // grammar's parser (grammars/<lang>.so) is dlopen'd once and its query (<lang>.scm) compiled
@@ -64,7 +67,7 @@ Highlighter :: struct {
     tree:     ts.Tree,
     tree_buf: rawptr, // the Buffer it was parsed from
     tree_ver: u64, // doc.version at parse time
-    worker:   Hl_Worker,
+    worker:   syntax.Hl_Worker,
     // The request in flight, so a frame does not ask twice for one version. `no_reuse` means
     // the held tree cannot be a base: the changes to bring it forward went to a job that came
     // back empty.
@@ -79,20 +82,20 @@ Highlighter :: struct {
     cache_ver:   u64,
     cache_first: int,
     cache_count: int,
-    cache_theme: Theme,
+    cache_theme: gfx.Theme,
 }
 
 highlighter_init :: proc(h: ^Highlighter) {
     h.parser = ts.parser_new() // for ts_filter_definitions, which parses files off disk
     h.cursor = ts.query_cursor_new()
     h.loaded = make(map[string]Loaded_Grammar)
-    hl_worker_start(&h.worker)
+    syntax.hl_worker_start(&h.worker)
 }
 
 highlighter_destroy :: proc(h: ^Highlighter) {
     // The worker first: a parse in flight reads the grammar's tables inside its .so, so
     // unloading a library out from under it faults at a wild offset.
-    hl_worker_stop(&h.worker)
+    syntax.hl_worker_stop(&h.worker)
     hl_cache_free(h)
     if h.tree != nil {
         ts.tree_delete(h.tree)
@@ -148,7 +151,7 @@ highlighter_tree :: proc(h: ^Highlighter, b: ^Buffer, lang: ts.Language) -> (tre
 // A tree for a buffer we no longer show is dropped: switching buffers means a full parse.
 @(private = "file")
 hl_publish :: proc(h: ^Highlighter) {
-    done, got := hl_worker_take(&h.worker)
+    done, got := syntax.hl_worker_take(&h.worker)
     if !got {
         return
     }
@@ -177,21 +180,21 @@ hl_request :: proc(h: ^Highlighter, b: ^Buffer, lang: ts.Language) {
 
     // Copied, not handed over: the painter keeps using ours. ts_tree_copy is a shallow share.
     base: ts.Tree
-    changes: []Doc_Change
+    changes: []txt.Doc_Change
     if !h.no_reuse && h.tree != nil && h.tree_buf == rawptr(b) {
-        pending, lost := doc_changes_since(&b.doc, .Highlight)
+        pending, lost := txt.doc_changes_since(&b.doc, .Highlight)
         if !lost {
             base = ts.tree_copy(h.tree)
-            changes = slice.clone(pending, hl_job_allocator())
+            changes = slice.clone(pending, syntax.hl_job_allocator())
         }
     }
-    doc_changes_ack(&b.doc, .Highlight) // handed over, or deliberately skipped past
+    txt.doc_changes_ack(&b.doc, .Highlight) // handed over, or deliberately skipped past
     h.no_reuse = false
 
-    hl_worker_submit(
+    syntax.hl_worker_submit(
         &h.worker,
-        Hl_Job {
-            text = pt_read(&b.doc.pt, 0, b.doc.pt.size, hl_job_allocator()),
+        syntax.Hl_Job {
+            text = txt.pt_read(&b.doc.pt, 0, b.doc.pt.size, syntax.hl_job_allocator()),
             changes = changes,
             base = base,
             lang = lang,
@@ -222,30 +225,18 @@ hl_settle :: proc(a: ^App, b: ^Buffer) {
         if !h.in_flight {
             return // no worker running
         }
-        hl_worker_idle(&h.worker)
+        syntax.hl_worker_idle(&h.worker)
     }
     hl_publish(h)
-}
-
-// The worker (hlworker.odin) replays the same changes onto the same tree.
-hl_input_edit :: proc(c: Doc_Change) -> ts.Input_Edit {
-    return ts.Input_Edit {
-        start_byte = u32(c.start),
-        old_end_byte = u32(c.old_end),
-        new_end_byte = u32(c.new_end),
-        start_point = ts.Point{u32(c.start_pt.line), u32(c.start_pt.col)},
-        old_end_point = ts.Point{u32(c.old_end_pt.line), u32(c.old_end_pt.col)},
-        new_end_point = ts.Point{u32(c.new_end_pt.line), u32(c.new_end_pt.col)},
-    }
 }
 
 // For predicate evaluation. A node is small — an identifier, a keyword — so the copy costs
 // nothing beside holding the whole buffer on the heap to index into.
 @(private = "file")
-hl_node_text :: proc(d: ^Doc, node: ts.Node) -> string {
+hl_node_text :: proc(d: ^txt.Doc, node: ts.Node) -> string {
     lo := int(ts.node_start_byte(node))
     hi := int(ts.node_end_byte(node))
-    return string(pt_read(&d.pt, lo, hi, context.temp_allocator))
+    return string(txt.pt_read(&d.pt, lo, hi, context.temp_allocator))
 }
 
 // At file scope so the sort comparator can name it.
@@ -286,7 +277,7 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
         return h.cache_rows // nil before the first paint, which draws plain fg
     }
 
-    last := min(first_line + count, doc_line_count(&b.doc))
+    last := min(first_line + count, txt.doc_line_count(&b.doc))
     ts.query_cursor_set_point_range(h.cursor, {u32(first_line), 0}, {u32(last), 0})
     ts.query_cursor_exec(h.cursor, g.query, ts.tree_root_node(tree))
 
@@ -336,10 +327,10 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
     rows := make([]Row_Colors, count)
     for k in 0 ..< count {
         line := first_line + k
-        if line >= doc_line_count(&b.doc) {
+        if line >= txt.doc_line_count(&b.doc) {
             continue
         }
-        rc := make(Row_Colors, doc_cell_count(&b.doc, line))
+        rc := make(Row_Colors, txt.doc_cell_count(&b.doc, line))
         slice.fill(rc, th.fg)
         rows[k] = rc
     }
@@ -354,10 +345,10 @@ highlight_visible :: proc(a: ^App, b: ^Buffer, first_line, count: int) -> []Row_
             if rows[k] == nil {
                 continue // line past end-of-buffer
             }
-            cells := doc_cells(&b.doc, row)
+            cells := txt.doc_cells(&b.doc, row)
             lo_byte := row == int(s.start.row) ? int(s.start.col) : 0
             hi_byte := row == int(s.end.row) ? int(s.end.col) : max(int)
-            for c in cells_col(cells, lo_byte) ..< cells_col(cells, hi_byte) {
+            for c in txt.cells_col(cells, lo_byte) ..< txt.cells_col(cells, hi_byte) {
                 rows[k][c] = s.color
             }
         }
@@ -388,7 +379,7 @@ highlight_dump_captures :: proc(a: ^App, b: ^Buffer, first_line, count: int) {
         fmt.println("no tree")
         return
     }
-    last := min(first_line + count, doc_line_count(&b.doc))
+    last := min(first_line + count, txt.doc_line_count(&b.doc))
     ts.query_cursor_set_point_range(h.cursor, {u32(first_line), 0}, {u32(last), 0})
     ts.query_cursor_exec(h.cursor, g.query, ts.tree_root_node(tree))
     for {
@@ -427,7 +418,7 @@ hl_cache_free :: proc(h: ^Highlighter) {
 // [line, end], end being the last line to hide: the innermost multi-line node that BEGINS on
 // `line`. ok=false with no grammar or no such node, and the caller falls back to an indent scan.
 highlight_fold_range :: proc(a: ^App, b: ^Buffer, line: int) -> (start, end: int, ok: bool) {
-    if line < 0 || line >= doc_line_count(&b.doc) {
+    if line < 0 || line >= txt.doc_line_count(&b.doc) {
         return 0, 0, false
     }
     g, found := highlighter_grammar(a, b.path)
@@ -443,7 +434,7 @@ highlight_fold_range :: proc(a: ^App, b: ^Buffer, line: int) -> (start, end: int
 
     // Descend at the first real token, then climb to the nearest ancestor that opens here and
     // spans more than one line.
-    col := u32(line_indent_cols(doc_line(&b.doc, line)))
+    col := u32(txt.line_indent_cols(txt.doc_line(&b.doc, line)))
     node := ts.node_descendant_for_range(ts.tree_root_node(tree), ts.Point{u32(line), col}, ts.Point{u32(line), col})
     for !ts.node_is_null(node) {
         sp := ts.node_start_point(node)
@@ -452,14 +443,14 @@ highlight_fold_range :: proc(a: ^App, b: ^Buffer, line: int) -> (start, end: int
             break // every ancestor from here up begins above this line
         }
         if int(sp.row) == line && int(ep.row) > line {
-            last := min(int(ep.row), doc_line_count(&b.doc) - 1)
+            last := min(int(ep.row), txt.doc_line_count(&b.doc) - 1)
             if ep.col == 0 && last > line {
                 last -= 1 // a half-open end at column 0 sits on the next line
             }
             // Keep a lone dedented closer visible: a node's end point lands on the `}` line or
             // just past it depending on the grammar, so trim a trailing line no deeper than the
             // header.
-            if last > line && line_indent_cols(doc_line(&b.doc, last)) <= line_indent_cols(doc_line(&b.doc, line)) {
+            if last > line && txt.line_indent_cols(txt.doc_line(&b.doc, last)) <= txt.line_indent_cols(txt.doc_line(&b.doc, line)) {
                 last -= 1
             }
             return line, last, last > line
@@ -502,15 +493,15 @@ highlighter_grammar :: proc(a: ^App, path: string) -> (Loaded_Grammar, bool) {
         return {}, false
     }
     ext := strings.trim_prefix(filepath.ext(path), ".")
-    name, found := grammar_for_ext(a.gram_ext, ext)
+    name, found := syntax.grammar_for_ext(a.gram_ext, ext)
     if !found {
         return {}, false
     }
     if g, cached := a.hl.loaded[name]; cached {
         return g, g.ok
     }
-    dir := grammars_dir(context.temp_allocator)
-    if !grammar_present(dir, name) {
+    dir := syntax.grammars_dir(context.temp_allocator)
+    if !syntax.grammar_present(dir, name) {
         return {}, false // not installed; don't cache, so an install is seen later
     }
     g := load_grammar(dir, name)
@@ -521,7 +512,7 @@ highlighter_grammar :: proc(a: ^App, path: string) -> (Loaded_Grammar, bool) {
 // dlopen the .so, resolve tree_sitter_<name>, ABI-check it, compile the .scm. Never panics.
 @(private = "file")
 load_grammar :: proc(dir, name: string) -> Loaded_Grammar {
-    lib, loaded := dynlib.load_library(grammar_lib_path(dir, name, context.temp_allocator))
+    lib, loaded := dynlib.load_library(syntax.grammar_lib_path(dir, name, context.temp_allocator))
     if !loaded {
         return {}
     }
@@ -547,7 +538,7 @@ load_grammar :: proc(dir, name: string) -> Loaded_Grammar {
         lang = lang,
         ok   = true,
     }
-    scm := grammar_query_path(dir, name, context.temp_allocator)
+    scm := syntax.grammar_query_path(dir, name, context.temp_allocator)
     if src := os.read_entire_file_from_path(scm, context.temp_allocator) or_else nil; src != nil {
         if q, _, err := ts.query_new(lang, string(src)); err == .None {
             g.query = q
@@ -640,7 +631,7 @@ parse_predicate :: proc(query: ts.Query, steps: []ts.Query_Predicate_Step) -> (P
 // Unmodelled ops and uncompilable regexes count as passing: never hide a token on a predicate
 // we cannot evaluate.
 @(private = "file")
-predicates_ok :: proc(g: Loaded_Grammar, pi: u32, match: ts.Query_Match, d: ^Doc) -> bool {
+predicates_ok :: proc(g: Loaded_Grammar, pi: u32, match: ts.Query_Match, d: ^txt.Doc) -> bool {
     if int(pi) >= len(g.preds) {
         return true
     }
@@ -649,7 +640,7 @@ predicates_ok :: proc(g: Loaded_Grammar, pi: u32, match: ts.Query_Match, d: ^Doc
         if !found {
             continue
         }
-        txt := hl_node_text(d, node)
+        node_src := hl_node_text(d, node)
         res: bool
         switch p.op {
         case .Unknown:
@@ -657,12 +648,12 @@ predicates_ok :: proc(g: Loaded_Grammar, pi: u32, match: ts.Query_Match, d: ^Doc
         case .Eq:
             if p.cap2 >= 0 {
                 other := capture_node(match, u32(p.cap2)) or_continue
-                res = txt == hl_node_text(d, other)
+                res = node_src == hl_node_text(d, other)
             } else if len(p.strs) > 0 {
-                res = txt == p.strs[0]
+                res = node_src == p.strs[0]
             }
         case .AnyOf:
-            res = slice.contains(p.strs, txt)
+            res = slice.contains(p.strs, node_src)
         case .Match:
             if !p.has_re {
                 continue // could not compile, so do not filter
@@ -670,7 +661,7 @@ predicates_ok :: proc(g: Loaded_Grammar, pi: u32, match: ts.Query_Match, d: ^Doc
             {
                 // match allocates a capture; only the bool leaves, so take it from temp
                 context.allocator = context.temp_allocator
-                _, matched := regex.match(p.re, txt)
+                _, matched := regex.match(p.re, node_src)
                 res = matched
             }
         case .HasParent:
@@ -712,7 +703,7 @@ node_has_parent_type :: proc(node: ts.Node, types: []string) -> bool {
 // Only the base before the first '.' matters, so @function.builtin and @function share a slot.
 // ok=false for names with no slot, which draw in the default foreground.
 @(private = "file")
-capture_color :: proc(th: ^Theme, name: string) -> (color: [3]f32, ok: bool) {
+capture_color :: proc(th: ^gfx.Theme, name: string) -> (color: [3]f32, ok: bool) {
     base := name
     if dot := strings.index_byte(name, '.'); dot >= 0 {
         base = name[:dot]

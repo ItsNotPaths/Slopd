@@ -3,27 +3,28 @@ package tests
 import app ".."
 import "core:testing"
 import "vendor:glfw"
+import "../txt"
 
 @(private = "file")
-mkdoc :: proc(s: string) -> app.Doc {
-    d: app.Doc
-    app.doc_set_text(&d, s)
+mkdoc :: proc(s: string) -> txt.Doc {
+    d: txt.Doc
+    txt.doc_set_text(&d, s)
     return d
 }
 
 @(private = "file")
-ln :: proc(d: ^app.Doc, i: int) -> string {
-    return string(app.doc_line(d, i, context.temp_allocator))
+ln :: proc(d: ^txt.Doc, i: int) -> string {
+    return string(txt.doc_line(d, i, context.temp_allocator))
 }
 
 @(test)
 test_copy_selection :: proc(t: ^testing.T) {
     d := mkdoc("hello")
-    defer app.doc_destroy(&d)
-    app.doc_move(&d, .Home)
-    app.doc_move(&d, .Right, true)
-    app.doc_move(&d, .Right, true) // select "he"
-    joined, pieces := app.doc_copy(&d, context.temp_allocator)
+    defer txt.doc_destroy(&d)
+    txt.doc_move(&d, .Home)
+    txt.doc_move(&d, .Right, true)
+    txt.doc_move(&d, .Right, true) // select "he"
+    joined, pieces := txt.doc_copy(&d, context.temp_allocator)
     testing.expect_value(t, joined, "he")
     testing.expect_value(t, len(pieces), 1)
 }
@@ -31,8 +32,8 @@ test_copy_selection :: proc(t: ^testing.T) {
 @(test)
 test_copy_line_when_no_selection :: proc(t: ^testing.T) {
     d := mkdoc("hello")
-    defer app.doc_destroy(&d)
-    joined, _ := app.doc_copy(&d, context.temp_allocator)
+    defer txt.doc_destroy(&d)
+    joined, _ := txt.doc_copy(&d, context.temp_allocator)
     testing.expect_value(t, joined, "hello\n") // whole line + newline
 }
 
@@ -55,8 +56,8 @@ test_term_has_span_decides_copy_or_interrupt :: proc(t: ^testing.T) {
 @(test)
 test_paste_at_caret :: proc(t: ^testing.T) {
     d := mkdoc("ab")
-    defer app.doc_destroy(&d)
-    app.doc_paste(&d, "XY")
+    defer txt.doc_destroy(&d)
+    txt.doc_paste(&d, "XY")
     testing.expect_value(t, ln(&d, 0), "XYab")
 }
 
@@ -64,11 +65,11 @@ test_paste_at_caret :: proc(t: ^testing.T) {
 @(test)
 test_paste_pieces :: proc(t: ^testing.T) {
     d := mkdoc("ab\ncd")
-    defer app.doc_destroy(&d)
+    defer txt.doc_destroy(&d)
     clear(&d.cursors)
-    append(&d.cursors, app.Cursor{head = {0, 0}, anchor = {0, 0}})
-    append(&d.cursors, app.Cursor{head = {1, 0}, anchor = {1, 0}})
-    app.doc_paste_pieces(&d, []string{"X", "Y"})
+    append(&d.cursors, txt.Cursor{head = {0, 0}, anchor = {0, 0}})
+    append(&d.cursors, txt.Cursor{head = {1, 0}, anchor = {1, 0}})
+    txt.doc_paste_pieces(&d, []string{"X", "Y"})
     testing.expect_value(t, ln(&d, 0), "Xab")
     testing.expect_value(t, ln(&d, 1), "Ycd")
 }
@@ -76,11 +77,11 @@ test_paste_pieces :: proc(t: ^testing.T) {
 @(test)
 test_cut_selection :: proc(t: ^testing.T) {
     d := mkdoc("hello")
-    defer app.doc_destroy(&d)
-    app.doc_move(&d, .Home)
-    app.doc_move(&d, .Right, true)
-    app.doc_move(&d, .Right, true) // select "he"
-    app.doc_cut(&d)
+    defer txt.doc_destroy(&d)
+    txt.doc_move(&d, .Home)
+    txt.doc_move(&d, .Right, true)
+    txt.doc_move(&d, .Right, true) // select "he"
+    txt.doc_cut(&d)
     testing.expect_value(t, ln(&d, 0), "llo")
 }
 
@@ -88,8 +89,8 @@ test_cut_selection :: proc(t: ^testing.T) {
 @(test)
 test_cut_line :: proc(t: ^testing.T) {
     d := mkdoc("ab\ncd")
-    defer app.doc_destroy(&d)
-    app.doc_cut(&d)
-    testing.expect_value(t, app.doc_line_count(&d), 1)
+    defer txt.doc_destroy(&d)
+    txt.doc_cut(&d)
+    testing.expect_value(t, txt.doc_line_count(&d), 1)
     testing.expect_value(t, ln(&d, 0), "cd")
 }

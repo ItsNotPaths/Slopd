@@ -5,6 +5,9 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "../txt"
+import "../gfx"
+import "../ui"
 
 @(private = "file")
 mkbuf :: proc(text: string) -> app.Buffer {
@@ -15,7 +18,7 @@ mkbuf :: proc(text: string) -> app.Buffer {
 
 @(private = "file")
 lstr :: proc(b: ^app.Buffer, i: int) -> string {
-    return string(app.doc_line(&b.doc, i, context.temp_allocator))
+    return string(txt.doc_line(&b.doc, i, context.temp_allocator))
 }
 
 @(test)
@@ -25,7 +28,7 @@ test_buffer_newline :: proc(t: ^testing.T) {
     app.buffer_motion(&b, .Right)
     app.buffer_motion(&b, .Right) // column 2
     app.buffer_newline(&b)
-    testing.expect_value(t, app.doc_line_count(&b.doc), 2)
+    testing.expect_value(t, txt.doc_line_count(&b.doc), 2)
     testing.expect_value(t, lstr(&b, 0), "he")
     testing.expect_value(t, lstr(&b, 1), "llo")
     testing.expect_value(t, b.cursors[0].head.line, 1)
@@ -38,7 +41,7 @@ test_buffer_join :: proc(t: ^testing.T) {
     defer app.buffer_destroy(&b)
     app.buffer_motion(&b, .Down) // line 1, column 0
     app.buffer_backspace(&b) // joins into the previous line
-    testing.expect_value(t, app.doc_line_count(&b.doc), 1)
+    testing.expect_value(t, txt.doc_line_count(&b.doc), 1)
     testing.expect_value(t, lstr(&b, 0), "abcd")
     testing.expect_value(t, b.cursors[0].head.line, 0)
     testing.expect_value(t, b.cursors[0].head.col, 2)
@@ -87,7 +90,7 @@ test_buffer_crlf_roundtrip :: proc(t: ^testing.T) {
     defer app.buffer_destroy(&b)
     testing.expect(t, app.buffer_load(&b, path))
     testing.expect(t, b.crlf)
-    testing.expect_value(t, app.doc_line_count(&b.doc), 2)
+    testing.expect_value(t, txt.doc_line_count(&b.doc), 2)
     testing.expect_value(t, lstr(&b, 1), "b") // no '\r' in the document itself
 
     testing.expect_value(t, app.buffer_save(&b), app.Save_Result.Ok)
@@ -124,7 +127,7 @@ test_buffer_save_is_atomic :: proc(t: ^testing.T) {
     b: app.Buffer
     defer app.buffer_destroy(&b)
     testing.expect(t, app.buffer_load(&b, path))
-    app.doc_insert_text(&b.doc, "X")
+    txt.doc_insert_text(&b.doc, "X")
     testing.expect_value(t, app.buffer_save(&b), app.Save_Result.Ok)
 
     fi, err := os.stat(path, context.temp_allocator)
@@ -158,7 +161,7 @@ test_buffer_save_follows_symlink :: proc(t: ^testing.T) {
     b: app.Buffer
     defer app.buffer_destroy(&b)
     testing.expect(t, app.buffer_load(&b, link))
-    app.doc_insert_text(&b.doc, "X")
+    txt.doc_insert_text(&b.doc, "X")
     testing.expect_value(t, app.buffer_save(&b), app.Save_Result.Ok)
 
     fi, err := os.lstat(link, context.temp_allocator)
@@ -191,7 +194,7 @@ test_buffer_reload_if_changed :: proc(t: ^testing.T) {
     testing.expect(t, os.write_entire_file(path, transmute([]u8)string("ALPHA\n")) == nil)
     b.disk_mtime = {} // so a change is seen whatever the mtime resolution
     testing.expect(t, app.buffer_reload_if_changed(&b, true))
-    testing.expect_value(t, app.doc_line_count(&b.doc), 1)
+    testing.expect_value(t, txt.doc_line_count(&b.doc), 1)
     testing.expect_value(t, lstr(&b, 0), "ALPHA")
     testing.expect_value(t, b.cursors[0].head.line, 0) // clamped from line 1
 
@@ -268,10 +271,29 @@ test_ring_contains :: proc(t: ^testing.T) {
     b := app.editor_current(&a.editor)
     b.path = strings.clone("/x/y.txt") // freed by editor_destroy
 
-    testing.expect(t, !app.ring_contains(&a, "/x/y.txt")) // clean
+    testing.expect(t, !app.ring_contains(&a.editor, "/x/y.txt")) // clean
     b.dirty = true
-    testing.expect(t, app.ring_contains(&a, "/x/y.txt"))
-    testing.expect(t, !app.ring_contains(&a, "/x/other.txt"))
+    testing.expect(t, app.ring_contains(&a.editor, "/x/y.txt"))
+    testing.expect(t, !app.ring_contains(&a.editor, "/x/other.txt"))
+}
+
+// The file panes ask the ring through a Path_Dirty rather than reaching for it, so a front-end
+// with no open-file ring marks no row instead of failing to build.
+@(test)
+test_path_dirty_is_a_question_not_a_flag :: proc(t: ^testing.T) {
+    a: app.App
+    app.editor_init(&a.editor)
+    defer app.editor_destroy(&a.editor)
+    b := app.editor_current(&a.editor)
+    b.path = strings.clone("/x/y.txt") // freed by editor_destroy
+    b.dirty = true
+
+    ask := app.ring_dirty(&a.editor)
+    testing.expect(t, ui.path_is_dirty(ask, "/x/y.txt"))
+    testing.expect(t, !ui.path_is_dirty(ask, "/x/other.txt"))
+
+    none: ui.Path_Dirty // no ring to ask
+    testing.expect(t, !ui.path_is_dirty(none, "/x/y.txt"), "an unasked question is not a yes")
 }
 
 // --- scroll policy (buffer_scroll_target; the renderer only consumes it) ---
@@ -294,12 +316,12 @@ test_scroll_follow :: proc(t: ^testing.T) {
     ROWS :: 10
 
     testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, false), 0) // caret on line 0
-    app.doc_reset_cursor(&b.doc, app.Pos{5, 0})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{5, 0})
     testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, false), 0) // on screen: no move
-    app.doc_reset_cursor(&b.doc, app.Pos{12, 0})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{12, 0})
     testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, false), 3) // caret onto the bottom row
     b.scroll = 3
-    app.doc_reset_cursor(&b.doc, app.Pos{1, 0})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{1, 0})
     testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, false), 1) // above: top = caret
 }
 
@@ -312,19 +334,19 @@ test_scroll_middle :: proc(t: ^testing.T) {
     ROWS :: 10
 
     testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, true), 0) // clamped at the top
-    app.doc_reset_cursor(&b.doc, app.Pos{40, 0})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{40, 0})
     testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, true), 35)
-    app.doc_reset_cursor(&b.doc, app.Pos{41, 0})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{41, 0})
     // one line down = one row of text:
     testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, true), 36)
-    app.doc_reset_cursor(&b.doc, app.Pos{99, 0})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{99, 0})
     testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, true), 94) // past the end, still centred
 
     // Multi-cursor: the topmost cursor frames the view, not the primary.
-    app.doc_reset_cursor(&b.doc, app.Pos{50, 0})
-    app.doc_drop_anchor(&b.doc)
-    app.doc_move(&b.doc, .Down, false, 8) // primary now on line 58, first cursor on 50
-    testing.expect_value(t, app.doc_top_cursor_line(&b.doc), 50)
+    txt.doc_reset_cursor(&b.doc, txt.Pos{50, 0})
+    txt.doc_drop_anchor(&b.doc)
+    txt.doc_move(&b.doc, .Down, false, 8) // primary now on line 58, first cursor on 50
+    testing.expect_value(t, txt.doc_top_cursor_line(&b.doc), 50)
     testing.expect_value(t, app.buffer_scroll_target(&b, ROWS, true), 45)
 }
 
@@ -341,7 +363,7 @@ test_scroll_detached_holds :: proc(t: ^testing.T) {
     for center in ([?]bool{false, true}) {
         b := numbered(100)
         defer app.buffer_destroy(&b)
-        app.doc_reset_cursor(&b.doc, app.Pos{5, 0}) // caret near the top, view following
+        txt.doc_reset_cursor(&b.doc, txt.Pos{5, 0}) // caret near the top, view following
 
         app.buffer_scroll_by(&b, 60, 100) // wheel: 60 lines down, detached at t=100
         testing.expect_value(t, b.scroll, 60)
@@ -362,7 +384,7 @@ test_scroll_detached_reattaches_on_input :: proc(t: ^testing.T) {
     b := numbered(100)
     defer app.buffer_destroy(&b)
     ROWS :: 10
-    app.doc_reset_cursor(&b.doc, app.Pos{5, 0})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{5, 0})
 
     app.buffer_scroll_by(&b, 60, 100)
     app.buffer_scroll_apply(&b, ROWS, false, 50) // no input since: still detached
@@ -373,7 +395,7 @@ test_scroll_detached_reattaches_on_input :: proc(t: ^testing.T) {
     testing.expect_value(t, b.scroll, 5) // …and Follow pulled the view back to the caret
 
     // Still attached on later frames, with no second detach to undo.
-    app.doc_reset_cursor(&b.doc, app.Pos{40, 0})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{40, 0})
     app.buffer_scroll_apply(&b, ROWS, false, 102)
     testing.expect_value(t, b.scroll, 31) // caret onto the bottom row
 }
@@ -385,7 +407,7 @@ test_scroll_attached_is_the_policy :: proc(t: ^testing.T) {
     b := numbered(100)
     defer app.buffer_destroy(&b)
     ROWS :: 10
-    app.doc_reset_cursor(&b.doc, app.Pos{40, 0})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{40, 0})
 
     app.buffer_scroll_apply(&b, ROWS, true, 0)
     testing.expect_value(t, b.scroll, app.buffer_scroll_target(&b, ROWS, true))
@@ -547,7 +569,7 @@ test_hscroll_apply_bounds :: proc(t: ^testing.T) {
     b := wide(300)
     defer app.buffer_destroy(&b)
     COLS :: 80
-    app.doc_reset_cursor(&b.doc, app.Pos{1, 300}) // end of the long line
+    txt.doc_reset_cursor(&b.doc, txt.Pos{1, 300}) // end of the long line
 
     app.buffer_hscroll_apply(&b, COLS, 300, 0)
     testing.expect_value(t, b.hscroll, 300 + app.HSCROLL_PAD - COLS + 1)
@@ -566,7 +588,7 @@ test_hscroll_detach_and_reattach :: proc(t: ^testing.T) {
     b := wide(300)
     defer app.buffer_destroy(&b)
     COLS :: 80
-    app.doc_reset_cursor(&b.doc, app.Pos{1, 0}) // caret at home, view following
+    txt.doc_reset_cursor(&b.doc, txt.Pos{1, 0}) // caret at home, view following
 
     app.buffer_hscroll_by(&b, 120, 100) // Shift+wheel right, detached at t = 100
     testing.expect_value(t, b.hscroll, 120)
@@ -606,7 +628,7 @@ test_hscroll_holds_while_page_detached :: proc(t: ^testing.T) {
     b := wide(300)
     defer app.buffer_destroy(&b)
     COLS :: 80
-    app.doc_reset_cursor(&b.doc, app.Pos{1, 250}) // deep into the long line
+    txt.doc_reset_cursor(&b.doc, txt.Pos{1, 250}) // deep into the long line
 
     app.buffer_hscroll_apply(&b, COLS, 300, 0)
     at := b.hscroll
@@ -649,16 +671,16 @@ test_save_compacts_a_splintered_table :: proc(t: ^testing.T) {
     testing.expect(t, app.buffer_load(&b, path))
 
     // Scattered single-rune inserts: each one splits a piece, and none of them coalesce.
-    for i in 0 ..< app.PT_COMPACT_PIECES {
-        app.doc_reset_cursor(&b.doc, {0, i % 2 == 0 ? 0 : 3})
-        app.doc_insert_rune(&b.doc, 'z')
+    for i in 0 ..< txt.PT_COMPACT_PIECES {
+        txt.doc_reset_cursor(&b.doc, {0, i % 2 == 0 ? 0 : 3})
+        txt.doc_insert_rune(&b.doc, 'z')
     }
-    testing.expect(t, app.pt_should_compact(&b.doc.pt))
-    want := app.doc_string(&b.doc, context.temp_allocator)
+    testing.expect(t, txt.pt_should_compact(&b.doc.pt))
+    want := txt.doc_string(&b.doc, context.temp_allocator)
 
     testing.expect_value(t, app.buffer_save(&b), app.Save_Result.Ok)
-    testing.expect(t, !app.pt_should_compact(&b.doc.pt), "a save must flatten the table")
-    testing.expect_value(t, app.doc_string(&b.doc, context.temp_allocator), want)
+    testing.expect(t, !txt.pt_should_compact(&b.doc.pt), "a save must flatten the table")
+    testing.expect_value(t, txt.doc_string(&b.doc, context.temp_allocator), want)
 }
 
 // A discard that cannot reload must not claim the buffer is clean. Marking it clean first —
@@ -672,7 +694,7 @@ test_discard_that_cannot_reload_keeps_the_edits :: proc(t: ^testing.T) {
     b: app.Buffer
     defer app.buffer_destroy(&b)
     testing.expect(t, app.buffer_load(&b, path))
-    app.doc_insert_text(&b.doc, "MINE")
+    txt.doc_insert_text(&b.doc, "MINE")
     b.dirty = true
 
     os.remove(path) // the file goes while the edits are unsaved: nothing to come back from
@@ -680,7 +702,7 @@ test_discard_that_cannot_reload_keeps_the_edits :: proc(t: ^testing.T) {
     testing.expect(t, b.dirty, "a failed discard must leave the buffer in the unsaved ring")
     testing.expect(
         t,
-        strings.contains(app.doc_string(&b.doc, context.temp_allocator), "MINE"),
+        strings.contains(txt.doc_string(&b.doc, context.temp_allocator), "MINE"),
         "a failed discard must not lose the edits it could not replace",
     )
 }
@@ -694,12 +716,12 @@ test_conflict_reload_that_fails_keeps_the_edits :: proc(t: ^testing.T) {
     b: app.Buffer
     defer app.buffer_destroy(&b)
     testing.expect(t, app.buffer_load(&b, path))
-    app.doc_insert_text(&b.doc, "MINE")
+    txt.doc_insert_text(&b.doc, "MINE")
     b.dirty = true
     b.conflict = true
 
     os.remove(path)
     app.buffer_conflict_resolve(&b, true)
     testing.expect(t, b.dirty, "an unanswerable reload must not mark the buffer clean")
-    testing.expect(t, strings.contains(app.doc_string(&b.doc, context.temp_allocator), "MINE"))
+    testing.expect(t, strings.contains(txt.doc_string(&b.doc, context.temp_allocator), "MINE"))
 }

@@ -6,6 +6,7 @@ import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import "vendor:glfw"
+import "txt"
 
 // The master command line: a one-line Doc (so every motion/edit op is reused from the buffer;
 // Enter submits instead of splitting) plus a history ring and an executor. Output never lands
@@ -14,7 +15,7 @@ import "vendor:glfw"
 // A line is SHELL unless it starts with the `:` sigil — `grep foo` is the real grep, `:grep foo`
 // is our Grep pane. Alt+C opens empty, Alt+; opens with the sigil typed.
 CommandLine :: struct {
-    using doc:  Doc,
+    using doc:  txt.Doc,
     history:  [dynamic]string,
     hist_idx: int, // index into history; == len(history) means the live edit
     // A UI gesture pre-filled the line; it renders in the alert colour until touched. Version
@@ -24,7 +25,7 @@ CommandLine :: struct {
 }
 
 cl_init :: proc(cl: ^CommandLine) {
-    doc_init(&cl.doc)
+    txt.doc_init(&cl.doc)
 }
 
 cl_destroy :: proc(a: ^App) {
@@ -32,14 +33,14 @@ cl_destroy :: proc(a: ^App) {
         delete(s)
     }
     delete(a.cl.history)
-    doc_destroy(&a.cl.doc)
+    txt.doc_destroy(&a.cl.doc)
 }
 
 // Open the line, optionally with `prefix` already typed (Alt+; passes the `:` sigil). Not an
 // injection: the prefix is a keystroke saved, not a command staged, so no alert.
 cl_open :: proc(a: ^App, prefix := "") {
     a.cl_active = true
-    doc_clear(&a.cl.doc)
+    txt.doc_clear(&a.cl.doc)
     a.cl.hist_idx = len(a.cl.history)
     a.cl.injected = false
     if prefix != "" {
@@ -68,7 +69,7 @@ cl_dispatch :: proc(a: ^App, text: string, run: bool) {
 cl_cancel :: proc(a: ^App) {
     cl_preview_restore(a)
     a.cl_active = false
-    doc_clear(&a.cl.doc)
+    txt.doc_clear(&a.cl.doc)
 }
 
 cl_submit :: proc(a: ^App) {
@@ -83,7 +84,7 @@ cl_submit :: proc(a: ^App) {
 cl_submit_all :: proc(a: ^App) -> bool {
     // The TYPED LINE decides, not the preview's kind, so the gesture still works with
     // `cl_preview` turned off.
-    name, args, ok := cl_builtin_call(doc_string(&a.cl.doc, context.temp_allocator))
+    name, args, ok := cl_builtin_call(txt.doc_string(&a.cl.doc, context.temp_allocator))
     if !ok {
         return false
     }
@@ -119,11 +120,11 @@ cl_find_select_all :: proc(a: ^App) -> bool {
     }
     clear(&b.cursors)
     for m in a.find.matches {
-        head := doc_clamp_pos(&b.doc, Pos{m.line, m.col + m.n})
-        append(&b.cursors, Cursor{
-            anchor = doc_clamp_pos(&b.doc, Pos{m.line, m.col}),
+        head := txt.doc_clamp_pos(&b.doc, txt.Pos{m.line, m.col + m.n})
+        append(&b.cursors, txt.Cursor{
+            anchor = txt.doc_clamp_pos(&b.doc, txt.Pos{m.line, m.col}),
             head   = head,
-            goal   = doc_cell_col(&b.doc, head),
+            goal   = txt.doc_cell_col(&b.doc, head),
         })
     }
     b.primary = clamp(a.find.cur, 0, len(b.cursors) - 1)
@@ -134,10 +135,10 @@ cl_find_select_all :: proc(a: ^App) -> bool {
 // goes to history. Returns it, or "" for an empty line.
 @(private = "file")
 cl_close_kept :: proc(a: ^App) -> string {
-    input := strings.trim_space(doc_string(&a.cl.doc, context.temp_allocator))
+    input := strings.trim_space(txt.doc_string(&a.cl.doc, context.temp_allocator))
     cl_preview_commit(a) // keep what the preview landed on
     a.cl_active = false
-    doc_clear(&a.cl.doc)
+    txt.doc_clear(&a.cl.doc)
     if input != "" {
         append(&a.cl.history, strings.clone(input))
     }
@@ -175,7 +176,7 @@ cl_history_next :: proc(a: ^App) {
     if a.cl.hist_idx < len(a.cl.history) {
         a.cl.hist_idx += 1
         if a.cl.hist_idx == len(a.cl.history) {
-            doc_clear(&a.cl.doc)
+            txt.doc_clear(&a.cl.doc)
         } else {
             cl_recall(a, a.cl.history[a.cl.hist_idx])
         }
@@ -184,8 +185,8 @@ cl_history_next :: proc(a: ^App) {
 
 @(private = "file")
 cl_recall :: proc(a: ^App, text: string) {
-    doc_set_text(&a.cl.doc, text)
-    doc_cursor_to_end(&a.cl.doc)
+    txt.doc_set_text(&a.cl.doc, text)
+    txt.doc_cursor_to_end(&a.cl.doc)
 }
 
 // A submitted line is a chain of `&&` segments, each a builtin (`:name`) or a shell command. A
@@ -631,7 +632,7 @@ cl_discard :: proc(a: ^App, args: string) {
     if arg != "" {
         path := cl_resolve_path(a, arg)
         defer delete(path)
-        b = ring_dirty_buffer(a, path)
+        b = ring_dirty_buffer(&a.editor, path)
         if b == nil {
             cl_echo(a, fmt.tprintf(":discard: %s has no unsaved changes", arg))
             return
@@ -783,7 +784,7 @@ cl_jump :: proc(a: ^App, args: string) {
     b := editor_current(&a.editor)
 
     if pos, ok := cl_jump_line(b, s); ok {
-        jump_to(a, "", pos.line, doc_cell_col(&b.doc, pos))
+        jump_to(a, "", pos.line, txt.doc_cell_col(&b.doc, pos))
         return
     }
     raw, first := first_arg(s)
@@ -801,7 +802,7 @@ cl_jump :: proc(a: ^App, args: string) {
 
 // Where a bare-line `:j` argument lands, clamped into the buffer. ok=false when the argument
 // names a file. Shared with the live preview so the two cannot disagree.
-cl_jump_line :: proc(b: ^Buffer, args: string) -> (Pos, bool) {
+cl_jump_line :: proc(b: ^Buffer, args: string) -> (txt.Pos, bool) {
     s := strings.trim_space(args)
     raw, first := first_arg(s)
     if strings.trim_space(s[len(raw):]) != "" {
@@ -812,9 +813,9 @@ cl_jump_line :: proc(b: ^Buffer, args: string) -> (Pos, bool) {
     if !ok {
         return {}, false
     }
-    line = clamp(line, 0, doc_line_count(&b.doc) - 1)
+    line = clamp(line, 0, txt.doc_line_count(&b.doc) - 1)
     // Keep the column by CELL, as a vertical motion does; a byte offset would land elsewhere.
-    return Pos{line, doc_byte_col(&b.doc, line, doc_cell_col(&b.doc, cur))}, true
+    return txt.Pos{line, txt.doc_byte_col(&b.doc, line, txt.doc_cell_col(&b.doc, cur))}, true
 }
 
 // `:f <text>` / `:find <text>`: put the caret on a match in the open buffer.
@@ -829,7 +830,7 @@ cl_find :: proc(a: ^App, args: string) {
     find_set(&a.find, b, strings.trim_space(args), b.cursors[b.primary].head)
     a.find.show = false
     if p, ok := find_pos(&a.find); ok {
-        doc_reset_cursor(&b.doc, p)
+        txt.doc_reset_cursor(&b.doc, p)
         set_focus(a, .Editor)
     }
 }
@@ -1030,8 +1031,8 @@ run_in_term :: proc(a: ^App, cmd: string, n: int) {
 editor_selection_text :: proc(a: ^App, alloc := context.temp_allocator) -> string {
     b := editor_current(&a.editor)
     for c in b.cursors {
-        if cursor_has_selection(c) {
-            joined, _ := doc_copy(&b.doc, alloc)
+        if txt.cursor_has_selection(c) {
+            joined, _ := txt.doc_copy(&b.doc, alloc)
             return joined
         }
     }

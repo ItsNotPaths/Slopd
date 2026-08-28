@@ -1,4 +1,4 @@
-package main
+package txt
 
 import "core:unicode"
 import "core:unicode/utf8"

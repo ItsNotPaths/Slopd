@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:strings"
+import "txt"
 
 // What Slopd says about itself: the build version, and the two documents baked into the
 // binary. Both docs are #load-ed rather than shipped beside the executable, because the
@@ -54,7 +55,7 @@ open_embedded_doc :: proc(a: ^App, k: Embedded_Doc) {
         }
     }
     b: Buffer
-    doc_init(&b.doc)
+    txt.doc_init(&b.doc)
     buffer_set_text(&b, embedded_doc_source(k))
     b.path = strings.clone(name)
     b.embedded = true

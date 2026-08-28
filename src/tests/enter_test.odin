@@ -2,6 +2,7 @@ package tests
 
 import app ".."
 import "core:testing"
+import "../txt"
 
 // Auto-indent + brace expansion on Enter (buffer_enter). No grammar is loaded for these
 // buffers (path is ""), so the tree-sitter string/comment gate is inert and these exercise
@@ -16,7 +17,7 @@ mkbuf :: proc(s: string) -> app.Buffer {
 
 @(private = "file")
 bln :: proc(b: ^app.Buffer, i: int) -> string {
-    return string(app.doc_line(&b.doc, i, context.temp_allocator))
+    return string(txt.doc_line(&b.doc, i, context.temp_allocator))
 }
 
 @(private = "file")
@@ -27,7 +28,7 @@ SP4 :: app.Indent {
 
 @(private = "file")
 put_caret :: proc(b: ^app.Buffer, line, col: int) {
-    b.cursors[0] = app.Cursor{head = {line, col}, anchor = {line, col}}
+    b.cursors[0] = txt.Cursor{head = {line, col}, anchor = {line, col}}
 }
 
 // A plain line: the newline copies the existing leading indentation.

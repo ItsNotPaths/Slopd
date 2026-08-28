@@ -1,6 +1,9 @@
 package main
 
 import clay "../bindings/clay"
+import "txt"
+import "gfx"
+import "ui"
 
 // The workspace prompt's UI half — one bar and one list, called by both faces of the file pane.
 // They differ only in the box they hand it, so everything a row means is decided here once.
@@ -14,25 +17,24 @@ import clay "../bindings/clay"
 //     ws_none    instead of the rows when there are none, saying WHICH nothing this is
 
 // Into the box the caller has already opened. Reads App, writes only Clay.
-wsfind_declare_bar :: proc(a: ^App, lh: i32, now: f64) {
-    th := &a.theme
-    ws := &a.wsfind
+wsfind_declare_bar :: proc(u: ui.UI_Ctx, ws: ^WS_Find, live: bool, lh: i32, now: f64) {
+    th := u.theme
     if clay.UI(clay.ID("ws_lbl"))({layout = {childAlignment = {y = .Center}}}) {
-        clay.Text(WS_PROMPT, clay_text_config(th.accent, lh))
+        clay.Text(WS_PROMPT, ui.clay_text_config(th.accent, lh))
     }
-    field_declare(
+    ui.field_declare(
         clay.ID("ws_edit"),
-        {doc = &ws.query, off = ws.off, now = now, caret = wsfind_live(a)},
+        u,
+        {doc = &ws.query, off = ws.off, now = now, caret = live},
     )
 }
 
 // Its own viewport tween: the listing underneath keeps `tree.scroll` where the user left it.
-wsfind_declare_body :: proc(a: ^App, r: Rect, row_h, lh: i32, cw: f32, now: f64) {
-    ws := &a.wsfind
-    th := &a.theme
-    top, off := smooth_scroll(&ws.scroll_anim, ws.scroll, now, row_h)
+wsfind_declare_body :: proc(u: ui.UI_Ctx, ws: ^WS_Find, r: gfx.Rect, row_h, lh: i32, cw: f32, now: f64) {
+    th := u.theme
+    top, off := ui.smooth_scroll(&ws.scroll_anim, ws.scroll, now, row_h)
     first := clamp(top, 0, max(0, len(ws.rows)))
-    visible := max(0, min(len(ws.rows) - first, list_visible_rows(r.h, off, row_h)))
+    visible := max(0, min(len(ws.rows) - first, ui.list_visible_rows(r.h, off, row_h)))
 
     if clay.UI(clay.ID("ws_body"))(
         {
@@ -56,7 +58,7 @@ wsfind_declare_body :: proc(a: ^App, r: Rect, row_h, lh: i32, cw: f32, now: f64)
                     },
                 },
             ) {
-                clay.Text(empty, clay_text_config(th.muted, lh))
+                clay.Text(empty, ui.clay_text_config(th.muted, lh))
             }
             return
         }
@@ -65,9 +67,9 @@ wsfind_declare_body :: proc(a: ^App, r: Rect, row_h, lh: i32, cw: f32, now: f64)
             row := ws.rows[i]
             bg: clay.Color
             if i == ws.selected {
-                bg = clay_rgb(th.separator)
-            } else if hover_shown(a) && i == ws.hover {
-                bg = clay_rgb(hover_bg(th))
+                bg = ui.clay_rgb(th.separator)
+            } else if ui.hover_shown(u) && i == ws.hover {
+                bg = ui.clay_rgb(ui.hover_bg(th))
             }
             if clay.UI(clay.ID("ws_row", u32(i)))(
                 {
@@ -84,9 +86,9 @@ wsfind_declare_body :: proc(a: ^App, r: Rect, row_h, lh: i32, cw: f32, now: f64)
                 if clay.UI(clay.ID("ws_pre", u32(i)))(
                     {layout = {sizing = {width = clay.SizingFixed(2 * cw)}}},
                 ) {
-                    clay.Text(row.dirty ? "*" : "-", clay_text_config(col, lh))
+                    clay.Text(row.dirty ? "*" : "-", ui.clay_text_config(col, lh))
                 }
-                name := clay_text_config(row.dirty ? th.urgent : th.fg, lh)
+                name := ui.clay_text_config(row.dirty ? th.urgent : th.fg, lh)
                 clay.Text(wsfind_rel(ws.root, row.path), name)
             }
         }
@@ -95,13 +97,12 @@ wsfind_declare_body :: proc(a: ^App, r: Rect, row_h, lh: i32, cw: f32, now: f64)
 
 // Given the bar's content box, since the two faces pad differently: the box the press, the drag
 // and the window resolve against. The label takes the first cells, the line the rest.
-wsfind_field_rect :: proc(inner: Rect, cw: f32) -> Rect {
+wsfind_field_rect :: proc(inner: gfx.Rect, cw: f32) -> gfx.Rect {
     w := i32(f32(len(WS_PROMPT)) * cw)
-    return Rect{inner.x + w, inner.y, max(0, inner.w - w), inner.h}
+    return gfx.Rect{inner.x + w, inner.y, max(0, inner.w - w), inner.h}
 }
 
-wsfind_field_box :: proc(a: ^App, field: Rect, cw: f32) -> Field_Box {
-    ws := &a.wsfind
+wsfind_field_box :: proc(ws: ^WS_Find, field: gfx.Rect, cw: f32) -> ui.Field_Box {
     return {doc = &ws.query, target = FIELD_WSFIND, r = field, off = ws.off, cw = cw}
 }
 
@@ -122,16 +123,17 @@ wsfind_hit :: proc(ws: ^WS_Find, top, visible: int) -> int {
 // A row selects on one press and opens on two, as the listing does; a press on the typed line
 // is the field's own.
 @(private = "file")
-wsfind_click :: proc(a: ^App, row: int, field: Rect, cw: f32) {
+wsfind_click :: proc(a: ^App, row: int, field: gfx.Rect, cw: f32) {
+    u := ctx_of(a)
     if row < 0 {
         if clay.PointerOver(clay.ID("ws_edit")) {
-            if count, ok := mouse_take_click(a); ok {
-                field_press(a, wsfind_field_box(a, field, cw), count)
+            if count, ok := ui.mouse_take_click(u); ok {
+                ui.field_press(u, wsfind_field_box(&a.wsfind, field, cw), count)
             }
         }
         return
     }
-    count, ok := mouse_take_click(a)
+    count, ok := ui.mouse_take_click(u)
     if !ok || len(a.wsfind.rows) == 0 {
         return
     }
@@ -143,31 +145,32 @@ wsfind_click :: proc(a: ^App, row: int, field: Rect, cw: f32) {
 
 // The pane template's phases, and the whole of what the hosting face has to do: with the prompt
 // up the listing takes no input at all.
-wsfind_frame :: proc(a: ^App, field, body: Rect, row_h: i32, cw: f32, now: f64) {
+wsfind_frame :: proc(a: ^App, field, body: gfx.Rect, row_h: i32, cw: f32, now: f64) {
+    u := ctx_of(a)
     ws := &a.wsfind
     if row_h <= 0 {
         return
     }
-    top, off := smooth_scroll(&ws.scroll_anim, ws.scroll, now, row_h)
-    hit := wsfind_hit(ws, top, list_visible_rows(body.h, off, row_h))
+    top, off := ui.smooth_scroll(&ws.scroll_anim, ws.scroll, now, row_h)
+    hit := wsfind_hit(ws, top, ui.list_visible_rows(body.h, off, row_h))
     ws.hover = hit
     wsfind_click(a, hit, field, cw)
-    list_scroll_apply(
+    ui.list_scroll_apply(
         &ws.scroll,
         &ws.scroll_detached,
         ws.selected,
         int(body.h / row_h),
         len(ws.rows),
         a.scroll_mode == .Middle,
-        pane_input_at(a),
+        ui.pane_input_at(u),
     )
 
     // As the path bar runs them: a gesture that walks the caret off the end must move the
     // window in the frame that moved it.
-    field_drag(a, wsfind_field_box(a, field, cw), now)
-    if doc_line_count(&ws.query) > 0 {
-        cells := doc_cells(&ws.query, 0)
-        cur := cells_col(cells, ws.query.cursors[ws.query.primary].head.col)
-        ws.off = field_scroll(ws.off, cells_count(cells), cur, field_cells(field, cw))
+    ui.field_drag(u, wsfind_field_box(&a.wsfind, field, cw), now)
+    if txt.doc_line_count(&ws.query) > 0 {
+        cells := txt.doc_cells(&ws.query, 0)
+        cur := txt.cells_col(cells, ws.query.cursors[ws.query.primary].head.col)
+        ws.off = ui.field_scroll(ws.off, txt.cells_count(cells), cur, ui.field_cells(field, cw))
     }
 }

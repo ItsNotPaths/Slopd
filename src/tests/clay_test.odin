@@ -3,6 +3,7 @@ package tests
 import app ".."
 import clay "../../bindings/clay"
 import "core:testing"
+import "../ui"
 
 // Clay links, its ABI answers, and the static arena we size for it is still big enough. Pure —
 // no window, no GL — which is why the arena question belongs in a test rather than at startup.
@@ -12,15 +13,15 @@ import "core:testing"
 // [N]u8 global was measured landing at base % 64 == 16.
 @(test)
 test_clay_arena_aligned :: proc(t: ^testing.T) {
-    base := uintptr(raw_data(app.clay_arena_bytes()))
+    base := uintptr(raw_data(ui.clay_arena_bytes()))
     testing.expectf(
         t,
-        base % app.CLAY_ARENA_ALIGN == 0,
-        "arena base is %d mod %d, must be 0 — the aligned element type in clay_ui.odin was lost",
-        base % app.CLAY_ARENA_ALIGN,
-        app.CLAY_ARENA_ALIGN,
+        base % ui.CLAY_ARENA_ALIGN == 0,
+        "arena base is %d mod %d, must be 0 — the aligned element type in src/ui was lost",
+        base % ui.CLAY_ARENA_ALIGN,
+        ui.CLAY_ARENA_ALIGN,
     )
-    testing.expect_value(t, len(app.clay_arena_bytes()), app.CLAY_ARENA_BYTES)
+    testing.expect_value(t, len(ui.clay_arena_bytes()), ui.CLAY_ARENA_BYTES)
 }
 
 // If MinMemorySize outgrows CLAY_ARENA_BYTES the app refuses to start; catch that here instead.
@@ -40,10 +41,10 @@ test_clay_arena_fits :: proc(t: ^testing.T) {
     )
     testing.expectf(
         t,
-        app.clay_arena_fits(),
-        "Clay wants %d bytes, CLAY_ARENA_BYTES is %d — raise it in clay_ui.odin",
+        ui.clay_arena_fits(),
+        "Clay wants %d bytes, CLAY_ARENA_BYTES is %d — raise it in src/ui",
         need,
-        app.CLAY_ARENA_BYTES,
+        ui.CLAY_ARENA_BYTES,
     )
 }
 

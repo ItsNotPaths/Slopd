@@ -5,6 +5,9 @@ import "core:os"
 import "core:path/filepath"
 import "core:unicode/utf8"
 import clay "../bindings/clay"
+import "txt"
+import "gfx"
+import "ui"
 
 // The file browser pane's UI half — the same six procs every pane has (filetree_ui.odin is the
 // short example), plus four kinds of thing to point at: a top-bar button, a path segment, a
@@ -64,25 +67,25 @@ FB_Hit :: struct {
 // The sidebar caps at half the pane: at a narrow split a fixed 16-cell sidebar would leave the
 // contents narrower than one tile.
 filebrowser_geom :: proc(
-    pane: Rect,
+    pane: gfx.Rect,
     scale, line_h, cell_w: f32,
 ) -> (
-    area, bar, side, content: Rect,
+    area, bar, side, content: gfx.Rect,
     row_h, bar_h: i32,
 ) {
-    area = inset(pane, i32(2 * scale))
+    area = ui.inset(pane, i32(2 * scale))
     row_h = i32(line_h) + i32(FB_ROW_PAD * scale)
     bar_h = i32(line_h) + i32(2 * FB_BAR_PAD * scale)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {
         return area, {}, {}, {}, row_h, bar_h
     }
     bar_h = min(bar_h, area.h)
-    bar = Rect{area.x, area.y, area.w, bar_h}
+    bar = gfx.Rect{area.x, area.y, area.w, bar_h}
 
     side_w := min(i32(f32(FB_SIDE_CELLS) * cell_w), area.w / 2)
     below := area.h - bar_h
-    side = Rect{area.x, area.y + bar_h, side_w, below}
-    content = Rect{area.x + side_w, area.y + bar_h, area.w - side_w, below}
+    side = gfx.Rect{area.x, area.y + bar_h, side_w, below}
+    content = gfx.Rect{area.x + side_w, area.y + bar_h, area.w - side_w, below}
     return
 }
 
@@ -116,7 +119,7 @@ filebrowser_tile_name_cells :: proc() -> int {
 // Rows that fit, and in Grid the tiles across. One call for both, so a caller never has to pick
 // which proc to ask.
 filebrowser_rows :: proc(
-    content: Rect,
+    content: gfx.Rect,
     view: Browse_View,
     row_h: i32,
     scale, line_h, cell_w: f32,
@@ -150,29 +153,28 @@ filebrowser_row_h :: proc(view: Browse_View, row_h: i32, scale, line_h, cell_w: 
 
 // Follow the selection under the shared `scroll_mode` policy. The unit is the content row, so
 // the anchor and the total go through filebrowser_anchor / filebrowser_grid_rows.
-filebrowser_scroll_apply :: proc(a: ^App, rows, cols: int, center: bool) {
-    ft := &a.tree
-    view := a.filebrowser.view
+filebrowser_scroll_apply :: proc(u: ui.UI_Ctx, br: ^FileBrowser, ft: ^FileTree, rows, cols: int, center: bool) {
+    view := br.view
     total := view == .List ? len(ft.entries) : filebrowser_grid_rows(len(ft.entries), cols)
     anchor := filebrowser_anchor(ft, view, cols)
-    list_scroll_apply(&ft.scroll, &ft.scroll_detached, anchor, rows, total, center, pane_input_at(a))
+    ui.list_scroll_apply(&ft.scroll, &ft.scroll_detached, anchor, rows, total, center, ui.pane_input_at(u))
 }
 
 // The bar less its four square buttons. For the phases the solver cannot answer — the press
 // that puts a caret on the column it landed on.
-filebrowser_path_rect :: proc(bar: Rect, bar_h: i32) -> Rect {
-    return Rect{bar.x + 3 * bar_h, bar.y, max(0, bar.w - 4 * bar_h), bar_h}
+filebrowser_path_rect :: proc(bar: gfx.Rect, bar_h: i32) -> gfx.Rect {
+    return gfx.Rect{bar.x + 3 * bar_h, bar.y, max(0, bar.w - 4 * bar_h), bar_h}
 }
 
 // Cells the segments may use, which is also what the line scrolls inside, so both states of the
 // bar cut the path at the same character.
-filebrowser_path_cells :: proc(bar: Rect, bar_h: i32, cell_w: f32) -> int {
-    return field_cells(filebrowser_path_rect(bar, bar_h), cell_w)
+filebrowser_path_cells :: proc(bar: gfx.Rect, bar_h: i32, cell_w: f32) -> int {
+    return ui.field_cells(filebrowser_path_rect(bar, bar_h), cell_w)
 }
 
 // Chrome first, contents last, though the boxes do not overlap so the order is documentation.
 // Resolves against the tree the last frame declared.
-filebrowser_hit :: proc(a: ^App, segs: []Path_Seg, first_seg, top, visible, cols: int) -> FB_Hit {
+filebrowser_hit :: proc(br: ^FileBrowser, ft: ^FileTree, segs: []Path_Seg, first_seg, top, visible, cols: int) -> FB_Hit {
     for b in Browse_Btn {
         if b != .None && clay.PointerOver(clay.ID("fb_btn", u32(b))) {
             return FB_Hit{kind = .Button, index = -1, btn = b}
@@ -187,15 +189,14 @@ filebrowser_hit :: proc(a: ^App, segs: []Path_Seg, first_seg, top, visible, cols
     if clay.PointerOver(clay.ID("fb_path")) {
         return FB_Hit{kind = .PathBar, index = -1}
     }
-    for i in 0 ..< len(a.filebrowser.places) {
+    for i in 0 ..< len(br.places) {
         if clay.PointerOver(clay.ID("fb_place", u32(i))) {
             return FB_Hit{kind = .Place, index = i}
         }
     }
     // Over the painted window (`top`, animated) rather than the target — see filetree_hit.
-    ft := &a.tree
     first := clamp(top, 0, max(0, len(ft.entries)))
-    lo := a.filebrowser.view == .List ? first : first * max(1, cols)
+    lo := br.view == .List ? first : first * max(1, cols)
     n := max(0, min(len(ft.entries) - lo, visible * max(1, cols)))
     for k in 0 ..< n {
         i := lo + k
@@ -209,7 +210,8 @@ filebrowser_hit :: proc(a: ^App, segs: []Path_Seg, first_seg, top, visible, cols
 // Chrome activates on a single press, an entry selects on one and opens on two, and a press
 // that hit nothing is left for whoever else is drawing. `path` and `cw` are for the one press
 // needing a column rather than a box: inside the open text line, the caret goes where it landed.
-filebrowser_click :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit, path: Rect, cw: f32) {
+filebrowser_click :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit, path: gfx.Rect, cw: f32) {
+    u := ctx_of(a)
     br := &a.filebrowser
     // A press elsewhere abandons the line without consuming the press.
     if br.path_edit && hit.kind != .PathBar && a.mouse_on && a.mouse.click {
@@ -218,14 +220,14 @@ filebrowser_click :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit, path: Rect, cw
     if hit.kind == .None {
         return
     }
-    count, ok := mouse_take_click(a)
+    count, ok := ui.mouse_take_click(u)
     if !ok {
         return
     }
     switch hit.kind {
     case .None:
     case .Button:
-        filebrowser_button(a, hit.btn)
+        filebrowser_button(br, &a.tree, hit.btn)
     case .Segment:
         if hit.index >= 0 && hit.index < len(segs) {
             filebrowser_navigate(br, &a.tree, segs[hit.index].path)
@@ -234,7 +236,7 @@ filebrowser_click :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit, path: Rect, cw
         // Empty space after the last segment turns the bar into a line; a press inside an open
         // line is the field's own.
         if br.path_edit {
-            field_press(a, filebrowser_path_box(a, path, cw), count)
+            ui.field_press(u, filebrowser_path_box(br, path, cw), count)
         } else {
             filebrowser_path_open(a)
         }
@@ -258,10 +260,10 @@ filebrowser_click :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit, path: Rect, cw
 // kinds get one: a segment and a place name a directory, and empty space is the browsed
 // directory's menu (paste, add to places, reload).
 filebrowser_rclick :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit) {
-    if !rect_hit(a.lay.aux, a.mouse.rclick_x, a.mouse.rclick_y) {
+    if !gfx.rect_hit(a.lay.aux, a.mouse.rclick_x, a.mouse.rclick_y) {
         return
     }
-    if !mouse_take_rclick(a) {
+    if !ui.mouse_take_rclick(ctx_of(a)) {
         return
     }
     br := &a.filebrowser
@@ -291,16 +293,15 @@ filebrowser_rclick :: proc(a: ^App, segs: []Path_Seg, hit: FB_Hit) {
 
 // The top bar's verbs. Package-level because the pointer and the keyboard (`^Left`, `^Right`,
 // `^r`, `^g`) both reach every one.
-filebrowser_button :: proc(a: ^App, b: Browse_Btn) {
-    br := &a.filebrowser
+filebrowser_button :: proc(br: ^FileBrowser, ft: ^FileTree, b: Browse_Btn) {
     switch b {
     case .None:
     case .Back:
-        filebrowser_back(br, &a.tree)
+        filebrowser_back(br, ft)
     case .Forward:
-        filebrowser_forward(br, &a.tree)
+        filebrowser_forward(br, ft)
     case .Reload:
-        filetree_reload(&a.tree)
+        filetree_reload(ft)
     case .View:
         br.view = br.view == .List ? .Grid : .List
         config_set("file_view", br.view == .Grid ? "grid" : "list")
@@ -324,8 +325,8 @@ filebrowser_path_open :: proc(a: ^App) {
     br := &a.filebrowser
     br.path_edit = true
     br.path_off = 0
-    doc_set_text(&br.path, a.tree.dir)
-    doc_cursor_to_end(&br.path)
+    txt.doc_set_text(&br.path, a.tree.dir)
+    txt.doc_cursor_to_end(&br.path)
 }
 
 filebrowser_path_cancel :: proc(a: ^App) {
@@ -337,7 +338,7 @@ filebrowser_path_cancel :: proc(a: ^App) {
 // text in it, so the typo stays on screen to fix.
 filebrowser_path_commit :: proc(a: ^App) {
     br := &a.filebrowser
-    typed := doc_string(&br.path, context.temp_allocator)
+    typed := txt.doc_string(&br.path, context.temp_allocator)
     dir := filebrowser_path_resolve(a.tree.dir, typed)
     if !os.is_dir(dir) {
         return
@@ -348,9 +349,8 @@ filebrowser_path_commit :: proc(a: ^App) {
 
 // The box the press, the drag and the window resolve against. `path` is the rect the field was
 // declared into.
-filebrowser_path_box :: proc(a: ^App, path: Rect, cw: f32) -> Field_Box {
-    br := &a.filebrowser
-    return {doc = &br.path, target = FIELD_PATH, r = path, off = br.path_off, cw = cw}
+filebrowser_path_box :: proc(br: ^FileBrowser, path: gfx.Rect, cw: f32) -> ui.Field_Box {
+    return {doc = &br.path, target = ui.FIELD_PATH, r = path, off = br.path_off, cw = cw}
 }
 
 // Descend into a directory through the history (the difference from filetree_activate), or open
@@ -399,11 +399,13 @@ filebrowser_place_open :: proc(a: ^App, n: int) {
 //       fb_content   the clip group the contents scroll inside
 //         fb_item/i    List: one row per visible entry, keyed by entry index
 //         fb_grow/r    Grid: one row of tiles, holding fb_item/i tiles keyed the same
-filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, now: f64 = 0) {
+filebrowser_declare :: proc(a: ^App, f: ^gfx.Font, pane: gfx.Rect, top: int, off: i32, now: f64 = 0) {
+    u := ctx_of(a)
     br := &a.filebrowser
     ft := &a.tree
-    th := &a.theme
-    area, bar, side, content, row_h, bar_h := filebrowser_geom(pane, a.scale, f.line_height, f.cell_w)
+    th := u.theme
+    dirty := ring_dirty(&a.editor)
+    area, bar, side, content, row_h, bar_h := filebrowser_geom(pane, u.scale, f.line_height, f.cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }
@@ -413,9 +415,9 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, n
     // Rows the region TOUCHES, one more than fit whenever it does not divide evenly or a scroll
     // is in progress. Whole rows alone leaves the bottom tile row undeclared but on screen.
     unit := filebrowser_row_h(br.view, row_h, a.scale, f.line_height, cw)
-    visible := list_visible_rows(content.h, off, unit)
+    visible := ui.list_visible_rows(content.h, off, unit)
 
-    if clay.UI(clay.ID("fb_pane"))(clay_pane_box(area)) {
+    if clay.UI(clay.ID("fb_pane"))(ui.clay_pane_box(area)) {
         filebrowser_declare_bar(a, bar, bar_h, lh, cw, now)
 
         if clay.UI(clay.ID("fb_body"))(
@@ -434,7 +436,7 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, n
                         layoutDirection = .TopToBottom,
                     },
                     border = {
-                        color = clay_rgb(th.separator),
+                        color = ui.clay_rgb(th.separator),
                         width = {right = u16(max(i32(1), i32(a.scale)))},
                     },
                     clip   = {horizontal = true, vertical = true},
@@ -443,8 +445,8 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, n
                 for p, i in br.places {
                     here := p.path == ft.dir
                     bg: clay.Color
-                    if hover_shown(a) && i == br.hover_place {
-                        bg = clay_rgb(hover_bg(th))
+                    if ui.hover_shown(u) && i == br.hover_place {
+                        bg = ui.clay_rgb(ui.hover_bg(th))
                     }
                     if clay.UI(clay.ID("fb_place", u32(i)))(
                         {
@@ -456,14 +458,14 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, n
                             backgroundColor = bg,
                         },
                     ) {
-                        clay.Text(p.name, clay_text_config(here ? th.accent : th.muted, lh))
+                        clay.Text(p.name, ui.clay_text_config(here ? th.accent : th.muted, lh))
                     }
                 }
             }
 
             // The prompt covers the listing, not the pane: the bar and sidebar stay.
             if wsfind_shown(a) {
-                wsfind_declare_body(a, content, row_h, lh, cw, now)
+                wsfind_declare_body(u, &a.wsfind, content, row_h, lh, cw, now)
             } else if clay.UI(clay.ID("fb_content"))(
                 {
                     layout = {
@@ -480,9 +482,9 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, n
             ) {
                 switch br.view {
                 case .List:
-                    filebrowser_declare_list(a, f, top, visible, row_h, lh, cw)
+                    filebrowser_declare_list(u, br, ft, dirty, a.file_icons, f, top, visible, row_h, lh, cw)
                 case .Grid:
-                    filebrowser_declare_grid(a, f, top, visible, cols, lh, cw, content.w)
+                    filebrowser_declare_grid(u, br, ft, dirty, a.file_icons, f, top, visible, cols, lh, cw, content.w)
                 }
             }
         }
@@ -490,7 +492,7 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, n
         // Last and inside the pane — the same overlay the listing face puts up, over the same
         // chords. See filetree_declare.
         if chord_shown(a) {
-            chord_declare(a, f, area, now)
+            chord_declare(u, &a.tree, chord_hints(a), &a.chord_anim, f, area, now)
         }
     }
 }
@@ -498,7 +500,8 @@ filebrowser_declare :: proc(a: ^App, f: ^Font, pane: Rect, top: int, off: i32, n
 // Every button is square — `SizingFixed(bar_h)` on both axes — which keeps the icons on a
 // common baseline at any zoom.
 @(private = "file")
-filebrowser_declare_bar :: proc(a: ^App, bar: Rect, bar_h, lh: i32, cw: f32, now: f64) {
+filebrowser_declare_bar :: proc(a: ^App, bar: gfx.Rect, bar_h, lh: i32, cw: f32, now: f64) {
+    u := ctx_of(a)
     br := &a.filebrowser
     th := &a.theme
     segs := filebrowser_segments(a.tree.dir)
@@ -511,12 +514,12 @@ filebrowser_declare_bar :: proc(a: ^App, bar: Rect, bar_h, lh: i32, cw: f32, now
                 layoutDirection = .LeftToRight,
                 childAlignment  = {y = .Center},
             },
-            backgroundColor = clay_rgb(th.border_light),
+            backgroundColor = ui.clay_rgb(th.border_light),
         },
     ) {
-        filebrowser_declare_btn(a, .Back, FB_ICON_BACK, filebrowser_can_back(br), bar_h, lh)
-        filebrowser_declare_btn(a, .Forward, FB_ICON_FWD, filebrowser_can_forward(br), bar_h, lh)
-        filebrowser_declare_btn(a, .Reload, FB_ICON_RELOAD, true, bar_h, lh)
+        filebrowser_declare_btn(u, br, .Back, FB_ICON_BACK, filebrowser_can_back(br), bar_h, lh)
+        filebrowser_declare_btn(u, br, .Forward, FB_ICON_FWD, filebrowser_can_forward(br), bar_h, lh)
+        filebrowser_declare_btn(u, br, .Reload, FB_ICON_RELOAD, true, bar_h, lh)
 
         if clay.UI(clay.ID("fb_path"))(
             {
@@ -531,38 +534,39 @@ filebrowser_declare_bar :: proc(a: ^App, bar: Rect, bar_h, lh: i32, cw: f32, now
             // The line is the shared one-line Field (field_ui.odin), with a window since a
             // path is read from its end. The workspace prompt takes the same box.
             if wsfind_shown(a) {
-                wsfind_declare_bar(a, lh, now)
+                wsfind_declare_bar(u, &a.wsfind, wsfind_live(a), lh, now)
             } else if br.path_edit {
-                field_declare(
+                ui.field_declare(
                     clay.ID("fb_edit"),
+                    u,
                     {doc = &br.path, off = br.path_off, now = now, caret = filebrowser_path_live(a)},
                 )
             } else {
-                filebrowser_declare_segs(a, segs, first, lh, cw)
+                filebrowser_declare_segs(u, br, segs, first, lh, cw)
             }
         }
 
         // The toggle shows the view it would give you, not the one you are in: a button is a
         // verb.
         icon := br.view == .List ? FB_ICON_GRID : FB_ICON_LIST
-        filebrowser_declare_btn(a, .View, icon, true, bar_h, lh)
+        filebrowser_declare_btn(u, br, .View, icon, true, bar_h, lh)
     }
 }
 
 // One button per segment from `first` on, behind a '…' when the head is cut.
 @(private = "file")
-filebrowser_declare_segs :: proc(a: ^App, segs: []Path_Seg, first: int, lh: i32, cw: f32) {
-    th := &a.theme
+filebrowser_declare_segs :: proc(u: ui.UI_Ctx, br: ^FileBrowser, segs: []Path_Seg, first: int, lh: i32, cw: f32) {
+    th := u.theme
     if first > 0 {
         if clay.UI(clay.ID("fb_ell"))({layout = {padding = {left = u16(cw)}}}) {
-            clay.Text("…", clay_text_config(th.muted, lh))
+            clay.Text("…", ui.clay_text_config(th.muted, lh))
         }
     }
     for i in first ..< len(segs) {
         last := i == len(segs) - 1
         bg: clay.Color
-        if hover_shown(a) && i == a.filebrowser.hover_seg {
-            bg = clay_rgb(hover_bg(th))
+        if ui.hover_shown(u) && i == br.hover_seg {
+            bg = ui.clay_rgb(ui.hover_bg(th))
         }
         if clay.UI(clay.ID("fb_seg", u32(i)))(
             {
@@ -574,7 +578,7 @@ filebrowser_declare_segs :: proc(a: ^App, segs: []Path_Seg, first: int, lh: i32,
                 backgroundColor = bg,
             },
         ) {
-            clay.Text(segs[i].name, clay_text_config(last ? th.fg : th.muted, lh))
+            clay.Text(segs[i].name, ui.clay_text_config(last ? th.fg : th.muted, lh))
         }
     }
 }
@@ -582,11 +586,11 @@ filebrowser_declare_segs :: proc(a: ^App, segs: []Path_Seg, first: int, lh: i32,
 // A disabled button (no history behind [◀]) draws in the border colour and takes no hover tint,
 // but stays in place so the bar does not reflow as you navigate.
 @(private = "file")
-filebrowser_declare_btn :: proc(a: ^App, b: Browse_Btn, icon: string, enabled: bool, bar_h, lh: i32) {
-    th := &a.theme
+filebrowser_declare_btn :: proc(u: ui.UI_Ctx, br: ^FileBrowser, b: Browse_Btn, icon: string, enabled: bool, bar_h, lh: i32) {
+    th := u.theme
     bg: clay.Color
-    if enabled && hover_shown(a) && a.filebrowser.hover_btn == b {
-        bg = clay_rgb(hover_bg(th))
+    if enabled && ui.hover_shown(u) && br.hover_btn == b {
+        bg = ui.clay_rgb(ui.hover_bg(th))
     }
     if clay.UI(clay.ID("fb_btn", u32(b)))(
         {
@@ -597,16 +601,15 @@ filebrowser_declare_btn :: proc(a: ^App, b: Browse_Btn, icon: string, enabled: b
             backgroundColor = bg,
         },
     ) {
-        clay.Text(icon, clay_text_config(enabled ? th.fg : th.border_dark, lh))
+        clay.Text(icon, ui.clay_text_config(enabled ? th.fg : th.border_dark, lh))
     }
 }
 
 // The filetree's row with a type icon in front. The icon is one cell and a glyph like any other
-// (font.odin bakes the icon face into the same atlas) — no image, no second texture.
+// (src/gfx bakes the icon face into the same atlas) — no image, no second texture.
 @(private = "file")
-filebrowser_declare_list :: proc(a: ^App, f: ^Font, top, visible: int, row_h, lh: i32, cw: f32) {
-    ft := &a.tree
-    th := &a.theme
+filebrowser_declare_list :: proc(u: ui.UI_Ctx, br: ^FileBrowser, ft: ^FileTree, dirty: ui.Path_Dirty, icons: bool, f: ^gfx.Font, top, visible: int, row_h, lh: i32, cw: f32) {
+    th := u.theme
     first := clamp(top, 0, max(0, len(ft.entries)))
     shown := max(0, min(len(ft.entries) - first, visible))
 
@@ -615,11 +618,11 @@ filebrowser_declare_list :: proc(a: ^App, f: ^Font, top, visible: int, row_h, lh
         e := &ft.entries[i]
         bg: clay.Color
         if i == ft.selected {
-            bg = clay_rgb(th.separator)
+            bg = ui.clay_rgb(th.separator)
         } else if filetree_marked(ft, e.path) {
-            bg = clay_rgb(th.line_highlight)
-        } else if hover_shown(a) && i == a.filebrowser.hover_row {
-            bg = clay_rgb(hover_bg(th))
+            bg = ui.clay_rgb(th.line_highlight)
+        } else if ui.hover_shown(u) && i == br.hover_row {
+            bg = ui.clay_rgb(ui.hover_bg(th))
         }
         if clay.UI(clay.ID("fb_item", u32(i)))(
             {
@@ -631,26 +634,26 @@ filebrowser_declare_list :: proc(a: ^App, f: ^Font, top, visible: int, row_h, lh
                 backgroundColor = bg,
             },
         ) {
-            col := filebrowser_entry_color(a, e)
-            if icon, ok := filebrowser_icon(a, f, e); ok {
+            col := filebrowser_entry_color(u, dirty, e)
+            if icon, ok := filebrowser_icon(icons, f, e); ok {
                 if clay.UI(clay.ID("fb_ico", u32(i)))(
                     {layout = {sizing = {width = clay.SizingFixed(2 * cw)}}},
                 ) {
-                    clay.Text(icon, clay_text_config(col, lh))
+                    clay.Text(icon, ui.clay_text_config(col, lh))
                 }
             }
-            clay.Text(e.display, clay_text_config(col, lh))
+            clay.Text(e.display, ui.clay_text_config(col, lh))
         }
     }
 }
 
 // ok=false when icons are off or no icon face was vendored. Temp-allocated: Clay's command list
 // points at it, and the frame's arena outlives EndLayout.
-filebrowser_icon :: proc(a: ^App, f: ^Font, e: ^FileEntry) -> (s: string, ok: bool) {
-    if !a.file_icons || !f.icons_ok {
+filebrowser_icon :: proc(icons: bool, f: ^gfx.Font, e: ^FileEntry) -> (s: string, ok: bool) {
+    if !icons || !f.icons_ok {
         return "", false
     }
-    r := file_icon(e.name, e.is_dir)
+    r := gfx.file_icon(e.name, e.is_dir)
     return utf8.runes_to_string({r}, context.temp_allocator), true
 }
 
@@ -669,38 +672,39 @@ FB_Name :: struct {
 
 // Baked at the tile's own size. A Custom because a glyph can only be drawn at the size it was
 // baked, and Clay's Text command is the atlas's one size.
-filebrowser_paint_icon :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
+filebrowser_paint_icon :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
+    a := (^App)(host)
     ic := (^FB_Icon)(user)
     if ic != nil {
-        icon_draw(t, ic.icon, r, ic.px, ic.color)
+        gfx.icon_draw(t, ic.icon, r, ic.px, ic.color)
     }
     // The ClayCustom contract: the painter ends with its own flush.
-    flush_pane(t, clip, win_w, win_h)
+    gfx.flush_pane(t, clip, win_w, win_h)
 }
 
 // A Custom for the icon's reason, from the other side: Clay lays text out at the atlas size and
 // this is smaller. Centred from the rune count, which a fixed advance makes exact.
-filebrowser_paint_name :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
+filebrowser_paint_name :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
+    a := (^App)(host)
     nm := (^FB_Name)(user)
     if nm != nil && nm.text != "" {
         n := utf8.rune_count_in_string(nm.text)
-        w := f32(n) * text_sized_cell(t, nm.px)
+        w := f32(n) * gfx.text_sized_cell(t, nm.px)
         x := f32(r.x) + (f32(r.w) - w) / 2
         y := f32(r.y) + (f32(r.h) - t.font.line_height * FB_TILE_NAME_SCALE) / 2
-        text_draw_sized(t, nm.text, x, y, nm.px, nm.color)
+        gfx.text_draw_sized(t, nm.text, x, y, nm.px, nm.color)
     }
-    flush_pane(t, clip, win_w, win_h)
+    gfx.flush_pane(t, clip, win_w, win_h)
 }
 
 // Rows of tiles, each a coloured swatch over an elided name. No thumbnails to decode: a filled
 // block says "directory / program / file" at any zoom.
 @(private = "file")
-filebrowser_declare_grid :: proc(a: ^App, f: ^Font, top, visible, cols: int, lh: i32, cw: f32, max_w: i32) {
-    ft := &a.tree
-    th := &a.theme
-    tw, thh := filebrowser_tile(a.scale, f.line_height, cw, max_w)
+filebrowser_declare_grid :: proc(u: ui.UI_Ctx, br: ^FileBrowser, ft: ^FileTree, dirty: ui.Path_Dirty, icons: bool, f: ^gfx.Font, top, visible, cols: int, lh: i32, cw: f32, max_w: i32) {
+    th := u.theme
+    tw, thh := filebrowser_tile(u.scale, f.line_height, cw, max_w)
     first := clamp(top, 0, max(0, filebrowser_grid_rows(len(ft.entries), cols)))
-    pad := u16(max(0.0, FB_TILE_PAD * a.scale))
+    pad := u16(max(0.0, FB_TILE_PAD * u.scale))
 
     for r in first ..< min(first + visible, filebrowser_grid_rows(len(ft.entries), cols)) {
         if clay.UI(clay.ID("fb_grow", u32(r)))(
@@ -708,7 +712,7 @@ filebrowser_declare_grid :: proc(a: ^App, f: ^Font, top, visible, cols: int, lh:
                 layout = {
                     sizing          = {clay.SizingGrow(), clay.SizingFixed(thh)},
                     layoutDirection = .LeftToRight,
-                    childGap        = u16(filebrowser_tile_gap(a.scale)),
+                    childGap        = u16(filebrowser_tile_gap(u.scale)),
                 },
             },
         ) {
@@ -720,11 +724,11 @@ filebrowser_declare_grid :: proc(a: ^App, f: ^Font, top, visible, cols: int, lh:
                 e := &ft.entries[i]
                 bg: clay.Color
                 if i == ft.selected {
-                    bg = clay_rgb(th.separator)
+                    bg = ui.clay_rgb(th.separator)
                 } else if filetree_marked(ft, e.path) {
-                    bg = clay_rgb(th.line_highlight)
-                } else if hover_shown(a) && i == a.filebrowser.hover_row {
-                    bg = clay_rgb(hover_bg(th))
+                    bg = ui.clay_rgb(th.line_highlight)
+                } else if ui.hover_shown(u) && i == br.hover_row {
+                    bg = ui.clay_rgb(ui.hover_bg(th))
                 }
                 if clay.UI(clay.ID("fb_item", u32(i)))(
                     {
@@ -741,11 +745,11 @@ filebrowser_declare_grid :: proc(a: ^App, f: ^Font, top, visible, cols: int, lh:
                     // not. Same box either way, so the grid does not reflow.
                     icon_h, name_h := filebrowser_tile_bands(f.line_height)
                     icon_w := min(cw * f32(FB_TILE_CELLS - 6), tw)
-                    col := filebrowser_entry_color(a, e)
-                    if a.file_icons && f.icons_ok {
+                    col := filebrowser_entry_color(u, dirty, e)
+                    if icons && f.icons_ok {
                         ic := new(FB_Icon, context.temp_allocator)
-                        cu := new(ClayCustom, context.temp_allocator)
-                        ic^ = {icon = file_icon(e.name, e.is_dir), px = icon_h, color = col}
+                        cu := new(ui.ClayCustom, context.temp_allocator)
+                        ic^ = {icon = gfx.file_icon(e.name, e.is_dir), px = icon_h, color = col}
                         cu^ = {paint = filebrowser_paint_icon, user = ic}
                         if clay.UI(clay.ID("fb_swatch", u32(i)))(
                             {
@@ -756,12 +760,12 @@ filebrowser_declare_grid :: proc(a: ^App, f: ^Font, top, visible, cols: int, lh:
                     } else if clay.UI(clay.ID("fb_swatch", u32(i)))(
                         {
                             layout = {sizing = {clay.SizingFixed(icon_w), clay.SizingFixed(icon_h)}},
-                            backgroundColor = clay_rgb(col),
+                            backgroundColor = ui.clay_rgb(col),
                         },
                     ) {}
                     // At FB_TILE_NAME_SCALE of the text size, so its own Custom.
                     nm := new(FB_Name, context.temp_allocator)
-                    ncu := new(ClayCustom, context.temp_allocator)
+                    ncu := new(ui.ClayCustom, context.temp_allocator)
                     nm^ = {
                         text  = filebrowser_elide(e.name, filebrowser_tile_name_cells()),
                         px    = f.px * FB_TILE_NAME_SCALE,
@@ -782,12 +786,12 @@ filebrowser_declare_grid :: proc(a: ^App, f: ^Font, top, visible, cols: int, lh:
 
 // Also the tile swatch's. The execute bit is called out here because a tile has no room for the
 // filetree's mode column.
-filebrowser_entry_color :: proc(a: ^App, e: ^FileEntry) -> [3]f32 {
-    th := &a.theme
+filebrowser_entry_color :: proc(u: ui.UI_Ctx, dirty: ui.Path_Dirty, e: ^FileEntry) -> [3]f32 {
+    th := u.theme
     switch {
     case e.is_dir:
         return th.code_return_type
-    case ring_contains(a, e.path):
+    case ui.path_is_dirty(dirty, e.path):
         return th.urgent
     case e.exec:
         return th.accent
@@ -798,14 +802,14 @@ filebrowser_entry_color :: proc(a: ^App, e: ^FileEntry) -> [3]f32 {
 // Test-facing wrapper; see filetree_layout.
 filebrowser_layout :: proc(
     a: ^App,
-    f: ^Font,
-    pane: Rect,
+    f: ^gfx.Font,
+    pane: gfx.Rect,
     win_w, win_h: i32,
     now: f64 = 0,
 ) -> clay.ClayArray(clay.RenderCommand) {
     _, _, _, _, row_h, _ := filebrowser_geom(pane, a.scale, f.line_height, f.cell_w)
     unit := filebrowser_row_h(a.filebrowser.view, row_h, a.scale, f.line_height, f.cell_w)
-    top, off := smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
+    top, off := ui.smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
         filebrowser_declare(a, f, pane, top, off, now)
@@ -815,9 +819,10 @@ filebrowser_layout :: proc(
 
 // The template's four phases, with the hover written per kind of target from the one hit the
 // click consumes. `cols` is published for the keyboard, since only the geometry knows it.
-filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
+filebrowser_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect, now: f64) {
+    u := ctx_of(a)
     br := &a.filebrowser
-    area, bar, _, content, row_h, bar_h := filebrowser_geom(pane, a.scale, t.font.line_height, t.font.cell_w)
+    area, bar, _, content, row_h, bar_h := filebrowser_geom(pane, u.scale, t.font.line_height, t.font.cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }
@@ -840,7 +845,7 @@ filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
     // The pointer is over what the LAST frame painted, so the hit resolves against the animated
     // top. Read twice for the editor's reason (editor_frame).
     unit := filebrowser_row_h(br.view, row_h, a.scale, t.font.line_height, cw)
-    top0, off0 := smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
+    top0, off0 := ui.smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
 
     // The line belongs to the pane: losing the keyboard closes it.
     if br.path_edit && !filebrowser_path_live(a) {
@@ -849,7 +854,7 @@ filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
 
     segs := filebrowser_segments(a.tree.dir)
     first_seg := filebrowser_seg_first(segs, filebrowser_path_cells(bar, bar_h, cw))
-    hit := filebrowser_hit(a, segs, first_seg, top0, list_visible_rows(content.h, off0, unit), cols)
+    hit := filebrowser_hit(br, &a.tree, segs, first_seg, top0, ui.list_visible_rows(content.h, off0, unit), cols)
     br.hover_row = hit.kind == .Row ? hit.index : -1
     br.hover_place = hit.kind == .Place ? hit.index : -1
     br.hover_seg = hit.kind == .Segment ? hit.index : -1
@@ -857,20 +862,20 @@ filebrowser_frame :: proc(t: ^Text, a: ^App, pane: Rect, now: f64) {
 
     filebrowser_click(a, segs, hit, path, cw)
     filebrowser_rclick(a, segs, hit)
-    filebrowser_scroll_apply(a, rows, cols, a.scroll_mode == .Middle)
+    filebrowser_scroll_apply(u, br, &a.tree, rows, cols, u.scroll_mode == .Middle)
 
     // Beside the click for editor_drag's reason: a drag walking the caret off the end must move
     // the window in the same frame — the next two statements, in order.
     if br.path_edit {
-        field_drag(a, filebrowser_path_box(a, path, cw), now)
+        ui.field_drag(u, filebrowser_path_box(br, path, cw), now)
     }
     // The window follows the caret, as the listing's follows the selection.
-    if br.path_edit && doc_line_count(&br.path) > 0 {
-        cells := doc_cells(&br.path, 0)
-        cur := cells_col(cells, br.path.cursors[br.path.primary].head.col)
-        br.path_off = field_scroll(br.path_off, cells_count(cells), cur, field_cells(path, cw))
+    if br.path_edit && txt.doc_line_count(&br.path) > 0 {
+        cells := txt.doc_cells(&br.path, 0)
+        cur := txt.cells_col(cells, br.path.cursors[br.path.primary].head.col)
+        br.path_off = ui.field_scroll(br.path_off, txt.cells_count(cells), cur, ui.field_cells(path, cw))
     }
 
-    top, off = smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
+    top, off = ui.smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, unit)
     filebrowser_declare(a, &t.font, pane, top, off, now)
 }

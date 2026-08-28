@@ -1,11 +1,11 @@
-package main
+package gfx
 
 import "core:os"
 import "core:strconv"
 import "core:strings"
 
 // Theme — a Prawk-compatible colour palette. Theme files use Prawk's
-// `key: #rrggbb` format (so they're interchangeable with Prawk); Slopd parses the
+// `key: #rrggbb` format (so they're interchangeable with Prawk); the loader parses the
 // same keys plus a few extensions for tree-sitter, and ignores unknown keys.
 // Colours are stored as [3]f32 (0..1) for direct use by the renderer.
 Theme :: struct {
@@ -14,7 +14,7 @@ Theme :: struct {
     selection, line_highlight:                                     [3]f32,
     code_keyword, code_string, code_comment, code_number:         [3]f32,
     code_operator, code_type, code_return_type, cl_inject:        [3]f32,
-    // Slopd extensions (tree-sitter), Gruvbox Material source:
+    // Syntax extensions (tree-sitter), Gruvbox Material source:
     code_function, code_variable, code_constant, code_punctuation: [3]f32,
     // Editor whitespace + indent guides (the dim leading-space dots / tab marks,
     // the per-level indent guide rail, and the brighter rail of the cursor's scope).
@@ -25,7 +25,7 @@ Theme :: struct {
 }
 
 // Embedded so the baked-in fallback always matches the shipped default.theme.
-DEFAULT_THEME_SRC := string(#load("../themes/default.theme"))
+DEFAULT_THEME_SRC := string(#load("../../themes/default.theme"))
 
 default_theme :: proc() -> Theme {
     t: Theme

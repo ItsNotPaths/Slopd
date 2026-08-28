@@ -4,6 +4,9 @@ import app ".."
 import clay "../../bindings/clay"
 import "core:strings"
 import "core:testing"
+import "../txt"
+import "../gfx"
+import "../ui"
 
 // The status strip declared in Clay. It has no list, no viewport and no click, so what is left
 // is the whole of it: which of the things it shows, and where each piece lands.
@@ -19,7 +22,7 @@ import "core:testing"
 //                  is a floating slot and not a row cell
 
 @(private = "file")
-STRIP :: app.Rect{0, 280, 500, 20}
+STRIP :: gfx.Rect{0, 280, 500, 20}
 @(private = "file")
 WIN_W :: 500
 @(private = "file")
@@ -42,12 +45,12 @@ fixture :: proc(a: ^app.App, text: string) {
 @(private = "file")
 teardown :: proc(a: ^app.App) {
     app.editor_destroy(&a.editor)
-    app.doc_destroy(&a.cl.doc)
+    txt.doc_destroy(&a.cl.doc)
 }
 
 // A zero rect when absent, which every caller can tell from a real box.
 @(private = "file")
-text_box :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), want: string) -> app.Rect {
+text_box :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), want: string) -> gfx.Rect {
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(cmds, i)
         if c.commandType != .Text {
@@ -55,7 +58,7 @@ text_box :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), want: string) -> app
         }
         d := c.renderData.text
         if string(d.stringContents.chars[:d.stringContents.length]) == want {
-            return app.clay_rect(c.boundingBox)
+            return ui.clay_rect(c.boundingBox)
         }
     }
     return {}
@@ -97,7 +100,7 @@ test_strip_status_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fixture(&a, "alpha\nbravo")
@@ -107,7 +110,7 @@ test_strip_status_command_list :: proc(t: ^testing.T) {
 
     // Left: the modified marker, a space, then the name.
     left := text_box(&cmds, "  untitled")
-    testing.expect_value(t, left, app.Rect{PAD, TEXT_Y, 100, 16})
+    testing.expect_value(t, left, gfx.Rect{PAD, TEXT_Y, 100, 16})
 
     // Right: language, caret, line count, scroll — one string, ending at the far pad.
     right := text_box(&cmds, "text   L1:1   2 lines   Top")
@@ -117,7 +120,7 @@ test_strip_status_command_list :: proc(t: ^testing.T) {
 
     // Centre: the project root, centred in the STRIP, not between its neighbours.
     root := text_box(&cmds, "/zz/proj")
-    testing.expect_value(t, root, app.Rect{(STRIP.w - 80) / 2, TEXT_Y, 80, 16})
+    testing.expect_value(t, root, gfx.Rect{(STRIP.w - 80) / 2, TEXT_Y, 80, 16})
 
     // The strip paints its own background, and rings itself only when holding something that
     // wants an answer.
@@ -133,7 +136,7 @@ test_strip_status_command_list :: proc(t: ^testing.T) {
         c := clay.RenderCommandArray_Get(&cmds, i)
         #partial switch c.commandType {
         case .ScissorStart:
-            testing.expect_value(t, app.clay_rect(c.boundingBox), STRIP)
+            testing.expect_value(t, ui.clay_rect(c.boundingBox), STRIP)
             depth += 1
         case .ScissorEnd:
             depth -= 1
@@ -156,7 +159,7 @@ test_strip_labels_are_anchored_not_a_row :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fixture(&a, "alpha\nbravo")
@@ -187,36 +190,36 @@ test_strip_command_line_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fixture(&a, "alpha")
     defer teardown(&a)
     a.cl_active = true
-    app.doc_set_text(&a.cl.doc, ":reload")
+    txt.doc_set_text(&a.cl.doc, ":reload")
 
     cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
 
-    testing.expect_value(t, text_box(&cmds, "> "), app.Rect{PAD, TEXT_Y, 20, 16})
+    testing.expect_value(t, text_box(&cmds, "> "), gfx.Rect{PAD, TEXT_Y, 20, 16})
 
     // A Custom, since a caret is an over-quad, sized to the runes PLUS ONE CELL — the caret
     // column, one cell past the last glyph, which a box sized to the runes alone would clip.
-    custom: app.Rect
+    custom: gfx.Rect
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
         if c.commandType == .Custom {
-            custom = app.clay_rect(c.boundingBox)
+            custom = ui.clay_rect(c.boundingBox)
         }
     }
-    testing.expect_value(t, custom, app.Rect{PAD + 20, STRIP.y, 80, STRIP.h}) // 7 runes + 1
+    testing.expect_value(t, custom, gfx.Rect{PAD + 20, STRIP.y, 80, STRIP.h}) // 7 runes + 1
 
     // The ghost hint starts where that extra cell ends.
-    testing.expect_value(t, text_box(&cmds, "(y/n)"), app.Rect{PAD + 20 + 80, TEXT_Y, 50, 16})
+    testing.expect_value(t, text_box(&cmds, "(y/n)"), gfx.Rect{PAD + 20 + 80, TEXT_Y, 50, 16})
 
     // An argument makes the hint go away, so the field grows into its space.
-    app.doc_set_text(&a.cl.doc, ":reload y")
+    txt.doc_set_text(&a.cl.doc, ":reload y")
     cmds2 := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
-    testing.expect_value(t, text_box(&cmds2, "(y/n)"), app.Rect{})
+    testing.expect_value(t, text_box(&cmds2, "(y/n)"), gfx.Rect{})
 }
 
 // An untouched injected line rings the strip in the alert colour: "review this before Enter".
@@ -227,7 +230,7 @@ test_strip_injected_ring :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fixture(&a, "alpha")
@@ -242,14 +245,14 @@ test_strip_injected_ring :: proc(t: ^testing.T) {
         c := clay.RenderCommandArray_Get(&cmds, i)
         if c.commandType == .Border {
             ring = true
-            testing.expect_value(t, app.clay_rect(c.boundingBox), STRIP)
+            testing.expect_value(t, ui.clay_rect(c.boundingBox), STRIP)
             testing.expect_value(t, int(c.renderData.border.width.left), 2)
             testing.expect_value(t, int(c.renderData.border.width.bottom), 2)
         }
     }
     testing.expect(t, ring, "a pristine injected line drew no ring")
 
-    app.doc_insert_rune(&a.cl.doc, 'y')
+    txt.doc_insert_rune(&a.cl.doc, 'y')
     cmds2 := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
     testing.expect_value(t, count_of(&cmds2, .Border), 0)
 }
@@ -261,7 +264,7 @@ test_strip_conflict_marks_the_modeline :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fixture(&a, "alpha")
@@ -271,12 +274,12 @@ test_strip_conflict_marks_the_modeline :: proc(t: ^testing.T) {
     b.dirty = true
 
     cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
-    testing.expect_value(t, text_box(&cmds, "* x.odin"), app.Rect{PAD, TEXT_Y, 80, 16})
+    testing.expect_value(t, text_box(&cmds, "* x.odin"), gfx.Rect{PAD, TEXT_Y, 80, 16})
 
     b.conflict = true
     cmds2 := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
-    testing.expect_value(t, text_box(&cmds2, "! x.odin"), app.Rect{PAD, TEXT_Y, 80, 16})
-    testing.expect_value(t, text_box(&cmds2, "* x.odin"), app.Rect{}) // one marker, not two
+    testing.expect_value(t, text_box(&cmds2, "! x.odin"), gfx.Rect{PAD, TEXT_Y, 80, 16})
+    testing.expect_value(t, text_box(&cmds2, "* x.odin"), gfx.Rect{}) // one marker, not two
     testing.expect_value(t, count_of(&cmds2, .Border), 0) // no ring: nothing wants an answer
 }
 
@@ -287,7 +290,7 @@ test_strip_status_without_an_editor :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fixture(&a, "alpha")
@@ -297,8 +300,8 @@ test_strip_status_without_an_editor :: proc(t: ^testing.T) {
     a.aux_mode = .Config
 
     cmds := app.strip_layout(&a, &f, STRIP, WIN_W, WIN_H)
-    testing.expect_value(t, text_box(&cmds, "config"), app.Rect{PAD, TEXT_Y, 60, 16})
-    testing.expect_value(t, text_box(&cmds, "/zz/proj"), app.Rect{}) // no document, no root
+    testing.expect_value(t, text_box(&cmds, "config"), gfx.Rect{PAD, TEXT_Y, 60, 16})
+    testing.expect_value(t, text_box(&cmds, "/zz/proj"), gfx.Rect{}) // no document, no root
     testing.expect_value(t, count_of(&cmds, .Text), 1)
 }
 
@@ -308,12 +311,12 @@ test_strip_degenerate :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fixture(&a, "alpha")
     defer teardown(&a)
 
-    cmds := app.strip_layout(&a, &f, app.Rect{0, 300, 500, 0}, WIN_W, WIN_H)
+    cmds := app.strip_layout(&a, &f, gfx.Rect{0, 300, 500, 0}, WIN_W, WIN_H)
     testing.expect_value(t, cmds.length, i32(0))
 }

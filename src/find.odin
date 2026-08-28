@@ -3,6 +3,7 @@ package main
 import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
+import "txt"
 
 // In-buffer search: the mechanism under `:f`/`:find` and the live preview that runs it as you
 // type.
@@ -42,7 +43,7 @@ find_destroy :: proc(f: ^Find) {
 // Lands `cur` on the first hit at or after `from`, wrapping when every hit is behind it. The
 // anchor is a parameter, not the live caret: the preview re-runs this on every keystroke, and
 // reading the caret would walk the landing further down the file with each letter.
-find_set :: proc(f: ^Find, b: ^Buffer, query: string, from: Pos) {
+find_set :: proc(f: ^Find, b: ^Buffer, query: string, from: txt.Pos) {
     q := strings.clone(query) // before the old one goes: a caller may pass f.query back
     delete(f.query)
     f.query = q
@@ -64,8 +65,8 @@ find_scan :: proc(f: ^Find, b: ^Buffer, query: string) {
         return
     }
     fold := find_folds_case(query)
-    for line in 0 ..< doc_line_count(&b.doc) {
-        src := doc_line(&b.doc, line)
+    for line in 0 ..< txt.doc_line_count(&b.doc) {
+        src := txt.doc_line(&b.doc, line)
         for col := 0; col < len(src); {
             n, hit := match_at(src, col, pat, fold)
             if !hit {
@@ -118,7 +119,7 @@ find_folds_case :: proc(query: string) -> bool {
 // Wrapping to 0 when every match is behind it. An empty list answers 0 too, and find_pos
 // says so.
 @(private = "file")
-find_index_from :: proc(ms: []Find_Match, from: Pos) -> int {
+find_index_from :: proc(ms: []Find_Match, from: txt.Pos) -> int {
     for m, i in ms {
         if m.line > from.line || (m.line == from.line && m.col >= from.col) {
             return i
@@ -135,12 +136,12 @@ find_step :: proc(f: ^Find, dir: int) {
 }
 
 // ok=false when there is no match to sit on.
-find_pos :: proc(f: ^Find) -> (Pos, bool) {
+find_pos :: proc(f: ^Find) -> (txt.Pos, bool) {
     if f.cur < 0 || f.cur >= len(f.matches) {
         return {}, false
     }
     m := f.matches[f.cur]
-    return Pos{m.line, m.col}, true
+    return txt.Pos{m.line, m.col}, true
 }
 
 // One past the end when there is none at or after it. A binary search, because the paint asks

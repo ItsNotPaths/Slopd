@@ -1,6 +1,8 @@
 package main
 
 import clay "../bindings/clay"
+import "gfx"
+import "ui"
 
 // The grep results pane's UI half — the first pane whose rows are not one-per-item. It follows
 // filetree_ui.odin's template, with one hit being a BLOCK of several display rows (a
@@ -14,8 +16,8 @@ import clay "../bindings/clay"
 GREP_ROW_PAD :: 5
 
 // filetree_geom's twin: content area, row height, and display rows under the header.
-grep_geom :: proc(pane: Rect, scale: f32, line_h: f32) -> (area: Rect, row_h: i32, rows: int) {
-    area = inset(pane, i32(2 * scale))
+grep_geom :: proc(pane: gfx.Rect, scale: f32, line_h: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
+    area = ui.inset(pane, i32(2 * scale))
     row_h = i32(line_h) + i32(GREP_ROW_PAD * scale)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {
         return area, row_h, 0
@@ -27,7 +29,7 @@ grep_geom :: proc(pane: Rect, scale: f32, line_h: f32) -> (area: Rect, row_h: i3
 // `anchor` and `total` are in display rows: a block spans several, so tracking hits would leave
 // a title scrolled off above its own context.
 grep_scroll_apply :: proc(g: ^GrepPane, anchor, rows, total: int, center: bool, last_input_at: f64 = 0) {
-    list_scroll_apply(&g.scroll, &g.scroll_detached, anchor, rows, total, center, last_input_at)
+    ui.list_scroll_apply(&g.scroll, &g.scroll_detached, anchor, rows, total, center, last_input_at)
 }
 
 // Walks display rows and returns the block each belongs to; a spacer carries hit == -1, so the
@@ -50,7 +52,7 @@ grep_click :: proc(a: ^App, hit: int) {
     if hit < 0 {
         return
     }
-    count, ok := mouse_take_click(a)
+    count, ok := ui.mouse_take_click(ctx_of(a))
     if !ok {
         return
     }
@@ -73,20 +75,19 @@ grep_click :: proc(a: ^App, hit: int) {
 //       gp_empty            the "(no matches)" placeholder
 //       gp_row/i            one per visible DISPLAY row, keyed by row index
 //         gp_gut/i            the right-aligned line-number gutter (context rows only)
-grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
-    g := &a.grep
-    th := &a.theme
-    area, row_h, max_rows := grep_geom(pane, a.scale, f.line_height)
+grep_declare :: proc(u: ui.UI_Ctx, g: ^GrepPane, f: ^gfx.Font, pane: gfx.Rect, rows: []GrepRow) {
+    th := u.theme
+    area, row_h, max_rows := grep_geom(pane, u.scale, f.line_height)
     cw := f.cell_w
     lh := i32(f.line_height)
-    rail := u16(2 * a.scale)
+    rail := u16(2 * u.scale)
     gutw := grep_gutter_w(rows)
 
     first := clamp(g.scroll, 0, max(0, len(rows)))
     visible := max(0, min(len(rows) - first, max_rows))
 
     // No backgroundColor: panel() filled the pane, so every fill below means something.
-    if clay.UI(clay.ID("gp_pane"))(clay_pane_box(area)) {
+    if clay.UI(clay.ID("gp_pane"))(ui.clay_pane_box(area)) {
         if clay.UI(clay.ID("gp_head"))(
             {
                 layout = {
@@ -96,7 +97,7 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
                 },
             },
         ) {
-            clay.Text(grep_head(g), clay_text_config(focus_fg(a, .Aux), lh))
+            clay.Text(grep_head(g), ui.clay_text_config(focus_fg(u, .Aux), lh))
         }
 
         if clay.UI(clay.ID("gp_body"))(
@@ -118,7 +119,7 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
                         },
                     },
                 ) {
-                    clay.Text("(no matches)", clay_text_config(th.muted, lh))
+                    clay.Text("(no matches)", ui.clay_text_config(th.muted, lh))
                 }
             }
 
@@ -132,14 +133,14 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
                 // its padding.
                 bg: clay.Color
                 if sel {
-                    bg = clay_rgb(th.line_highlight)
-                } else if hover_shown(a) && r.hit >= 0 && r.hit == g.hover {
+                    bg = ui.clay_rgb(th.line_highlight)
+                } else if ui.hover_shown(u) && r.hit >= 0 && r.hit == g.hover {
                     // The whole block lights, not the row: that is what a click selects.
-                    bg = clay_rgb(hover_bg(th))
+                    bg = ui.clay_rgb(ui.hover_bg(th))
                 }
                 border: clay.BorderElementConfig
                 if sel && r.match {
-                    border = {color = clay_rgb(th.accent), width = {left = rail}}
+                    border = {color = ui.clay_rgb(th.accent), width = {left = rail}}
                 }
 
                 if clay.UI(clay.ID("gp_row", u32(i)))(
@@ -163,7 +164,7 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
                         lit := r.header ? sel : r.match
                         col := lit ? th.fg : th.muted
                         if r.header {
-                            clay.Text(r.text, clay_text_config(col, lh)) // flush-left
+                            clay.Text(r.text, ui.clay_text_config(col, lh)) // flush-left
                         } else {
                             if r.gutter != "" {
                                 // A fixed column with its text pushed right, rather than an
@@ -176,10 +177,10 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
                                         },
                                     },
                                 ) {
-                                    clay.Text(r.gutter, clay_text_config(th.muted, lh))
+                                    clay.Text(r.gutter, ui.clay_text_config(th.muted, lh))
                                 }
                             }
-                            clay.Text(r.text, clay_text_config(col, lh))
+                            clay.Text(r.text, ui.clay_text_config(col, lh))
                         }
                     }
                 }
@@ -191,8 +192,9 @@ grep_declare :: proc(a: ^App, f: ^Font, pane: Rect, rows: []GrepRow) {
 // A header naming the query and hit count, then each hit as a context block: a
 // project-relative "path:line" title over the lines around the match, blocks parted by a
 // blank row.
-grep_frame :: proc(t: ^Text, a: ^App, pane: Rect) {
-    area, _, max_rows := grep_geom(pane, a.scale, t.font.line_height)
+grep_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect) {
+    u := ctx_of(a)
+    area, _, max_rows := grep_geom(pane, u.scale, t.font.line_height)
     if area.w <= 0 || area.h <= 0 {
         return
     }
@@ -204,22 +206,22 @@ grep_frame :: proc(t: ^Text, a: ^App, pane: Rect) {
     hit := grep_hit(rows, g.scroll, max_rows)
     g.hover = hit // against the same (last) frame the click is
     grep_click(a, hit)
-    grep_scroll_apply(g, grep_anchor(rows, g.selected), max_rows, len(rows), a.scroll_mode == .Middle, pane_input_at(a))
+    grep_scroll_apply(g, grep_anchor(rows, g.selected), max_rows, len(rows), u.scroll_mode == .Middle, ui.pane_input_at(u))
 
-    grep_declare(a, &t.font, pane, rows)
+    grep_declare(u, g, &t.font, pane, rows)
 }
 
 // Test-facing wrapper; see filetree_layout.
 grep_layout :: proc(
     a: ^App,
-    f: ^Font,
-    pane: Rect,
+    f: ^gfx.Font,
+    pane: gfx.Rect,
     rows: []GrepRow,
     win_w, win_h: i32,
 ) -> clay.ClayArray(clay.RenderCommand) {
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        grep_declare(a, f, pane, rows)
+        grep_declare(ctx_of(a), &a.grep, f, pane, rows)
     }
     return clay.EndLayout(0)
 }

@@ -6,6 +6,9 @@ import "core:path/filepath"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
+import "gfx"
+import "paths"
+import "ui"
 
 // For .Tab, width is a tab's display column count; for .Spaces, how many a Tab press inserts.
 Indent_Kind :: enum {
@@ -25,11 +28,6 @@ Line_Numbers :: enum {
 // Follow moves the view only when the target would leave it; Middle pins the target to the
 // middle row. One policy across every line view. ROWS only — the editor's column axis has its
 // own, see buffer_hscroll_target.
-Scroll_Mode :: enum {
-    Follow,
-    Middle,
-}
-
 // `Ls` is the dired-style listing, `Browser` the file-manager one. Both drive the same FileTree
 // model, so this chooses pixels and pointer targets, never behaviour.
 File_Pane :: enum {
@@ -37,7 +35,7 @@ File_Pane :: enum {
     Browser,
 }
 
-// Slopd's own `key: value` file, in one directory install.odin picks (config_file): beside the
+// Slopd's own `key: value` file, in one directory src/paths picks (config_file): beside the
 // binary, or ~/.config/slopd once installed. Anything missing keeps the defaults below.
 //
 // One `[section]` block exists and is not a setting: `[places]` holds the browser's sidebar
@@ -46,7 +44,7 @@ Config :: struct {
     theme_path:       string, // absolute (owned), or "" for the baked-in default
     indent:           Indent,
     line_numbers:     Line_Numbers,
-    scroll_mode:      Scroll_Mode, // every line view's ROWS: follow, or keep middled
+    scroll_mode:      ui.Scroll_Mode, // every line view's ROWS: follow, or keep middled
     font_px:          f32, // logical text size, persisted across runs
     jump_lines:       int, // how many lines Ctrl+Up/Down jumps in the editor
     show_whitespace:  bool, // ghost the leading-space dots / tab marks
@@ -259,28 +257,28 @@ config_destroy :: proc(cfg: ^Config) {
 // through config_override (src/tests/config_harness.odin), which holds the lock it needs.
 config_path_override: string
 
-// Beside the binary while portable, ~/.config/slopd/slopd.config once installed (install.odin
+// Beside the binary while portable, ~/.config/slopd/slopd.config once installed (src/paths
 // owns that choice). Returned whether or not it exists, since it is also the write target.
 // Temp-allocated. No search path: one mode picks one directory.
 config_file :: proc() -> string {
     if config_path_override != "" {
         return strings.clone(config_path_override, context.temp_allocator)
     }
-    return config_asset("slopd.config", context.temp_allocator)
+    return paths.config_asset("slopd.config", context.temp_allocator)
 }
 
 // The one way from a theme token to a live Theme:
 //   "omarchy"  -> the desktop palette (theme_omarchy.odin)
 //   anything   -> a themes/ file, via theme_resolve
 // Both fall back to the baked-in default, so a token that stops resolving shows a palette.
-theme_load :: proc(token: string) -> Theme {
-    if token == OMARCHY_THEME {
-        if t, ok := omarchy_theme(omarchy_colors_file(context.temp_allocator)); ok {
+theme_load :: proc(token: string) -> gfx.Theme {
+    if token == gfx.OMARCHY_THEME {
+        if t, ok := gfx.omarchy_theme(gfx.omarchy_colors_file(context.temp_allocator)); ok {
             return t
         }
-        return default_theme()
+        return gfx.default_theme()
     }
-    return load_theme(theme_resolve(token))
+    return gfx.load_theme(theme_resolve(token))
 }
 
 // A theme token to a file path for load_theme:
@@ -292,12 +290,12 @@ theme_resolve :: proc(token: string) -> string {
     if strings.contains(token, "/") {
         return "" // no theme lives outside themes/
     }
-    if token == OMARCHY_THEME {
+    if token == gfx.OMARCHY_THEME {
         return "" // reserved: not a file, and theme_load takes it first
     }
     name := token == "" ? "default" : token
     file := fmt.tprintf("%s.theme", name)
-    p := filepath.join({data_asset("themes", context.temp_allocator), file}, context.temp_allocator) or_else ""
+    p := filepath.join({paths.data_asset("themes", context.temp_allocator), file}, context.temp_allocator) or_else ""
     return os.exists(p) ? p : ""
 }
 
@@ -347,11 +345,11 @@ theme_options :: proc(allocator := context.allocator) -> []string {
     out := make([dynamic]string, 0, 16, allocator)
     append(&out, "default")
     pinned := 1
-    if omarchy_available() {
-        append(&out, OMARCHY_THEME) // only when a desktop palette exists
+    if gfx.omarchy_available() {
+        append(&out, gfx.OMARCHY_THEME) // only when a desktop palette exists
         pinned = 2
     }
-    dir := data_asset("themes", context.temp_allocator)
+    dir := paths.data_asset("themes", context.temp_allocator)
     if f, oerr := os.open(dir); oerr == nil {
         defer os.close(f)
         it := os.read_directory_iterator_create(f)
@@ -361,7 +359,7 @@ theme_options :: proc(allocator := context.allocator) -> []string {
                 continue
             }
             base := strings.trim_suffix(fi.name, ".theme")
-            if base == "default" || base == OMARCHY_THEME {
+            if base == "default" || base == gfx.OMARCHY_THEME {
                 continue // already offered, or a reserved token
             }
             append(&out, strings.clone(base, allocator))
@@ -635,7 +633,7 @@ config_block_write :: proc(
     keep_empty := false,
 ) -> bool {
     if !config_writable() {
-        return false // read-only — see install.odin
+        return false // read-only — see src/paths
     }
     path := config_file()
     b := strings.builder_make(context.temp_allocator)
@@ -665,7 +663,7 @@ config_block_write :: proc(
             strings.write_byte(&b, '\n')
         }
     }
-    ensure_parent(path)
+    paths.ensure_parent(path)
     return os.write_entire_file(path, transmute([]byte)strings.to_string(b)) == nil
 }
 
@@ -719,7 +717,7 @@ parse_prompt_keep :: proc(s: string) -> (prompt: bool, ok: bool) {
 
 // "follow" moves the view only when the target would leave it; "middle" keeps it on the middle
 // row. ok=false on anything else.
-parse_scroll_mode :: proc(s: string) -> (mode: Scroll_Mode, ok: bool) {
+parse_scroll_mode :: proc(s: string) -> (mode: ui.Scroll_Mode, ok: bool) {
     switch s {
     case "follow": return .Follow, true
     case "middle": return .Middle, true
@@ -763,7 +761,7 @@ config_set :: proc(key, val: string) -> bool {
     path := config_file()
     src := os.read_entire_file_from_path(path, context.temp_allocator) or_else nil
     out := config_rewrite(string(src), key, val, context.temp_allocator)
-    ensure_parent(path)
+    paths.ensure_parent(path)
     return os.write_entire_file(path, transmute([]byte)out) == nil
 }
 
@@ -806,7 +804,7 @@ config_default_write :: proc(path: string) -> bool {
     if path == "" || os.exists(path) {
         return false
     }
-    ensure_parent(path)
+    paths.ensure_parent(path)
     return os.write_entire_file(path, transmute([]byte)DEFAULT_CONFIG_SRC) == nil
 }
 

@@ -5,6 +5,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:testing"
+import "../txt"
 
 // A file pane gesture stages a command line rather than acting behind a modal, which means the
 // NAME OF A FILE ends up inside a line the chain will parse. `&&` is that chain's operator, so
@@ -37,7 +38,7 @@ test_cd_gesture_cannot_be_split_by_a_folder_name :: proc(t: ^testing.T) {
         defer app.filetree_destroy(&a.tree)
 
         app.filetree_cd_selected(&a) // staged, not run: folder_cd_run is false by default
-        line := app.doc_string(&a.cl.doc, context.temp_allocator)
+        line := txt.doc_string(&a.cl.doc, context.temp_allocator)
 
         // Running the staged line must set the root and NOTHING else. `:readme` is the payload:
         // a builtin, so it needs no shell, and it puts a buffer in the ring -- which `:cd` never

@@ -3,6 +3,7 @@ package tests
 import app ".."
 import "core:strings"
 import "core:testing"
+import "../txt"
 
 // Incremental reparse over the grammars that can break it in ways odin cannot.
 //
@@ -82,7 +83,7 @@ private:
 // One buffer, parsed and then edited; a second holding the same final text, parsed whole. The
 // two must agree cell for cell.
 @(private = "file")
-Editor_Fn :: proc(d: ^app.Doc)
+Editor_Fn :: proc(d: ^txt.Doc)
 
 @(private = "file")
 expect_incremental_matches_full :: proc(t: ^testing.T, lang, ext, src: string, edits: []Editor_Fn, what: string) {
@@ -108,7 +109,7 @@ expect_incremental_matches_full :: proc(t: ^testing.T, lang, ext, src: string, e
 
     ref: app.Buffer
     defer app.buffer_destroy(&ref)
-    app.buffer_set_text(&ref, app.doc_string(&live.doc, context.temp_allocator))
+    app.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
     ref.path = strings.clone(live.path)
     want := hl_rows(&a, &ref)
     expect_rows_equal(t, got, want, what)
@@ -120,58 +121,58 @@ expect_incremental_matches_full :: proc(t: ^testing.T, lang, ext, src: string, e
 // scanner's whole job: the INDENT/DEDENT tokens it emits come from state it has to carry across
 // the edit, and getting that wrong changes the block structure of everything below.
 @(private = "file")
-py_indent :: proc(d: ^app.Doc) {
+py_indent :: proc(d: ^txt.Doc) {
     for line in 10 ..= 12 {
-        app.doc_reset_cursor(d, app.Pos{line, 0})
-        app.doc_insert_text(d, "    ")
+        txt.doc_reset_cursor(d, txt.Pos{line, 0})
+        txt.doc_insert_text(d, "    ")
     }
 }
 
 @(private = "file")
-py_dedent :: proc(d: ^app.Doc) {
+py_dedent :: proc(d: ^txt.Doc) {
     for line in 10 ..= 12 {
-        app.doc_reset_cursor(d, app.Pos{line, 0})
+        txt.doc_reset_cursor(d, txt.Pos{line, 0})
         for _ in 0 ..< 4 {
-            app.doc_delete(d)
+            txt.doc_delete(d)
         }
     }
 }
 
 // Open a new suite: a nested `if` under the loop, which the scanner has to push a level for.
 @(private = "file")
-py_nest :: proc(d: ^app.Doc) {
-    app.doc_reset_cursor(d, app.Pos{18, app.doc_line_len(d, 18)})
-    app.doc_insert_text(d, "\n            if i > 4:\n                total *= 2")
+py_nest :: proc(d: ^txt.Doc) {
+    txt.doc_reset_cursor(d, txt.Pos{18, txt.doc_line_len(d, 18)})
+    txt.doc_insert_text(d, "\n            if i > 4:\n                total *= 2")
 }
 
 // Type a run mid-identifier, then split a line — the ordinary edits, in a heavy grammar.
 @(private = "file")
-type_run :: proc(d: ^app.Doc) {
-    app.doc_reset_cursor(d, app.Pos{8, 4})
+type_run :: proc(d: ^txt.Doc) {
+    txt.doc_reset_cursor(d, txt.Pos{8, 4})
     for r in "extra_" {
-        app.doc_insert_rune(d, r)
+        txt.doc_insert_rune(d, r)
     }
 }
 
 @(private = "file")
-split_line :: proc(d: ^app.Doc) {
-    app.doc_reset_cursor(d, app.Pos{5, 0})
-    app.doc_insert_text(d, "// inserted\n")
+split_line :: proc(d: ^txt.Doc) {
+    txt.doc_reset_cursor(d, txt.Pos{5, 0})
+    txt.doc_insert_text(d, "// inserted\n")
 }
 
 @(private = "file")
-delete_first_line :: proc(d: ^app.Doc) {
-    app.doc_reset_cursor(d, app.Pos{0, 0})
-    app.doc_move(d, .Down, true)
-    app.doc_delete(d)
+delete_first_line :: proc(d: ^txt.Doc) {
+    txt.doc_reset_cursor(d, txt.Pos{0, 0})
+    txt.doc_move(d, .Down, true)
+    txt.doc_delete(d)
 }
 
 // Open a brace block that closes further down — the edit that makes tree-sitter rebuild a large
 // subtree rather than a token, and the one where a wrong reuse shows up as colour drift.
 @(private = "file")
-cpp_open_block :: proc(d: ^app.Doc) {
-    app.doc_reset_cursor(d, app.Pos{12, app.doc_line_len(d, 12)})
-    app.doc_insert_text(d, "\n    void reset() { value = T{}; }")
+cpp_open_block :: proc(d: ^txt.Doc) {
+    txt.doc_reset_cursor(d, txt.Pos{12, txt.doc_line_len(d, 12)})
+    txt.doc_insert_text(d, "\n    void reset() { value = T{}; }")
 }
 
 @(test)
@@ -218,16 +219,16 @@ test_incremental_cpp_typing :: proc(t: ^testing.T) {
     app.buffer_set_text(&live, CPP_SRC)
     live.path = strings.clone("stress.cpp")
 
-    app.doc_reset_cursor(&live.doc, app.Pos{18, app.doc_line_len(&live.doc, 18)})
+    txt.doc_reset_cursor(&live.doc, txt.Pos{18, txt.doc_line_len(&live.doc, 18)})
     for r in " int extra = sum + 1;" {
-        app.doc_insert_rune(&live.doc, r)
+        txt.doc_insert_rune(&live.doc, r)
         _ = hl_rows(&a, &live)
     }
     got := clone_rows(hl_rows(&a, &live))
 
     ref: app.Buffer
     defer app.buffer_destroy(&ref)
-    app.buffer_set_text(&ref, app.doc_string(&live.doc, context.temp_allocator))
+    app.buffer_set_text(&ref, txt.doc_string(&live.doc, context.temp_allocator))
     ref.path = strings.clone("stress.cpp")
     want := hl_rows(&a, &ref)
     expect_rows_equal(t, got, want, "cpp typed run")

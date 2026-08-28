@@ -6,6 +6,8 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 import "vendor:glfw"
+import "../txt"
+import "../ui"
 
 // The workspace prompt's model (wsfind.odin): what a typed line matches, what the list holds
 // when nothing is typed, and what the keys do to it. Host-independent — no window, no Clay —
@@ -126,7 +128,7 @@ test_wsfind_rows :: proc(t: ^testing.T) {
     defer app.editor_destroy(&a.editor)
     ring :: proc(a: ^app.App, path: string, dirty: bool) {
         b: app.Buffer
-        app.doc_init(&b.doc)
+        txt.doc_init(&b.doc)
         b.path = strings.clone(path)
         b.dirty = dirty
         append(&a.editor.buffers, b)
@@ -151,25 +153,25 @@ test_wsfind_rows :: proc(t: ^testing.T) {
 
     // Typed: the ring is gone and the rows are matches, best first — and the one that is also
     // unsaved keeps its star, which is the whole reason the flag is per ROW and not per list.
-    app.doc_set_text(&ws.query, "theme")
+    txt.doc_set_text(&ws.query, "theme")
     app.wsfind_build(&a)
     testing.expect_value(t, len(ws.rows), 1)
     testing.expect_value(t, ws.rows[0].path, "/w/src/theme.odin")
     testing.expect(t, ws.rows[0].dirty)
 
-    app.doc_set_text(&ws.query, "win")
+    txt.doc_set_text(&ws.query, "win")
     app.wsfind_build(&a)
     testing.expect_value(t, len(ws.rows), 1)
     testing.expect_value(t, ws.rows[0].path, "/w/src/window_ui.odin")
     testing.expect(t, !ws.rows[0].dirty)
 
-    app.doc_set_text(&ws.query, "zzz")
+    txt.doc_set_text(&ws.query, "zzz")
     app.wsfind_build(&a)
     testing.expect_value(t, len(ws.rows), 0)
     testing.expect_value(t, ws.selected, 0) // a new list starts at its best answer
 
     // …and emptying the line brings the ring back: the prompt has no third state.
-    app.doc_set_text(&ws.query, "")
+    txt.doc_set_text(&ws.query, "")
     app.wsfind_build(&a)
     testing.expect_value(t, len(ws.rows), 2)
 }
@@ -199,7 +201,7 @@ test_wsfind_keys :: proc(t: ^testing.T) {
     testing.expect(t, run(&a, .Ws_Find))
     testing.expect(t, app.wsfind_shown(&a), "Alt+P shows the file pane with the prompt on it")
     testing.expect_value(t, a.aux_mode, app.AuxMode.FileTree)
-    testing.expect_value(t, a.focus, app.Focus.Aux)
+    testing.expect_value(t, a.focus, ui.Focus.Aux)
     kind, _ := app.active_editable(&a)
     testing.expect_value(t, kind, app.Editable.Workspace_Find)
 
@@ -209,7 +211,7 @@ test_wsfind_keys :: proc(t: ^testing.T) {
     testing.expect_value(t, ctx, app.Bind_Ctx.Text)
 
     // The scan found the file, so typing its name lists it and Enter opens it.
-    app.doc_set_text(&a.wsfind.query, "target")
+    txt.doc_set_text(&a.wsfind.query, "target")
     app.wsfind_sync(&a) // the rows follow the line on a version compare, once a frame
     testing.expect_value(t, len(a.wsfind.rows), 1)
     testing.expect_value(t, a.wsfind.rows[0].path, file)
@@ -220,7 +222,7 @@ test_wsfind_keys :: proc(t: ^testing.T) {
 
     testing.expect(t, run(&a, .Activate))
     testing.expect(t, !a.wsfind.open, "opening a row closes the prompt")
-    testing.expect_value(t, a.focus, app.Focus.Editor)
+    testing.expect_value(t, a.focus, ui.Focus.Editor)
     testing.expect_value(t, app.editor_current(&a.editor).path, file)
 
     // Esc closes it without opening anything, leaving the listing as it was found.

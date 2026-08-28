@@ -1,11 +1,11 @@
-package main
+package gfx
 
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
 
 // Omarchy v4 resolves the active desktop theme to one palette file and rewrites it on every
-// `omarchy theme set`. Slopd reads it directly: no template to install, no hook, no subprocess.
+// `omarchy theme set`. The theme loader reads it directly: no template to install, no hook, no subprocess.
 // The path is $HOME-relative and not an XDG variable, because that is how Omarchy writes it.
 OMARCHY_COLORS :: ".local/state/omarchy/current/theme/colors.toml"
 
@@ -14,7 +14,7 @@ OMARCHY_THEME :: "omarchy"
 
 // "" with no $HOME. Returned existing or not — omarchy_available is the existence test.
 omarchy_colors_file :: proc(allocator := context.allocator) -> string {
-    // install.odin keeps its own file-private $HOME helper; "" means the same in both.
+    // src/paths keeps its own file-private $HOME helper; "" means the same in both.
     home := os.get_env("HOME", context.temp_allocator)
     if home == "" {
         return strings.clone("", allocator)
@@ -23,7 +23,7 @@ omarchy_colors_file :: proc(allocator := context.allocator) -> string {
 }
 
 // The test is the FILE, not os-release: a distro ID says which system this is, the file says a
-// palette is there. Slopd also runs under Omarchy's Hyprland from a plain Arch install.
+// palette is there. The program also runs under Omarchy's Hyprland from a plain Arch install.
 omarchy_available :: proc() -> bool {
     p := omarchy_colors_file(context.temp_allocator)
     return p != "" && os.exists(p)

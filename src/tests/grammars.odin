@@ -6,6 +6,8 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:testing"
+import "../gfx"
+import "../syntax"
 
 // The suite builds its own grammars, once, and caches them where a release cannot wipe them.
 // They used to resolve `build/grammars`, which `release.sh` clears, so the tests skipped on most
@@ -49,7 +51,7 @@ grammars_ensure :: proc "contextless" () {
     dir := grammar_cache_dir()
     missing := 0
     for name in TEST_GRAMMARS {
-        if !app.grammar_present(dir, name) {
+        if !syntax.grammar_present(dir, name) {
             missing += 1
         }
     }
@@ -58,18 +60,18 @@ grammars_ensure :: proc "contextless" () {
     }
 
     fmt.printfln("[grammars] %d to build into %s — first run only, this takes a minute", missing, dir)
-    reg := app.load_grammars()
-    defer app.grammars_destroy(reg)
+    reg := syntax.load_grammars()
+    defer syntax.grammars_destroy(reg)
     for name in TEST_GRAMMARS {
-        if app.grammar_present(dir, name) {
+        if syntax.grammar_present(dir, name) {
             continue
         }
-        g, found := app.grammar_find(reg, name)
+        g, found := syntax.grammar_find(reg, name)
         if !found {
             fmt.printfln("[grammars] %s: not in the registry", name)
             continue
         }
-        _, msg := app.grammar_install(dir, g^)
+        _, msg := syntax.grammar_install(dir, g^)
         fmt.printfln("[grammars] %s", msg)
     }
 }
@@ -77,7 +79,7 @@ grammars_ensure :: proc "contextless" () {
 // ok=false having announced why: offline it is a skip, under SLOPD_REQUIRE_GRAMMARS a failure.
 grammar_or_skip :: proc(t: ^testing.T, name: string) -> (dir: string, ok: bool) {
     dir = grammar_cache_dir()
-    if app.grammar_present(dir, name) {
+    if syntax.grammar_present(dir, name) {
         return dir, true
     }
     if os.get_env("SLOPD_REQUIRE_GRAMMARS", context.temp_allocator) != "" {
@@ -95,17 +97,17 @@ hl_app :: proc(t: ^testing.T, a: ^app.App, lang, ext: string) -> bool {
     if !ok {
         return false
     }
-    a.theme = app.default_theme()
+    a.theme = gfx.default_theme()
     app.highlighter_init(&a.hl)
     // So the registry outlives this proc: a `[]T{...}` literal is backed by this frame's stack.
     exts := make([]string, 1, context.temp_allocator)
     exts[0] = ext
-    grams := make([]app.Grammar, 1, context.temp_allocator)
-    grams[0] = app.Grammar{name = lang, exts = exts}
+    grams := make([]syntax.Grammar, 1, context.temp_allocator)
+    grams[0] = syntax.Grammar{name = lang, exts = exts}
     a.grammars = grams
     // Through the ext->language index, not the registry: a fixture that only sets `grammars`
     // resolves nothing.
-    a.gram_ext = app.grammar_ext_index(a.grammars)
+    a.gram_ext = syntax.grammar_ext_index(a.grammars)
     return app.highlighter_preload(&a.hl, dir, lang)
 }
 

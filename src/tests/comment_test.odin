@@ -3,6 +3,7 @@ package tests
 import app ".."
 import "core:strings"
 import "core:testing"
+import "../txt"
 
 // The comment toggle: which token a file gets, and the one rule the toggle turns on — a block
 // goes fully commented unless every line holding text is commented already, and only then bare.
@@ -10,7 +11,7 @@ import "core:testing"
 @(private = "file")
 mk :: proc(path, src: string) -> app.Buffer {
     b: app.Buffer
-    app.doc_init(&b.doc)
+    txt.doc_init(&b.doc)
     app.buffer_set_text(&b, src)
     b.path = strings.clone(path)
     return b
@@ -18,12 +19,12 @@ mk :: proc(path, src: string) -> app.Buffer {
 
 @(private = "file")
 text :: proc(b: ^app.Buffer) -> string {
-    return app.doc_string(&b.doc, context.temp_allocator)
+    return txt.doc_string(&b.doc, context.temp_allocator)
 }
 
 @(private = "file")
 whole :: proc(b: ^app.Buffer) {
-    app.doc_select_all(&b.doc)
+    txt.doc_select_all(&b.doc)
 }
 
 @(test)
@@ -103,10 +104,10 @@ test_comment_one_line_carries_the_caret :: proc(t: ^testing.T) {
     b := mk("/w/x.py", "x = 1\ny = 2")
     defer app.buffer_destroy(&b)
 
-    app.doc_reset_cursor(&b.doc, app.Pos{1, 4})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{1, 4})
     testing.expect(t, app.buffer_comment_toggle(&b))
     testing.expect_value(t, text(&b), "x = 1\n# y = 2")
-    testing.expect_value(t, b.doc.cursors[0].head, app.Pos{1, 6})
+    testing.expect_value(t, b.doc.cursors[0].head, txt.Pos{1, 6})
 }
 
 // Nothing to do is not an edit: an unknown language, and a selection of blank lines.

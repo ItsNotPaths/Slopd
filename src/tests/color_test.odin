@@ -3,6 +3,8 @@ package tests
 import app ".."
 import "core:testing"
 import "core:unicode/utf8"
+import "../txt"
+import "../gfx"
 
 // Reading a colour out of a line and writing it back. The picker edits IN PLACE, so color_at
 // and color_format have to be inverses: what the caret was on is the form the buffer keeps.
@@ -180,7 +182,7 @@ picker_free :: proc(a: ^app.App) {
 
 @(private = "file")
 line0 :: proc(a: ^app.App) -> string {
-    return string(app.doc_line(&a.editor.buffers[0].doc, 0, context.temp_allocator))
+    return string(txt.doc_line(&a.editor.buffers[0].doc, 0, context.temp_allocator))
 }
 
 // The whole gesture: Alt+Enter lands on the literal, a slider rewrites it in place, and the
@@ -205,9 +207,9 @@ test_color_edits_the_buffer_in_place :: proc(t: ^testing.T) {
     testing.expect_value(t, line0(&a), "fg := [3]f32{0, 0, 1}")
     testing.expect(t, a.editor.buffers[0].dirty, "a committed colour is an unsaved edit")
 
-    testing.expect(t, app.doc_undo(&a.editor.buffers[0].doc), "the commit must be undoable")
+    testing.expect(t, txt.doc_undo(&a.editor.buffers[0].doc), "the commit must be undoable")
     testing.expect_value(t, line0(&a), "fg := [3]f32{1, 0, 0}")
-    testing.expect(t, !app.doc_undo(&a.editor.buffers[0].doc), "and must be ONE step, not one per frame")
+    testing.expect(t, !txt.doc_undo(&a.editor.buffers[0].doc), "and must be ONE step, not one per frame")
 }
 
 // Escape puts the token back exactly as it was, including the buffer's dirty flag — a picker

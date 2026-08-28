@@ -6,6 +6,7 @@ import "core:strconv"
 import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
+import "txt"
 
 // Alt+Enter follows the token under the caret, classified most- to least-specific so a bare
 // identifier is the fallback:
@@ -20,14 +21,14 @@ import "core:unicode/utf8"
 link_follow :: proc(a: ^App) {
     b := editor_current(&a.editor)
     cur := b.cursors[b.primary].head
-    if cur.line < 0 || cur.line >= doc_line_count(&b.doc) {
+    if cur.line < 0 || cur.line >= txt.doc_line_count(&b.doc) {
         return
     }
     // The classifiers scan one line as runes, so the byte column crosses to a rune index once,
     // here, and nothing below knows the document stores bytes.
-    cells := doc_cells(&b.doc, cur.line)
+    cells := txt.doc_cells(&b.doc, cur.line)
     line := cells.runes
-    col := cells_col(cells, cur.col)
+    col := txt.cells_col(cells, cur.col)
 
     if name, ok := link_wikilink_at(line, col); ok {
         link_open_wiki(a, name)
@@ -55,8 +56,8 @@ jump_to :: proc(a: ^App, path: string, line: int, col: int) {
         open_file(a, path) // may grow the ring, so nothing above may outlive this
     }
     b := editor_current(&a.editor)
-    target := clamp(line, 0, doc_line_count(&b.doc) - 1)
-    doc_reset_cursor(&b.doc, Pos{target, doc_byte_col(&b.doc, target, max(col, 0))})
+    target := clamp(line, 0, txt.doc_line_count(&b.doc) - 1)
+    txt.doc_reset_cursor(&b.doc, txt.Pos{target, txt.doc_byte_col(&b.doc, target, max(col, 0))})
     set_focus(a, .Editor)
     if has_from && (from_path != b.path || from_line != target) {
         cl_history_jump(a, from_path, b.path, from_line)

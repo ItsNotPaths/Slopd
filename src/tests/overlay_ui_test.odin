@@ -3,6 +3,8 @@ package tests
 import app ".."
 import clay "../../bindings/clay"
 import "core:testing"
+import "../gfx"
+import "../ui"
 
 // The two overlays. Within one scissor group quads paint UNDER glyphs, so a bar covering a
 // pane's text has to get out of that group. Three fields do it:
@@ -19,9 +21,9 @@ import "core:testing"
 // there are rows above the bar as well as under it.
 
 @(private = "file")
-PANE :: app.Rect{100, 50, 300, 300}
+PANE :: gfx.Rect{100, 50, 300, 300}
 @(private = "file")
-AREA :: app.Rect{102, 52, 296, 296}
+AREA :: gfx.Rect{102, 52, 296, 296}
 @(private = "file")
 FT_ROW_H :: 18 // the filetree's rows, under the bar
 @(private = "file")
@@ -40,9 +42,9 @@ BAR_Y :: 216 // 52 + 296 - 132: the bottom of the content area
 
 // {0, 0, 240, 200} insets to {2, 2, 236, 196}, holding 8 switcher rows of 22px.
 @(private = "file")
-TERM_PANE :: app.Rect{0, 0, 240, 200}
+TERM_PANE :: gfx.Rect{0, 0, 240, 200}
 @(private = "file")
-TERM_AREA :: app.Rect{2, 2, 236, 196}
+TERM_AREA :: gfx.Rect{2, 2, 236, 196}
 @(private = "file")
 COLW :: 32 // two 10px cells plus SWITCHER_COL_PAD
 @(private = "file")
@@ -61,8 +63,8 @@ palette :: proc(a: ^app.App) {
 
 // duration <= 0 makes anim_value return `to`, so this is "Alt has been down long enough".
 @(private = "file")
-faded_in :: proc(an: ^app.Anim) {
-    an^ = app.Anim{to = 1}
+faded_in :: proc(an: ^ui.Anim) {
+    an^ = ui.Anim{to = 1}
 }
 
 // A listing, the aux pane focused, Ctrl down.
@@ -156,7 +158,7 @@ test_chord_bar_in_both_faces :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 400)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     chord_app(&a, 20)
@@ -172,7 +174,7 @@ test_chord_bar_in_both_faces :: proc(t: ^testing.T) {
     br_bar, bok := box_of(&br, clay.ID("ch_bar"), .Rectangle)
     testing.expect(t, bok, "the browser face declared no chord bar")
 
-    for r in ([?]app.Rect{ls_bar, br_bar}) {
+    for r in ([?]gfx.Rect{ls_bar, br_bar}) {
         testing.expect_value(t, r.x, AREA.x)
         testing.expect_value(t, r.w, AREA.w)
         testing.expect_value(t, r.y + r.h, AREA.y + AREA.h) // pinned to the pane's bottom
@@ -238,7 +240,7 @@ test_chord_bar_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 400)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     chord_app(&a, 20)
@@ -248,7 +250,7 @@ test_chord_bar_command_list :: proc(t: ^testing.T) {
 
     bar, ok := box_of(&cmds, clay.ID("ch_bar"), .Rectangle)
     testing.expect(t, ok, "the bar drew no backdrop")
-    testing.expect_value(t, bar, app.Rect{AREA.x, BAR_Y, AREA.w, BAR_H})
+    testing.expect_value(t, bar, gfx.Rect{AREA.x, BAR_Y, AREA.w, BAR_H})
 
     // Pure layout: neither declares a background, so neither emits a command (rule 3).
     _, row_bg := box_of(&cmds, clay.ID("ch_row", 0), .Rectangle)
@@ -256,12 +258,12 @@ test_chord_bar_command_list :: proc(t: ^testing.T) {
     testing.expect(t, !row_bg && !item_bg, "a row or an item painted a background of its own")
 
     // One command per text run, in declaration order, with the readout last.
-    runs: [dynamic]app.Rect
+    runs: [dynamic]gfx.Rect
     defer delete(runs)
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
         if c.commandType == .Text {
-            append(&runs, app.clay_rect(c.boundingBox))
+            append(&runs, ui.clay_rect(c.boundingBox))
         }
     }
     testing.expect_value(t, len(runs), 2 * 14 + 1) // fourteen chords of two runs, plus one
@@ -311,7 +313,7 @@ test_chord_bar_paints_over_the_rows :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 400)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     chord_app(&a, 20)
@@ -321,16 +323,16 @@ test_chord_bar_paints_over_the_rows :: proc(t: ^testing.T) {
     cmds := app.filetree_layout(&a, &f, PANE, 500, 400)
 
     open_at: [8]int
-    open_box: [8]app.Rect
+    open_box: [8]gfx.Rect
     depth := 0
     pane_close, bar_open, bar_fill, bar_depth, last_row_text := -1, -1, -1, -1, -1
-    bar_clip: app.Rect
+    bar_clip: gfx.Rect
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
         #partial switch c.commandType {
         case .ScissorStart:
             open_at[depth] = int(i)
-            open_box[depth] = app.clay_rect(c.boundingBox)
+            open_box[depth] = ui.clay_rect(c.boundingBox)
             depth += 1
         case .ScissorEnd:
             depth -= 1
@@ -368,7 +370,7 @@ test_chord_bar_captures_the_pointer :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 400)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     chord_app(&a, 20)
@@ -407,11 +409,11 @@ test_switcher_geom_and_window :: proc(t: ^testing.T) {
     testing.expect_value(t, rows, SW_ROWS) // 196 / 22
 
     // Never wider than the pane it is inside.
-    narrow, _, _ := app.switcher_geom(app.Rect{0, 0, 12, 196}, 1, 16, 10)
+    narrow, _, _ := app.switcher_geom(gfx.Rect{0, 0, 12, 196}, 1, 16, 10)
     testing.expect_value(t, narrow, i32(12))
 
     // A hidden pane is a zero rect and reports no rows.
-    _, _, none := app.switcher_geom(app.Rect{}, 1, 16, 10)
+    _, _, none := app.switcher_geom(gfx.Rect{}, 1, 16, 10)
     testing.expect_value(t, none, 0)
 
     // Centred on the active session, then clamped at both ends.
@@ -444,7 +446,7 @@ test_switcher_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     switcher_app(&a, 12, 7)
@@ -455,13 +457,13 @@ test_switcher_command_list :: proc(t: ^testing.T) {
 
     col, ok := box_of(&cmds, clay.ID("sw_col"), .Rectangle)
     testing.expect(t, ok, "the switcher drew no column")
-    testing.expect_value(t, col, app.Rect{TERM_AREA.x, TERM_AREA.y, COLW, SW_ROWS * ROW_H})
+    testing.expect_value(t, col, gfx.Rect{TERM_AREA.x, TERM_AREA.y, COLW, SW_ROWS * ROW_H})
 
     // Sessions 3..10 are on screen, so the active row is the fifth down — keyed 7, not 4, which
     // is what makes the id name a session.
     active, act_ok := box_of(&cmds, clay.ID("sw_row", 7), .Rectangle)
     testing.expect(t, act_ok, "the active session drew no fill")
-    testing.expect_value(t, active, app.Rect{TERM_AREA.x, TERM_AREA.y + 4 * ROW_H, COLW, ROW_H})
+    testing.expect_value(t, active, gfx.Rect{TERM_AREA.x, TERM_AREA.y + 4 * ROW_H, COLW, ROW_H})
 
     // Only the active one: the rest are transparent and emit no command.
     _, idle_ok := box_of(&cmds, clay.ID("sw_row", 6), .Rectangle)
@@ -474,14 +476,14 @@ test_switcher_command_list :: proc(t: ^testing.T) {
         if c.commandType != .Text {
             continue
         }
-        r := app.clay_rect(c.boundingBox)
+        r := ui.clay_rect(c.boundingBox)
         s := string(c.renderData.text.stringContents.chars[:c.renderData.text.stringContents.length])
         switch s {
         case "8":
             one_digit = r.x
         case "10":
             two_digit = r.x
-            locked_col, _ = app.clay_color(c.renderData.text.textColor)
+            locked_col, _ = ui.clay_color(c.renderData.text.textColor)
         }
         texts += 1
     }
@@ -504,7 +506,7 @@ test_switcher_is_a_group_of_its_own :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     switcher_app(&a, 12, 7)
@@ -513,15 +515,15 @@ test_switcher_is_a_group_of_its_own :: proc(t: ^testing.T) {
     cmds := app.switcher_layout(&a, &f, TERM_AREA, 500, 300)
 
     open_at: [8]int
-    open_box: [8]app.Rect
+    open_box: [8]gfx.Rect
     depth, pane_close, col_open, col_fill, col_depth := 0, -1, -1, -1, -1
-    col_clip: app.Rect
+    col_clip: gfx.Rect
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
         #partial switch c.commandType {
         case .ScissorStart:
             open_at[depth] = int(i)
-            open_box[depth] = app.clay_rect(c.boundingBox)
+            open_box[depth] = ui.clay_rect(c.boundingBox)
             depth += 1
         case .ScissorEnd:
             depth -= 1
@@ -560,7 +562,7 @@ test_overlay_outranks_everything_declared_after_it :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 400)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     chord_app(&a, 20)
@@ -569,15 +571,15 @@ test_overlay_outranks_everything_declared_after_it :: proc(t: ^testing.T) {
     defer app.editor_destroy(&a.editor)
     app.buffer_set_text(app.editor_current(&a.editor), "alpha\nbravo")
 
-    ed_pane := app.Rect{0, 0, 90, 380}
-    strip := app.Rect{0, 380, 500, 20}
+    ed_pane := gfx.Rect{0, 0, 90, 380}
+    strip := gfx.Rect{0, 380, 500, 20}
     ed_area, ed_row_h, ed_rows := app.editor_geom(ed_pane, 1, f.line_height)
     v := app.editor_view(app.editor_current(&a.editor), &f, ed_area, ed_row_h, ed_rows, 0)
 
     app.clay_window_begin(500, 400)
     if clay.UI(clay.ID(app.WIN_ROOT))(app.clay_window_root(500, 400)) {
         app.editor_declare(&a, &f, ed_pane, v, 0)
-        app.filetree_declare(&a, &f, AREA, a.tree.scroll, 0, 0)
+        app.filetree_declare(app.ctx_of(&a), &a, &f, AREA, a.tree.scroll, 0, 0)
         app.strip_declare(&a, &f, strip, 0)
     }
     cmds := clay.EndLayout(0)

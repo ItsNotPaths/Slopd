@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:testing"
 import "core:strings"
 import "core:time"
+import "../txt"
 
 // E8's keep-the-numbers-honest bench, in budget_test's spirit: measure rather than reason,
 // assert a CEILING rather than an exact figure, and print the measurement so drift is visible.
@@ -55,10 +56,10 @@ test_perf_ceilings :: proc(t: ^testing.T) {
     defer app.buffer_destroy(&b)
 
     // A typed run mid-file, through the whole funnel. The average IS the smoothing.
-    app.doc_reset_cursor(&b.doc, app.Pos{app.doc_line_count(&b.doc) / 2, 4})
+    txt.doc_reset_cursor(&b.doc, txt.Pos{txt.doc_line_count(&b.doc) / 2, 4})
     start := time.tick_now()
     for _ in 0 ..< PERF_KEYSTROKES {
-        app.doc_insert_rune(&b.doc, 'x')
+        txt.doc_insert_rune(&b.doc, 'x')
     }
     keystroke := time.tick_since(start) / PERF_KEYSTROKES
 
@@ -74,7 +75,7 @@ test_perf_ceilings :: proc(t: ^testing.T) {
     fmt.printfln(
         "[perf] %d KB / %d lines: load %.2f ms, keystroke %.1f us, serialise %.2f ms",
         len(src) / 1024,
-        app.doc_line_count(&b.doc),
+        txt.doc_line_count(&b.doc),
         time.duration_milliseconds(load),
         f64(time.duration_microseconds(keystroke)),
         time.duration_milliseconds(save),

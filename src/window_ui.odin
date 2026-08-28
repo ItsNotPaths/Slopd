@@ -1,6 +1,8 @@
 package main
 
 import clay "../bindings/clay"
+import "gfx"
+import "ui"
 
 // One Clay tree per frame, with the panes as floating siblings of a single `win_root` at their
 // own rects. Clay holds exactly one tree, so a per-pane tree would leave PointerOver answering
@@ -24,7 +26,7 @@ DIVIDER_DRAG_PX :: 3
 
 // The gap IS the predicate: compute_layout leaves `gutter` px between side-by-side panes, zero
 // in Zen, nothing when one is hidden. So Zen's boundary is not draggable.
-divider_band :: proc(lay: Layout, scale: f32) -> (Rect, bool) {
+divider_band :: proc(lay: Layout, scale: f32) -> (gfx.Rect, bool) {
     if !lay.vis.editor || !lay.vis.aux {
         return {}, false
     }
@@ -34,7 +36,7 @@ divider_band :: proc(lay: Layout, scale: f32) -> (Rect, bool) {
         return {}, false
     }
     slop := max(i32(1), i32(DIVIDER_GRAB * scale))
-    return Rect{right - slop, lay.editor.y, gap + 2 * slop, lay.editor.h}, true
+    return gfx.Rect{right - slop, lay.editor.y, gap + 2 * slop, lay.editor.h}, true
 }
 
 // The inverse of compute_layout's `i32(f32(win_w) * split)`, clamped to Alt+[ / Alt+]'s range:
@@ -49,45 +51,47 @@ divider_split_at :: proc(mx, win_w: i32) -> f32 {
 // Taken before any pane declares: the band overlaps both panes' edges, so a divider asking
 // second would be reachable only in the 2px of gutter it was widened to escape.
 divider_click :: proc(a: ^App, lay: Layout) {
+    u := ctx_of(a)
     if !a.mouse_on || !a.mouse.known {
         return
     }
     band, ok := divider_band(lay, a.scale)
-    if !ok || !rect_hit(band, a.mouse.x, a.mouse.y) {
+    if !ok || !gfx.rect_hit(band, a.mouse.x, a.mouse.y) {
         return
     }
-    if _, took := mouse_take_click(a); !took {
+    if _, took := ui.mouse_take_click(u); !took {
         return
     }
     // No noun and no anchor: the press captured a single number, and there is no second grade
     // of "move the divider".
-    drag_begin(a, .Split, 0, 1, {}, 0)
+    ui.drag_begin(u, .Split, 0, 1, {}, 0)
 }
 
 // The frame's last word on `a.split`, hence before compute_layout. Snapped, not eased:
 // SPLIT_DUR exists for Alt+[ / Alt+]'s 0.02 steps, and easing a drag would trail the cursor.
 divider_drag :: proc(a: ^App, win_w: i32) {
+    u := ctx_of(a)
     // drag_sweep buries a capture when the toggle goes off, but it runs at the END of a frame
     // and a config change arrives before one. Every per-frame drag verb asks this.
-    if !a.mouse_on || !drag_live(a, .Split, 0) {
+    if !a.mouse_on || !ui.drag_live(u, .Split, 0) {
         return
     }
-    if !drag_moved(a, DIVIDER_DRAG_PX) {
+    if !ui.drag_moved(u, DIVIDER_DRAG_PX) {
         return // still a click, which does nothing on a divider
     }
     a.split = divider_split_at(a.mouse.x, win_w)
-    a.split_anim = Anim {
+    a.split_anim = ui.Anim {
         to = a.split,
     }
 }
 
 // ok=false for the gutter, the strip, or outside the window. wheel_target's twin: which pane a
 // press landed in is a question the rects answer on their own.
-click_focus_target :: proc(lay: Layout, mx, my: i32) -> (who: Focus, ok: bool) {
-    if rect_hit(lay.editor, mx, my) {
+click_focus_target :: proc(lay: Layout, mx, my: i32) -> (who: ui.Focus, ok: bool) {
+    if gfx.rect_hit(lay.editor, mx, my) {
         return .Editor, true
     }
-    if rect_hit(lay.aux, mx, my) {
+    if gfx.rect_hit(lay.aux, mx, my) {
         return .Aux, true
     }
     return .Editor, false
@@ -123,34 +127,12 @@ window_pointer :: proc(a: ^App, win_w: i32) {
 // frame and each `<p>_layout` wrapper both declare it.
 WIN_ROOT :: "win_root"
 
-// Attached to the root by the top-left corner, so the offset IS the pane's origin. Passthrough:
-// one that captured would stop the root answering for the gutter.
-clay_pane_float :: proc(area: Rect) -> clay.FloatingElementConfig {
-    return {
-        attachTo           = .Root,
-        offset             = {f32(area.x), f32(area.y)},
-        attachment         = {element = .LeftTop, parent = .LeftTop},
-        pointerCaptureMode = .Passthrough,
-    }
-}
 
-// Fixed to the content area, floating at its origin, clipping its own content, stacking
-// downward. One call, so the panes cannot disagree.
-clay_pane_box :: proc(area: Rect) -> clay.ElementDeclaration {
-    return {
-        layout = {
-            sizing          = {clay.SizingFixed(f32(area.w)), clay.SizingFixed(f32(area.h))},
-            layoutDirection = .TopToBottom,
-        },
-        floating = clay_pane_float(area),
-        clip     = {horizontal = true, vertical = true},
-    }
-}
 
 // The two must not be separated: Clay solves at the dimensions it currently holds, so a resize
 // applied after BeginLayout lands a frame late.
 clay_window_begin :: proc(win_w, win_h: i32) {
-    clay_resize(win_w, win_h)
+    ui.clay_resize(win_w, win_h)
     clay.BeginLayout()
 }
 
@@ -161,7 +143,7 @@ clay_window_root :: proc(win_w, win_h: i32) -> clay.ElementDeclaration {
 
 // Every live pane claims its click, moves its viewport and declares itself into one tree. The
 // editor goes first so a press over the boundary is offered to it first.
-window_frame :: proc(t: ^Text, a: ^App, lay: Layout, win_w, win_h: i32, now: f64) {
+window_frame :: proc(t: ^gfx.Text, a: ^App, lay: Layout, win_w, win_h: i32, now: f64) {
     clay_window_begin(win_w, win_h)
 
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
@@ -199,5 +181,5 @@ window_frame :: proc(t: ^Text, a: ^App, lay: Layout, win_w, win_h: i32, now: f64
     }
 
     cmds := clay.EndLayout(0)
-    clay_paint(t, a, &cmds, Rect{0, 0, win_w, win_h}, win_w, win_h)
+    ui.clay_paint(t, a, &cmds, gfx.Rect{0, 0, win_w, win_h}, win_w, win_h)
 }

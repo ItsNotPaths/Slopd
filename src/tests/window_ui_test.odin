@@ -3,6 +3,8 @@ package tests
 import app ".."
 import clay "../../bindings/clay"
 import "core:testing"
+import "../gfx"
+import "../ui"
 
 // The window frame: one tree per frame, the panes floating inside it at the rects
 // compute_layout chose.
@@ -20,29 +22,29 @@ WIN_W :: 500
 @(private = "file")
 WIN_H :: 300
 @(private = "file")
-ED_PANE :: app.Rect{0, 0, 249, 280}
+ED_PANE :: gfx.Rect{0, 0, 249, 280}
 @(private = "file")
-ED_AREA :: app.Rect{2, 2, 245, 276} // inset by the 2px focus ring
+ED_AREA :: gfx.Rect{2, 2, 245, 276} // inset by the 2px focus ring
 @(private = "file")
-AUX_PANE :: app.Rect{251, 0, 249, 280}
+AUX_PANE :: gfx.Rect{251, 0, 249, 280}
 @(private = "file")
-AUX_AREA :: app.Rect{253, 2, 245, 276}
+AUX_AREA :: gfx.Rect{253, 2, 245, 276}
 @(private = "file")
 FT_ROW_H :: 18
 
 // Into ONE tree, in window_frame's order. The declarations are the app's own procs; only the
 // pair of calls is written out, which is what window_frame's aux_mode switch does.
 @(private = "file")
-two_panes :: proc(a: ^app.App, f: ^app.Font, v: app.Editor_View) {
+two_panes :: proc(a: ^app.App, f: ^gfx.Font, v: app.Editor_View) {
     app.clay_window_begin(WIN_W, WIN_H)
     if clay.UI(clay.ID(app.WIN_ROOT))(app.clay_window_root(WIN_W, WIN_H)) {
         app.editor_declare(a, f, ED_PANE, v, 0)
-        app.filetree_declare(a, f, AUX_PANE, a.tree.scroll, 0, 0)
+        app.filetree_declare(app.ctx_of(a), a, f, AUX_PANE, a.tree.scroll, 0, 0)
     }
 }
 
 @(private = "file")
-fixture :: proc(a: ^app.App, f: ^app.Font) -> app.Editor_View {
+fixture :: proc(a: ^app.App, f: ^gfx.Font) -> app.Editor_View {
     app.editor_init(&a.editor)
     a.scale = 1
     a.mouse_on = true
@@ -72,7 +74,7 @@ test_window_places_both_panes :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     v := fixture(&a, &f)
@@ -81,11 +83,11 @@ test_window_places_both_panes :: proc(t: ^testing.T) {
     two_panes(&a, &f, v)
     cmds := clay.EndLayout(0)
 
-    ed_clip, aux_clip: app.Rect
-    custom: app.Rect
+    ed_clip, aux_clip: gfx.Rect
+    custom: gfx.Rect
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
-        r := app.clay_rect(c.boundingBox)
+        r := ui.clay_rect(c.boundingBox)
         #partial switch c.commandType {
         case .ScissorStart:
             if c.id == clay.ID("ed_pane").id {
@@ -117,7 +119,7 @@ test_window_pane_clips_do_not_interleave :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     v := fixture(&a, &f)
@@ -153,7 +155,7 @@ test_window_one_tree_answers_for_every_pane :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     v := fixture(&a, &f)
@@ -228,7 +230,7 @@ pointing_app :: proc(x, y: i32) -> app.App {
 test_divider_band_straddles_the_gutter :: proc(t: ^testing.T) {
     band, ok := app.divider_band(LAY, 1)
     testing.expect(t, ok, "two panes side by side have a divider")
-    testing.expect_value(t, band, app.Rect{245, 0, 10, 280}) // 249 - 4, 2 + 2*4
+    testing.expect_value(t, band, gfx.Rect{245, 0, 10, 280}) // 249 - 4, 2 + 2*4
     testing.expect(t, band.x < ED_PANE.x + ED_PANE.w, "the band must reach into the editor's edge")
     testing.expect(t, band.x + band.w > AUX_PANE.x, "and into the aux pane's")
 
@@ -266,7 +268,7 @@ test_divider_drag_moves_the_split :: proc(t: ^testing.T) {
     a := pointing_app(250, 140) // dead centre of the gutter
 
     app.divider_click(&a, a.lay)
-    testing.expect(t, app.drag_live(&a, .Split, 0), "a press in the band must capture")
+    testing.expect(t, ui.drag_live(app.ctx_of(&a), .Split, 0), "a press in the band must capture")
     testing.expect(t, !a.mouse.click, "and must claim the press")
 
     // Inside the threshold: still a click, which on a divider does nothing.
@@ -303,12 +305,12 @@ test_divider_ignores_presses_elsewhere :: proc(t: ^testing.T) {
     a := pointing_app(100, 140)
     app.divider_click(&a, a.lay)
     testing.expect(t, a.mouse.click, "a press over a pane must stay pending")
-    testing.expect_value(t, a.drag.kind, app.Drag_Kind.None)
+    testing.expect_value(t, a.drag.kind, ui.Drag_Kind.None)
 
     b := pointing_app(250, 140)
     b.mouse_on = false
     app.divider_click(&b, b.lay)
-    testing.expect_value(t, b.drag.kind, app.Drag_Kind.None)
+    testing.expect_value(t, b.drag.kind, ui.Drag_Kind.None)
 
     // With no drag held, the per-frame verb writes nothing.
     c := pointing_app(400, 140)
@@ -324,15 +326,15 @@ test_divider_ignores_presses_elsewhere :: proc(t: ^testing.T) {
 @(test)
 test_focus_follows_click_without_eating_it :: proc(t: ^testing.T) {
     a := pointing_app(300, 140) // over the aux pane, focus in the editor
-    testing.expect_value(t, a.focus, app.Focus.Editor)
+    testing.expect_value(t, a.focus, ui.Focus.Editor)
 
     app.focus_follows_click(&a, a.lay)
-    testing.expect_value(t, a.focus, app.Focus.Aux)
+    testing.expect_value(t, a.focus, ui.Focus.Aux)
     testing.expect(t, a.mouse.click, "the pane still has to claim its own row")
 
     a.mouse.x = 100 // and back over the editor
     app.focus_follows_click(&a, a.lay)
-    testing.expect_value(t, a.focus, app.Focus.Editor)
+    testing.expect_value(t, a.focus, ui.Focus.Editor)
 }
 
 // The gutter (which keeps a resize from stealing focus), the strip, off-window, and a pane that
@@ -353,7 +355,7 @@ test_focus_follows_click_only_where_a_pane_is :: proc(t: ^testing.T) {
     a := pointing_app(300, 140)
     a.mouse.click = false
     app.focus_follows_click(&a, a.lay)
-    testing.expect_value(t, a.focus, app.Focus.Editor)
+    testing.expect_value(t, a.focus, ui.Focus.Editor)
 
     // A hidden pane carries a zero rect, so it cannot be clicked into.
     lone := LAY
@@ -369,16 +371,16 @@ test_focus_follows_click_only_where_a_pane_is :: proc(t: ^testing.T) {
 @(test)
 test_window_pointer_divider_outranks_focus :: proc(t: ^testing.T) {
     a := pointing_app(254, 140) // inside the band, and inside the aux pane's rect
-    testing.expect(t, app.rect_hit(AUX_PANE, 254, 140), "the fixture must be over the aux pane")
+    testing.expect(t, gfx.rect_hit(AUX_PANE, 254, 140), "the fixture must be over the aux pane")
 
     app.window_pointer(&a, WIN_W)
-    testing.expect(t, app.drag_live(&a, .Split, 0), "the divider takes the press")
-    testing.expect_value(t, a.focus, app.Focus.Editor) // unmoved: the press was spent
+    testing.expect(t, ui.drag_live(app.ctx_of(&a), .Split, 0), "the divider takes the press")
+    testing.expect_value(t, a.focus, ui.Focus.Editor) // unmoved: the press was spent
 
     // Two pixels further in it is an ordinary press on the pane, which does move focus.
     b := pointing_app(256, 140)
     app.window_pointer(&b, WIN_W)
-    testing.expect_value(t, b.drag.kind, app.Drag_Kind.None)
-    testing.expect_value(t, b.focus, app.Focus.Aux)
+    testing.expect_value(t, b.drag.kind, ui.Drag_Kind.None)
+    testing.expect_value(t, b.focus, ui.Focus.Aux)
     testing.expect(t, b.mouse.click, "and the pane's own verb still gets it")
 }

@@ -4,6 +4,8 @@ import "base:runtime"
 import "core:fmt"
 import "core:strings"
 import clay "../bindings/clay"
+import "gfx"
+import "ui"
 
 // The binds pane's UI half — the flattening and the click; pane_ui.odin draws the rows.
 //
@@ -37,14 +39,14 @@ BindsRow :: struct {
 }
 
 binds_geom :: proc(
-    pane: Rect,
+    pane: gfx.Rect,
     scale, line_h, cell_w: f32,
 ) -> (
-    area: Rect,
+    area: gfx.Rect,
     row_h: i32,
     rows, cols: int,
 ) {
-    return list_geom(pane, scale, line_h, cell_w, BINDS_ROW_PAD)
+    return ui.list_geom(pane, scale, line_h, cell_w, BINDS_ROW_PAD)
 }
 
 // The widest action name plus ": ", so every chord list starts on one column.
@@ -80,14 +82,14 @@ binds_chord_text :: proc(bp: ^BindsPane, act: Action, alloc: runtime.Allocator) 
 binds_chord_spans :: proc(
     bp: ^BindsPane,
     act: Action,
-    th: ^Theme,
+    th: ^gfx.Theme,
     alloc: runtime.Allocator,
-) -> []Pane_Span {
+) -> []ui.Pane_Span {
     at := binds_of(bp, act)
     if len(at) == 0 {
         return nil
     }
-    out := make([]Pane_Span, len(at), alloc)
+    out := make([]ui.Pane_Span, len(at), alloc)
     for i, k in at {
         text := chord_string(bp.working[i].chord, alloc)
         if k > 0 {
@@ -205,7 +207,7 @@ binds_click :: proc(a: ^App, rows: []BindsRow, row: int) {
     if row < 0 || row >= len(rows) || rows[row].item < 0 {
         return
     }
-    count, ok := mouse_take_click(a)
+    count, ok := ui.mouse_take_click(ctx_of(a))
     if !ok {
         return
     }
@@ -218,7 +220,7 @@ binds_click :: proc(a: ^App, rows: []BindsRow, row: int) {
     }
 }
 
-binds_row_color :: proc(th: ^Theme, r: BindsRow, sel: bool) -> [3]f32 {
+binds_row_color :: proc(th: ^gfx.Theme, r: BindsRow, sel: bool) -> [3]f32 {
     switch r.kind {
     case .Rule:
         return th.border_light
@@ -236,20 +238,20 @@ binds_row_color :: proc(th: ^Theme, r: BindsRow, sel: bool) -> [3]f32 {
 
 // The drawable view: an error row is urgent throughout, and only the lit row spells out which of
 // its chords Left/Right has landed on.
-binds_draw_rows :: proc(a: ^App, rows: []BindsRow, alloc := context.allocator) -> []Pane_Row {
-    th := &a.theme
-    sel_row := a.binds_pane.sel
-    out := make([]Pane_Row, len(rows), alloc)
+binds_draw_rows :: proc(u: ui.UI_Ctx, bp: ^BindsPane, rows: []BindsRow, alloc := context.allocator) -> []ui.Pane_Row {
+    th := u.theme
+    sel_row := bp.sel
+    out := make([]ui.Pane_Row, len(rows), alloc)
     for r, i in rows {
         sel := r.item >= 0 && r.item == sel_row
         // Only the lit row splits its chords, since only there is one of them picked out.
-        spans: []Pane_Span
+        spans: []ui.Pane_Span
         if sel && r.kind == .Action {
-            if act, ok := binds_pane_action(&a.binds_pane, r.item); ok {
-                spans = binds_chord_spans(&a.binds_pane, act, th, alloc)
+            if act, ok := binds_pane_action(bp, r.item); ok {
+                spans = binds_chord_spans(bp, act, th, alloc)
             }
         }
-        out[i] = Pane_Row {
+        out[i] = ui.Pane_Row {
             text   = r.text,
             value  = r.value,
             spans  = spans,
@@ -264,14 +266,13 @@ binds_draw_rows :: proc(a: ^App, rows: []BindsRow, alloc := context.allocator) -
     return out
 }
 
-binds_declare :: proc(a: ^App, f: ^Font, pane: Rect, ui: []Pane_Row) {
-    bp := &a.binds_pane
-    area, row_h, max_rows, _ := binds_geom(pane, a.scale, f.line_height, f.cell_w)
-    pane_declare(
-        a,
+binds_declare :: proc(u: ui.UI_Ctx, bp: ^BindsPane, f: ^gfx.Font, pane: gfx.Rect, rows: []ui.Pane_Row) {
+    area, row_h, max_rows, _ := binds_geom(pane, u.scale, f.line_height, f.cell_w)
+    ui.pane_declare(
+        u,
         f,
         {
-            ids = BINDS_IDS,
+            ids = ui.BINDS_IDS,
             area = area,
             row_h = row_h,
             max_rows = max_rows,
@@ -279,47 +280,49 @@ binds_declare :: proc(a: ^App, f: ^Font, pane: Rect, ui: []Pane_Row) {
             scroll = bp.scroll,
             hover = bp.hover,
         },
-        ui,
+        rows,
     )
 }
 
-binds_frame :: proc(t: ^Text, a: ^App, pane: Rect) {
-    area, _, max_rows, cols := binds_geom(pane, a.scale, t.font.line_height, t.font.cell_w)
+binds_frame :: proc(t: ^gfx.Text, a: ^App, pane: gfx.Rect) {
+    u := ctx_of(a)
+    area, _, max_rows, cols := binds_geom(pane, u.scale, t.font.line_height, t.font.cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }
     bp := &a.binds_pane
     rows := binds_rows(bp, cols, context.temp_allocator)
-    ui := binds_draw_rows(a, rows, context.temp_allocator)
-    hit := pane_hit(BINDS_IDS, ui, bp.scroll, max_rows)
+    drawn := binds_draw_rows(u, bp, rows, context.temp_allocator)
+    hit := ui.pane_hit(ui.BINDS_IDS, drawn, bp.scroll, max_rows)
     bp.hover = hit
     binds_click(a, rows, hit)
 
     rows = binds_rows(bp, cols, context.temp_allocator)
-    ui = binds_draw_rows(a, rows, context.temp_allocator)
-    list_scroll_apply(
+    drawn = binds_draw_rows(u, bp, rows, context.temp_allocator)
+    ui.list_scroll_apply(
         &bp.scroll,
         &bp.scroll_detached,
-        pane_anchor(ui),
+        ui.pane_anchor(drawn),
         max_rows,
-        len(ui),
-        a.scroll_mode == .Middle,
-        pane_input_at(a),
+        len(drawn),
+        u.scroll_mode == .Middle,
+        ui.pane_input_at(u),
     )
-    binds_declare(a, &t.font, pane, ui)
+    binds_declare(u, bp, &t.font, pane, drawn)
 }
 
 // Test-facing wrapper; see filetree_layout.
 binds_layout :: proc(
     a: ^App,
-    f: ^Font,
-    pane: Rect,
+    f: ^gfx.Font,
+    pane: gfx.Rect,
     rows: []BindsRow,
     win_w, win_h: i32,
 ) -> clay.ClayArray(clay.RenderCommand) {
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        binds_declare(a, f, pane, binds_draw_rows(a, rows, context.temp_allocator))
+        u := ctx_of(a)
+        binds_declare(u, &a.binds_pane, f, pane, binds_draw_rows(u, &a.binds_pane, rows, context.temp_allocator))
     }
     return clay.EndLayout(0)
 }

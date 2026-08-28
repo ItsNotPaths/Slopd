@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:strings"
+import "txt"
 
 // Workspace-wide find and replace: `:rep <old> <new>`.
 //
@@ -133,15 +134,15 @@ rep_buffer_for :: proc(a: ^App, path: string) -> ^Buffer {
 // One file, as ONE undo step: doc_commit journals the whole batch, so a single undo in that file
 // backs all of it out. The cursors land on the replacements, as they do after `:f` + Shift+Enter.
 rep_buffer_replace :: proc(b: ^Buffer, old, new: string) -> int {
-    offs := rep_offsets(doc_string(&b.doc, context.temp_allocator), old)
+    offs := rep_offsets(txt.doc_string(&b.doc, context.temp_allocator), old)
     if len(offs) == 0 {
         return 0
     }
-    edits := make([dynamic]Edit, 0, len(offs), context.temp_allocator)
+    edits := make([dynamic]txt.Edit, 0, len(offs), context.temp_allocator)
     for off in offs {
-        append(&edits, Edit{off, off + len(old), new, 0})
+        append(&edits, txt.Edit{off, off + len(old), new, 0})
     }
-    if !doc_commit(&b.doc, edits[:]) {
+    if !txt.doc_commit(&b.doc, edits[:]) {
         return 0
     }
     b.dirty = true

@@ -1,4 +1,4 @@
-package main
+package ui
 
 // buffer_scroll_target's flat-row twin: a list tracks its selection as the editor tracks its
 // caret, under the one `scroll_mode` config. No folds, so plain rows.
@@ -57,8 +57,8 @@ list_scroll_apply :: proc(scroll: ^int, detached: ^f64, sel, rows, total: int, c
 }
 
 // The app's, only while the aux pane holds focus. Zero never re-attaches.
-pane_input_at :: proc(a: ^App) -> f64 {
-    return a.focus == .Aux ? a.last_input_at : 0
+pane_input_at :: proc(u: UI_Ctx) -> f64 {
+    return u.focus == .Aux ? u.last_input_at : 0
 }
 
 // Seconds for a scroll step to settle.

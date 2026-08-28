@@ -1,10 +1,11 @@
-package main
+package syntax
 
 import "base:runtime"
 import "core:sync"
 import "core:thread"
-import ts "../vendor/odin-tree-sitter"
-import "wake"
+import ts "../../vendor/odin-tree-sitter"
+import "../wake"
+import "../txt"
 
 // One thread keeping a buffer's syntax tree up to date while the main thread types into it.
 //
@@ -26,7 +27,7 @@ import "wake"
 // thread's tracking allocation from another is an invalid pointer, not a leak.
 Hl_Job :: struct {
     text:    []u8, // the document at `version`, copied
-    changes: []Doc_Change, // folded into `base` first; empty means parse from scratch
+    changes: []txt.Doc_Change, // folded into `base` first; empty means parse from scratch
     base:    ts.Tree, // the tree to edit and reuse, or nil for a full parse
     lang:    ts.Language,
     buf:     rawptr, // identity only; never dereferenced here
@@ -234,4 +235,16 @@ job_destroy :: proc(j: ^Hl_Job) {
         ts.tree_delete(j.base)
     }
     j^ = {}
+}
+
+// The worker below replays the same changes onto the same tree.
+hl_input_edit :: proc(c: txt.Doc_Change) -> ts.Input_Edit {
+    return ts.Input_Edit {
+        start_byte = u32(c.start),
+        old_end_byte = u32(c.old_end),
+        new_end_byte = u32(c.new_end),
+        start_point = ts.Point{u32(c.start_pt.line), u32(c.start_pt.col)},
+        old_end_point = ts.Point{u32(c.old_end_pt.line), u32(c.old_end_pt.col)},
+        new_end_point = ts.Point{u32(c.new_end_pt.line), u32(c.new_end_pt.col)},
+    }
 }

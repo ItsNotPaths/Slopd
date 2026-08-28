@@ -3,6 +3,9 @@ package tests
 import app ".."
 import clay "../../bindings/clay"
 import "core:testing"
+import "../txt"
+import "../gfx"
+import "../ui"
 
 // The workspace prompt declared in Clay, under BOTH faces of the file pane. The claim is the one
 // the shared UI half exists for: the same prompt and the same rows come out of the `ls` header
@@ -13,9 +16,9 @@ import "core:testing"
 // {2, 2, 596, 296}. `ls`: an 18px header, then the rows. Browser: a 26px bar, a 160px sidebar.
 
 @(private = "file")
-WPANE :: app.Rect{0, 0, 600, 300}
+WPANE :: gfx.Rect{0, 0, 600, 300}
 @(private = "file")
-WAREA :: app.Rect{2, 2, 596, 296}
+WAREA :: gfx.Rect{2, 2, 596, 296}
 @(private = "file")
 WROW :: 18
 @(private = "file")
@@ -47,7 +50,7 @@ fake_prompt :: proc(a: ^app.App, n: int) {
 fake_prompt_free :: proc(a: ^app.App) {
     delete(a.wsfind.rows)
     delete(a.filebrowser.places)
-    app.doc_destroy(&a.wsfind.query)
+    txt.doc_destroy(&a.wsfind.query)
 }
 
 // The `ls` face: the prompt takes the header, and the rows take everything under it.
@@ -56,7 +59,7 @@ test_wsfind_declared_in_ls :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fake_prompt(&a, 3)
@@ -69,12 +72,12 @@ test_wsfind_declared_in_ls :: proc(t: ^testing.T) {
     // The line fills the header past its one-cell margin and the label.
     edit, ok := box_of(&cmds, clay.ID("ws_edit"), .Custom)
     testing.expect(t, ok, "the header declared no text field")
-    testing.expect_value(t, edit, app.Rect{WAREA.x + 10 + WLBL, WAREA.y, WAREA.w - 10 - WLBL, WROW})
+    testing.expect_value(t, edit, gfx.Rect{WAREA.x + 10 + WLBL, WAREA.y, WAREA.w - 10 - WLBL, WROW})
 
     // The first row is the selected one, at the top of the region under the header.
     row, rok := box_of(&cmds, clay.ID("ws_row", 0), .Rectangle)
     testing.expect(t, rok, "the selected row drew no background")
-    testing.expect_value(t, row, app.Rect{WAREA.x, WAREA.y + WROW, WAREA.w, WROW})
+    testing.expect_value(t, row, gfx.Rect{WAREA.x, WAREA.y + WROW, WAREA.w, WROW})
 
     _, unsel := box_of(&cmds, clay.ID("ws_row", 1), .Rectangle)
     testing.expect(t, !unsel, "an unselected row must not paint a background (rule 3)")
@@ -93,7 +96,7 @@ test_wsfind_declared_in_browser :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fake_prompt(&a, 3)
@@ -104,34 +107,34 @@ test_wsfind_declared_in_browser :: proc(t: ^testing.T) {
 
     cmds := app.filebrowser_layout(&a, &f, WPANE, 600, 300)
 
-    path := app.Rect{WAREA.x + 3 * WBAR, WAREA.y, WAREA.w - 4 * WBAR, WBAR}
+    path := gfx.Rect{WAREA.x + 3 * WBAR, WAREA.y, WAREA.w - 4 * WBAR, WBAR}
     edit, ok := box_of(&cmds, clay.ID("ws_edit"), .Custom)
     testing.expect(t, ok, "the path region declared no text field")
     testing.expect_value(t, edit, app.wsfind_field_rect(path, 10))
 
-    content := app.Rect{WAREA.x + WSIDE, WAREA.y + WBAR, WAREA.w - WSIDE, WAREA.h - WBAR}
+    content := gfx.Rect{WAREA.x + WSIDE, WAREA.y + WBAR, WAREA.w - WSIDE, WAREA.h - WBAR}
     row, rok := box_of(&cmds, clay.ID("ws_row", 0), .Rectangle)
     testing.expect(t, rok, "the selected row drew no background")
-    testing.expect_value(t, row, app.Rect{content.x, content.y, content.w, WROW})
+    testing.expect_value(t, row, gfx.Rect{content.x, content.y, content.w, WROW})
 
     _, listed := box_of(&cmds, clay.ID("fb_item", 0), .Rectangle)
     testing.expect(t, !listed, "the listing was declared under the prompt")
 
     // The chrome the prompt does not take is untouched: the sidebar still lists its place, and
     // the view toggle is still on the bar's right edge.
-    side := app.Rect{WAREA.x, WAREA.y + WBAR, WSIDE, WAREA.h - WBAR}
+    side := gfx.Rect{WAREA.x, WAREA.y + WBAR, WSIDE, WAREA.h - WBAR}
     testing.expect_value(t, texts_in_box(&cmds, side), 1)
-    toggle := app.Rect{path.x + path.w, WAREA.y, WBAR, WBAR}
+    toggle := gfx.Rect{path.x + path.w, WAREA.y, WBAR, WBAR}
     testing.expect_value(t, texts_in_box(&cmds, toggle), 1)
 }
 
 // How many text runs start inside `region` — filebrowser_ui_test's, which is file-private there.
 @(private = "file")
-texts_in_box :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), region: app.Rect) -> (n: int) {
+texts_in_box :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), region: gfx.Rect) -> (n: int) {
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(cmds, i)
-        r := app.clay_rect(c.boundingBox)
-        if c.commandType == .Text && app.rect_hit(region, r.x, r.y) {
+        r := ui.clay_rect(c.boundingBox)
+        if c.commandType == .Text && gfx.rect_hit(region, r.x, r.y) {
             n += 1
         }
     }

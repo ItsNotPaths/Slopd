@@ -1,8 +1,10 @@
 package main
 
 import gl "vendor:OpenGL"
+import "gfx"
+import "ui"
 
-// Solid-colour quads plus glyph text, batched per pane (text.odin). Every colour comes from
+// Solid-colour quads plus glyph text, batched per pane (src/gfx). Every colour comes from
 // a.theme; the palette maps to UI usage as:
 //   border_dark -> window gutter / overlay bg   bg -> pane background
 //   accent      -> focus outline / active item  border_light -> status strip
@@ -32,28 +34,17 @@ aux_mode_name :: proc(m: AuxMode) -> string {
     return ""
 }
 
-inset :: proc(r: Rect, by: i32) -> Rect {
-    return Rect{r.x + by, r.y + by, r.w - 2 * by, r.h - 2 * by}
-}
 
 // Four edge bars of `w` thickness just inside `r`, leaving the middle untouched.
-outline :: proc(t: ^Text, r: Rect, color: [3]f32, w: i32) {
-    fill(t, Rect{r.x, r.y, r.w, w}, color)                 // top
-    fill(t, Rect{r.x, r.y + r.h - w, r.w, w}, color)       // bottom
-    fill(t, Rect{r.x, r.y, w, r.h}, color)                 // left
-    fill(t, Rect{r.x + r.w - w, r.y, w, r.h}, color)       // right
+outline :: proc(t: ^gfx.Text, r: gfx.Rect, color: [3]f32, w: i32) {
+    gfx.fill(t, gfx.Rect{r.x, r.y, r.w, w}, color)                 // top
+    gfx.fill(t, gfx.Rect{r.x, r.y + r.h - w, r.w, w}, color)       // bottom
+    gfx.fill(t, gfx.Rect{r.x, r.y, w, r.h}, color)                 // left
+    gfx.fill(t, gfx.Rect{r.x + r.w - w, r.y, w, r.h}, color)       // right
 }
 
-panel :: proc(t: ^Text, r: Rect, bg, focus: [3]f32, focused: bool, scale: f32) {
-    if focused {
-        fill(t, r, focus)
-        fill(t, inset(r, i32(2 * scale)), bg)
-    } else {
-        fill(t, r, bg)
-    }
-}
 
-render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
+render :: proc(a: ^App, t: ^gfx.Text, win_w, win_h: i32, now: f64) {
     th := &a.theme
     t.frame_verts = 0 // the perf log tallies this frame's submitted vertices
     // Must track the framebuffer or the shaders distort on resize.
@@ -77,9 +68,9 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
 
     // Both pane backgrounds and rings in one flush. The strip has no panel(): the element
     // owning that region paints it (strip_ui.odin).
-    panel(t, lay.editor, th.bg, th.accent, focus_ring(a, lay.vis, .Editor), a.scale)
-    panel(t, lay.aux, th.bg, th.accent, focus_ring(a, lay.vis, .Aux), a.scale)
-    flush_pane(t, Rect{0, 0, win_w, win_h}, win_w, win_h)
+    ui.panel(t, lay.editor, th.bg, th.accent, focus_ring(a, lay.vis, .Editor), a.scale)
+    ui.panel(t, lay.aux, th.bg, th.accent, focus_ring(a, lay.vis, .Aux), a.scale)
+    gfx.flush_pane(t, gfx.Rect{0, 0, win_w, win_h}, win_w, win_h)
 
     // Every live pane claims its click, moves its viewport and declares itself into one tree,
     // painted in one pass.
@@ -92,30 +83,21 @@ render :: proc(a: ^App, t: ^Text, win_w, win_h: i32, now: f64) {
 
     // The extra frame a released drag was owed (drag.odin). Also the one place a capture can
     // end without a release: a pane that stopped drawing mid-gesture never sees its last frame.
-    drag_sweep(a)
+    ui.drag_sweep(ctx_of(a))
 }
 
-focus_fg :: proc(a: ^App, who: Focus) -> [3]f32 {
-    return a.focus == who ? a.theme.fg : a.theme.muted
+focus_fg :: proc(u: ui.UI_Ctx, who: ui.Focus) -> [3]f32 {
+    return u.focus == who ? u.theme.fg : u.theme.muted
 }
 
 // The ring says which of two panes the arrows go to. Zen's editor never rings: focusing it
 // starts the aux pane retracting, and both are visible for that slide.
-focus_ring :: proc(a: ^App, vis: Pane_Vis, who: Focus) -> bool {
+focus_ring :: proc(a: ^App, vis: Pane_Vis, who: ui.Focus) -> bool {
     if !vis.editor || !vis.aux || a.focus != who {
         return false
     }
     return !(a.view == .Zen && who == .Editor)
 }
 
-// How far the hover tint travels from the background toward the selection bar. Well short on
-// purpose: the pointer resting somewhere is not a selection.
-HOVER_MIX :: 0.35
-
-// The row under the pointer (`hover: on|off`). Mixes rather than blends: the quad shader
-// writes opaque, so a translucent wash has to be baked into the colour.
-hover_bg :: proc(th: ^Theme) -> [3]f32 {
-    return th.bg + (th.separator - th.bg) * HOVER_MIX
-}
 
 // Each pane's geometry, hit-testing and paint live in its own *_ui.odin file.

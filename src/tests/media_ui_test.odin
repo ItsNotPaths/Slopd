@@ -3,6 +3,9 @@ package tests
 import app ".."
 import clay "../../bindings/clay"
 import "core:testing"
+import "../txt"
+import "../gfx"
+import "../ui"
 
 // The media surface, the last thing in the program painted by hand. Two claims:
 //
@@ -20,9 +23,9 @@ WIN_W :: 400
 @(private = "file")
 WIN_H :: 300
 @(private = "file")
-PANE :: app.Rect{0, 0, 200, 280}
+PANE :: gfx.Rect{0, 0, 200, 280}
 @(private = "file")
-AREA :: app.Rect{2, 2, 196, 276} // inset by the 2px focus ring
+AREA :: gfx.Rect{2, 2, 196, 276} // inset by the 2px focus ring
 @(private = "file")
 FAKE_TEX :: 7
 
@@ -58,9 +61,9 @@ press :: proc(a: ^app.App, count: int) {
 @(test)
 test_media_geom_is_the_ring_inset :: proc(t: ^testing.T) {
     testing.expect_value(t, app.media_geom(PANE, 1), AREA)
-    testing.expect_value(t, app.media_geom(PANE, 2), app.Rect{4, 4, 192, 272})
+    testing.expect_value(t, app.media_geom(PANE, 2), gfx.Rect{4, 4, 192, 272})
     // Too small to have an inside yields a rect with no area, which every phase refuses.
-    testing.expect(t, app.media_geom(app.Rect{}, 1).w <= 0, "a hidden pane has no content area")
+    testing.expect(t, app.media_geom(gfx.Rect{}, 1).w <= 0, "a hidden pane has no content area")
 }
 
 // The image lands at media_fit_rect's answer, inside the pane's clip group: what used to be an
@@ -71,21 +74,21 @@ test_media_declares_the_image_at_its_fit_rect :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a := media_app(100, 100)
     a.media.zoom = 2 // bigger than the pane: the clip is the whole question
     cmds := app.media_layout(&a, &f, PANE, WIN_W, WIN_H)
 
     want := app.media_fit_rect(AREA, 200, 100, 2, {0, 0})
-    image: app.Rect
+    image: gfx.Rect
     tex: u32
     depth, image_depth := 0, -1
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
         #partial switch c.commandType {
         case .Image:
-            image = app.clay_rect(c.boundingBox)
+            image = ui.clay_rect(c.boundingBox)
             tex = u32(uintptr(c.renderData.image.imageData))
             image_depth = depth
         case .ScissorStart:
@@ -110,14 +113,14 @@ test_media_declares_a_placeholder_when_empty :: proc(t: ^testing.T) {
     raw := clay_test_context(WIN_W, WIN_H)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a := media_app(100, 100)
     a.media = app.Media{zoom = 1} // nothing decoded
     cmds := app.media_layout(&a, &f, PANE, WIN_W, WIN_H)
 
     images, texts := 0, 0
-    label: app.Rect
+    label: gfx.Rect
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
         #partial switch c.commandType {
@@ -125,7 +128,7 @@ test_media_declares_a_placeholder_when_empty :: proc(t: ^testing.T) {
             images += 1
         case .Text:
             texts += 1
-            label = app.clay_rect(c.boundingBox)
+            label = ui.clay_rect(c.boundingBox)
         }
     }
 
@@ -146,23 +149,23 @@ test_media_click_captures_and_drag_pans :: proc(t: ^testing.T) {
     a.media.pan = {12, -4} // a view the user had already moved
     press(&a, 1)
 
-    app.media_click(&a, AREA)
-    testing.expect(t, app.drag_live(&a, .Media_Pan, 0), "a press on the image must capture")
+    app.media_click(app.ctx_of(&a), &a.media, AREA, a.main == .Image)
+    testing.expect(t, ui.drag_live(app.ctx_of(&a), .Media_Pan, 0), "a press on the image must capture")
     testing.expect(t, !a.mouse.click, "and must claim the press, so the pane behind it does not")
     testing.expect_value(t, a.drag.origin_pan, [2]f32{12, -4})
 
     a.mouse.x, a.mouse.y = 140, 130
-    app.media_drag(&a)
+    app.media_drag(app.ctx_of(&a), &a.media, a.main == .Image)
     testing.expect_value(t, a.media.pan, [2]f32{12 + 40, -4 + 30})
 
     // A second frame at a new position is measured from the press, not the last frame.
     a.mouse.x, a.mouse.y = 110, 90
-    app.media_drag(&a)
+    app.media_drag(app.ctx_of(&a), &a.media, a.main == .Image)
     testing.expect_value(t, a.media.pan, [2]f32{12 + 10, -4 - 10})
 
     // Back where it started: a drag returned to the press point is the identity.
     a.mouse.x, a.mouse.y = 100, 100
-    app.media_drag(&a)
+    app.media_drag(app.ctx_of(&a), &a.media, a.main == .Image)
     testing.expect_value(t, a.media.pan, [2]f32{12, -4})
 }
 
@@ -174,13 +177,13 @@ test_media_double_click_fits_then_captures :: proc(t: ^testing.T) {
     a.media.zoom, a.media.pan = 3, {50, 50}
     press(&a, 2)
 
-    app.media_click(&a, AREA)
+    app.media_click(app.ctx_of(&a), &a.media, AREA, a.main == .Image)
     testing.expect_value(t, a.media.zoom, f32(1))
     testing.expect_value(t, a.media.pan, [2]f32{0, 0})
     testing.expect_value(t, a.drag.origin_pan, [2]f32{0, 0})
 
     a.mouse.x += 20
-    app.media_drag(&a)
+    app.media_drag(app.ctx_of(&a), &a.media, a.main == .Image)
     testing.expect_value(t, a.media.pan, [2]f32{20, 0})
 }
 
@@ -190,22 +193,22 @@ test_media_double_click_fits_then_captures :: proc(t: ^testing.T) {
 test_media_refuses_presses_that_are_not_its_own :: proc(t: ^testing.T) {
     outside := media_app(300, 100) // over the aux side of the window
     press(&outside, 1)
-    app.media_click(&outside, AREA)
+    app.media_click(app.ctx_of(&outside), &outside.media, AREA, outside.main == .Image)
     testing.expect(t, outside.mouse.click, "a press outside the pane must stay pending")
-    testing.expect_value(t, outside.drag.kind, app.Drag_Kind.None)
+    testing.expect_value(t, outside.drag.kind, ui.Drag_Kind.None)
 
     off := media_app(100, 100)
     off.mouse_on = false
     press(&off, 1)
-    app.media_click(&off, AREA)
-    testing.expect_value(t, off.drag.kind, app.Drag_Kind.None)
+    app.media_click(app.ctx_of(&off), &off.media, AREA, off.main == .Image)
+    testing.expect_value(t, off.drag.kind, ui.Drag_Kind.None)
 
     text := media_app(100, 100)
     text.main = .Text
     press(&text, 1)
-    app.media_click(&text, AREA)
+    app.media_click(app.ctx_of(&text), &text.media, AREA, text.main == .Image)
     testing.expect(t, text.mouse.click, "the editor's press must not be eaten by the viewer")
-    testing.expect_value(t, text.drag.kind, app.Drag_Kind.None)
+    testing.expect_value(t, text.drag.kind, ui.Drag_Kind.None)
 }
 
 // Kind AND target here too: a pan does not write while another gesture holds the button, and
@@ -214,17 +217,17 @@ test_media_refuses_presses_that_are_not_its_own :: proc(t: ^testing.T) {
 test_media_drag_only_writes_its_own_capture :: proc(t: ^testing.T) {
     a := media_app(100, 100)
     press(&a, 1)
-    app.media_click(&a, AREA)
+    app.media_click(app.ctx_of(&a), &a.media, AREA, a.main == .Image)
 
     a.mouse.x += 30
     a.main = .Text // the surface swapped with the button still down
-    app.media_drag(&a)
+    app.media_drag(app.ctx_of(&a), &a.media, a.main == .Image)
     testing.expect_value(t, a.media.pan, [2]f32{0, 0})
 
     b := media_app(100, 100)
     b.mouse.down = true
-    app.drag_begin(&b, .Editor_Text, 0, 1, app.Pos{}, 0) // somebody else's gesture
+    ui.drag_begin(app.ctx_of(&b), .Editor_Text, 0, 1, txt.Pos{}, 0) // somebody else's gesture
     b.mouse.x += 30
-    app.media_drag(&b)
+    app.media_drag(app.ctx_of(&b), &b.media, b.main == .Image)
     testing.expect_value(t, b.media.pan, [2]f32{0, 0})
 }

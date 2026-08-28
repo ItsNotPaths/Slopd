@@ -3,6 +3,7 @@ package tests
 import app ".."
 import "core:log"
 import "core:testing"
+import "../gfx"
 
 // A cut of the real Aether colors.toml Omarchy v4 writes: the semantic palette, a comment
 // line, a section-less flat body, and a `mode` key whose value is not a colour.
@@ -51,7 +52,7 @@ hex :: proc(c: [3]f32) -> u32 {
 // blending: a theme's accent IS Slopd's accent.
 @(test)
 test_omarchy_maps_palette :: proc(t: ^testing.T) {
-    th, ok := app.omarchy_theme_from_src(AETHER)
+    th, ok := gfx.omarchy_theme_from_src(AETHER)
     testing.expect(t, ok, "a semantic palette must load")
 
     testing.expect_value(t, hex(th.bg), 0x32302f)
@@ -74,7 +75,7 @@ test_omarchy_maps_palette :: proc(t: ^testing.T) {
 // wrong one makes every comment and every unfocused label unreadable against bg.
 @(test)
 test_omarchy_muted_is_text_not_fill :: proc(t: ^testing.T) {
-    th, _ := app.omarchy_theme_from_src(AETHER)
+    th, _ := gfx.omarchy_theme_from_src(AETHER)
     testing.expect_value(t, hex(th.muted), 0x9f8f72) // dark_foreground
     testing.expect_value(t, hex(th.code_comment), 0x9f8f72)
 }
@@ -83,7 +84,7 @@ test_omarchy_muted_is_text_not_fill :: proc(t: ^testing.T) {
 // straight read would flatten the two into one colour and the alert would stop reading as one.
 @(test)
 test_omarchy_cl_inject_beats_urgent :: proc(t: ^testing.T) {
-    th, _ := app.omarchy_theme_from_src(AETHER)
+    th, _ := gfx.omarchy_theme_from_src(AETHER)
     testing.expect(t, hex(th.cl_inject) != hex(th.urgent), "cl_inject must differ from urgent")
     testing.expect(t, th.cl_inject.r > th.urgent.r, "and must be the redder of the two")
     testing.expect(t, th.cl_inject.g < th.urgent.g)
@@ -93,7 +94,7 @@ test_omarchy_cl_inject_beats_urgent :: proc(t: ^testing.T) {
 // or the guides and the selection either vanish into the background or cover the code.
 @(test)
 test_omarchy_derives_guides :: proc(t: ^testing.T) {
-    th, _ := app.omarchy_theme_from_src(AETHER)
+    th, _ := gfx.omarchy_theme_from_src(AETHER)
 
     Derived :: struct {
         name: string,
@@ -120,7 +121,7 @@ test_omarchy_derives_guides :: proc(t: ^testing.T) {
 // what Omarchy's own cascade does with one. Nothing may fall back to the baked-in gruvbox.
 @(test)
 test_omarchy_legacy_ansi_palette :: proc(t: ^testing.T) {
-    th, ok := app.omarchy_theme_from_src(LEGACY)
+    th, ok := gfx.omarchy_theme_from_src(LEGACY)
     testing.expect(t, ok, "an ANSI-only palette must load")
 
     testing.expect_value(t, hex(th.bg), 0x1d2021) // color0
@@ -139,11 +140,11 @@ test_omarchy_legacy_ansi_palette :: proc(t: ^testing.T) {
 // truncated mid-write by a theme switch, or full of rgba() must never yield a black theme.
 @(test)
 test_omarchy_rejects_empty_source :: proc(t: ^testing.T) {
-    def := app.default_theme()
+    def := gfx.default_theme()
 
     empty := []string{"", "# only a comment\n", "mode = \"dark\"\n", "accent = rgba(11223344)\n"}
     for src in empty {
-        th, ok := app.omarchy_theme_from_src(src)
+        th, ok := gfx.omarchy_theme_from_src(src)
         testing.expect(t, !ok, "a palette with no colour must report failure")
         testing.expect_value(t, hex(th.bg), hex(def.bg))
         testing.expect_value(t, hex(th.accent), hex(def.accent))
@@ -154,23 +155,23 @@ test_omarchy_rejects_empty_source :: proc(t: ^testing.T) {
 // never shadow the live desktop palette that theme_load reads first.
 @(test)
 test_omarchy_token_is_reserved :: proc(t: ^testing.T) {
-    testing.expect_value(t, app.theme_resolve(app.OMARCHY_THEME), "")
+    testing.expect_value(t, app.theme_resolve(gfx.OMARCHY_THEME), "")
 }
 
 // The synthetic palettes above pin the mapping; this one pins the PATH and the real file
 // format. It runs only on a machine that has a theme applied, because CI has none.
 @(test)
 test_omarchy_reads_live_palette :: proc(t: ^testing.T) {
-    if !app.omarchy_available() {
+    if !gfx.omarchy_available() {
         log.info("[skip] no Omarchy theme applied; see theme_omarchy.odin header")
         return
     }
-    th, ok := app.omarchy_theme(app.omarchy_colors_file(context.temp_allocator))
+    th, ok := gfx.omarchy_theme(gfx.omarchy_colors_file(context.temp_allocator))
     testing.expect(t, ok, "the live colors.toml must parse")
 
     // The palette is real, so the only claim worth making is that it is not the baked-in
     // one and not black: the desktop's own colours actually landed.
-    def := app.default_theme()
+    def := gfx.default_theme()
     testing.expect(t, hex(th.bg) != hex(def.bg) || hex(th.accent) != hex(def.accent))
     testing.expect(t, hex(th.fg) != hex(th.bg), "fg must not collapse into bg")
     log.infof("live palette: bg #%06x fg #%06x accent #%06x", hex(th.bg), hex(th.fg), hex(th.accent))

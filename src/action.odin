@@ -2,6 +2,7 @@ package main
 
 import "core:strings"
 import "vendor:glfw"
+import "txt"
 
 // Every verb Slopd has, named once. action_run is the only thing that performs one, so a key, a
 // click and a menu item reach the same verb.
@@ -117,7 +118,7 @@ Editable :: enum {
     Config_Value,
 }
 
-active_editable :: proc(a: ^App) -> (Editable, ^Doc) {
+active_editable :: proc(a: ^App) -> (Editable, ^txt.Doc) {
     if a.cl_active {
         return .Command_Line, &a.cl.doc // owns the keys while it is up
     }
@@ -262,7 +263,7 @@ action_run :: proc(a: ^App, act: Action, n: int, extend, all: bool) -> (handled:
         if kind == .None {
             return false
         }
-        doc_drop_anchor(d)
+        txt.doc_drop_anchor(d)
     case .Move_All:
         // handle_key has spent whatever was pending, so this only ever arms.
         kind, _ := active_editable(a)
@@ -371,9 +372,9 @@ select_run :: proc(a: ^App, act: Action) -> bool {
         return false
     }
     if act == .Select_All {
-        doc_select_all(d)
+        txt.doc_select_all(d)
     } else {
-        doc_select_lines(d) // every cursor takes its own line
+        txt.doc_select_lines(d) // every cursor takes its own line
     }
     return true
 }
@@ -448,13 +449,13 @@ browse_run :: proc(a: ^App, act: Action, n: int) -> bool {
     }
     #partial switch act {
     case .Browse_Back:
-        filebrowser_button(a, .Back)
+        filebrowser_button(&a.filebrowser, &a.tree, .Back)
     case .Browse_Forward:
-        filebrowser_button(a, .Forward)
+        filebrowser_button(&a.filebrowser, &a.tree, .Forward)
     case .Browse_Reload:
-        filebrowser_button(a, .Reload)
+        filebrowser_button(&a.filebrowser, &a.tree, .Reload)
     case .Browse_View:
-        filebrowser_button(a, .View) // the toggle button's keyboard twin
+        filebrowser_button(&a.filebrowser, &a.tree, .View) // the toggle button's keyboard twin
     case .Browse_Place:
         filebrowser_place_open(a, n + 1)
     }
@@ -575,14 +576,14 @@ nav_run :: proc(a: ^App, n: Nav, extend, all: bool) -> bool {
     if co := color_target(a); co != nil {
         #partial switch n {
         case .Up:
-            co.sel = (co.sel - 1 + color_slider_count(a)) % color_slider_count(a)
+            co.sel = (co.sel - 1 + color_slider_count(&a.color)) % color_slider_count(&a.color)
         case .Down:
-            co.sel = (co.sel + 1) % color_slider_count(a)
+            co.sel = (co.sel + 1) % color_slider_count(&a.color)
         case .Left:
-            v := color_slider_value(a, co.sel) - 0.02
+            v := color_slider_value(&a.color, co.sel) - 0.02
             color_set_slider(a, co.sel, v)
         case .Right:
-            v := color_slider_value(a, co.sel) + 0.02
+            v := color_slider_value(&a.color, co.sel) + 0.02
             color_set_slider(a, co.sel, v)
         }
         return true
@@ -706,12 +707,12 @@ clip_put :: proc(a: ^App) -> bool {
 
 // Every editable takes these the same way, so there is no per-surface branch.
 @(private = "file")
-motion_run :: proc(a: ^App, m: Motion, extend, all: bool) -> bool {
+motion_run :: proc(a: ^App, m: txt.Motion, extend, all: bool) -> bool {
     kind, d := active_editable(a)
     if kind == .None {
         return false
     }
-    if all {doc_move_all(d, m, extend)} else {doc_move(d, m, extend)}
+    if all {txt.doc_move_all(d, m, extend)} else {txt.doc_move(d, m, extend)}
     return true
 }
 
@@ -735,10 +736,10 @@ delete_run :: proc(a: ^App, act: Action) -> bool {
         return true
     }
     switch {
-    case back && word: doc_delete_word_back(d)
-    case back:         doc_backspace(d)
-    case word:         doc_delete_word_forward(d)
-    case:              doc_delete(d)
+    case back && word: txt.doc_delete_word_back(d)
+    case back:         txt.doc_backspace(d)
+    case word:         txt.doc_delete_word_forward(d)
+    case:              txt.doc_delete(d)
     }
     // The filter re-runs on an edit, not a motion.
     if kind == .Config_Search {
@@ -776,7 +777,7 @@ escape_run :: proc(a: ^App, move_all_pending: bool) {
     case move_all_pending:
     // handle_key already spent the prefix; swallowing the key here IS the cancel.
     case kind == .Buffer && len(d.cursors) > 1:
-        doc_collapse_to_primary(d)
+        txt.doc_collapse_to_primary(d)
     case:
         zen_escape(a) // Zen on (never off), then flip the shown side
     }
@@ -864,7 +865,7 @@ filetree_nav :: proc(a: ^App, ft: ^FileTree, n: Nav, extend: bool) {
 
 // Left/Right on a Doc with the Alt+M prefix applied: where Nav meets Motion.
 @(private = "file")
-doc_step :: proc(d: ^Doc, n: Nav, extend, all: bool) {
-    m: Motion = n == .Left ? .Left : .Right
-    if all {doc_move_all(d, m, extend)} else {doc_move(d, m, extend)}
+doc_step :: proc(d: ^txt.Doc, n: Nav, extend, all: bool) {
+    m: txt.Motion = n == .Left ? .Left : .Right
+    if all {txt.doc_move_all(d, m, extend)} else {txt.doc_move(d, m, extend)}
 }

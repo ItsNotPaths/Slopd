@@ -3,6 +3,8 @@ package tests
 import app ".."
 import clay "../../bindings/clay"
 import "core:testing"
+import "../gfx"
+import "../ui"
 
 // The grep results pane declared in Clay. The filetree proved a flat list of one-row items;
 // this proves the case every remaining pane has — one ITEM is several display ROWS. So the
@@ -13,9 +15,9 @@ import "core:testing"
 // {102, 52, 296, 196}, a 21px row, and 8 display rows under the query header.
 
 @(private = "file")
-PANE :: app.Rect{100, 50, 300, 200}
+PANE :: gfx.Rect{100, 50, 300, 200}
 @(private = "file")
-AREA :: app.Rect{102, 52, 296, 196}
+AREA :: gfx.Rect{102, 52, 296, 196}
 @(private = "file")
 ROW_H :: 21
 @(private = "file")
@@ -117,7 +119,7 @@ test_grep_geom :: proc(t: ^testing.T) {
     testing.expect_value(t, row_h, i32(ROW_H))
     testing.expect_value(t, rows, MAX_ROWS) // (196 - 21) / 21
 
-    _, _, none := app.grep_geom(app.Rect{}, 1, 16)
+    _, _, none := app.grep_geom(gfx.Rect{}, 1, 16)
     testing.expect_value(t, none, 0)
 }
 
@@ -128,7 +130,7 @@ test_grep_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     a.scale = 1
@@ -143,13 +145,13 @@ test_grep_command_list :: proc(t: ^testing.T) {
     cmds := app.grep_layout(&a, &f, PANE, rows, 500, 300)
 
     rects, borders, texts := 0, 0, 0
-    scissor, border_box: app.Rect
-    row_box: [9]app.Rect
+    scissor, border_box: gfx.Rect
+    row_box: [9]gfx.Rect
     row_seen: [9]bool
     gut9_x, gut100_x, line_x, title_x: i32 = -1, -1, -1, -1
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
-        r := app.clay_rect(c.boundingBox)
+        r := ui.clay_rect(c.boundingBox)
         #partial switch c.commandType {
         case .ScissorStart:
             scissor = r
@@ -182,13 +184,13 @@ test_grep_command_list :: proc(t: ^testing.T) {
     }
 
     // The clip group is the body, under the query header.
-    testing.expect_value(t, scissor, app.Rect{AREA.x, AREA.y + ROW_H, AREA.w, AREA.h - ROW_H})
+    testing.expect_value(t, scissor, gfx.Rect{AREA.x, AREA.y + ROW_H, AREA.w, AREA.h - ROW_H})
 
     // Only the selected block's four rows band, at full pane width.
     testing.expect_value(t, rects, 4)
     testing.expect(t, row_seen[0] && row_seen[3], "the selected block did not band")
     testing.expect(t, !row_seen[4] && !row_seen[5], "a row outside the selected block banded")
-    testing.expect_value(t, row_box[2], app.Rect{AREA.x, AREA.y + ROW_H + 2 * ROW_H, AREA.w, ROW_H})
+    testing.expect_value(t, row_box[2], gfx.Rect{AREA.x, AREA.y + ROW_H + 2 * ROW_H, AREA.w, ROW_H})
 
     // Exactly one Border, on the match line of the selected block, at the row's left edge. A
     // left-only border is why the bridge skips zero-width edges.
@@ -213,7 +215,7 @@ test_grep_hit_resolves_to_block :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     a.scale = 1

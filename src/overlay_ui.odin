@@ -3,6 +3,8 @@ package main
 import "core:fmt"
 import "core:unicode/utf8"
 import clay "../bindings/clay"
+import "gfx"
+import "ui"
 
 // The terminal switcher (a numbered column while plain Alt is held) and the filetree chord bar
 // (the Ctrl-held cheat-sheet along the pane's bottom).
@@ -50,7 +52,7 @@ switcher_shown :: proc(a: ^App) -> bool {
 
 // Two digits wide plus padding, never wider than the pane. The one source every phase sizes
 // itself from.
-switcher_geom :: proc(area: Rect, scale, line_h, cell_w: f32) -> (colw, row_h: i32, rows: int) {
+switcher_geom :: proc(area: gfx.Rect, scale, line_h, cell_w: f32) -> (colw, row_h: i32, rows: int) {
     colw = min(i32(cell_w * 2) + i32(SWITCHER_COL_PAD * scale), area.w)
     row_h = i32(line_h) + i32(SWITCHER_ROW_PAD * scale)
     if area.h <= 0 || row_h <= 0 {
@@ -76,17 +78,17 @@ switcher_window :: proc(n, active, rows: int) -> (first, visible: int) {
 //
 // Every colour tweens out of th.bg as Alt goes down — an opaque lerp, since alpha is a
 // visibility bit here, not a blend factor.
-switcher_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
-    th := &a.theme
-    colw, row_h, rows := switcher_geom(area, a.scale, f.line_height, f.cell_w)
-    first, visible := switcher_window(term_count(a), a.term_active, rows)
+switcher_declare :: proc(u: ui.UI_Ctx, terms: []^Terminal, active: int, fade_anim: ^ui.Anim, f: ^gfx.Font, area: gfx.Rect, now: f64) {
+    th := u.theme
+    colw, row_h, rows := switcher_geom(area, u.scale, f.line_height, f.cell_w)
+    first, visible := switcher_window(len(terms), active, rows)
     if colw <= 0 || visible <= 0 {
         return
     }
-    fade := clamp(anim_value(&a.switcher_anim, now), 0, 1)
-    col_active := clay_rgb(lerp3(th.bg, th.accent, fade))
-    col_fg := lerp3(th.bg, th.fg, fade)
-    col_lock := lerp3(th.bg, th.muted, fade) // Alt+L
+    fade := clamp(ui.anim_value(fade_anim, now), 0, 1)
+    col_active := ui.clay_rgb(ui.lerp3(th.bg, th.accent, fade))
+    col_fg := ui.lerp3(th.bg, th.fg, fade)
+    col_lock := ui.lerp3(th.bg, th.muted, fade) // Alt+L
     lh := i32(f.line_height)
 
     if clay.UI(clay.ID("sw_col"))(
@@ -96,13 +98,13 @@ switcher_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
                 layoutDirection = .TopToBottom,
             },
             floating        = clay_overlay_float(.LeftTop),
-            backgroundColor = clay_rgb(lerp3(th.bg, th.border_dark, fade)),
+            backgroundColor = ui.clay_rgb(ui.lerp3(th.bg, th.border_dark, fade)),
         },
     ) {
         for k in 0 ..< visible {
             i := first + k
             bg: clay.Color
-            if i == a.term_active {
+            if i == active {
                 bg = col_active
             }
             // Capped: a four-digit session number is wider than the column, and SizingGrow
@@ -120,7 +122,7 @@ switcher_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
                 // at it, and the frame's arena outlives EndLayout.
                 clay.Text(
                     fmt.tprintf("%d", i + 1),
-                    clay_text_config(a.terminals[i].locked ? col_lock : col_fg, lh),
+                    ui.clay_text_config(terms[i].locked ? col_lock : col_fg, lh),
                 )
             }
         }
@@ -131,15 +133,15 @@ switcher_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
 // overlay attached to `.Parent` inherits its clip from that pane.
 switcher_layout :: proc(
     a: ^App,
-    f: ^Font,
-    area: Rect,
+    f: ^gfx.Font,
+    area: gfx.Rect,
     win_w, win_h: i32,
     now: f64 = 0,
 ) -> clay.ClayArray(clay.RenderCommand) {
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        if clay.UI(clay.ID("term_pane"))(clay_pane_box(area)) {
-            switcher_declare(a, f, area, now)
+        if clay.UI(clay.ID("term_pane"))(ui.clay_pane_box(area)) {
+            switcher_declare(ctx_of(a), a.terminals[:], a.term_active, &a.switcher_anim, f, area, now)
         }
     }
     return clay.EndLayout(0)
@@ -208,7 +210,7 @@ Chord_Item :: struct {
 
 // Row height, margin in Clay's units, and how many CELLS wide the packing may run. The one
 // call the packing and the declaration both size themselves from.
-chord_geom :: proc(area: Rect, scale, line_h, cell_w: f32) -> (row_h: i32, pad: u16, maxw: int) {
+chord_geom :: proc(area: gfx.Rect, scale, line_h, cell_w: f32) -> (row_h: i32, pad: u16, maxw: int) {
     row_h = i32(line_h) + i32(CHORD_ROW_PAD * scale)
     p := i32(max(0.0, CHORD_PAD * scale))
     pad = u16(p)
@@ -261,23 +263,22 @@ chord_pack :: proc(
 //                 cells, so the columns land where the packing said (rule 5)
 //       ch_item/i "^y mark": the key in accent, its label muted
 //       ch_state  the paste mode and marked count, last in the flow so it wraps too
-chord_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
-    th := &a.theme
-    row_h, pad, maxw := chord_geom(area, a.scale, f.line_height, f.cell_w)
+chord_declare :: proc(u: ui.UI_Ctx, ft: ^FileTree, hints: [][2]string, fade_anim: ^ui.Anim, f: ^gfx.Font, area: gfx.Rect, now: f64) {
+    th := u.theme
+    row_h, pad, maxw := chord_geom(area, u.scale, f.line_height, f.cell_w)
     if area.w <= 0 || row_h <= 0 {
         return
     }
     // The clipboard half appears only when there is one: "[2 marked]" until you copy.
-    ft := &a.tree
     state := len(ft.clip) == 0 \
         ? fmt.tprintf("[%d marked]", len(ft.marks)) \
         : fmt.tprintf("[%d marked · %s %d]", len(ft.marks), ft.clip_mode == .Cut ? "cut" : "copy", len(ft.clip))
-    items, nrows := chord_pack(chord_hints(a), state, maxw)
+    items, nrows := chord_pack(hints, state, maxw)
 
     // Opaque lerp out of the pane bg as Ctrl is held — the switcher's fade, one pane along.
-    fade := clamp(anim_value(&a.chord_anim, now), 0, 1)
-    key_col := lerp3(th.bg, th.accent, fade)
-    lbl_col := lerp3(th.bg, th.muted, fade)
+    fade := clamp(ui.anim_value(fade_anim, now), 0, 1)
+    key_col := ui.lerp3(th.bg, th.accent, fade)
+    lbl_col := ui.lerp3(th.bg, th.muted, fade)
     cw := f.cell_w
     lh := i32(f.line_height)
 
@@ -289,7 +290,7 @@ chord_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
                 layoutDirection = .TopToBottom,
             },
             floating        = clay_overlay_float(.LeftBottom),
-            backgroundColor = clay_rgb(lerp3(th.bg, th.border_dark, fade)),
+            backgroundColor = ui.clay_rgb(ui.lerp3(th.bg, th.border_dark, fade)),
         },
     ) {
         for r in 0 ..< nrows {
@@ -311,13 +312,13 @@ chord_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
                     }
                     if it.key == "" {
                         if clay.UI(clay.ID("ch_state"))({}) {
-                            clay.Text(it.label, clay_text_config(lbl_col, lh))
+                            clay.Text(it.label, ui.clay_text_config(lbl_col, lh))
                         }
                         continue
                     }
                     if clay.UI(clay.ID("ch_item", u32(i)))({layout = {childGap = u16(cw)}}) {
-                        clay.Text(it.key, clay_text_config(key_col, lh))
-                        clay.Text(it.label, clay_text_config(lbl_col, lh))
+                        clay.Text(it.key, ui.clay_text_config(key_col, lh))
+                        clay.Text(it.label, ui.clay_text_config(lbl_col, lh))
                     }
                 }
             }
@@ -328,15 +329,15 @@ chord_declare :: proc(a: ^App, f: ^Font, area: Rect, now: f64) {
 // See switcher_layout for why the pane box is declared around it.
 chord_layout :: proc(
     a: ^App,
-    f: ^Font,
-    area: Rect,
+    f: ^gfx.Font,
+    area: gfx.Rect,
     win_w, win_h: i32,
     now: f64 = 0,
 ) -> clay.ClayArray(clay.RenderCommand) {
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
-        if clay.UI(clay.ID("ft_pane"))(clay_pane_box(area)) {
-            chord_declare(a, f, area, now)
+        if clay.UI(clay.ID("ft_pane"))(ui.clay_pane_box(area)) {
+            chord_declare(ctx_of(a), &a.tree, chord_hints(a), &a.chord_anim, f, area, now)
         }
     }
     return clay.EndLayout(0)

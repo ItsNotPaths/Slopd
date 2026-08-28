@@ -4,6 +4,8 @@ import app ".."
 import "core:strings"
 import "core:testing"
 import "vendor:glfw"
+import "../gfx"
+import "../ui"
 
 @(private = "file") C :: i32(glfw.MOD_CONTROL)
 @(private = "file") A :: i32(glfw.MOD_ALT)
@@ -235,15 +237,15 @@ test_binds_highlights_the_selected_chord_in_place :: proc(t: ^testing.T) {
     a: app.App
     fixture(&a)
     defer app.binds_pane_destroy(&a.binds_pane)
-    a.theme = app.default_theme()
+    a.theme = gfx.default_theme()
     bp := &a.binds_pane
     bp.sel = row_of(bp, .Clip_Copy)
     bp.chord = 1 // ^y
 
     rows := app.binds_rows(bp, 40, context.temp_allocator)
-    ui := app.binds_draw_rows(&a, rows, context.temp_allocator)
-    lit, other: app.Pane_Row
-    for r in ui {
+    drawn := app.binds_draw_rows(app.ctx_of(&a), &a.binds_pane, rows, context.temp_allocator)
+    lit, other: ui.Pane_Row
+    for r in drawn {
         if r.sel && len(r.spans) > 0 {
             lit = r
         } else if r.item > app.ROW_BINDS_ERRS && len(r.spans) == 0 && r.value != "" {
@@ -461,6 +463,6 @@ test_bind_builtin_opens_the_pane :: proc(t: ^testing.T) {
 
         app.cl_dispatch(&a, name, true)
         testing.expectf(t, a.aux_mode == .Binds, "%s did not open the pane", name)
-        testing.expect_value(t, a.focus, app.Focus.Aux)
+        testing.expect_value(t, a.focus, ui.Focus.Aux)
     }
 }

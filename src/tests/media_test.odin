@@ -2,6 +2,7 @@ package tests
 
 import app ".."
 import "core:testing"
+import "../gfx"
 
 // --- extension routing (is_media_path) ---
 
@@ -24,36 +25,36 @@ test_is_media_path :: proc(t: ^testing.T) {
 
 @(test)
 test_media_fit_contain :: proc(t: ^testing.T) {
-    pane := app.Rect{0, 0, 100, 100}
+    pane := gfx.Rect{0, 0, 100, 100}
 
     // Wide (2:1) in a square pane: full width, letterboxed top and bottom.
-    testing.expect_value(t, app.media_fit_rect(pane, 200, 100, 1, {0, 0}), app.Rect{0, 25, 100, 50})
+    testing.expect_value(t, app.media_fit_rect(pane, 200, 100, 1, {0, 0}), gfx.Rect{0, 25, 100, 50})
     // Tall (1:2): full height, pillarboxed left and right.
-    testing.expect_value(t, app.media_fit_rect(pane, 100, 200, 1, {0, 0}), app.Rect{25, 0, 50, 100})
-    testing.expect_value(t, app.media_fit_rect(pane, 50, 50, 1, {0, 0}), app.Rect{0, 0, 100, 100})
+    testing.expect_value(t, app.media_fit_rect(pane, 100, 200, 1, {0, 0}), gfx.Rect{25, 0, 50, 100})
+    testing.expect_value(t, app.media_fit_rect(pane, 50, 50, 1, {0, 0}), gfx.Rect{0, 0, 100, 100})
 }
 
 @(test)
 test_media_fit_zoom_and_pan :: proc(t: ^testing.T) {
-    pane := app.Rect{0, 0, 100, 100}
+    pane := gfx.Rect{0, 0, 100, 100}
 
     // Zoom 2x: double the fitted size, recentred, overflowing left and right.
-    testing.expect_value(t, app.media_fit_rect(pane, 200, 100, 2, {0, 0}), app.Rect{-50, 0, 200, 100})
+    testing.expect_value(t, app.media_fit_rect(pane, 200, 100, 2, {0, 0}), gfx.Rect{-50, 0, 200, 100})
     // Pan shifts the placement by whole pixels on top of the centred fit.
-    testing.expect_value(t, app.media_fit_rect(pane, 200, 100, 1, {10, -5}), app.Rect{10, 20, 100, 50})
+    testing.expect_value(t, app.media_fit_rect(pane, 200, 100, 1, {10, -5}), gfx.Rect{10, 20, 100, 50})
 }
 
 @(test)
 test_media_fit_pane_offset_and_degenerate :: proc(t: ^testing.T) {
     // Relative to the pane's own origin, not the window's.
-    off := app.Rect{5, 5, 100, 100}
-    testing.expect_value(t, app.media_fit_rect(off, 200, 100, 1, {0, 0}), app.Rect{5, 30, 100, 50})
+    off := gfx.Rect{5, 5, 100, 100}
+    testing.expect_value(t, app.media_fit_rect(off, 200, 100, 1, {0, 0}), gfx.Rect{5, 30, 100, 50})
 
     // Degenerate inputs yield a zero-size rect at the pane origin.
-    pane := app.Rect{0, 0, 100, 100}
-    testing.expect_value(t, app.media_fit_rect(pane, 0, 100, 1, {0, 0}), app.Rect{0, 0, 0, 0})
-    testing.expect_value(t, app.media_fit_rect(pane, 200, 100, 0, {0, 0}), app.Rect{0, 0, 0, 0})
-    testing.expect_value(t, app.media_fit_rect(app.Rect{0, 0, 0, 100}, 200, 100, 1, {0, 0}), app.Rect{0, 0, 0, 0})
+    pane := gfx.Rect{0, 0, 100, 100}
+    testing.expect_value(t, app.media_fit_rect(pane, 0, 100, 1, {0, 0}), gfx.Rect{0, 0, 0, 0})
+    testing.expect_value(t, app.media_fit_rect(pane, 200, 100, 0, {0, 0}), gfx.Rect{0, 0, 0, 0})
+    testing.expect_value(t, app.media_fit_rect(gfx.Rect{0, 0, 0, 100}, 200, 100, 1, {0, 0}), gfx.Rect{0, 0, 0, 0})
 }
 
 // --- zoom about a point (media_zoom_at) ---
@@ -66,7 +67,7 @@ test_media_fit_pane_offset_and_degenerate :: proc(t: ^testing.T) {
 // wrong implementation as readily as a right one.
 @(test)
 test_media_zoom_at_pins_the_pointer :: proc(t: ^testing.T) {
-    pane := app.Rect{0, 0, 100, 100}
+    pane := gfx.Rect{0, 0, 100, 100}
     m := app.Media {
         w    = 200,
         h    = 100,
@@ -94,7 +95,7 @@ test_media_zoom_at_pins_the_pointer :: proc(t: ^testing.T) {
 // than by cancelling two errors. Also the keyboard's behaviour, so this pins the two agreeing.
 @(test)
 test_media_zoom_at_centre_leaves_the_pan_alone :: proc(t: ^testing.T) {
-    pane := app.Rect{0, 0, 100, 100}
+    pane := gfx.Rect{0, 0, 100, 100}
     m := app.Media {
         w    = 200,
         h    = 100,
@@ -111,7 +112,7 @@ test_media_zoom_at_centre_leaves_the_pan_alone :: proc(t: ^testing.T) {
 // the image slides sideways every time the wheel turns at the end of its range.
 @(test)
 test_media_zoom_at_respects_the_clamp :: proc(t: ^testing.T) {
-    pane := app.Rect{0, 0, 100, 100}
+    pane := gfx.Rect{0, 0, 100, 100}
     m := app.Media {
         w    = 200,
         h    = 100,

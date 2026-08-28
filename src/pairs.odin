@@ -3,31 +3,12 @@ package main
 import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
+import "txt"
 
 // Heuristic bracket/quote pairing, no tree-sitter. Everything fans out to all cursors: each
 // caret decides its own action from local context and contributes one edit to a single commit,
 // with caret_delta parking it inside a fresh pair or past a skipped close. The pair set is fixed
 // for now; a per-language table comes with the language registry.
-
-// Quotes are their own close. Package-visible, so the buffer backspace can recognise an empty
-// pair.
-pair_close :: proc(open: rune) -> (close: rune, ok: bool) {
-    switch open {
-    case '(':
-        return ')', true
-    case '[':
-        return ']', true
-    case '{':
-        return '}', true
-    case '"':
-        return '"', true
-    case '\'':
-        return '\'', true
-    case '`':
-        return '`', true
-    }
-    return 0, false
-}
 
 @(private = "file")
 is_open :: proc(r: rune) -> bool {
@@ -55,35 +36,35 @@ buffer_autopair :: proc(b: ^Buffer, r: rune) -> bool {
         return false
     }
     d := &b.doc
-    close, _ := pair_close(r)
+    close, _ := txt.pair_close(r)
     self := text(r)
-    edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
-    for c in edit_cursors(d) {
-        if cursor_has_selection(c) {
-            lo, hi := cursor_range(c)
-            at, to := doc_off(d, lo), doc_off(d, hi)
+    edits := make([dynamic]txt.Edit, 0, len(d.cursors), context.temp_allocator)
+    for c in txt.edit_cursors(d) {
+        if txt.cursor_has_selection(c) {
+            lo, hi := txt.cursor_range(c)
+            at, to := txt.doc_off(d, lo), txt.doc_off(d, hi)
             if is_open(r) || is_quote(r) {
-                append(&edits, Edit{at, to, surround(d, r, close, lo, hi), 0}) // surround
+                append(&edits, txt.Edit{at, to, surround(d, r, close, lo, hi), 0}) // surround
             } else {
-                append(&edits, Edit{at, to, self, 0}) // the closer replaces the selection
+                append(&edits, txt.Edit{at, to, self, 0}) // the closer replaces the selection
             }
             continue
         }
-        at := doc_off(d, c.head)
-        next := doc_rune_at(d, c.head)
-        prev, _ := doc_rune_before(d, c.head)
+        at := txt.doc_off(d, c.head)
+        next := txt.doc_rune_at(d, c.head)
+        prev, _ := txt.doc_rune_before(d, c.head)
         // A quote right after a word character is an apostrophe, not a new pair.
         quote_apostrophe := is_quote(r) && is_word(prev)
         switch {
         case (is_close(r) || is_quote(r)) && next == r:
-            append(&edits, Edit{at, at, "", -1}) // step over the existing close
+            append(&edits, txt.Edit{at, at, "", -1}) // step over the existing close
         case (is_open(r) || is_quote(r)) && !is_word(next) && !quote_apostrophe:
-            append(&edits, Edit{at, at, text(r, close), 1}) // pair, caret inside
+            append(&edits, txt.Edit{at, at, text(r, close), 1}) // pair, caret inside
         case:
-            append(&edits, Edit{at, at, self, 0}) // plain
+            append(&edits, txt.Edit{at, at, self, 0}) // plain
         }
     }
-    b.dirty |= doc_commit(d, edits[:])
+    b.dirty |= txt.doc_commit(d, edits[:])
     return true
 }
 
@@ -93,49 +74,49 @@ buffer_tab :: proc(b: ^Buffer, indent: Indent) {
     d := &b.doc
     // A selection crossing lines is the BLOCK gesture, not a character to type over.
     for c in d.cursors {
-        if lo, hi := cursor_range(c); lo.line != hi.line {
+        if lo, hi := txt.cursor_range(c); lo.line != hi.line {
             _ = buffer_indent_block(b, indent, false)
             return
         }
     }
-    edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
-    for c in edit_cursors(d) {
-        at := doc_off(d, c.head)
-        if j, ok := skip_target(doc_line(d, c.head.line), c.head.col); ok {
+    edits := make([dynamic]txt.Edit, 0, len(d.cursors), context.temp_allocator)
+    for c in txt.edit_cursors(d) {
+        at := txt.doc_off(d, c.head)
+        if j, ok := skip_target(txt.doc_line(d, c.head.line), c.head.col); ok {
             // An empty edit; caret_delta jumps the caret past the close.
-            append(&edits, Edit{at, at, "", c.head.col - (j + 1)})
+            append(&edits, txt.Edit{at, at, "", c.head.col - (j + 1)})
         } else {
-            append(&edits, Edit{at, at, indent_text(indent), 0})
+            append(&edits, txt.Edit{at, at, indent_text(indent), 0})
         }
     }
-    b.dirty |= doc_commit(d, edits[:])
+    b.dirty |= txt.doc_commit(d, edits[:])
 }
 
 // Tab and Shift+Tab over whole lines; `out` takes a level off instead of adding one. A blank line
 // is left alone, since indenting it would only leave trailing whitespace behind.
 buffer_indent_block :: proc(b: ^Buffer, indent: Indent, out: bool) -> bool {
     d := &b.doc
-    lines := doc_cursor_lines(d)
-    edits := make([dynamic]Edit, 0, len(lines), context.temp_allocator)
+    lines := txt.doc_cursor_lines(d)
+    edits := make([dynamic]txt.Edit, 0, len(lines), context.temp_allocator)
     deltas := make([]int, len(lines), context.temp_allocator)
     unit := indent_text(indent)
     for line, i in lines {
-        anchor, _ := line_span(d, line)
-        start := doc_off(d, anchor)
-        src := doc_line(d, line)
+        anchor, _ := txt.line_span(d, line)
+        start := txt.doc_off(d, anchor)
+        src := txt.doc_line(d, line)
         if out {
             n := dedent_width(src, indent)
             if n == 0 {
                 continue
             }
-            append(&edits, Edit{start, start + n, "", 0})
+            append(&edits, txt.Edit{start, start + n, "", 0})
             deltas[i] = -n
         } else if len(src) > 0 {
-            append(&edits, Edit{start, start, unit, 0})
+            append(&edits, txt.Edit{start, start, unit, 0})
             deltas[i] = len(unit)
         }
     }
-    changed := doc_line_commit(d, edits[:], lines, deltas)
+    changed := txt.doc_line_commit(d, edits[:], lines, deltas)
     b.dirty |= changed
     return changed
 }
@@ -181,8 +162,8 @@ skip_target :: proc(src: []u8, col: int) -> (j: int, ok: bool) {
 }
 
 @(private = "file")
-surround :: proc(d: ^Doc, open, close: rune, lo, hi: Pos) -> string {
-    sel := doc_text(d, lo, hi, context.temp_allocator)
+surround :: proc(d: ^txt.Doc, open, close: rune, lo, hi: txt.Pos) -> string {
+    sel := txt.doc_text(d, lo, hi, context.temp_allocator)
     return strings.concatenate({text(open), sel, text(close)}, context.temp_allocator)
 }
 

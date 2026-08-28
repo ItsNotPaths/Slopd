@@ -4,6 +4,8 @@ import app ".."
 import clay "../../bindings/clay"
 import "core:fmt"
 import "core:testing"
+import "../gfx"
+import "../ui"
 
 // The element budget, measured rather than reasoned about.
 //
@@ -22,8 +24,8 @@ BUDGET_H :: 2160 // a 4K panel stood on end
 // FONT_PX_MIN is 8, and a bitmap-ish 5x8 cell is what that bakes to: the smallest row the
 // filetree can be asked to draw.
 @(private = "file")
-tiny_font :: proc() -> app.Font {
-    return app.Font{cell_w = 5, line_height = 8}
+tiny_font :: proc() -> gfx.Font {
+    return gfx.Font{cell_w = 5, line_height = 8}
 }
 
 // A list pane, full of rows, at the smallest font. The editor and the terminal are irrelevant:
@@ -33,12 +35,12 @@ test_element_budget_at_minimum_font :: proc(t: ^testing.T) {
     raw := clay_test_context(BUDGET_W, BUDGET_H)
     defer clay_test_context_free(raw)
     f := tiny_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     a.scale = 1
     a.tree.dir = "/tmp/budget"
-    _, row_h, rows := app.filetree_geom(app.Rect{0, 0, BUDGET_W, BUDGET_H}, 1, f.line_height)
+    _, row_h, rows := app.filetree_geom(gfx.Rect{0, 0, BUDGET_W, BUDGET_H}, 1, f.line_height)
 
     // Twice as many entries as fit, so the viewport is genuinely full.
     for i in 0 ..< rows * 2 {
@@ -49,7 +51,7 @@ test_element_budget_at_minimum_font :: proc(t: ^testing.T) {
     }
     defer delete(a.tree.entries)
 
-    cmds := app.filetree_layout(&a, &f, app.Rect{0, 0, BUDGET_W, BUDGET_H}, BUDGET_W, BUDGET_H)
+    cmds := app.filetree_layout(&a, &f, gfx.Rect{0, 0, BUDGET_W, BUDGET_H}, BUDGET_W, BUDGET_H)
 
     fmt.printfln(
         "[budget] filetree at FONT_PX_MIN: row_h=%d rows=%d -> %d render commands (Clay max elements %d)",

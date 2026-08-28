@@ -4,6 +4,7 @@ import vt "../../bindings/libvterm"
 import app ".."
 import "core:c"
 import "core:testing"
+import "../txt"
 
 // The libvterm core wiring: bytes fed in land in the cell grid and move the cursor as the VT
 // spec dictates. No GL, no shell, no PTY.
@@ -398,17 +399,17 @@ test_terminal_range_text_clips_and_trims :: proc(t: ^testing.T) {
     defer app.terminal_vt_destroy(&term)
     feed(&term, "alpha bravo\r\ncharlie delta")
 
-    a := app.terminal_range_text(&term, app.Pos{0, 6}, app.Pos{1, 7})
+    a := app.terminal_range_text(&term, txt.Pos{0, 6}, txt.Pos{1, 7})
     defer delete(a)
     testing.expect_value(t, a, "bravo\ncharlie")
 
     // A segment that stops short keeps the spaces inside it…
-    b := app.terminal_range_text(&term, app.Pos{0, 4}, app.Pos{0, 8})
+    b := app.terminal_range_text(&term, txt.Pos{0, 4}, txt.Pos{0, 8})
     defer delete(b)
     testing.expect_value(t, b, "a br")
 
     // …while one that runs to the edge is trimmed of the row's padding.
-    c := app.terminal_range_text(&term, app.Pos{0, 0}, app.Pos{0, 20})
+    c := app.terminal_range_text(&term, txt.Pos{0, 0}, txt.Pos{0, 20})
     defer delete(c)
     testing.expect_value(t, c, "alpha bravo")
 }
@@ -483,7 +484,7 @@ test_terminal_view_follows_the_bottom_again :: proc(t: ^testing.T) {
     testing.expect_value(t, app.terminal_view_top(&term), term.sb_total)
 
     // A bare click pins the view too, and pinning it at the bottom must not stop it following.
-    app.terminal_msel_set(&term, app.Pos{term.sb_total, 0}, app.Pos{term.sb_total, 0})
+    app.terminal_msel_set(&term, txt.Pos{term.sb_total, 0}, txt.Pos{term.sb_total, 0})
     feed(&term, "\r\nL6")
     testing.expect_value(t, app.terminal_view_top(&term), term.sb_total)
 
@@ -503,10 +504,10 @@ test_terminal_wheel_keeps_a_mouse_selection :: proc(t: ^testing.T) {
     app.terminal_enable_scrollback(&term)
     feed(&term, "L0\r\nL1\r\nL2\r\nL3\r\nL4")
 
-    app.terminal_msel_set(&term, app.Pos{3, 0}, app.Pos{4, 2})
+    app.terminal_msel_set(&term, txt.Pos{3, 0}, txt.Pos{4, 2})
     app.terminal_scroll_by(&term, -2)
     testing.expect(t, term.msel_on, "a notch is not a new selection gesture")
-    testing.expect_value(t, term.msel.anchor, app.Pos{3, 0})
+    testing.expect_value(t, term.msel.anchor, txt.Pos{3, 0})
     testing.expect_value(t, app.terminal_view_top(&term), 1)
 }
 

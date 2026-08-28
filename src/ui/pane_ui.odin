@@ -1,6 +1,8 @@
-package main
+package ui
 
-import clay "../bindings/clay"
+import clay "../../bindings/clay"
+import "../txt"
+import "../gfx"
 
 // The shape the Config and Binds panes share: a scrolled list of rows, each a key column and a
 // value on one shared column, with rules and titles spanning from the margin.
@@ -11,10 +13,10 @@ import clay "../bindings/clay"
 
 // What every phase of a pane's frame sizes itself from.
 list_geom :: proc(
-    pane: Rect,
+    pane: gfx.Rect,
     scale, line_h, cell_w, pad: f32,
 ) -> (
-    area: Rect,
+    area: gfx.Rect,
     row_h: i32,
     rows, cols: int,
 ) {
@@ -43,7 +45,7 @@ Pane_Row :: struct {
     sel:    bool,
     color:  [3]f32,
     vcolor: [3]f32, // the value's, which a lit row does not always share
-    field:  ^Doc, // a live one-line editor in place of `value`
+    field:  ^txt.Doc, // a live one-line editor in place of `value`
     caret:  bool,
 }
 
@@ -58,7 +60,7 @@ BINDS_IDS :: Pane_Ids{"bk_pane", "bk_body", "bk_row", "bk_key", "bk_edit"}
 // What a pane hands the shared declaration besides its rows.
 Pane_Draw :: struct {
     ids:      Pane_Ids,
-    area:     Rect,
+    area:     gfx.Rect,
     row_h:    i32,
     max_rows: int,
     val_off:  f32, // the key column, in cells
@@ -98,8 +100,8 @@ pane_anchor :: proc(rows: []Pane_Row) -> int {
 //         <p>_edit/i   a text field's Custom, where the row carries one
 //
 // No backgroundColor: panel() filled the pane, so every fill here means something.
-pane_declare :: proc(a: ^App, f: ^Font, d: Pane_Draw, rows: []Pane_Row) {
-    th := &a.theme
+pane_declare :: proc(u: UI_Ctx, f: ^gfx.Font, d: Pane_Draw, rows: []Pane_Row) {
+    th := u.theme
     cw := f.cell_w
     lh := i32(f.line_height)
     first := clamp(d.scroll, 0, max(0, len(rows)))
@@ -123,7 +125,7 @@ pane_declare :: proc(a: ^App, f: ^Font, d: Pane_Draw, rows: []Pane_Row) {
                 bg: clay.Color
                 if r.sel {
                     bg = clay_rgb(th.separator)
-                } else if hover_shown(a) && i == d.hover && r.item >= 0 {
+                } else if hover_shown(u) && i == d.hover && r.item >= 0 {
                     bg = clay_rgb(hover_bg(th))
                 }
 
@@ -153,6 +155,7 @@ pane_declare :: proc(a: ^App, f: ^Font, d: Pane_Draw, rows: []Pane_Row) {
                     case r.field != nil:
                         field_declare(
                             clay.ID(d.ids.edit, u32(i)),
+                            u,
                             {doc = r.field, now = d.now, caret = r.caret},
                         )
                     case len(r.spans) > 0:

@@ -8,6 +8,7 @@ import "core:time"
 import gl "vendor:OpenGL"
 import "vendor:glfw"
 import stbi "vendor:stb/image"
+import "gfx"
 
 // The main pane showing an image instead of a text buffer. MainSurface says which kind; Text
 // and Image are peers, both distinct from the aux pane.
@@ -46,9 +47,9 @@ is_media_path :: proc(path: string) -> bool {
 
 // A contain letterbox at zoom 1 — the largest size that fits whole, centred — then scaled by
 // zoom and shifted by pan. Pure: no GL, no App.
-media_fit_rect :: proc(pane: Rect, iw, ih: i32, zoom: f32, pan: [2]f32) -> Rect {
+media_fit_rect :: proc(pane: gfx.Rect, iw, ih: i32, zoom: f32, pan: [2]f32) -> gfx.Rect {
     if iw <= 0 || ih <= 0 || pane.w <= 0 || pane.h <= 0 || zoom <= 0 {
-        return Rect{pane.x, pane.y, 0, 0}
+        return gfx.Rect{pane.x, pane.y, 0, 0}
     }
     base := min(f32(pane.w) / f32(iw), f32(pane.h) / f32(ih)) // contain at zoom 1
     s := base * zoom
@@ -56,7 +57,7 @@ media_fit_rect :: proc(pane: Rect, iw, ih: i32, zoom: f32, pan: [2]f32) -> Rect 
     dh := i32(math.round(f32(ih) * s))
     dx := pane.x + (pane.w - dw) / 2 + i32(math.round(pan.x))
     dy := pane.y + (pane.h - dh) / 2 + i32(math.round(pan.y))
-    return Rect{dx, dy, dw, dh}
+    return gfx.Rect{dx, dy, dw, dh}
 }
 
 // So a stray key cannot shrink the image to a dot or blow it up forever.
@@ -73,7 +74,7 @@ media_zoom :: proc(m: ^Media, factor: f32) {
 // The pixel under (mx, my) stays there; media_zoom fixes the centre, since a key has no point.
 // Fitted size scales exactly with zoom, so pinning means shifting pan by (r-1) times the
 // pointer-to-centre vector. `r` is the LANDED zoom, so a clamped step cannot drift.
-media_zoom_at :: proc(m: ^Media, factor: f32, pane: Rect, mx, my: i32) {
+media_zoom_at :: proc(m: ^Media, factor: f32, pane: gfx.Rect, mx, my: i32) {
     before := m.zoom
     media_zoom(m, factor)
     if m.zoom == before {

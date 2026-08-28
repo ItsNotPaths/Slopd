@@ -1,4 +1,4 @@
-package main
+package txt
 
 import "core:slice"
 import "core:strings"
@@ -112,7 +112,6 @@ doc_drop_anchor :: proc(d: ^Doc) {
 // The cursors an edit fans out over. Alt+A leaves a fixed cursor exactly under the free caret,
 // and that pair names one range, not two — an edit per copy would apply it twice. Only the
 // selection matters here, so a stale goal column does not split a coincident pair.
-@(private)
 edit_cursors :: proc(d: ^Doc) -> []Cursor {
     out := make([dynamic]Cursor, 0, len(d.cursors), context.temp_allocator)
     next: for c in d.cursors {
@@ -930,7 +929,6 @@ pos_right :: proc(d: ^Doc, p: Pos) -> Pos {
 }
 
 // Sort by selection start and fuse any that overlap or touch.
-@(private)
 doc_merge_cursors :: proc(d: ^Doc) {
     if len(d.cursors) <= 1 {
         return

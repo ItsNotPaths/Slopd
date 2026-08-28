@@ -6,20 +6,22 @@ import "core:path/filepath"
 import "core:strings"
 import "core:sync"
 import "core:time"
+import "txt"
+import "ui"
 
 // A list of open Buffers (the ring) with one active. Each is a Doc plus file/view state, so
 // every motion and edit op is the code the command line uses.
 
 Buffer :: struct {
-    using doc:     Doc, // lines + cursors
+    using doc:     txt.Doc, // lines + cursors
     path:            string, // owned; "" = unnamed/scratch
     scroll:          int, // first visible line, the TARGET (clamped at render)
-    scroll_anim:     Anim, // visual top line tweening toward `scroll`
+    scroll_anim:     ui.Anim, // visual top line tweening toward `scroll`
     scroll_detached: f64, // glfw time the wheel cut the view loose; 0 = following the caret
     // The same three for the COLUMN axis: no soft wrap, so a long line runs off the right edge
     // and this is how you reach it. Separate because Shift+wheel detaches sideways alone.
     hscroll:          int,
-    hscroll_anim:     Anim,
+    hscroll_anim:     ui.Anim,
     hscroll_detached: f64,
     dirty:           bool,
     final_newline:   bool, // did the file end in '\n'? preserved on save
@@ -42,7 +44,7 @@ Editor :: struct {
 
 editor_init :: proc(e: ^Editor) {
     b: Buffer
-    doc_init(&b.doc) // one empty line, one cursor
+    txt.doc_init(&b.doc) // one empty line, one cursor
     b.final_newline = true
     append(&e.buffers, b)
 }
@@ -58,14 +60,6 @@ editor_current :: proc(e: ^Editor) -> ^Buffer {
     return &e.buffers[e.active]
 }
 
-// editor_current behind the two questions every whole-buffer tool asks first. Nil on the image
-// surface and on the bare App the tests build.
-main_text_buffer :: proc(a: ^App) -> ^Buffer {
-    if a.main != .Text || len(a.editor.buffers) == 0 {
-        return nil
-    }
-    return editor_current(&a.editor)
-}
 
 // Folding turned off in config.
 editor_clear_folds :: proc(e: ^Editor) {
@@ -76,47 +70,6 @@ editor_clear_folds :: proc(e: ^Editor) {
 
 // --- cross-part seams (called by the filetree / command line) ---
 
-// An image routes to the media viewer; anything else is text — an existing buffer for it, or
-// the scratch buffer if untouched, or a new one. Focuses the main pane either way.
-open_file :: proc(a: ^App, path: string) {
-    defer set_focus(a, .Editor)
-
-    // A failed decode leaves the current surface untouched.
-    if is_media_path(path) {
-        if m, ok := media_load(path); ok {
-            media_destroy(&a.media)
-            a.media = m
-            a.main = .Image
-        } else {
-            open_stage_sudo(a, path)
-        }
-        return
-    }
-
-    a.main = .Text
-    e := &a.editor
-    for &b, i in e.buffers {
-        if b.path == path && !b.embedded { // an embedded doc's path is a name
-            e.active = i
-            return
-        }
-    }
-    cur := editor_current(e)
-    if cur.path == "" && !cur.dirty && doc_line_count(&cur.doc) == 1 && doc_line_len(&cur.doc, 0) == 0 {
-        if !buffer_load(cur, path) {
-            open_stage_sudo(a, path)
-        }
-        return
-    }
-    b: Buffer
-    if buffer_load(&b, path) {
-        append(&e.buffers, b)
-        e.active = len(e.buffers) - 1
-    } else {
-        buffer_destroy(&b)
-        open_stage_sudo(a, path)
-    }
-}
 
 // The quit/write builtins guard on this so a stray `:q` cannot discard work. Edits are work to
 // lose only when a FILE is waiting for them: nothing can write a buffer with no path, so it
@@ -145,14 +98,25 @@ ring_mark_saved_matching :: proc(e: ^Editor) -> int {
 }
 
 // Lights up its '*' in the filetree.
-ring_contains :: proc(a: ^App, path: string) -> bool {
-    return ring_dirty_buffer(a, path) != nil
+ring_contains :: proc(ed: ^Editor, path: string) -> bool {
+    return ring_dirty_buffer(ed, path) != nil
+}
+
+// The ring as the question a file pane asks (Path_Dirty). Handed the Editor rather than the
+// App, so what a row is marked from is the open buffers and nothing else.
+ring_dirty :: proc(ed: ^Editor) -> ui.Path_Dirty {
+    return {ask = ring_dirty_ask, user = ed}
+}
+
+@(private = "file")
+ring_dirty_ask :: proc(user: rawptr, path: string) -> bool {
+    return ring_contains((^Editor)(user), path)
 }
 
 // The unsaved buffer holding `path`, or nil. An embedded doc is skipped: its path is a display
 // name, so no file pane can be pointing at it.
-ring_dirty_buffer :: proc(a: ^App, path: string) -> ^Buffer {
-    for &b in a.editor.buffers {
+ring_dirty_buffer :: proc(ed: ^Editor, path: string) -> ^Buffer {
+    for &b in ed.buffers {
         if b.dirty && !b.embedded && b.path == path {
             return &b
         }
@@ -163,14 +127,14 @@ ring_dirty_buffer :: proc(a: ^App, path: string) -> ^Buffer {
 // --- buffer lifecycle ---
 
 buffer_destroy :: proc(b: ^Buffer) {
-    doc_destroy(&b.doc)
+    txt.doc_destroy(&b.doc)
     delete(b.folds)
     delete(b.path)
     buffer_drop_save_tmp(b) // the copy must not outlive its buffer
 }
 
 buffer_set_text :: proc(b: ^Buffer, text: string) {
-    doc_set_text(&b.doc, text)
+    txt.doc_set_text(&b.doc, text)
     b.scroll = 0
     b.scroll_anim = {} // settled, so a reused scratch buffer does not smear from its old scroll
     b.scroll_detached = 0 // a wholesale swap re-attaches the view to the caret
@@ -230,7 +194,7 @@ Save_Result :: enum {
 // back to "\r\n" if that is how the file wrote them. Three callers must agree byte for byte:
 // the save, the sudo line's private copy, and `:saved`.
 buffer_bytes :: proc(b: ^Buffer, allocator := context.temp_allocator) -> string {
-    data := doc_string(&b.doc, allocator)
+    data := txt.doc_string(&b.doc, allocator)
     if b.final_newline {
         with_nl := strings.concatenate({data, "\n"}, allocator)
         delete(data, allocator)
@@ -263,8 +227,8 @@ buffer_save :: proc(b: ^Buffer) -> Save_Result {
         buffer_mark_saved(b)
         // Scattered editing splinters the table, and nothing else flattens it. Here, because a
         // save has just read the whole document anyway and holds no borrowed span across it.
-        if pt_should_compact(&b.doc.pt) {
-            pt_compact(&b.doc.pt)
+        if txt.pt_should_compact(&b.doc.pt) {
+            txt.pt_compact(&b.doc.pt)
         }
     }
     return res
@@ -418,8 +382,8 @@ buffer_reload_keep_view :: proc(b: ^Buffer) -> bool {
     if !buffer_load(b, b.path) {
         return false
     }
-    doc_reset_cursor(&b.doc, head) // clamped onto the reloaded content
-    b.scroll = clamp(scroll, 0, max(0, doc_line_count(&b.doc) - 1))
+    txt.doc_reset_cursor(&b.doc, head) // clamped onto the reloaded content
+    b.scroll = clamp(scroll, 0, max(0, txt.doc_line_count(&b.doc) - 1))
     b.hscroll = hscroll // bounded next frame, where the pane width is known
     return true
 }
@@ -451,130 +415,44 @@ buffer_conflict_resolve :: proc(b: ^Buffer, reload: bool) {
 // --- editing (thin wrappers over the Doc core; mark the buffer dirty) ---
 
 buffer_insert_rune :: proc(b: ^Buffer, r: rune) {
-    b.dirty |= doc_insert_rune(&b.doc, r)
+    b.dirty |= txt.doc_insert_rune(&b.doc, r)
 }
 
 // No auto-indent — the editor uses buffer_enter. The primitive for programmatic splits.
 buffer_newline :: proc(b: ^Buffer) {
-    b.dirty |= doc_newline(&b.doc)
+    b.dirty |= txt.doc_newline(&b.doc)
 }
 
-// A newline copying the line's leading whitespace, plus one indent unit when the line opens a
-// block at the caret. A lone caret between a bracket pair expands across three lines.
-// Heuristic-first, so it works with no grammar installed.
-buffer_enter :: proc(a: ^App, b: ^Buffer) {
-    d := &b.doc
 
-    if len(d.cursors) == 1 && !cursor_has_selection(d.cursors[0]) {
-        c := d.cursors[0]
-        prev, size := doc_rune_before(d, c.head)
-        if enter_expands_pair(prev, doc_rune_at(d, c.head)) &&
-           !ts_in_string_or_comment(a, b, c.head.line, c.head.col - size) {
-            base := line_lead(d, c.head.line)
-            inner := grow_indent(base, a.indent)
-            body := strings.concatenate({"\n", inner, "\n", base}, context.temp_allocator)
-            if doc_insert_text(d, body) {
-                b.dirty = true
-            }
-            doc_reset_cursor(d, Pos{c.head.line + 1, len(inner)}) // the indented middle line
-            return
-        }
-    }
 
-    // Each cursor gets a newline plus its own computed indent.
-    edits := make([dynamic]Edit, 0, len(d.cursors), context.temp_allocator)
-    for c in edit_cursors(d) {
-        lo, hi := cursor_range(c)
-        text := strings.concatenate({"\n", enter_indent(a, b, lo)}, context.temp_allocator)
-        append(&edits, Edit{doc_off(d, lo), doc_off(d, hi), text, 0})
-    }
-    if doc_commit(d, edits[:]) {
-        b.dirty = true
-    }
-}
 
-// The current line's leading whitespace, plus one unit when it opens a block at the caret.
-@(private = "file")
-enter_indent :: proc(a: ^App, b: ^Buffer, pos: Pos) -> string {
-    lead := line_lead(&b.doc, pos.line)
-    if enter_opens_block(a, b, pos) {
-        return grow_indent(lead, a.indent)
-    }
-    return lead
-}
 
-// The last non-blank char before the caret is an opener `([{` that is real code — tree-sitter
-// rules out one inside a string or comment where a grammar exists.
-@(private = "file")
-enter_opens_block :: proc(a: ^App, b: ^Buffer, pos: Pos) -> bool {
-    line := doc_line(&b.doc, pos.line)
-    at := -1
-    for i := min(pos.col, len(line)) - 1; i >= 0; i -= 1 {
-        if line[i] != ' ' && line[i] != '\t' {
-            at = i
-            break
-        }
-    }
-    if at < 0 {
-        return false
-    }
-    switch line[at] {
-    case '(', '[', '{':
-        return !ts_in_string_or_comment(a, b, pos.line, at)
-    }
-    return false
-}
 
-// Quotes excluded: splitting a string across lines is not wanted.
-@(private = "file")
-enter_expands_pair :: proc(prev, next: rune) -> bool {
-    switch prev {
-    case '(':
-        return next == ')'
-    case '[':
-        return next == ']'
-    case '{':
-        return next == '}'
-    }
-    return false
-}
-
-// A sub-slice of the line's bytes, so read it before any edit.
-@(private = "file")
-line_lead :: proc(d: ^Doc, line: int) -> string {
-    src := doc_line(d, line)
-    return string(src[:line_indent_cols(src)])
-}
-
-@(private = "file")
-grow_indent :: proc(lead: string, ind: Indent) -> string {
-    return strings.concatenate({lead, indent_text(ind)}, context.temp_allocator)
-}
 
 buffer_backspace :: proc(b: ^Buffer) {
-    b.dirty |= doc_backspace(&b.doc)
+    b.dirty |= txt.doc_backspace(&b.doc)
 }
 
 buffer_delete :: proc(b: ^Buffer) {
-    b.dirty |= doc_delete(&b.doc)
+    b.dirty |= txt.doc_delete(&b.doc)
 }
 
 buffer_delete_word_back :: proc(b: ^Buffer) {
-    b.dirty |= doc_delete_word_back(&b.doc)
+    b.dirty |= txt.doc_delete_word_back(&b.doc)
 }
 
 buffer_delete_word_forward :: proc(b: ^Buffer) {
-    b.dirty |= doc_delete_word_forward(&b.doc)
+    b.dirty |= txt.doc_delete_word_forward(&b.doc)
 }
 
 buffer_undo :: proc(b: ^Buffer) {
-    if doc_undo(&b.doc) {
+    if txt.doc_undo(&b.doc) {
         b.dirty = true
     }
 }
 
 buffer_redo :: proc(b: ^Buffer) {
-    if doc_redo(&b.doc) {
+    if txt.doc_redo(&b.doc) {
         b.dirty = true
     }
 }
@@ -585,10 +463,10 @@ buffer_redo :: proc(b: ^Buffer) {
 // minimum once the caret would leave; Middle pins the topmost cursor. Both walk visible rows.
 buffer_scroll_target :: proc(b: ^Buffer, rows: int, center: bool) -> int {
     if center {
-        line := buffer_prev_visible(b, doc_top_cursor_line(&b.doc))
+        line := buffer_prev_visible(b, txt.doc_top_cursor_line(&b.doc))
         return buffer_back_visible(b, line, rows / 2)
     }
-    top := buffer_prev_visible(b, clamp(b.scroll, 0, doc_line_count(&b.doc) - 1))
+    top := buffer_prev_visible(b, clamp(b.scroll, 0, txt.doc_line_count(&b.doc) - 1))
     cur := b.cursors[b.primary].head.line
     if cur < top {
         return cur
@@ -607,7 +485,7 @@ buffer_scroll_apply :: proc(b: ^Buffer, rows: int, center: bool, last_input_at: 
     }
     if b.scroll_detached > 0 {
         // No policy, only bounds: any visible line may be the top.
-        b.scroll = buffer_prev_visible(b, clamp(b.scroll, 0, max(0, doc_line_count(&b.doc) - 1)))
+        b.scroll = buffer_prev_visible(b, clamp(b.scroll, 0, max(0, txt.doc_line_count(&b.doc) - 1)))
         return
     }
     b.scroll = buffer_scroll_target(b, rows, center)
@@ -616,7 +494,7 @@ buffer_scroll_apply :: proc(b: ^Buffer, rows: int, center: bool, last_input_at: 
 // The wheel's entry point. buffer_scroll_apply snaps the result onto a visible line, so folds
 // need no handling here.
 buffer_scroll_by :: proc(b: ^Buffer, delta: int, now: f64) {
-    b.scroll = clamp(b.scroll + delta, 0, max(0, doc_line_count(&b.doc) - 1))
+    b.scroll = clamp(b.scroll + delta, 0, max(0, txt.doc_line_count(&b.doc) - 1))
     b.scroll_detached = now
 }
 
@@ -662,7 +540,7 @@ buffer_hscroll_apply :: proc(b: ^Buffer, cols, longest: int, last_input_at: f64)
         b.hscroll = clamp(b.hscroll, 0, limit)
         return
     }
-    col := doc_cell_col(&b.doc, b.cursors[b.primary].head) // the axis is CELLS
+    col := txt.doc_cell_col(&b.doc, b.cursors[b.primary].head) // the axis is CELLS
     b.hscroll = clamp(buffer_hscroll_target(b.hscroll, col, cols), 0, limit)
 }
 
@@ -676,12 +554,12 @@ buffer_hscroll_by :: proc(b: ^Buffer, delta: int, now: f64) {
 // --- movement --- select=true (Shift) grows a selection; all=true (the Alt+M prefix) moves
 // every cursor rather than the free caret.
 
-buffer_motion :: proc(b: ^Buffer, motion: Motion, select := false, all := false, count := 1) {
+buffer_motion :: proc(b: ^Buffer, motion: txt.Motion, select := false, all := false, count := 1) {
     buffer_sync_folds(b) // an earlier same-frame edit may have invalidated the folds
     if all {
-        doc_move_all(&b.doc, motion, select, count)
+        txt.doc_move_all(&b.doc, motion, select, count)
     } else {
-        doc_move(&b.doc, motion, select, count)
+        txt.doc_move(&b.doc, motion, select, count)
     }
     buffer_skip_hidden(b, motion)
 }
@@ -689,7 +567,7 @@ buffer_motion :: proc(b: ^Buffer, motion: Motion, select := false, all := false,
 // A cursor that stepped into a collapsed block snaps to the fold's visible edge in the
 // direction it moved, so one keypress steps cleanly over a fold.
 @(private = "file")
-buffer_skip_hidden :: proc(b: ^Buffer, motion: Motion) {
+buffer_skip_hidden :: proc(b: ^Buffer, motion: txt.Motion) {
     if len(b.folds) == 0 {
         return
     }
@@ -704,16 +582,16 @@ buffer_skip_hidden :: proc(b: ^Buffer, motion: Motion) {
         // have reached.
         col :=
             vertical \
-            ? doc_byte_col(&b.doc, target, c.goal) \
-            : (forward ? 0 : doc_line_len(&b.doc, target))
-        p := Pos{target, col}
-        if !cursor_has_selection(c) {
+            ? txt.doc_byte_col(&b.doc, target, c.goal) \
+            : (forward ? 0 : txt.doc_line_len(&b.doc, target))
+        p := txt.Pos{target, col}
+        if !txt.cursor_has_selection(c) {
             c.anchor = p
         }
         c.head = p
         if !vertical {
-            c.goal = doc_cell_col(&b.doc, p)
+            c.goal = txt.doc_cell_col(&b.doc, p)
         }
     }
-    doc_merge_cursors(&b.doc)
+    txt.doc_merge_cursors(&b.doc)
 }

@@ -5,6 +5,10 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import clay "../bindings/clay"
+import "txt"
+import "gfx"
+import "syntax"
+import "ui"
 
 // One row along the bottom, showing one of two things:
 //   the command line while it is open — a prompt, an editable line, a ghosted hint
@@ -35,7 +39,7 @@ strip_mode :: proc(a: ^App) -> Strip_Mode {
 
 // The region and the margin, in Clay's units. No inset: the strip has no focus ring, being
 // nothing you can focus.
-strip_geom :: proc(strip: Rect, scale: f32) -> (area: Rect, pad: u16) {
+strip_geom :: proc(strip: gfx.Rect, scale: f32) -> (area: gfx.Rect, pad: u16) {
     return strip, u16(max(0.0, STRIP_PAD * scale))
 }
 
@@ -57,15 +61,16 @@ strip_slot :: proc(at: clay.FloatingAttachPointType, dx: f32) -> clay.ElementDec
 
 // The one-line Doc and the frame's timestamp, for the blink. Lives in the frame's temp arena.
 Strip_Edit :: struct {
-    doc: ^Doc,
+    doc: ^txt.Doc,
     now: f64,
 }
 
 // The typed runes, a selection span per cursor and a caret per cursor. A caret is an over-quad
 // and must land above the glyphs, which a Clay Rectangle cannot do.
-strip_paint_cl :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user: rawptr) {
+strip_paint_cl :: proc(t: ^gfx.Text, r, clip: gfx.Rect, win_w, win_h: i32, host: rawptr, user: rawptr) {
+    a := (^App)(host)
     e := (^Strip_Edit)(user)
-    if e == nil || e.doc == nil || doc_line_count(e.doc) == 0 {
+    if e == nil || e.doc == nil || txt.doc_line_count(e.doc) == 0 {
         return
     }
     th := &a.theme
@@ -75,24 +80,24 @@ strip_paint_cl :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user
     ty := f32(r.y) + (f32(r.h) - lh) / 2
     y := i32(ty) // selection and caret share the glyph cell's top
 
-    cells := doc_cells(e.doc, 0) // one line; bytes -> the cell grid
+    cells := txt.doc_cells(e.doc, 0) // one line; bytes -> the cell grid
     for c in e.doc.cursors {
-        if cursor_has_selection(c) {
-            lo, hi := cursor_range(c)
-            x0 := cells_col(cells, lo.col)
-            x1 := cells_col(cells, hi.col)
-            fill(t, Rect{i32(ox + cw * f32(x0)), y, i32(cw * f32(x1 - x0)), i32(lh)}, th.selection)
+        if txt.cursor_has_selection(c) {
+            lo, hi := txt.cursor_range(c)
+            x0 := txt.cells_col(cells, lo.col)
+            x1 := txt.cells_col(cells, hi.col)
+            gfx.fill(t, gfx.Rect{i32(ox + cw * f32(x0)), y, i32(cw * f32(x1 - x0)), i32(lh)}, th.selection)
         }
     }
-    text_draw_runes(t, cells.runes, ox, ty, th.fg)
-    if caret_blink_on(a, e.now) {
+    gfx.text_draw_runes(t, cells.runes, ox, ty, th.fg)
+    if ui.caret_blink_on(ctx_of(a), e.now) {
         for c in e.doc.cursors {
-            cx := ox + cw * f32(cells_col(cells, c.head.col))
-            caret(t, Rect{i32(cx), y, i32(2 * a.scale), i32(lh)}, th.fg)
+            cx := ox + cw * f32(txt.cells_col(cells, c.head.col))
+            gfx.caret(t, gfx.Rect{i32(cx), y, i32(2 * a.scale), i32(lh)}, th.fg)
         }
     }
     // The ClayCustom contract: the painter ends with its own flush.
-    flush_pane(t, clip, win_w, win_h)
+    gfx.flush_pane(t, clip, win_w, win_h)
 }
 
 // Declare the strip into the window's tree. Reads App, writes only Clay — no mutation, no GL.
@@ -106,7 +111,7 @@ strip_paint_cl :: proc(t: ^Text, r, clip: Rect, win_w, win_h: i32, a: ^App, user
 //     .Status    st_left    the modified marker and file name, pinned left
 //                st_root    the project root, centred
 //                st_right   language / caret / line count / cursors / scroll, pinned right
-strip_declare :: proc(a: ^App, f: ^Font, strip: Rect, now: f64 = 0) {
+strip_declare :: proc(a: ^App, f: ^gfx.Font, strip: gfx.Rect, now: f64 = 0) {
     th := &a.theme
     area, pad := strip_geom(strip, a.scale)
     if area.w <= 0 || area.h <= 0 {
@@ -121,13 +126,13 @@ strip_declare :: proc(a: ^App, f: ^Font, strip: Rect, now: f64 = 0) {
     ring := mode == .Command && a.cl.injected && a.cl.doc.version == a.cl.inject_ver
     bw := u16(2 * a.scale)
 
-    box := clay_pane_box(area)
+    box := ui.clay_pane_box(area)
     box.layout.layoutDirection = .LeftToRight
     box.layout.padding = {left = pad, right = pad}
     box.layout.childAlignment = {y = .Center}
-    box.backgroundColor = clay_rgb(th.border_light)
+    box.backgroundColor = ui.clay_rgb(th.border_light)
     if ring {
-        box.border = {color = clay_rgb(th.cl_inject), width = {left = bw, right = bw, top = bw, bottom = bw}}
+        box.border = {color = ui.clay_rgb(th.cl_inject), width = {left = bw, right = bw, top = bw, bottom = bw}}
     }
 
     if clay.UI(clay.ID("st_pane"))(box) {
@@ -146,20 +151,20 @@ strip_declare :: proc(a: ^App, f: ^Font, strip: Rect, now: f64 = 0) {
 strip_declare_command :: proc(a: ^App, cw: f32, lh: i32, now: f64) {
     PROMPT :: "> "
     th := &a.theme
-    if doc_line_count(&a.cl.doc) == 0 {
+    if txt.doc_line_count(&a.cl.doc) == 0 {
         return // never cl_init'd, so there is no line to show
     }
-    text := string(doc_line(&a.cl.doc, 0))
-    ncells := cells_count(doc_cells(&a.cl.doc, 0))
+    text := string(txt.doc_line(&a.cl.doc, 0))
+    ncells := txt.cells_count(txt.doc_cells(&a.cl.doc, 0))
 
     if clay.UI(clay.ID("st_prompt"))({layout = {sizing = {width = clay.SizingFixed(cw * f32(len(PROMPT)))}}}) {
-        clay.Text(PROMPT, clay_text_config(th.muted, lh))
+        clay.Text(PROMPT, ui.clay_text_config(th.muted, lh))
     }
 
     ed := new(Strip_Edit, context.temp_allocator)
     ed^ = Strip_Edit{doc = &a.cl.doc, now = now}
-    cu := new(ClayCustom, context.temp_allocator)
-    cu^ = ClayCustom{paint = strip_paint_cl, user = ed}
+    cu := new(ui.ClayCustom, context.temp_allocator)
+    cu^ = ui.ClayCustom{paint = strip_paint_cl, user = ed}
     if clay.UI(clay.ID("st_edit"))(
         {
             layout = {sizing = {clay.SizingFixed(cw * f32(ncells + 1)), clay.SizingGrow()}},
@@ -170,7 +175,7 @@ strip_declare_command :: proc(a: ^App, cw: f32, lh: i32, now: f64) {
     // e.g. `:reload` -> "(y/n)", until an argument is entered.
     if hint := cl_ghost_hint(a, text); hint != "" {
         if clay.UI(clay.ID("st_hint"))({layout = {childAlignment = {y = .Center}}}) {
-            clay.Text(hint, clay_text_config(th.muted, lh))
+            clay.Text(hint, ui.clay_text_config(th.muted, lh))
         }
     }
 }
@@ -185,7 +190,7 @@ strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
     // No editor on screen: name the aux pane. The rest is about a document, and there is none.
     if !panes_visible(a).editor {
         if clay.UI(clay.ID("st_left"))(strip_slot(.LeftCenter, dx)) {
-            clay.Text(aux_mode_name(a.aux_mode), clay_text_config(th.muted, lh))
+            clay.Text(aux_mode_name(a.aux_mode), ui.clay_text_config(th.muted, lh))
         }
         return
     }
@@ -207,34 +212,34 @@ strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
         left = fmt.tprintf("%s %s", mark, name) // a dirty buffer reads brighter
         left_col = b.conflict ? th.urgent : b.dirty ? th.fg : th.muted
         head := b.cursors[b.primary].head
-        nlines := doc_line_count(&b.doc)
+        nlines := txt.doc_line_count(&b.doc)
         cursors := len(b.cursors) > 1 ? fmt.tprintf("   %d cursors", len(b.cursors)) : ""
         eol := b.crlf ? "   CRLF" : "" // LF is the norm and says nothing; CRLF has to be visible
         right = fmt.tprintf(
             "%s%s   L%d:%d   %d lines%s   %s",
-            status_lang(a, b.path), eol, head.line + 1, doc_cell_col(&b.doc, head) + 1, nlines,
+            status_lang(a, b.path), eol, head.line + 1, txt.doc_cell_col(&b.doc, head) + 1, nlines,
             cursors, scroll_label(head.line, nlines),
         )
     }
 
     if clay.UI(clay.ID("st_left"))(strip_slot(.LeftCenter, dx)) {
-        clay.Text(left, clay_text_config(left_col, lh))
+        clay.Text(left, ui.clay_text_config(left_col, lh))
     }
     if clay.UI(clay.ID("st_right"))(strip_slot(.RightCenter, -dx)) {
-        clay.Text(right, clay_text_config(th.muted, lh))
+        clay.Text(right, ui.clay_text_config(th.muted, lh))
     }
 
     // The project root, so the root the tools and `:tu` use is visible whenever the command
     // line is not.
     if root := home_abbrev(a.project_root, context.temp_allocator); root != "" {
         if clay.UI(clay.ID("st_root"))(strip_slot(.CenterCenter, 0)) {
-            clay.Text(root, clay_text_config(th.muted, lh))
+            clay.Text(root, ui.clay_text_config(th.muted, lh))
         }
     }
 }
 
 // Test-facing wrapper; see filetree_layout.
-strip_layout :: proc(a: ^App, f: ^Font, strip: Rect, win_w, win_h: i32, now: f64 = 0) -> clay.ClayArray(clay.RenderCommand) {
+strip_layout :: proc(a: ^App, f: ^gfx.Font, strip: gfx.Rect, win_w, win_h: i32, now: f64 = 0) -> clay.ClayArray(clay.RenderCommand) {
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
         strip_declare(a, f, strip, now)
@@ -244,7 +249,7 @@ strip_layout :: proc(a: ^App, f: ^Font, strip: Rect, win_w, win_h: i32, now: f64
 
 // Shorter than any pane's: with no list, no viewport and no click there is nothing to do
 // before declaring.
-strip_frame :: proc(t: ^Text, a: ^App, strip: Rect, now: f64) {
+strip_frame :: proc(t: ^gfx.Text, a: ^App, strip: gfx.Rect, now: f64) {
     strip_declare(a, &t.font, strip, now)
 }
 
@@ -264,7 +269,7 @@ status_lang :: proc(a: ^App, path: string) -> string {
     if ext == "" {
         return "text"
     }
-    if name, ok := grammar_for_ext(a.gram_ext, ext); ok {
+    if name, ok := syntax.grammar_for_ext(a.gram_ext, ext); ok {
         return name
     }
     return ext

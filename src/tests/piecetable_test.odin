@@ -4,29 +4,30 @@ import app ".."
 import "core:fmt"
 import "core:strings"
 import "core:testing"
+import "../txt"
 
-// The piece table is the byte storage under Doc (src/piecetable.odin). Nothing here touches the
+// The piece table is the byte storage under Doc (src/txt/piecetable.odin). Nothing here touches the
 // editor: a table is a document's bytes plus a line index, and every test below reads it back as
 // a string and compares against the same edit done to a plain Odin string. That equivalence IS
 // the contract — a splice may rearrange pieces however it likes as long as the bytes agree.
 
 @(private = "file")
-mk :: proc(s: string) -> app.Piece_Table {
-    pt: app.Piece_Table
-    app.pt_init(&pt)
-    app.pt_load(&pt, transmute([]u8)s)
+mk :: proc(s: string) -> txt.Piece_Table {
+    pt: txt.Piece_Table
+    txt.pt_init(&pt)
+    txt.pt_load(&pt, transmute([]u8)s)
     return pt
 }
 
 // The whole document, read back through the piece walk.
 @(private = "file")
-str :: proc(pt: ^app.Piece_Table) -> string {
-    return string(app.pt_read(pt, 0, pt.size, context.temp_allocator))
+str :: proc(pt: ^txt.Piece_Table) -> string {
+    return string(txt.pt_read(pt, 0, pt.size, context.temp_allocator))
 }
 
 @(private = "file")
-splice :: proc(pt: ^app.Piece_Table, lo, hi: int, text: string) -> int {
-    return app.pt_splice(pt, lo, hi, transmute([]u8)text)
+splice :: proc(pt: ^txt.Piece_Table, lo, hi: int, text: string) -> int {
+    return txt.pt_splice(pt, lo, hi, transmute([]u8)text)
 }
 
 // The same replacement done to a string, so a test states the expected result once.
@@ -38,10 +39,10 @@ want :: proc(s: string, lo, hi: int, text: string) -> string {
 // Every line's text, joined with '|' — the line index made readable. Uses pt_line, so it also
 // exercises the borrow/copy split.
 @(private = "file")
-lines :: proc(pt: ^app.Piece_Table) -> string {
-    out := make([dynamic]string, 0, app.pt_line_count(pt), context.temp_allocator)
-    for i in 0 ..< app.pt_line_count(pt) {
-        append(&out, string(app.pt_line(pt, i, context.temp_allocator)))
+lines :: proc(pt: ^txt.Piece_Table) -> string {
+    out := make([dynamic]string, 0, txt.pt_line_count(pt), context.temp_allocator)
+    for i in 0 ..< txt.pt_line_count(pt) {
+        append(&out, string(txt.pt_line(pt, i, context.temp_allocator)))
     }
     return strings.join(out[:], "|", context.temp_allocator)
 }
@@ -49,31 +50,31 @@ lines :: proc(pt: ^app.Piece_Table) -> string {
 // Re-derives the line index from the bytes and compares. The index is maintained incrementally
 // by pt_splice, so this is the check that the increment never drifts from the truth.
 @(private = "file")
-expect_lines_agree :: proc(t: ^testing.T, pt: ^app.Piece_Table, loc := #caller_location) {
+expect_lines_agree :: proc(t: ^testing.T, pt: ^txt.Piece_Table, loc := #caller_location) {
     s := str(pt)
-    scratch: app.Piece_Table
-    app.pt_init(&scratch)
-    defer app.pt_destroy(&scratch)
-    app.pt_load(&scratch, transmute([]u8)s)
+    scratch: txt.Piece_Table
+    txt.pt_init(&scratch)
+    defer txt.pt_destroy(&scratch)
+    txt.pt_load(&scratch, transmute([]u8)s)
     testing.expect_value(t, lines(pt), lines(&scratch), loc = loc)
 }
 
 @(test)
 test_pt_load_and_read :: proc(t: ^testing.T) {
     pt := mk("ab\ncd\nef")
-    defer app.pt_destroy(&pt)
+    defer txt.pt_destroy(&pt)
 
     testing.expect_value(t, pt.size, 8)
     testing.expect_value(t, str(&pt), "ab\ncd\nef")
-    testing.expect_value(t, app.pt_line_count(&pt), 3)
+    testing.expect_value(t, txt.pt_line_count(&pt), 3)
     testing.expect_value(t, lines(&pt), "ab|cd|ef")
 
     // A sub-range, and the line ranges the index reports.
-    testing.expect_value(t, string(app.pt_read(&pt, 3, 5, context.temp_allocator)), "cd")
-    lo, hi := app.pt_line_range(&pt, 1)
+    testing.expect_value(t, string(txt.pt_read(&pt, 3, 5, context.temp_allocator)), "cd")
+    lo, hi := txt.pt_line_range(&pt, 1)
     testing.expect_value(t, lo, 3)
     testing.expect_value(t, hi, 5) // the '\n' at 5 is NOT part of the line
-    testing.expect_value(t, app.pt_line_len(&pt, 1), 2)
+    testing.expect_value(t, txt.pt_line_len(&pt, 1), 2)
 }
 
 // A trailing newline opens an empty last line; an empty document is one empty line. Both are
@@ -81,28 +82,28 @@ test_pt_load_and_read :: proc(t: ^testing.T) {
 @(test)
 test_pt_line_edges :: proc(t: ^testing.T) {
     empty := mk("")
-    defer app.pt_destroy(&empty)
-    testing.expect_value(t, app.pt_line_count(&empty), 1)
-    testing.expect_value(t, app.pt_line_len(&empty, 0), 0)
-    testing.expect_value(t, len(app.pt_line(&empty, 0, context.temp_allocator)), 0)
+    defer txt.pt_destroy(&empty)
+    testing.expect_value(t, txt.pt_line_count(&empty), 1)
+    testing.expect_value(t, txt.pt_line_len(&empty, 0), 0)
+    testing.expect_value(t, len(txt.pt_line(&empty, 0, context.temp_allocator)), 0)
 
     trailing := mk("a\n")
-    defer app.pt_destroy(&trailing)
-    testing.expect_value(t, app.pt_line_count(&trailing), 2)
+    defer txt.pt_destroy(&trailing)
+    testing.expect_value(t, txt.pt_line_count(&trailing), 2)
     testing.expect_value(t, lines(&trailing), "a|")
 }
 
 @(test)
 test_pt_line_at_off :: proc(t: ^testing.T) {
     pt := mk("ab\ncd\nef") // starts at 0, 3, 6
-    defer app.pt_destroy(&pt)
+    defer txt.pt_destroy(&pt)
 
-    testing.expect_value(t, app.pt_line_at_off(&pt, 0), 0)
-    testing.expect_value(t, app.pt_line_at_off(&pt, 2), 0) // the '\n' belongs to the line before
-    testing.expect_value(t, app.pt_line_at_off(&pt, 3), 1)
-    testing.expect_value(t, app.pt_line_at_off(&pt, 6), 2)
-    testing.expect_value(t, app.pt_line_at_off(&pt, 8), 2) // the end of the document
-    testing.expect_value(t, app.pt_line_at_off(&pt, 99), 2) // past it: clamped, never off the index
+    testing.expect_value(t, txt.pt_line_at_off(&pt, 0), 0)
+    testing.expect_value(t, txt.pt_line_at_off(&pt, 2), 0) // the '\n' belongs to the line before
+    testing.expect_value(t, txt.pt_line_at_off(&pt, 3), 1)
+    testing.expect_value(t, txt.pt_line_at_off(&pt, 6), 2)
+    testing.expect_value(t, txt.pt_line_at_off(&pt, 8), 2) // the end of the document
+    testing.expect_value(t, txt.pt_line_at_off(&pt, 99), 2) // past it: clamped, never off the index
 }
 
 // A splice at every offset of a small document, insert and replace, checked against the same
@@ -115,7 +116,7 @@ test_pt_splice_every_offset :: proc(t: ^testing.T) {
         for hi in lo ..= len(base) {
             for text in ([]string{"", "X", "X\nY"}) {
                 pt := mk(base)
-                defer app.pt_destroy(&pt)
+                defer txt.pt_destroy(&pt)
                 delta := splice(&pt, lo, hi, text)
                 exp := want(base, lo, hi, text)
                 testing.expectf(
@@ -141,7 +142,7 @@ test_pt_splice_every_offset :: proc(t: ^testing.T) {
 @(test)
 test_pt_splice_layered :: proc(t: ^testing.T) {
     pt := mk("one\ntwo\nthree")
-    defer app.pt_destroy(&pt)
+    defer txt.pt_destroy(&pt)
     s := "one\ntwo\nthree"
 
     steps := [][3]int{{0, 0, 0}, {4, 7, 1}, {2, 2, 2}, {0, 5, 0}, {6, 9, 2}, {1, 3, 1}}
@@ -163,7 +164,7 @@ test_pt_splice_layered :: proc(t: ^testing.T) {
 @(test)
 test_pt_typing_coalesces :: proc(t: ^testing.T) {
     pt := mk("ab\ncd\nef")
-    defer app.pt_destroy(&pt)
+    defer txt.pt_destroy(&pt)
 
     at := 4 // inside "cd"
     for i in 0 ..< 200 {
@@ -180,7 +181,7 @@ test_pt_typing_coalesces :: proc(t: ^testing.T) {
 @(test)
 test_pt_typing_from_empty :: proc(t: ^testing.T) {
     pt := mk("")
-    defer app.pt_destroy(&pt)
+    defer txt.pt_destroy(&pt)
     for i in 0 ..< 100 {
         splice(&pt, i, i, "y")
     }
@@ -193,13 +194,13 @@ test_pt_typing_from_empty :: proc(t: ^testing.T) {
 @(test)
 test_pt_big_append_is_one_piece :: proc(t: ^testing.T) {
     pt := mk("head")
-    defer app.pt_destroy(&pt)
+    defer txt.pt_destroy(&pt)
 
-    big := strings.repeat("z", app.PT_CHUNK * 2 + 7, context.temp_allocator)
+    big := strings.repeat("z", txt.PT_CHUNK * 2 + 7, context.temp_allocator)
     splice(&pt, 4, 4, big)
     testing.expect_value(t, pt.size, 4 + len(big))
     testing.expect_value(t, len(pt.pieces), 2)
-    testing.expect_value(t, len(app.pt_span(&pt, 4)), len(big)) // contiguous, in one block
+    testing.expect_value(t, len(txt.pt_span(&pt, 4)), len(big)) // contiguous, in one block
     testing.expect_value(t, str(&pt), fmt.tprintf("head%s", big))
 }
 
@@ -209,15 +210,15 @@ test_pt_big_append_is_one_piece :: proc(t: ^testing.T) {
 @(test)
 test_pt_span_and_line_borrow :: proc(t: ^testing.T) {
     pt := mk("ab\ncd\nef")
-    defer app.pt_destroy(&pt)
+    defer txt.pt_destroy(&pt)
 
-    testing.expect_value(t, string(app.pt_span(&pt, 0)), "ab\ncd\nef") // one piece after a load
-    testing.expect_value(t, len(app.pt_span(&pt, pt.size)), 0) // nothing at the end
+    testing.expect_value(t, string(txt.pt_span(&pt, 0)), "ab\ncd\nef") // one piece after a load
+    testing.expect_value(t, len(txt.pt_span(&pt, pt.size)), 0) // nothing at the end
 
     splice(&pt, 4, 4, "X") // splits "cd" -> the middle line is now three pieces
     testing.expect_value(t, str(&pt), "ab\ncXd\nef")
-    testing.expect_value(t, string(app.pt_span(&pt, 3)), "c") // stops at the split
-    testing.expect_value(t, string(app.pt_line(&pt, 1, context.temp_allocator)), "cXd") // stitched
+    testing.expect_value(t, string(txt.pt_span(&pt, 3)), "c") // stops at the split
+    testing.expect_value(t, string(txt.pt_line(&pt, 1, context.temp_allocator)), "cXd") // stitched
     expect_lines_agree(t, &pt)
 }
 
@@ -226,7 +227,7 @@ test_pt_span_and_line_borrow :: proc(t: ^testing.T) {
 @(test)
 test_pt_compact :: proc(t: ^testing.T) {
     pt := mk("one\ntwo\nthree")
-    defer app.pt_destroy(&pt)
+    defer txt.pt_destroy(&pt)
     for i in 0 ..< 50 {
         splice(&pt, 4 + i, 4 + i, "q")
         splice(&pt, 0, 0, "p")
@@ -235,7 +236,7 @@ test_pt_compact :: proc(t: ^testing.T) {
     before_lines := strings.clone(lines(&pt), context.temp_allocator)
     testing.expect(t, len(pt.pieces) > 1)
 
-    app.pt_compact(&pt)
+    txt.pt_compact(&pt)
     testing.expect_value(t, len(pt.pieces), 1)
     testing.expect_value(t, len(pt.blocks), 1)
     testing.expect_value(t, str(&pt), before)
@@ -250,15 +251,15 @@ test_pt_compact :: proc(t: ^testing.T) {
 @(test)
 test_pt_should_compact :: proc(t: ^testing.T) {
     pt := mk("abc")
-    defer app.pt_destroy(&pt)
-    testing.expect(t, !app.pt_should_compact(&pt))
+    defer txt.pt_destroy(&pt)
+    testing.expect(t, !txt.pt_should_compact(&pt))
     // Scattered inserts fragment; typing runs do not. Each pair here lands somewhere new.
-    for i in 0 ..< app.PT_COMPACT_PIECES {
+    for i in 0 ..< txt.PT_COMPACT_PIECES {
         splice(&pt, pt.size / 2, pt.size / 2, "-")
     }
-    testing.expect(t, app.pt_should_compact(&pt))
-    app.pt_compact(&pt)
-    testing.expect(t, !app.pt_should_compact(&pt))
+    testing.expect(t, txt.pt_should_compact(&pt))
+    txt.pt_compact(&pt)
+    testing.expect(t, !txt.pt_should_compact(&pt))
 }
 
 // A whole-document replacement through pt_splice, and a reload over an edited table: both are
@@ -267,13 +268,13 @@ test_pt_should_compact :: proc(t: ^testing.T) {
 @(test)
 test_pt_replace_all_and_reload :: proc(t: ^testing.T) {
     pt := mk("ab\ncd")
-    defer app.pt_destroy(&pt)
+    defer txt.pt_destroy(&pt)
 
     splice(&pt, 0, pt.size, "x\ny\nz")
     testing.expect_value(t, str(&pt), "x\ny\nz")
     testing.expect_value(t, lines(&pt), "x|y|z")
 
-    app.pt_load(&pt, transmute([]u8)string("fresh\ncontent"))
+    txt.pt_load(&pt, transmute([]u8)string("fresh\ncontent"))
     testing.expect_value(t, str(&pt), "fresh\ncontent")
     testing.expect_value(t, lines(&pt), "fresh|content")
     testing.expect_value(t, len(pt.pieces), 1)
@@ -285,12 +286,12 @@ test_pt_replace_all_and_reload :: proc(t: ^testing.T) {
 @(test)
 test_pt_utf8_is_just_bytes :: proc(t: ^testing.T) {
     pt := mk("héllo\nwörld") // é and ö are two bytes each
-    defer app.pt_destroy(&pt)
+    defer txt.pt_destroy(&pt)
 
     testing.expect_value(t, pt.size, 13)
-    testing.expect_value(t, app.pt_line_count(&pt), 2)
-    testing.expect_value(t, string(app.pt_line(&pt, 0, context.temp_allocator)), "héllo")
-    testing.expect_value(t, string(app.pt_line(&pt, 1, context.temp_allocator)), "wörld")
+    testing.expect_value(t, txt.pt_line_count(&pt), 2)
+    testing.expect_value(t, string(txt.pt_line(&pt, 0, context.temp_allocator)), "héllo")
+    testing.expect_value(t, string(txt.pt_line(&pt, 1, context.temp_allocator)), "wörld")
 
     splice(&pt, 8, 8, "ü") // between 'w' and 'ö' — line 1 starts at 7, 'w' is one byte
     testing.expect_value(t, str(&pt), "héllo\nwüörld")

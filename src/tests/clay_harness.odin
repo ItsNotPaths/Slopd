@@ -5,6 +5,8 @@ import clay "../../bindings/clay"
 import "base:runtime"
 import "core:fmt"
 import "core:sync"
+import "../gfx"
+import "../ui"
 
 // A Clay context for headless tests, shared by every test that declares a tree, because the two
 // traps below are traps for all of them.
@@ -33,9 +35,9 @@ clay_global: sync.Mutex
 clay_test_context :: proc(w, h: f32) -> []u8 {
     sync.lock(&clay_global)
     need := int(clay.MinMemorySize())
-    raw := make([]u8, need + app.CLAY_ARENA_ALIGN)
+    raw := make([]u8, need + ui.CLAY_ARENA_ALIGN)
     base := uintptr(raw_data(raw))
-    pad := (app.CLAY_ARENA_ALIGN - int(base % app.CLAY_ARENA_ALIGN)) % app.CLAY_ARENA_ALIGN
+    pad := (ui.CLAY_ARENA_ALIGN - int(base % ui.CLAY_ARENA_ALIGN)) % ui.CLAY_ARENA_ALIGN
     mem := raw[pad:]
     arena := clay.CreateArenaWithCapacityAndMemory(len(mem), raw_data(mem))
     clay.Initialize(arena, {w, h}, {handler = clay_test_error})
@@ -67,8 +69,8 @@ clay_test_unlock :: proc() {
 }
 
 // A 10x16 cell, so any fractional box in the output is a real finding rather than noise.
-clay_test_font :: proc() -> app.Font {
-    return app.Font{cell_w = 10, line_height = 16}
+clay_test_font :: proc() -> gfx.Font {
+    return gfx.Font{cell_w = 10, line_height = 16}
 }
 
 // One command per element id, by type: what most declaration assertions want, since a surface is
@@ -82,13 +84,13 @@ box_of :: proc(
     id: clay.ElementId,
     kind: clay.RenderCommandType,
 ) -> (
-    box: app.Rect,
+    box: gfx.Rect,
     found: bool,
 ) {
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(cmds, i)
         if c.id == id.id && c.commandType == kind {
-            return app.clay_rect(c.boundingBox), true
+            return ui.clay_rect(c.boundingBox), true
         }
     }
     return {}, false

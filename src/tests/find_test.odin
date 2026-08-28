@@ -2,6 +2,7 @@ package tests
 
 import app ".."
 import "core:testing"
+import "../txt"
 
 // The in-buffer literal search behind `:f` and its live preview (find.odin). All of it is pure
 // — a Buffer in, a match list out — so none of this needs a window.
@@ -15,7 +16,7 @@ mkbuf :: proc(text: string) -> app.Buffer {
 
 @(private = "file")
 scan :: proc(f: ^app.Find, b: ^app.Buffer, query: string) {
-    app.find_set(f, b, query, app.Pos{})
+    app.find_set(f, b, query, txt.Pos{})
 }
 
 @(test)
@@ -84,10 +85,10 @@ test_find_lands_at_or_after_anchor :: proc(t: ^testing.T) {
     f: app.Find
     defer app.find_destroy(&f)
 
-    app.find_set(&f, &b, "x", app.Pos{line = 1, col = 0})
+    app.find_set(&f, &b, "x", txt.Pos{line = 1, col = 0})
     testing.expect_value(t, f.cur, 1)
 
-    app.find_set(&f, &b, "x", app.Pos{line = 9, col = 0}) // past every hit: wraps to the first
+    app.find_set(&f, &b, "x", txt.Pos{line = 9, col = 0}) // past every hit: wraps to the first
     testing.expect_value(t, f.cur, 0)
 }
 
@@ -140,6 +141,6 @@ test_cl_find_lands_and_clears_marks :: proc(t: ^testing.T) {
     a.find.show = true
 
     app.cl_find(&a, "three")
-    testing.expect_value(t, b.cursors[0].head, app.Pos{line = 2, col = 0})
+    testing.expect_value(t, b.cursors[0].head, txt.Pos{line = 2, col = 0})
     testing.expect(t, !a.find.show)
 }

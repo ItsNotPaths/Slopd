@@ -5,6 +5,7 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 import "vendor:glfw"
+import "../gfx"
 
 @(private = "file") CTL :: i32(glfw.MOD_CONTROL)
 @(private = "file") SFT :: i32(glfw.MOD_SHIFT)

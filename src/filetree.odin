@@ -7,6 +7,7 @@ import "core:slice"
 import "core:strings"
 import "core:time"
 import "core:unicode/utf8"
+import "ui"
 
 // A self-contained dired-style listing: read a directory, move or enter, pre-format each row's
 // fixed-width columns. No App and no GL — the host wires up rendering, the unsaved-ring prefix
@@ -43,7 +44,7 @@ FileTree :: struct {
     // The tween toward `scroll`, in rows: `scroll` is where the view is going, this is where it
     // IS, and the two differ for SCROLL_DUR after a move. Shared by both presentations, since
     // both scroll this one field and only one is ever on screen.
-    scroll_anim: Anim,
+    scroll_anim: ui.Anim,
 
     // Two sets, deliberately separate. `marks` is the MULTI-SELECTION: what a file op acts on
     // instead of the row under the cursor. `clip` is the CLIPBOARD: what copy/cut took, owned

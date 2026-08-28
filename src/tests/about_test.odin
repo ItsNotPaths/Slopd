@@ -3,6 +3,9 @@ package tests
 import app ".."
 import "core:strings"
 import "core:testing"
+import "../gfx"
+import "../syntax"
+import "../ui"
 
 // The embedded documents (about.odin). The release is the binary, so the LICENSE and the
 // README are #load-ed rather than shipped beside it — which makes two things worth pinning
@@ -23,10 +26,10 @@ test_embedded_license_carries_the_real_text :: proc(t: ^testing.T) {
 // leave every file unhighlighted with no error anywhere.
 @(test)
 test_embedded_language_registry_parses :: proc(t: ^testing.T) {
-    g := app.load_grammars()
-    defer app.grammars_destroy(g)
+    g := syntax.load_grammars()
+    defer syntax.grammars_destroy(g)
     testing.expect(t, len(g) > 100, "language registry embed looks empty")
-    odin, found := app.grammar_find(g, "odin")
+    odin, found := syntax.grammar_find(g, "odin")
     testing.expect(t, found)
     if found {
         testing.expect(t, strings.contains(odin.repo, "tree-sitter-odin"))
@@ -103,7 +106,7 @@ test_license_command_opens_the_doc :: proc(t: ^testing.T) {
     b := app.editor_current(&a.editor)
     testing.expect(t, b.embedded)
     testing.expect_value(t, b.path, "LICENSE")
-    testing.expect_value(t, a.focus, app.Focus.Editor)
+    testing.expect_value(t, a.focus, ui.Focus.Editor)
 
     app.cl_exec(&a, ":README")
     testing.expect_value(t, app.editor_current(&a.editor).path, "README.md")

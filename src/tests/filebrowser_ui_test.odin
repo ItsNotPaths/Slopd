@@ -3,6 +3,9 @@ package tests
 import app ".."
 import clay "../../bindings/clay"
 import "core:testing"
+import "../txt"
+import "../gfx"
+import "../ui"
 
 // The file browser declared in Clay. Same claim as every other pane's test — the boxes that
 // paint, the box a press resolves against and the geometry the scroll uses are one tree — plus
@@ -13,9 +16,9 @@ import "core:testing"
 // {162, 28, 436, 270}. List rows are 18px, so 15 fit.
 
 @(private = "file")
-PANE :: app.Rect{0, 0, 600, 300}
+PANE :: gfx.Rect{0, 0, 600, 300}
 @(private = "file")
-AREA :: app.Rect{2, 2, 596, 296}
+AREA :: gfx.Rect{2, 2, 596, 296}
 @(private = "file")
 BAR_H :: 26
 @(private = "file")
@@ -23,10 +26,10 @@ SIDE_W :: 160
 @(private = "file")
 ROW_H :: 18
 @(private = "file")
-CONTENT :: app.Rect{AREA.x + SIDE_W, AREA.y + BAR_H, AREA.w - SIDE_W, AREA.h - BAR_H}
+CONTENT :: gfx.Rect{AREA.x + SIDE_W, AREA.y + BAR_H, AREA.w - SIDE_W, AREA.h - BAR_H}
 // The bar less its four square buttons: where the segments sit, and where the line scrolls.
 @(private = "file")
-PATH :: app.Rect{AREA.x + 3 * BAR_H, AREA.y, AREA.w - 4 * BAR_H, BAR_H}
+PATH :: gfx.Rect{AREA.x + 3 * BAR_H, AREA.y, AREA.w - 4 * BAR_H, BAR_H}
 
 // By hand: the layout assertions want known counts and stable names. Every string is a literal,
 // so this is torn down with plain deletes, not filetree_destroy, which would free static
@@ -56,21 +59,21 @@ test_filebrowser_geom :: proc(t: ^testing.T) {
     testing.expect_value(t, area, AREA)
     testing.expect_value(t, row_h, i32(ROW_H))
     testing.expect_value(t, bar_h, i32(BAR_H))
-    testing.expect_value(t, bar, app.Rect{AREA.x, AREA.y, AREA.w, BAR_H})
-    testing.expect_value(t, side, app.Rect{AREA.x, AREA.y + BAR_H, SIDE_W, AREA.h - BAR_H})
+    testing.expect_value(t, bar, gfx.Rect{AREA.x, AREA.y, AREA.w, BAR_H})
+    testing.expect_value(t, side, gfx.Rect{AREA.x, AREA.y + BAR_H, SIDE_W, AREA.h - BAR_H})
     testing.expect_value(t, content, CONTENT)
     testing.expect_value(t, side.x + side.w, content.x) // they tile, with nothing between
 
     // Capped at half the pane: a fixed 16 cells in a narrow split would leave the contents
     // narrower than a single tile.
-    _, _, narrow, ncontent, _, _ := app.filebrowser_geom(app.Rect{0, 0, 200, 300}, 1, 16, 10)
+    _, _, narrow, ncontent, _, _ := app.filebrowser_geom(gfx.Rect{0, 0, 200, 300}, 1, 16, 10)
     testing.expect_value(t, narrow.w, 98) // (200 - 4) / 2
     testing.expect_value(t, ncontent.w, 98)
 
     // A hidden pane is a zero rect (compute_layout leaves them so) and must report no rows
     // rather than a negative count that would index the listing backwards.
-    _, _, _, empty, _, _ := app.filebrowser_geom(app.Rect{}, 1, 16, 10)
-    testing.expect_value(t, empty, app.Rect{})
+    _, _, _, empty, _, _ := app.filebrowser_geom(gfx.Rect{}, 1, 16, 10)
+    testing.expect_value(t, empty, gfx.Rect{})
 
     // List rows count entries, grid rows count TILES, and the column count comes from the same
     // call, so the keyboard's step and the declaration's row width cannot disagree.
@@ -115,14 +118,14 @@ test_filebrowser_scroll_unit :: proc(t: ^testing.T) {
     defer fake_browser_free(&a)
 
     a.tree.selected = 20
-    app.filebrowser_scroll_apply(&a, 15, 1, false)
+    app.filebrowser_scroll_apply(app.ctx_of(&a), &a.filebrowser, &a.tree, 15, 1, false)
     testing.expect_value(t, a.tree.scroll, 20 - 15 + 1) // the entry onto the bottom row
 
     // The same selection in a 3-wide grid is on tile row 6, which already fits in a 5-row
     // viewport scrolled to 2: the row, not the entry, is what the policy follows.
     a.filebrowser.view = .Grid
     a.tree.scroll = 0
-    app.filebrowser_scroll_apply(&a, 5, 3, false)
+    app.filebrowser_scroll_apply(app.ctx_of(&a), &a.filebrowser, &a.tree, 5, 3, false)
     testing.expect_value(t, a.tree.scroll, 6 - 5 + 1)
 }
 
@@ -133,7 +136,7 @@ test_filebrowser_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fake_browser(&a, 40) // more than fits: only the visible window may be declared
@@ -152,12 +155,12 @@ test_filebrowser_command_list :: proc(t: ^testing.T) {
 
     bar, bok := box_of(&cmds, clay.ID("fb_bar"), .Rectangle)
     testing.expect(t, bok, "the top bar drew no background")
-    testing.expect_value(t, bar, app.Rect{AREA.x, AREA.y, AREA.w, BAR_H})
+    testing.expect_value(t, bar, gfx.Rect{AREA.x, AREA.y, AREA.w, BAR_H})
 
     // The selected row: full content width, under the bar, at its scrolled position.
     row, rok := box_of(&cmds, clay.ID("fb_item", 6), .Rectangle)
     testing.expect(t, rok, "the selected row drew no background")
-    testing.expect_value(t, row, app.Rect{CONTENT.x, CONTENT.y + ROW_H, CONTENT.w, ROW_H})
+    testing.expect_value(t, row, gfx.Rect{CONTENT.x, CONTENT.y + ROW_H, CONTENT.w, ROW_H})
 
     _, unsel := box_of(&cmds, clay.ID("fb_item", 5), .Rectangle)
     testing.expect(t, !unsel, "an unselected, unmarked row must not paint a background")
@@ -176,7 +179,7 @@ test_filebrowser_command_list :: proc(t: ^testing.T) {
             continue
         }
         rails += 1
-        testing.expect_value(t, app.clay_rect(c.boundingBox), app.Rect{AREA.x, AREA.y + BAR_H, SIDE_W, AREA.h - BAR_H})
+        testing.expect_value(t, ui.clay_rect(c.boundingBox), gfx.Rect{AREA.x, AREA.y + BAR_H, SIDE_W, AREA.h - BAR_H})
         testing.expect_value(t, int(c.renderData.border.width.right), 1)
         testing.expect_value(t, int(c.renderData.border.width.left), 0) // a rail, not a box
     }
@@ -190,7 +193,7 @@ test_filebrowser_grid_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fake_browser(&a, 10)
@@ -205,7 +208,7 @@ test_filebrowser_grid_command_list :: proc(t: ^testing.T) {
     // its own edge.
     tile, ok := box_of(&cmds, clay.ID("fb_item", 4), .Rectangle)
     testing.expect(t, ok, "the selected tile drew no background")
-    testing.expect_value(t, tile, app.Rect{CONTENT.x + 140 + 6, CONTENT.y + 59 + 6, 140, 59})
+    testing.expect_value(t, tile, gfx.Rect{CONTENT.x + 140 + 6, CONTENT.y + 59 + 6, 140, 59})
 
     // Every tile carries a swatch: it is the tile's icon, not its highlight.
     sw, swok := box_of(&cmds, clay.ID("fb_swatch", 0), .Rectangle)
@@ -224,7 +227,7 @@ test_filebrowser_hit_kinds :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fake_browser(&a, 40)
@@ -233,11 +236,11 @@ test_filebrowser_hit_kinds :: proc(t: ^testing.T) {
     a.tree.scroll_anim = {to = 5}
 
     segs := app.filebrowser_segments(a.tree.dir)
-    probe :: proc(a: ^app.App, f: ^app.Font, segs: []app.Path_Seg, x, y: i32) -> app.FB_Hit {
+    probe :: proc(a: ^app.App, f: ^gfx.Font, segs: []app.Path_Seg, x, y: i32) -> app.FB_Hit {
         _ = app.filebrowser_layout(a, f, PANE, 600, 300) // frame 1: boxes for the pointer
         clay.SetPointerState({f32(x), f32(y)}, false)
         _ = app.filebrowser_layout(a, f, PANE, 600, 300) // frame 2: resolves against frame 1
-        return app.filebrowser_hit(a, segs, 0, a.tree.scroll, 15, 1)
+        return app.filebrowser_hit(&a.filebrowser, &a.tree, segs, 0, a.tree.scroll, 15, 1)
     }
 
     back := probe(&a, &f, segs, AREA.x + 5, AREA.y + 5)
@@ -323,14 +326,14 @@ test_filebrowser_path_line :: proc(t: ^testing.T) {
     a.mouse_on = true
     fake_browser(&a, 40)
     defer fake_browser_free(&a)
-    defer app.doc_destroy(&a.filebrowser.path)
+    defer txt.doc_destroy(&a.filebrowser.path)
     segs := app.filebrowser_segments(a.tree.dir)
 
     a.mouse.click = true
     a.mouse.click_count = 1
     app.filebrowser_click(&a, segs, app.FB_Hit{kind = .PathBar, index = -1}, PATH, 10)
     testing.expect(t, a.filebrowser.path_edit, "the whitespace press did not open the line")
-    line := app.doc_string(&a.filebrowser.path, context.temp_allocator)
+    line := txt.doc_string(&a.filebrowser.path, context.temp_allocator)
     testing.expect_value(t, line, "/home/me/src") // seeded with where you are
     testing.expect_value(t, a.filebrowser.path.cursors[0].head.col, 12) // caret at the end
 
@@ -355,7 +358,7 @@ test_filebrowser_path_line :: proc(t: ^testing.T) {
 
     // Enter on a path that is not a directory keeps the line open, so the typo stays on screen.
     app.filebrowser_path_open(&a)
-    app.doc_set_text(&a.filebrowser.path, "/no/such/directory/here")
+    txt.doc_set_text(&a.filebrowser.path, "/no/such/directory/here")
     app.filebrowser_path_commit(&a)
     testing.expect(t, a.filebrowser.path_edit, "a bad path must not close the line")
     testing.expect_value(t, a.tree.dir, "/home/me/src")
@@ -368,16 +371,16 @@ test_filebrowser_path_line_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fake_browser(&a, 4)
     defer fake_browser_free(&a)
-    defer app.doc_destroy(&a.filebrowser.path)
+    defer txt.doc_destroy(&a.filebrowser.path)
 
     // Clay derives a text command's id from its element, so the segments are counted by where
     // they landed — which is the claim anyway.
-    toggle :: app.Rect{PATH.x + PATH.w, AREA.y, BAR_H, BAR_H}
+    toggle :: gfx.Rect{PATH.x + PATH.w, AREA.y, BAR_H, BAR_H}
 
     cmds := app.filebrowser_layout(&a, &f, PANE, 600, 300)
     _, edit_off := box_of(&cmds, clay.ID("fb_edit"), .Custom)
@@ -410,7 +413,7 @@ test_filebrowser_tile_capped_to_the_content :: proc(t: ^testing.T) {
     testing.expect_value(t, narrow, f32(90)) // capped, not overflowing
 
     // The column count stays at least one, so the grid degrades to a single column.
-    rows, cols := app.filebrowser_rows(app.Rect{0, 0, 90, 270}, .Grid, ROW_H, 1, 16, 10)
+    rows, cols := app.filebrowser_rows(gfx.Rect{0, 0, 90, 270}, .Grid, ROW_H, 1, 16, 10)
     testing.expect_value(t, cols, 1)
     testing.expect_value(t, rows, 4)
 }
@@ -422,7 +425,7 @@ test_filebrowser_list_icon_column :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fake_browser(&a, 4)
@@ -454,11 +457,11 @@ test_filebrowser_list_icon_column :: proc(t: ^testing.T) {
 }
 
 @(private = "file")
-texts_in :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), region: app.Rect) -> (n: int) {
+texts_in :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), region: gfx.Rect) -> (n: int) {
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(cmds, i)
-        r := app.clay_rect(c.boundingBox)
-        if c.commandType == .Text && app.rect_hit(region, r.x, r.y) {
+        r := ui.clay_rect(c.boundingBox)
+        if c.commandType == .Text && gfx.rect_hit(region, r.x, r.y) {
             n += 1
         }
     }
@@ -467,13 +470,13 @@ texts_in :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), region: app.Rect) ->
 
 // The content rows, past the top bar's own glyphs.
 @(private = "file")
-first_two_texts_in :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), region: app.Rect) -> (a, b: i32) {
+first_two_texts_in :: proc(cmds: ^clay.ClayArray(clay.RenderCommand), region: gfx.Rect) -> (a, b: i32) {
     a, b = -1, -1
     seen := 0
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(cmds, i)
-        r := app.clay_rect(c.boundingBox)
-        if c.commandType != .Text || !app.rect_hit(region, r.x, r.y) {
+        r := ui.clay_rect(c.boundingBox)
+        if c.commandType != .Text || !gfx.rect_hit(region, r.x, r.y) {
             continue
         }
         if seen == 0 {
@@ -493,7 +496,7 @@ test_filebrowser_tile_icon_or_swatch :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fake_browser(&a, 4)
@@ -523,7 +526,7 @@ test_filebrowser_declares_the_partial_bottom_row :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fake_browser(&a, 40)
@@ -532,7 +535,7 @@ test_filebrowser_declares_the_partial_bottom_row :: proc(t: ^testing.T) {
 
     rows, cols := app.filebrowser_rows(CONTENT, .Grid, ROW_H, 1, 16, 10)
     testing.expect_value(t, rows, 4) // whole rows: what the policy counts
-    testing.expect_value(t, app.list_visible_rows(CONTENT.h, 0, 59), 5) // …and what is on screen
+    testing.expect_value(t, ui.list_visible_rows(CONTENT.h, 0, 59), 5) // …and what is on screen
 
     cmds := app.filebrowser_layout(&a, &f, PANE, 600, 300)
 
@@ -554,11 +557,11 @@ test_filebrowser_declares_the_partial_bottom_row :: proc(t: ^testing.T) {
 
 @(test)
 test_filebrowser_list_partial_bottom_row :: proc(t: ^testing.T) {
-    testing.expect_value(t, app.list_visible_rows(100, 0, 18), 6)
-    testing.expect_value(t, app.list_visible_rows(90, 0, 18), 5) // divides evenly: no extra
-    testing.expect_value(t, app.list_visible_rows(90, 1, 18), 6) // …until a scroll is under way
-    testing.expect_value(t, app.list_visible_rows(0, 0, 18), 0) // a hidden pane shows nothing
-    testing.expect_value(t, app.list_visible_rows(100, 0, 0), 0) // and never divides by zero
+    testing.expect_value(t, ui.list_visible_rows(100, 0, 18), 6)
+    testing.expect_value(t, ui.list_visible_rows(90, 0, 18), 5) // divides evenly: no extra
+    testing.expect_value(t, ui.list_visible_rows(90, 1, 18), 6) // …until a scroll is under way
+    testing.expect_value(t, ui.list_visible_rows(0, 0, 18), 0) // a hidden pane shows nothing
+    testing.expect_value(t, ui.list_visible_rows(100, 0, 0), 0) // and never divides by zero
 }
 
 // At its OWN bake size, which is why it is a Custom: Clay lays text out at the atlas's one size,
@@ -570,7 +573,7 @@ test_filebrowser_tile_caption :: proc(t: ^testing.T) {
     defer clay_test_context_free(raw)
     f := clay_test_font()
     f.px = 16 // so the caption's size is derived from something real
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     fake_browser(&a, 4)
@@ -593,7 +596,7 @@ test_filebrowser_tile_caption :: proc(t: ^testing.T) {
     }
 
     // The advance scales with the bake, which lets the painter centre from the rune count.
-    txt: app.Text
-    txt.font = f
-    testing.expect_value(t, app.text_sized_cell(&txt, f.px * 0.8), f32(8))
+    tx: gfx.Text
+    tx.font = f
+    testing.expect_value(t, gfx.text_sized_cell(&tx, f.px * 0.8), f32(8))
 }

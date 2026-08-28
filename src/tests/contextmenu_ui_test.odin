@@ -3,6 +3,8 @@ package tests
 import app ".."
 import clay "../../bindings/clay"
 import "core:testing"
+import "../gfx"
+import "../ui"
 
 // The context menu declared in Clay. Two claims no other surface makes: it is placed by the
 // POINTER rather than the layout, and it paints OVER a pane rather than inside one — so its clip
@@ -20,7 +22,7 @@ ITEMS := [?]app.Menu_Item {
 }
 
 @(private = "file")
-MENU :: app.Rect{10, 10, 136, 65}
+MENU :: gfx.Rect{10, 10, 136, 65}
 
 @(private = "file")
 menu_app :: proc(a: ^app.App, x: i32 = 10, y: i32 = 10) {
@@ -36,7 +38,7 @@ test_ctxmenu_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     menu_app(&a)
@@ -58,7 +60,7 @@ test_ctxmenu_command_list :: proc(t: ^testing.T) {
     // The highlighted row takes the selection bar; a disabled one takes nothing.
     first, fok := box_of(&cmds, clay.ID("cm_item", 0), .Rectangle)
     testing.expect(t, fok, "the selected item drew no bar")
-    testing.expect_value(t, first, app.Rect{MENU.x, MENU.y, MENU.w, 20})
+    testing.expect_value(t, first, gfx.Rect{MENU.x, MENU.y, MENU.w, 20})
     _, dok := box_of(&cmds, clay.ID("cm_item", 3), .Rectangle)
     testing.expect(t, !dok, "a disabled item painted a background")
 
@@ -69,7 +71,7 @@ test_ctxmenu_command_list :: proc(t: ^testing.T) {
     _ = cut
 
     // The label on the margin, the hint pushed right by the solver (rule 5).
-    label, hint: app.Rect
+    label, hint: gfx.Rect
     seen := 0
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
@@ -77,9 +79,9 @@ test_ctxmenu_command_list :: proc(t: ^testing.T) {
             continue
         }
         if seen == 0 {
-            label = app.clay_rect(c.boundingBox)
+            label = ui.clay_rect(c.boundingBox)
         } else if seen == 1 {
-            hint = app.clay_rect(c.boundingBox)
+            hint = ui.clay_rect(c.boundingBox)
         }
         seen += 1
     }
@@ -97,7 +99,7 @@ test_ctxmenu_paints_over_a_pane :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     menu_app(&a, 100, 100)
@@ -111,8 +113,8 @@ test_ctxmenu_paints_over_a_pane :: proc(t: ^testing.T) {
     // A pane and the popup in one tree, in window_frame's order.
     app.clay_window_begin(600, 300)
     if clay.UI(clay.ID(app.WIN_ROOT))(app.clay_window_root(600, 300)) {
-        app.filetree_declare(&a, &f, app.Rect{0, 0, 300, 300}, 0, 0)
-        app.ctxmenu_declare(&a, &f, 600, 300)
+        app.filetree_declare(app.ctx_of(&a), &a, &f, gfx.Rect{0, 0, 300, 300}, 0, 0)
+        app.ctxmenu_declare(app.ctx_of(&a), &a.ctxmenu, &f, 600, 300)
     }
     cmds := clay.EndLayout(0)
 
@@ -160,7 +162,7 @@ test_ctxmenu_hit_and_click :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
     defer clay_test_context_free(raw)
     f := clay_test_font()
-    app.clay_use_font(&f)
+    ui.clay_use_font(&f)
 
     a: app.App
     menu_app(&a)

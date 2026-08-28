@@ -3,18 +3,12 @@ package main
 import "core:os"
 import "core:strings"
 import "vendor:glfw"
+import "txt"
+import "gfx"
+import "syntax"
+import "ui"
 
 // Application state — the single source of truth. Flat and plain on purpose.
-
-Rect :: struct {
-    x, y, w, h: i32, // top-left origin, pixels
-}
-
-// Half-open on the far edges, so two rects sharing a boundary never both claim a pixel. A
-// zero-sized rect never hits, so hit-testing needs no hidden-pane check.
-rect_hit :: proc(r: Rect, x, y: i32) -> bool {
-    return r.w > 0 && r.h > 0 && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
-}
 
 // font_px is the logical text size, shared by every pane; the atlas bakes at font_px * scale.
 // Persisting is debounced so a burst of Ctrl+/- is one config write.
@@ -32,11 +26,6 @@ AuxMode :: enum {
     Grep,
     Binds,
     Color,
-}
-
-Focus :: enum {
-    Editor,
-    Aux,
 }
 
 // The left pane holds the document, the aux pane a tool acting on documents — which is why
@@ -61,7 +50,7 @@ Pane_Vis :: struct {
 App :: struct {
     view:     View, // pane arrangement (Split / Zen / Full)
     aux_mode: AuxMode,
-    focus:    Focus,
+    focus:    ui.Focus,
     split:    f32, // editor width as a fraction of the window (0..1)
 
     // Held by pointer so growing the array never moves a Terminal out from under its reader
@@ -135,7 +124,7 @@ App :: struct {
     grep_seq:    u64, // the newest request
     grep_seen:   u64, // the newest answer applied; behind grep_seq while a search is out
 
-    grammars: []Grammar, // language registry (owned; loaded in main)
+    grammars: []syntax.Grammar, // language registry (owned; loaded in main)
     gram_ext: map[string]string, // ext -> language name over `grammars`; borrows its strings
     hl:       Highlighter,
 
@@ -159,16 +148,16 @@ App :: struct {
     // For the redraw scheduler (anim.odin).
     blink_base:    f64, // the last-input time the caret blink is measured from
     last_input_at: f64, // most recent keystroke; the perf log measures keystroke->present from it
-    zen_anim:      Anim, // aux-pane reveal in Zen: 0 hidden .. 1 docked
-    switcher_anim: Anim, // terminal switcher fade-in while Alt is held
-    chord_anim:    Anim, // filetree chord cheat-sheet fade-in while Ctrl is held
-    split_anim:    Anim, // the split ratio, eased when Alt+[ / Alt+] adjust it
+    zen_anim:      ui.Anim, // aux-pane reveal in Zen: 0 hidden .. 1 docked
+    switcher_anim: ui.Anim, // terminal switcher fade-in while Alt is held
+    chord_anim:    ui.Anim, // filetree chord cheat-sheet fade-in while Ctrl is held
+    split_anim:    ui.Anim, // the split ratio, eased when Alt+[ / Alt+] adjust it
 
-    theme:        Theme,
+    theme:        gfx.Theme,
     theme_path:   string, // owned, resolved by load_config; "" = baked-in default
     indent:       Indent,
     line_numbers: Line_Numbers,
-    scroll_mode:  Scroll_Mode,
+    scroll_mode:  ui.Scroll_Mode,
     jump_lines:   int, // lines per Ctrl+Up/Down editor jump
 
     // Reading aids, all default on and toggled from the Config pane.
@@ -197,11 +186,11 @@ App :: struct {
     // `mouse` mirrors the GLFW pointer callbacks, `mouse_on` is the config toggle. `lay` is the
     // layout the LAST FRAME PAINTED: pointer events arrive between frames and must resolve
     // against what is on screen.
-    mouse:    Mouse,
+    mouse:    ui.Mouse,
     mouse_on: bool,
     // What the left button captured (drag.odin): every motion until the release belongs to
     // what the press resolved to, not to whatever the pointer is over now.
-    drag:     Drag,
+    drag:     ui.Drag,
     // Separate from `mouse_on`: a taste question, and it costs a repaint per motion event.
     hover_on: bool,
     lay:      Layout,
@@ -219,7 +208,7 @@ App :: struct {
 
 // The command line when active, else the focused editor buffer. The CL is a one-line buffer,
 // so motion, multi-cursor and selection serve both through this.
-active_doc :: proc(a: ^App) -> ^Doc {
+active_doc :: proc(a: ^App) -> ^txt.Doc {
     if a.cl_active {
         return &a.cl.doc
     }
@@ -284,11 +273,11 @@ view_poll_disk :: proc(a: ^App, now: f64) {
 
 // The one place focus changes. In Full it picks the lone surface; in Zen it drives the aux
 // pane's slide, so the reveal animation is re-aimed here.
-set_focus :: proc(a: ^App, who: Focus) {
+set_focus :: proc(a: ^App, who: ui.Focus) {
     a.focus = who
     if a.view == .Zen {
         now := glfw.GetTime()
-        anim_start(&a.zen_anim, now, anim_value(&a.zen_anim, now), a.focus == .Aux ? 1 : 0, ZEN_DUR)
+        ui.anim_start(&a.zen_anim, now, ui.anim_value(&a.zen_anim, now), a.focus == .Aux ? 1 : 0, ui.ZEN_DUR)
     }
     // Refresh on gaining focus, so an external edit flows in at once rather than waiting for
     // the poll and being overwritten by a later save.
@@ -349,7 +338,7 @@ app_init :: proc(a: ^App) {
     a.focus = .Editor
     a.split = 0.5
     a.term_active = 0 // sessions are spawned lazily (term_ensure)
-    a.split_anim = Anim{to = a.split} // settled at the base ratio
+    a.split_anim = ui.Anim{to = a.split} // settled at the base ratio
     a.mouse_on = true // config may turn it off (main)
     a.hover_on = true
     a.color.buf_idx = -1

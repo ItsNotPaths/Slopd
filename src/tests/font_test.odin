@@ -5,6 +5,7 @@ import "core:c"
 import "core:fmt"
 import "core:testing"
 import stbtt "vendor:stb/truetype"
+import "../gfx"
 
 // The embedded default font, measured rather than assumed.
 //
@@ -26,7 +27,7 @@ FONT_SIZE_CEILING :: 1 << 20
 
 @(test)
 test_embedded_font_is_subset :: proc(t: ^testing.T) {
-	n := len(app.IOSEVKA_TTF)
+	n := len(gfx.IOSEVKA_TTF)
 	fmt.printfln("embedded font: %d bytes (ceiling %d)", n, FONT_SIZE_CEILING)
 	testing.expectf(
 		t,
@@ -65,7 +66,7 @@ COVERAGE := [?]struct {
 @(test)
 test_embedded_font_covers_terminal_symbols :: proc(t: ^testing.T) {
 	info: stbtt.fontinfo
-	if !testing.expect(t, bool(stbtt.InitFont(&info, raw_data(app.IOSEVKA_TTF), 0)), "font failed to parse") {
+	if !testing.expect(t, bool(stbtt.InitFont(&info, raw_data(gfx.IOSEVKA_TTF), 0)), "font failed to parse") {
 		return
 	}
 	for c in COVERAGE {
@@ -84,7 +85,7 @@ test_embedded_font_covers_terminal_symbols :: proc(t: ^testing.T) {
 @(test)
 test_embedded_font_is_monospace :: proc(t: ^testing.T) {
 	info: stbtt.fontinfo
-	if !testing.expect(t, bool(stbtt.InitFont(&info, raw_data(app.IOSEVKA_TTF), 0)), "font failed to parse") {
+	if !testing.expect(t, bool(stbtt.InitFont(&info, raw_data(gfx.IOSEVKA_TTF), 0)), "font failed to parse") {
 		return
 	}
 	want, lsb: c.int
@@ -105,7 +106,7 @@ ICONS_SIZE_CEILING :: 256 * 1024
 
 @(test)
 test_embedded_icons_are_subset :: proc(t: ^testing.T) {
-	n := len(app.ICONS_TTF)
+	n := len(gfx.ICONS_TTF)
 	fmt.printfln("embedded icons: %d bytes (ceiling %d, 0 = none vendored)", n, ICONS_SIZE_CEILING)
 	testing.expectf(
 		t,
