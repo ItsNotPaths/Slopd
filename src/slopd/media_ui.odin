@@ -12,12 +12,13 @@ import "../ui"
 // No media_scroll_apply: an image has no viewport policy, and a wheel here zooms rather than
 // scrolls. The pan is where the user put it, and that is the whole of its state.
 
-// Inside the focus ring panel() draws — the one geometry source every phase sizes itself from.
-// No row grid, because there is nothing here to divide into rows.
-MEDIA_LABEL_PAD :: 8 // the "(no image)" indent, in layout units
+// Inside the focus ring panel() draws, on the window's glyph grid — the one geometry source
+// every phase sizes itself from. An image is not text, so nothing here but the placeholder
+// counts in rows.
+MEDIA_LABEL_CELLS :: 1 // the "(no image)" indent
 
-media_geom :: proc(pane: gfx.Rect, line_h: f32) -> gfx.Rect {
-    return ui.inset(pane, gfx.edge(line_h))
+media_geom :: proc(pane: gfx.Rect, line_h, cell_w: f32) -> gfx.Rect {
+    return gfx.grid_snap(ui.inset(pane, gfx.edge(line_h)), cell_w, line_h)
 }
 
 // rect_hit rather than PointerOver: one box, no tree lookup, and callable from a test that
@@ -74,7 +75,7 @@ media_wheel :: proc(a: ^App, notch: int) {
     media_zoom_at(
         &a.media,
         math.pow(MEDIA_ZOOM_STEP, f32(-notch)),
-        media_geom(a.lay.editor, a.face.line_height),
+        media_geom(a.lay.editor, a.face.line_height, a.face.cell_w),
         a.mouse.x,
         a.mouse.y,
     )
@@ -85,10 +86,10 @@ media_wheel :: proc(a: ^App, notch: int) {
 //   md_pane    the content area inside the focus ring, floating and clipping its own content
 //     md_image the decoded image at media_fit_rect's answer, clipped to the pane box. Declared
 //              only when the backend actually holds one, which is what selects the branch below
-//     md_empty the "(no image)" placeholder otherwise, centred by the solver
+//     md_empty the "(no image)" placeholder otherwise, centred in whole rows
 media_declare :: proc(u: ui.UI_Ctx, m: ^Media, face: gfx.Face, pane: gfx.Rect) {
     th := u.theme
-    area := media_geom(pane, face.line_height)
+    area := media_geom(pane, face.line_height, face.cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }
@@ -107,12 +108,17 @@ media_declare :: proc(u: ui.UI_Ctx, m: ^Media, face: gfx.Face, pane: gfx.Rect) {
                 ) {}
             }
         } else {
+            // Centred in whole ROWS rather than by pixel: a label half a row down is the one
+            // thing in this pane that would sit off the grid.
+            rows := max(0, area.h / gfx.row(face.line_height) - 1)
             if clay.UI(clay.ID("md_empty"))(
                 {
                     layout = {
-                        sizing         = {clay.SizingGrow(), clay.SizingGrow()},
-                        padding        = {left = u16(gfx.pad(face.line_height, MEDIA_LABEL_PAD))},
-                        childAlignment = {y = .Center},
+                        sizing  = {clay.SizingGrow(), clay.SizingGrow()},
+                        padding = {
+                            left = u16(gfx.cells(face.cell_w, MEDIA_LABEL_CELLS)),
+                            top  = u16(gfx.row(face.line_height) * (rows / 2)),
+                        },
                     },
                 },
             ) {
@@ -138,7 +144,7 @@ media_image_float :: proc(fit, area: gfx.Rect) -> clay.FloatingElementConfig {
 // MEDIA_ZOOM_MIN/MAX. Frame order: geometry, click, drag, declare. No scroll apply.
 media_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect) {
     u := ctx_of(a)
-    area := media_geom(pane, u.face.line_height)
+    area := media_geom(pane, u.face.line_height, u.face.cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }

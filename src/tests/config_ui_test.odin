@@ -14,16 +14,16 @@ import "../ui"
 // plus the Custom the live search field needs.
 //
 // The pane is {100, 50, 300, 200} at scale 1 with the synthetic 10x16 font: a content area of
-// {102, 52, 296, 196}, an 18px row, 10 rows fitting, and 29 whole cells across.
+// {102, 52, 296, 196}, a 16px row, 12 rows fitting, and 29 whole cells across.
 
 @(private = "file")
 PANE :: gfx.Rect{100, 50, 300, 200}
 @(private = "file")
 AREA :: gfx.Rect{102, 52, 296, 196}
 @(private = "file")
-ROW_H :: 18
+ROW_H :: 16
 @(private = "file")
-MAX_ROWS :: 10
+MAX_ROWS :: 12
 @(private = "file")
 COLS :: 29
 
@@ -77,7 +77,7 @@ test_config_geom :: proc(t: ^testing.T) {
     testing.expect_value(t, row_h, i32(ROW_H))
     // No row is reserved for a header: the first row is already a section rule, which is the
     // one geometry difference from the filetree and grep.
-    testing.expect_value(t, rows, MAX_ROWS) // 196 / 18
+    testing.expect_value(t, rows, MAX_ROWS) // 196 / 16
     testing.expect_value(t, cols, COLS) // 296 / 10
 
     _, _, none, _ := app.config_geom(gfx.Rect{}, 16, 10)
@@ -351,12 +351,12 @@ test_config_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, rects, 1)
     testing.expect_value(t, band, gfx.Rect{AREA.x, AREA.y + 7 * ROW_H, AREA.w, ROW_H})
 
-    // Ten rows fit and the search row is far below, so nothing is Custom here.
+    // Every row that fits is a plain one; the search row is far below, so nothing is Custom.
     testing.expect_value(t, customs, 0)
 
     // Row order, with each string's column. The two "global"s are the point: one the
     // line_numbers VALUE at the shared column, the other its first OPTION, indented.
-    testing.expect_value(t, len(texts), 15)
+    testing.expect_value(t, len(texts), 19)
     testing.expect_value(t, texts[1].text, "settings")
     testing.expect_value(t, texts[1].x, i32(X_FLUSH))
     testing.expect_value(t, texts[3].text, "default_display:")

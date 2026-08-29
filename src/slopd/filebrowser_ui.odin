@@ -17,7 +17,7 @@ import "../edit"
 // The pane is a fixed frame around one scrolling region:
 //
 //   ┌──────────────────────────────────────────────┐
-//   │ [◀] [▶] [⟳] │ / home paths src        │ [▦] │  fb_bar   — square buttons, path buttons
+//   │ [◀] [▶] [⟳] │ / home paths src        │ [▦] │  fb_bar   — icon buttons, path buttons
 //   ├─────────────┼──────────────────────────────┬─┤
 //   │ Home        │  contents, list or grid      │ │  fb_side  — places, a rail on its right
 //   │ Documents   │  scrolled by ft.scroll       │ │  fb_content
@@ -27,10 +27,9 @@ import "../edit"
 // are the aux pane's. This file only decides how they look and what a pointer can reach, which
 // makes `file_pane: ls | browser` a presentation switch rather than a second file manager.
 
-// Logical pixels. The bar is taller than a row because its buttons are square — the height is
-// also their width.
-FB_ROW_PAD :: 2
-FB_BAR_PAD :: 5
+// A button's width, in cells: the icon with a cell either side of it. The bar itself is one text
+// row, like the strip, so a button is a wide box rather than a square one.
+FB_BTN_CELLS :: 3
 
 // Logical pixels. The tile's width is in cells (FB_TILE_CELLS) so it follows the font zoom;
 // chrome follows the DPI only.
@@ -74,16 +73,17 @@ filebrowser_geom :: proc(
     area, bar, side, content: gfx.Rect,
     row_h, bar_h: i32,
 ) {
-    area = ui.inset(pane, gfx.edge(line_h))
-    row_h = i32(line_h) + gfx.pad(line_h, FB_ROW_PAD)
-    bar_h = i32(line_h) + 2 * gfx.pad(line_h, FB_BAR_PAD)
+    area = gfx.grid_snap(ui.inset(pane, gfx.edge(line_h)), cell_w, line_h)
+    row_h = gfx.row(line_h)
+    bar_h = row_h
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {
         return area, {}, {}, {}, row_h, bar_h
     }
     bar_h = min(bar_h, area.h)
     bar = gfx.Rect{area.x, area.y, area.w, bar_h}
 
-    side_w := min(i32(f32(FB_SIDE_CELLS) * cell_w), area.w / 2)
+    // Whole cells, so a place name starts on the same column the contents beside it do.
+    side_w := gfx.cells(cell_w, min(FB_SIDE_CELLS, gfx.cells_fit(area.w / 2, cell_w)))
     below := area.h - bar_h
     side = gfx.Rect{area.x, area.y + bar_h, side_w, below}
     content = gfx.Rect{area.x + side_w, area.y + bar_h, area.w - side_w, below}
@@ -161,16 +161,22 @@ filebrowser_scroll_apply :: proc(u: ui.UI_Ctx, br: ^FileBrowser, ft: ^FileTree, 
     ui.list_scroll_apply(&ft.scroll, &ft.scroll_detached, anchor, rows, total, center, ui.pane_input_at(u))
 }
 
-// The bar less its four square buttons. For the phases the solver cannot answer — the press
-// that puts a caret on the column it landed on.
-filebrowser_path_rect :: proc(bar: gfx.Rect, bar_h: i32) -> gfx.Rect {
-    return gfx.Rect{bar.x + 3 * bar_h, bar.y, max(0, bar.w - 4 * bar_h), bar_h}
+// The bar less its four buttons. For the phases the solver cannot answer — the press that puts a
+// caret on the column it landed on.
+filebrowser_path_rect :: proc(bar: gfx.Rect, bar_h: i32, cell_w: f32) -> gfx.Rect {
+    btn := filebrowser_btn_w(cell_w)
+    return gfx.Rect{bar.x + 3 * btn, bar.y, max(0, bar.w - 4 * btn), bar_h}
 }
 
 // Cells the segments may use, which is also what the line scrolls inside, so both states of the
 // bar cut the path at the same character.
 filebrowser_path_cells :: proc(bar: gfx.Rect, bar_h: i32, cell_w: f32) -> int {
-    return ui.field_cells(filebrowser_path_rect(bar, bar_h), cell_w)
+    return ui.field_cells(filebrowser_path_rect(bar, bar_h, cell_w), cell_w)
+}
+
+// Whole cells, so the path beside the buttons starts on the grid.
+filebrowser_btn_w :: proc(cell_w: f32) -> i32 {
+    return gfx.cells(cell_w, FB_BTN_CELLS)
 }
 
 // Chrome first, contents last, though the boxes do not overlap so the order is documentation.
@@ -436,8 +442,8 @@ filebrowser_place_open :: proc(a: ^App, n: int) {
 // Declare the pane into the window's tree. Reads App, writes only Clay.
 //
 //   fb_pane        content area inside the focus ring, clipping its own content
-//     fb_bar       three square buttons, the path, then the view toggle
-//       fb_btn/b     one per Browse_Btn, square (its side is the bar's height)
+//     fb_bar       three buttons, the path, then the view toggle — one text row tall
+//       fb_btn/b     one per Browse_Btn, three cells wide
 //       fb_path      the path, clipped; too long and it elides from the LEFT
 //         fb_ell       the "…" marking an elision
 //         fb_seg/i     one per shown segment, keyed by segment index
@@ -548,14 +554,6 @@ filebrowser_declare :: proc(a: ^App, face: gfx.Face, pane: gfx.Rect, top: int, o
     }
 }
 
-// A button is square at bar_h, which keeps the icons on a common baseline at any zoom — but never
-// narrower than the icon plus an edge either side. A pixel bar is many times the height of a
-// glyph, so the square already has the room; a grid's bar is ONE ROW, and three square buttons
-// there are three touching cells with the icons jammed against each other and the pane border.
-@(private = "file")
-filebrowser_btn_w :: proc(bar_h: i32, cw, line_h: f32) -> f32 {
-    return max(f32(bar_h), cw + f32(2 * gfx.edge(line_h)))
-}
 @(private = "file")
 filebrowser_declare_bar :: proc(a: ^App, bar: gfx.Rect, bar_h, lh: i32, cw: f32, now: f64) {
     u := ctx_of(a)
@@ -629,7 +627,7 @@ filebrowser_declare_segs :: proc(u: ui.UI_Ctx, br: ^FileBrowser, segs: []Path_Se
             {
                 layout = {
                     sizing         = {height = clay.SizingGrow()},
-                    padding        = {left = u16(gfx.gap(cw / 2)), right = u16(gfx.gap(cw / 2))},
+                    padding        = {left = u16(gfx.cells(cw, 1))},
                     childAlignment = {y = .Center},
                 },
                 backgroundColor = bg,
@@ -652,7 +650,7 @@ filebrowser_declare_btn :: proc(u: ui.UI_Ctx, br: ^FileBrowser, b: Browse_Btn, i
     if clay.UI(clay.ID("fb_btn", u32(b)))(
         {
             layout = {
-                sizing         = {clay.SizingFixed(filebrowser_btn_w(bar_h, cw, f32(lh))), clay.SizingFixed(f32(bar_h))},
+                sizing         = {clay.SizingFixed(f32(filebrowser_btn_w(cw))), clay.SizingFixed(f32(bar_h))},
                 childAlignment = {x = .Center, y = .Center},
             },
             backgroundColor = bg,
@@ -887,7 +885,7 @@ filebrowser_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect, now: f64) {
     br.cols = cols
     wsfind_sync(a)
     cw := gfx.face(t).cell_w
-    path := filebrowser_path_rect(bar, bar_h)
+    path := filebrowser_path_rect(bar, bar_h, cw)
     top, off := a.tree.scroll, i32(0) // the listing's window; the prompt's is its own
 
     // The prompt takes the whole pane's input; the chrome stays on screen but inert, for

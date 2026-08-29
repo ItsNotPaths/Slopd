@@ -40,8 +40,8 @@ Terminal_View :: struct {
 // meet. A degenerate pane reports ZERO rows, unlike the list panes — `rows` goes out via
 // TIOCSWINSZ.
 terminal_geom :: proc(pane: gfx.Rect, line_h: f32, cell_w: f32) -> (area: gfx.Rect, row_h: i32, cols, rows: int) {
-    area = ui.inset(pane, gfx.edge(line_h))
-    row_h = max(1, i32(line_h))
+    area = gfx.grid_snap(ui.inset(pane, gfx.edge(line_h)), cell_w, line_h)
+    row_h = gfx.row(line_h)
     if area.w <= 0 || area.h <= 0 || cell_w <= 0 {
         return area, row_h, 0, 0
     }

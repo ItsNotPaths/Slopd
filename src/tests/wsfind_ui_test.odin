@@ -14,16 +14,19 @@ import "../search"
 // cover is not declared at all, so nothing behind them can be clicked.
 //
 // Both panes are {0, 0, 600, 300} at scale 1 with the 10x16 test font, insetting to
-// {2, 2, 596, 296}. `ls`: an 18px header, then the rows. Browser: a 26px bar, a 160px sidebar.
+// {2, 2, 596, 296}. `ls`: a one-row header, then the rows. Browser: a one-row bar with
+// three-cell buttons, and a 160px sidebar.
 
 @(private = "file")
 WPANE :: gfx.Rect{0, 0, 600, 300}
 @(private = "file")
 WAREA :: gfx.Rect{2, 2, 596, 296}
 @(private = "file")
-WROW :: 18
+WROW :: 16
 @(private = "file")
-WBAR :: 26
+WBAR :: 16
+@(private = "file")
+WBTN :: 30
 @(private = "file")
 WSIDE :: 160
 
@@ -109,7 +112,7 @@ test_wsfind_declared_in_browser :: proc(t: ^testing.T) {
 
     cmds := app.filebrowser_layout(&a, f, WPANE, 600, 300)
 
-    path := gfx.Rect{WAREA.x + 3 * WBAR, WAREA.y, WAREA.w - 4 * WBAR, WBAR}
+    path := gfx.Rect{WAREA.x + 3 * WBTN, WAREA.y, WAREA.w - 4 * WBTN, WBAR}
     edit, ok := box_of(&cmds, clay.ID("ws_edit"), .Custom)
     testing.expect(t, ok, "the path region declared no text field")
     testing.expect_value(t, edit, app.wsfind_field_rect(path, 10))
@@ -126,7 +129,7 @@ test_wsfind_declared_in_browser :: proc(t: ^testing.T) {
     // the view toggle is still on the bar's right edge.
     side := gfx.Rect{WAREA.x, WAREA.y + WBAR, WSIDE, WAREA.h - WBAR}
     testing.expect_value(t, texts_in_box(&cmds, side), 1)
-    toggle := gfx.Rect{path.x + path.w, WAREA.y, WBAR, WBAR}
+    toggle := gfx.Rect{path.x + path.w, WAREA.y, WBTN, WBAR}
     testing.expect_value(t, texts_in_box(&cmds, toggle), 1)
 }
 

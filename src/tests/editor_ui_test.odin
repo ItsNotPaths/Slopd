@@ -13,8 +13,8 @@ import "../edit"
 // the inverse of the painter's arithmetic, and the two must agree through a fold, a scroll
 // offset, and a gutter width that grows with the file.
 //
-// The pane throughout is {100, 50, 300, 200} at scale 1, insetting to {102, 52, 296, 196}: an
-// 18px row height and 10 whole rows. The synthetic font is 10px per cell, so a two-digit gutter
+// The pane throughout is {100, 50, 300, 200} at scale 1, insetting to {102, 52, 296, 196}: a
+// 16px row height and 12 whole rows. The synthetic font is 10px per cell, so a two-digit gutter
 // puts column 0 at 142.
 
 @(private = "file")
@@ -22,9 +22,9 @@ PANE :: gfx.Rect{100, 50, 300, 200}
 @(private = "file")
 AREA :: gfx.Rect{102, 52, 296, 196}
 @(private = "file")
-ROW_H :: 18
+ROW_H :: 16
 @(private = "file")
-ROWS :: 10
+ROWS :: 12
 @(private = "file")
 TEXT_X :: AREA.x + 40 // margin + 2 gutter digits + gap, at cw = 10
 
@@ -61,23 +61,23 @@ mkview :: proc(top: int, off: i32, gutter := 2, hoff: f32 = 0) -> app.Editor_Vie
 // Same shape and the same degenerate cases as every other pane's geom.
 @(test)
 test_editor_geom :: proc(t: ^testing.T) {
-    area, row_h, rows := app.editor_geom(PANE, 16)
-    testing.expect_value(t, area, AREA) // inside the 2px focus ring
+    area, row_h, rows := app.editor_geom(PANE, 16, 10)
+    testing.expect_value(t, area, AREA) // inside the 2px focus ring, then on the grid
     testing.expect_value(t, row_h, i32(ROW_H))
-    testing.expect_value(t, rows, ROWS) // 196 / 18, floored
+    testing.expect_value(t, rows, ROWS) // 196 / 16, floored
 
     // A hidden pane is a zero rect and must report no rows.
-    _, _, none := app.editor_geom(gfx.Rect{}, 16)
+    _, _, none := app.editor_geom(gfx.Rect{}, 16, 10)
     testing.expect_value(t, none, 0)
 
     // Too short for a whole row still reports one: the clip keeps it inside, not the count.
-    _, _, tiny := app.editor_geom(gfx.Rect{0, 0, 300, 20}, 16)
+    _, _, tiny := app.editor_geom(gfx.Rect{0, 0, 300, 20}, 16, 10)
     testing.expect_value(t, tiny, 1)
 
-    // DPI scale reaches the inset and the row padding both.
-    area2, row_h2, _ := app.editor_geom(PANE, 32)
+    // DPI scale reaches the inset and the grid both.
+    area2, row_h2, _ := app.editor_geom(PANE, 32, 20)
     testing.expect_value(t, area2, gfx.Rect{104, 54, 292, 192})
-    testing.expect_value(t, row_h2, i32(36))
+    testing.expect_value(t, row_h2, i32(32))
 }
 
 // The two numbers a click has to share with the painter.
@@ -146,12 +146,12 @@ test_editor_pos_at :: proc(t: ^testing.T) {
     p, _ = app.editor_pos_at(b, vs, TEXT_X, AREA.y + 2)
     testing.expect_value(t, p.line, 2)
 
-    // Mid-tween the rows shift up by `off`, so the point moves down by it: 6px of an 18px row
-    // leaves the first row its last 12 pixels.
+    // Mid-tween the rows shift up by `off`, so the point moves down by it: 6px of a 16px row
+    // leaves the first row its last 10 pixels.
     vo := mkview(0, 6)
-    p, _ = app.editor_pos_at(b, vo, TEXT_X, AREA.y + 11)
+    p, _ = app.editor_pos_at(b, vo, TEXT_X, AREA.y + 9)
     testing.expect_value(t, p.line, 0)
-    p, _ = app.editor_pos_at(b, vo, TEXT_X, AREA.y + 13)
+    p, _ = app.editor_pos_at(b, vo, TEXT_X, AREA.y + 11)
     testing.expect_value(t, p.line, 1)
 }
 
@@ -202,7 +202,7 @@ test_editor_command_list :: proc(t: ^testing.T) {
     defer edit.editor_destroy(&a.editor)
     b := edit.editor_current(&a.editor)
 
-    area, row_h, rows := app.editor_geom(PANE, f.line_height)
+    area, row_h, rows := app.editor_geom(PANE, f.line_height, f.cell_w)
     v := app.editor_view(b, f, area, row_h, rows, 0)
     cmds := app.editor_layout(&a, f, PANE, 500, 300, v, 0)
 
@@ -298,7 +298,7 @@ test_editor_hit_survives_the_aux_pane :: proc(t: ^testing.T) {
     append(&a.tree.entries, app.FileEntry{name = "e", path = "/tmp/ft/e", display = "e"})
     defer delete(a.tree.entries)
 
-    area, row_h, rows := app.editor_geom(PANE, f.line_height)
+    area, row_h, rows := app.editor_geom(PANE, f.line_height, f.cell_w)
     v := app.editor_view(b, f, area, row_h, rows, 0)
 
     // One frame in render()'s order: editor first, aux pane second, one tree.
@@ -496,8 +496,7 @@ test_editor_click_begins_a_drag :: proc(t: ^testing.T) {
 }
 
 // A hit off the pane is refused, since a press there belongs to somebody else; a drag under
-// capture answers wherever the pointer went. The clamp is on the ROW, not the pixel: the pane
-// is 196px of 18px rows, so its bottom 16px is a row the painter never fills.
+// capture answers wherever the pointer went. The clamp is on the ROW, not the pixel.
 @(test)
 test_editor_drag_pos_past_the_edges :: proc(t: ^testing.T) {
     a: app.App
@@ -511,9 +510,9 @@ test_editor_drag_pos_past_the_edges :: proc(t: ^testing.T) {
     testing.expect_value(t, p, txt.Pos{0, 2})
     testing.expect_value(t, glyph, 2)
 
-    // Below it: the last DRAWN row, 9, not the part-drawn tenth.
+    // Below it: the last DRAWN row, not a line past the window.
     p, _ = app.editor_drag_pos(b, v, TEXT_X + 5, AREA.y + 4000)
-    testing.expect_value(t, p.line, 9)
+    testing.expect_value(t, p.line, 11)
 
     // Left of the text column is column 0, as a click in the gutter already is.
     p, glyph = app.editor_drag_pos(b, v, 0, AREA.y + ROW_H + 4)
@@ -634,20 +633,21 @@ test_editor_drag_autoscrolls_past_the_edge :: proc(t: ^testing.T) {
     a.mouse.click, a.mouse.click_count = true, 1
     app.editor_click(&a, app.editor_hit(&a, b, v), 100)
 
-    // One row-height below the bottom edge: seeded at the last drawn row (9), then two lines
+    // One row-height below the bottom edge: seeded at the last drawn row (11), then two lines
     // on the first tick — one for the edge, one for the row height beyond.
     a.mouse.y = AREA.y + AREA.h + ROW_H
     app.editor_drag(&a, b, v, 100)
-    testing.expect_value(t, b.cursors[0].head.line, 11)
+    testing.expect_value(t, b.cursors[0].head.line, 13)
     testing.expect_value(t, b.scroll, 0) // the selection moved; the view is the policy's
 
     // Another frame inside the same tick must hold the line, not snap back to row 9.
     app.editor_drag(&a, b, v, 100)
-    testing.expect_value(t, b.cursors[0].head.line, 11)
-
-    // The next interval walks on from where the drag got to, not from the edge.
-    app.editor_drag(&a, b, v, 100 + ui.DRAG_SCROLL_S)
     testing.expect_value(t, b.cursors[0].head.line, 13)
+
+    // The next interval walks on from where the drag got to, not from the edge. The buffer runs
+    // out on the way, so it stops on the last line.
+    app.editor_drag(&a, b, v, 100 + ui.DRAG_SCROLL_S)
+    testing.expect_value(t, b.cursors[0].head.line, 14)
 
     // An absolute line, so the view catching up underneath changes nothing — which is what
     // stops the walk double-counting its own scrolling.
@@ -760,28 +760,28 @@ test_editor_pos_at_through_hscroll :: proc(t: ^testing.T) {
 
     // At home, x = TEXT_X is column 0 and each cell is 10px further right.
     v := mkview(0, 0)
-    p, ok := app.editor_pos_at(b, v, TEXT_X + 35, 55)
+    p, ok := app.editor_pos_at(b, v, TEXT_X + 35, AREA.y + 2)
     testing.expect(t, ok)
     testing.expect_value(t, p.col, 4) // the right half of cell 3 is boundary 4
 
     // Scrolled 12 columns right, the SAME pixel names a column 12 further on.
     v = mkview(0, 0, 2, 120)
-    p, ok = app.editor_pos_at(b, v, TEXT_X + 35, 55)
+    p, ok = app.editor_pos_at(b, v, TEXT_X + 35, AREA.y + 2)
     testing.expect(t, ok)
     testing.expect_value(t, p.col, 16)
 
     // The text region's left edge is the scrolled-to column itself.
-    p, _ = app.editor_pos_at(b, v, TEXT_X, 55)
+    p, _ = app.editor_pos_at(b, v, TEXT_X, AREA.y + 2)
     testing.expect_value(t, p.col, 12)
 
     // A part-scrolled view is exact rather than snapped.
     v = mkview(0, 0, 2, 124)
-    p, _ = app.editor_pos_at(b, v, TEXT_X + 36, 55)
+    p, _ = app.editor_pos_at(b, v, TEXT_X + 36, AREA.y + 2)
     testing.expect_value(t, p.col, 16)
 
     // Still clamped to the line, so scrolling past its end cannot invent a column.
     v = mkview(0, 0, 2, 300)
-    p, ok = app.editor_pos_at(b, v, TEXT_X + 200, 55)
+    p, ok = app.editor_pos_at(b, v, TEXT_X + 200, AREA.y + 2)
     testing.expect(t, ok)
     testing.expect_value(t, p.col, 36) // the line's length, not column 55
 }

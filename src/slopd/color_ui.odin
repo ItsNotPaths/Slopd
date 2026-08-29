@@ -13,17 +13,17 @@ import "../ui"
 // The rows are font-sized rather than a fixed 28px: a row is a label line with its rail under
 // it, so its height has to follow the line height or the labels grow into the rails.
 
-COLOR_PAD :: 8 // pane margin, in layout units (gfx.pad)
-COLOR_GAP :: 10 // preview -> format line -> rails
-COLOR_PREVIEW_H :: 36
+// Everything the eye reads as text is counted in rows and cells; the rail, the thumb and the
+// checker are marks rather than glyphs, and stay in layout units.
+COLOR_MARGIN_CELLS :: 1 // pane margin: a cell in, a row down
+COLOR_PREVIEW_ROWS :: 3 // the swatch, with its hex on the middle row
+COLOR_ROW_ROWS :: 2 // a channel: its label row, then its rail's row
 COLOR_TRACK_H :: 6
 COLOR_THUMB_W :: 6
-COLOR_LABEL_GAP :: 4 // label line -> its rail
-COLOR_ROW_GAP :: 8 // rail -> the next label line
 COLOR_CHECKER :: 6 // alpha checkerboard square
 
-color_geom :: proc(pane: gfx.Rect, line_h: f32) -> gfx.Rect {
-    return ui.inset(pane, gfx.edge(line_h))
+color_geom :: proc(pane: gfx.Rect, line_h, cell_w: f32) -> gfx.Rect {
+    return gfx.grid_snap(ui.inset(pane, gfx.edge(line_h)), cell_w, line_h)
 }
 
 color_slider_count :: proc(cp: ^ColorPane) -> int {
@@ -62,27 +62,31 @@ color_set_slider :: proc(a: ^App, i: int, v: f32) {
 // --- geometry ---
 
 color_preview_rect :: proc(u: ui.UI_Ctx, pane: gfx.Rect) -> gfx.Rect {
-    area := color_geom(pane, u.face.line_height)
-    p := gfx.pad(u.face.line_height, COLOR_PAD)
-    return gfx.Rect{area.x + p, area.y + p, max(0, area.w - 2 * p), gfx.pad(u.face.line_height, COLOR_PREVIEW_H)}
+    lh, cw := u.face.line_height, u.face.cell_w
+    area := color_geom(pane, lh, cw)
+    px, py := gfx.cells(cw, COLOR_MARGIN_CELLS), gfx.row(lh)
+    return gfx.Rect{area.x + px, area.y + py, max(0, area.w - 2 * px), gfx.row(lh) * COLOR_PREVIEW_ROWS}
 }
 
-// The strip one channel owns: a label line plus the gap under its rail.
+// The strip one channel owns: its label row, then the row its rail sits in.
 color_row_h :: proc(lh: f32) -> i32 {
-    // a label line, its rail, and the gap under it
-    return i32(lh) + gfx.pad(lh, COLOR_LABEL_GAP + COLOR_ROW_GAP) + max(1, gfx.pad(lh, COLOR_TRACK_H))
+    return gfx.row(lh) * COLOR_ROW_ROWS
 }
 
 // `row` is the hit target: a press anywhere on it grabs the rail, which is 6px tall and would
 // otherwise be a pixel hunt.
 color_row :: proc(u: ui.UI_Ctx, cp: ^ColorPane, pane: gfx.Rect, idx: int, lh: f32) -> (row, track: gfx.Rect) {
     pr := color_preview_rect(u, pane)
-    y := pr.y + pr.h + gfx.pad(u.face.line_height, COLOR_GAP)
-    if cp.live { // the format line sits between the swatch and the rails
-        y += i32(lh) + gfx.pad(u.face.line_height, COLOR_GAP)
+    r := gfx.row(lh)
+    y := pr.y + pr.h + r // a blank row under the swatch
+    if cp.live { // the format line takes the row between the swatch and the rails
+        y += r
     }
     row = gfx.Rect{pr.x, y + i32(idx) * color_row_h(lh), pr.w, color_row_h(lh)}
-    track = gfx.Rect{row.x, row.y + i32(lh) + gfx.pad(lh, COLOR_LABEL_GAP), row.w, max(1, gfx.pad(lh, COLOR_TRACK_H))}
+    // Centred in the row under the label: a rail is a mark, so it is the only thing here that
+    // does not start on a row line.
+    rail := max(1, gfx.pad(lh, COLOR_TRACK_H))
+    track = gfx.Rect{row.x, row.y + r + (r - rail) / 2, row.w, rail}
     return
 }
 
@@ -145,7 +149,7 @@ Color_Body :: struct {
 //   co_pane  the content area inside the focus ring, clipping its own content
 //     co_body  the picker surface, as a Custom — rails are gradients, not Clay rectangles
 color_declare :: proc(u: ui.UI_Ctx, cp: ^ColorPane, face: gfx.Face, pane: gfx.Rect) {
-    area := color_geom(pane, u.face.line_height)
+    area := color_geom(pane, u.face.line_height, u.face.cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }
@@ -197,16 +201,17 @@ color_paint_preview :: proc(t: ^gfx.Draw, u: ui.UI_Ctx, cp: ^ColorPane, pane: gf
 
     hex := color_format(cp.rgba, {kind = .Hex, has_alpha = cp.style.has_alpha}, context.temp_allocator)
     lum := col.r * 0.299 + col.g * 0.587 + col.b * 0.114
+    hx := f32(pr.x) + (f32(pr.w) - gfx.text_w(hex, cw)) / 2
     gfx.text_draw(
         t,
         hex,
-        f32(pr.x) + (f32(pr.w) - gfx.text_w(hex, cw)) / 2,
-        f32(pr.y) + (f32(pr.h) - lh) / 2,
+        hx - gfx.grid_off(hx, f32(pr.x), cw), // centred, then back to the column below it
+        f32(pr.y + gfx.row(lh) * (COLOR_PREVIEW_ROWS / 2)),
         lum > 0.5 ? {0, 0, 0} : {1, 1, 1},
     )
     if cp.live {
         label := color_format(cp.rgba, cp.style, context.temp_allocator)
-        gfx.text_draw(t, label, f32(pr.x), f32(pr.y + pr.h + gfx.pad(u.face.line_height, COLOR_GAP)), th.muted)
+        gfx.text_draw(t, label, f32(pr.x), f32(pr.y + pr.h), th.muted)
     }
 }
 

@@ -871,9 +871,12 @@ test_cl_parse_bare_sigil_is_nothing :: proc(t: ^testing.T) {
 // the tail `:ls` reaching the filetree is proof the name was recognised. `nm` is the one worth
 // naming — it is a real binary on every Linux box (the GNU symbol lister), and before the sigil
 // a missing case here would have quietly run THAT instead of rearranging the panes.
+//
+// The names are written out rather than taken from the table: the short form of `:full` shipped
+// as `face`, and a list built from the same source as the code cannot see that.
 @(test)
 test_cl_view_commands_are_builtins :: proc(t: ^testing.T) {
-    for name in ([]string{"zen", "zm", "full", "face", "normal", "nm"}) {
+    for name in ([]string{"zen", "zm", "full", "fm", "normal", "nm"}) {
         a: app.App
         fake_sessions(&a, 1) // an unrecognised name would echo into t1; never spawn one
         defer {app.cl_chain_clear(&a);free_sessions(&a)}

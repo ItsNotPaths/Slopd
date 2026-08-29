@@ -20,16 +20,18 @@ PANE :: gfx.Rect{0, 0, 600, 300}
 @(private = "file")
 AREA :: gfx.Rect{2, 2, 596, 296}
 @(private = "file")
-BAR_H :: 26
+BAR_H :: 16 // one text row, like every other row in the pane
+@(private = "file")
+BTN_W :: 30 // three cells
 @(private = "file")
 SIDE_W :: 160
 @(private = "file")
-ROW_H :: 18
+ROW_H :: 16
 @(private = "file")
 CONTENT :: gfx.Rect{AREA.x + SIDE_W, AREA.y + BAR_H, AREA.w - SIDE_W, AREA.h - BAR_H}
-// The bar less its four square buttons: where the segments sit, and where the line scrolls.
+// The bar less its four buttons: where the segments sit, and where the line scrolls.
 @(private = "file")
-PATH :: gfx.Rect{AREA.x + 3 * BAR_H, AREA.y, AREA.w - 4 * BAR_H, BAR_H}
+PATH :: gfx.Rect{AREA.x + 3 * BTN_W, AREA.y, AREA.w - 4 * BTN_W, BAR_H}
 
 // By hand: the layout assertions want known counts and stable names. Every string is a literal,
 // so this is torn down with plain deletes, not filetree_destroy, which would free static
@@ -68,8 +70,8 @@ test_filebrowser_geom :: proc(t: ^testing.T) {
     // Capped at half the pane: a fixed 16 cells in a narrow split would leave the contents
     // narrower than a single tile.
     _, _, narrow, ncontent, _, _ := app.filebrowser_geom(gfx.Rect{0, 0, 200, 300}, 16, 10)
-    testing.expect_value(t, narrow.w, 98) // (200 - 4) / 2
-    testing.expect_value(t, ncontent.w, 98)
+    testing.expect_value(t, narrow.w, 90) // half of the 196-wide content area, in whole cells
+    testing.expect_value(t, ncontent.w, 106)
 
     // A hidden pane is a zero rect (compute_layout leaves them so) and must report no rows
     // rather than a negative count that would index the listing backwards.
@@ -79,7 +81,7 @@ test_filebrowser_geom :: proc(t: ^testing.T) {
     // List rows count entries, grid rows count TILES, and the column count comes from the same
     // call, so the keyboard's step and the declaration's row width cannot disagree.
     rows, cols := app.filebrowser_rows(CONTENT, .List, ROW_H, 1, 16, 10)
-    testing.expect_value(t, rows, 15) // 270 / 18
+    testing.expect_value(t, rows, 17) // 280 / 16, floored
     testing.expect_value(t, cols, 1)
 
     // A tile is 140x59: 14 cells wide, an icon band of round(16 * 2.4) = 38 over a caption row
@@ -92,8 +94,8 @@ test_filebrowser_geom :: proc(t: ^testing.T) {
     testing.expect_value(t, name_h, f32(13))
 
     grows, gcols := app.filebrowser_rows(CONTENT, .Grid, ROW_H, 1, 16, 10)
-    testing.expect_value(t, gcols, 3) // 436 / (14 cells * 10)
-    testing.expect_value(t, grows, 4) // 270 / 59, which is 4.57 rows
+    testing.expect_value(t, gcols, 3) // 436 / (14 cells * 10 + the 6px gap)
+    testing.expect_value(t, grows, 4) // 280 / 65, the tile plus the gap under it
 
     // The smaller caption buys back characters: 14 cells at 0.8 each is 17, less one for the
     // truncation mark.
@@ -254,7 +256,7 @@ test_filebrowser_hit_kinds :: proc(t: ^testing.T) {
     testing.expect_value(t, view.btn, app.Browse_Btn.View)
 
     // A path segment: past the three buttons, on the "/" root button.
-    seg := probe(&a, f, segs, AREA.x + 3 * BAR_H + 5, AREA.y + 5)
+    seg := probe(&a, f, segs, AREA.x + 3 * BTN_W + 5, AREA.y + 5)
     testing.expect_value(t, seg.kind, app.FB_Hit_Kind.Segment)
     testing.expect_value(t, seg.index, 0)
 
@@ -519,9 +521,10 @@ test_filebrowser_tile_icon_or_swatch :: proc(t: ^testing.T) {
     testing.expect_value(t, custom, swatch) // same box: no reflow
 }
 
-// The bottom edge. A tile row is 56px and the content region 270, so four rows fit WHOLE and
-// 46px of a fifth is on screen. Declaring only the rows that fit leaves that band empty, which
-// reads as the bottom row vanishing early rather than being clipped.
+// The bottom edge. A tile row is 65px of pitch and the content region 280, so four rows fit
+// WHOLE and a fifth is on screen without room for the gap under it. Declaring only the rows that
+// fit leaves that band empty, which reads as the bottom row vanishing early rather than being
+// clipped.
 @(test)
 test_filebrowser_declares_the_partial_bottom_row :: proc(t: ^testing.T) {
     raw := clay_test_context(600, 300)
@@ -535,8 +538,8 @@ test_filebrowser_declares_the_partial_bottom_row :: proc(t: ^testing.T) {
     a.filebrowser.view = .Grid
 
     rows, cols := app.filebrowser_rows(CONTENT, .Grid, ROW_H, 1, 16, 10)
-    testing.expect_value(t, rows, 4) // whole rows: what the policy counts
-    testing.expect_value(t, ui.list_visible_rows(CONTENT.h, 0, 59), 5) // …and what is on screen
+    testing.expect_value(t, rows, 4) // whole rows of pitch: what the policy counts
+    testing.expect_value(t, ui.list_visible_rows(CONTENT.h, 0, 65), 5) // …and what is on screen
 
     cmds := app.filebrowser_layout(&a, f, PANE, 600, 300)
 
@@ -546,10 +549,11 @@ test_filebrowser_declares_the_partial_bottom_row :: proc(t: ^testing.T) {
     testing.expect(t, ok, "the partially-visible bottom row of tiles was not declared")
     testing.expect(t, tile.y < CONTENT.y + CONTENT.h, "the bottom row starts below the region")
 
-    // The tile it sits in runs past the bottom of the region, and the clip cuts it.
-    row_top := CONTENT.y + i32(rows) * 59
-    testing.expect(t, row_top < CONTENT.y + CONTENT.h, "the fifth row starts below the region")
-    testing.expect(t, row_top + 59 > CONTENT.y + CONTENT.h, "the fifth row was not the partial one")
+    // The row it sits in has no room for its full pitch, which is why the policy leaves it out
+    // and the declaration puts it back.
+    row_top := CONTENT.y + i32(rows) * 65
+    testing.expect(t, row_top < CONTENT.y + CONTENT.h, "the last row starts below the region")
+    testing.expect(t, row_top + 65 > CONTENT.y + CONTENT.h, "the last row was not the partial one")
 
     // The row past that is still not declared: the fix is one more row, not no clipping.
     _, past := box_of(&cmds, clay.ID("fb_swatch", u32((rows + 1) * cols)), .Rectangle)

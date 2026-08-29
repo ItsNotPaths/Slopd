@@ -11,9 +11,6 @@ import "../ui"
 
 // Named here because there are two writers — Alt+[ / Alt+] and the divider drag — and a
 // pointer must not reach a width the keyboard cannot.
-// The strip is a text row plus this, in layout units. 9 reproduces the 24px it has always
-// been at the default font, and it tracks a zoom because the command line lives in it.
-STRIP_H_PAD :: 9
 SPLIT_MIN :: 0.15
 SPLIT_MAX :: 0.85
 
@@ -29,9 +26,9 @@ compute_layout :: proc(win_w, win_h: i32, a: ^App, line_h: f32, now: f64) -> Lay
     out: Layout
     out.gutter = gfx.edge(line_h) // panes that touch are two panes you cannot tell apart
 
-    // One text row plus the padding above and below it. Derived from the line box rather than
-    // from the DPI scale and the font zoom separately, since the line box already tracks both.
-    strip_h := i32(line_h) + gfx.pad(line_h, STRIP_H_PAD)
+    // ONE text row, the same row the panes above are ruled in: a strip a fraction of a row
+    // taller would push every pane's grid off the window's.
+    strip_h := gfx.row(line_h)
     if strip_h > win_h {
         strip_h = win_h
     }

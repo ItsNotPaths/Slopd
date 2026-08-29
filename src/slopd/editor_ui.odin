@@ -14,9 +14,6 @@ import "../edit"
 // and where a pixel reads back as a Pos cannot drift. The view is built twice, either side of
 // the click, because a click that moves the caret re-aims the scroll animation.
 
-// Logical pixels; the twin of FT_ROW_PAD / GREP_ROW_PAD.
-EDITOR_ROW_PAD :: 2
-
 // Digits. A file under ten lines still gets two, so the text column does not jitter.
 EDITOR_GUTTER_MIN :: 2
 
@@ -24,11 +21,11 @@ EDITOR_GUTTER_MIN :: 2
 // miss only puts the caret at end-of-line.
 EDITOR_FOLD_HIT_CELLS :: 2
 
-// The buffer-dependent half (gutter, animated top) is editor_view. `rows` is at least 1 even
-// in a pane too short — the clip keeps an overflowing row inside, not the count.
-editor_geom :: proc(pane: gfx.Rect, line_h: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
-    area = ui.inset(pane, gfx.edge(line_h))
-    row_h = i32(line_h) + gfx.pad(line_h, EDITOR_ROW_PAD)
+// The buffer-dependent half (gutter, animated top) is editor_view. A pane with no room for a
+// whole row reports none: the content area is the grid, and half a row is not part of it.
+editor_geom :: proc(pane: gfx.Rect, line_h, cell_w: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
+    area = gfx.grid_snap(ui.inset(pane, gfx.edge(line_h)), cell_w, line_h)
+    row_h = gfx.row(line_h)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {
         return area, row_h, 0
     }
@@ -518,7 +515,7 @@ editor_paint_body :: proc(t: ^gfx.Draw, r, clip: gfx.Rect, win_w, win_h: i32, ho
 // would stop a column being a rune index. See editor_view for why the view is built twice.
 editor_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect, now: f64) {
     b := edit.editor_current(&a.editor)
-    area, row_h, rows := editor_geom(pane, gfx.face(t).line_height)
+    area, row_h, rows := editor_geom(pane, gfx.face(t).line_height, gfx.face(t).cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }
@@ -642,8 +639,7 @@ draw_runes_colored :: proc(t: ^gfx.Draw, runes: []rune, colors: Row_Colors, x, y
     }
 }
 
-// The gutter's width, and nothing else uses it.
-@(private = "file")
+// Digits in a number: the gutter's width here, the switcher column's in overlay_ui.
 num_digits :: proc(n: int) -> int {
     d := 1
     for m := n; m >= 10; m /= 10 {

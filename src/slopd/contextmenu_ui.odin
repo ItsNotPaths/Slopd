@@ -19,11 +19,9 @@ import "../ui"
 // Above OVERLAY_Z, so a right-press with the chord bar up puts the menu on top of it.
 CM_Z :: 2
 
-// Logical pixels, DPI scaled at use. The label-to-hint gap is in CELLS, being a column position
-// rather than a margin.
-CM_ROW_PAD :: 4
-CM_PAD :: 8
-CM_SEP_H :: 5
+// The margin either side of a label, in cells. A separator is a whole row carrying a rule, as it
+// is in a grid, so the items under one stay on the same rows as the items over it.
+CM_PAD_CELLS :: 1
 
 // Content size, then ctxmenu_place's flip. The one geometry source: the frame stores the result
 // for the dismissal test and the declaration re-derives it, so the box painted, the box that
@@ -37,17 +35,18 @@ ctxmenu_geom :: proc(
     row_h, sep_h: i32,
     pad: u16,
 ) {
-    row_h = i32(line_h) + gfx.pad(line_h, CM_ROW_PAD)
-    sep_h = max(1, gfx.pad(line_h, CM_SEP_H))
-    p := gfx.pad(line_h, CM_PAD)
+    row_h = gfx.row(line_h)
+    sep_h = row_h
+    p := gfx.cells(cell_w, CM_PAD_CELLS)
     pad = u16(p)
 
     h: i32 = 0
     for it in m.items {
         h += it.action == .None ? sep_h : row_h
     }
-    w := i32(f32(ui.ctxmenu_width_cells(m)) * cell_w) + 2 * p
-    return ui.ctxmenu_place(m.x, m.y, w, h, win_w, win_h), row_h, sep_h, pad
+    w := gfx.cells(cell_w, i32(ui.ctxmenu_width_cells(m))) + 2 * p
+    placed := ui.ctxmenu_place(m.x, m.y, w, h, win_w, win_h)
+    return gfx.grid_place(placed, cell_w, line_h), row_h, sep_h, pad
 }
 
 // -1 when over none. Separators are not declared as items, so they cannot be hit.

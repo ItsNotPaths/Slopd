@@ -16,9 +16,6 @@ import "../ui"
 // The dropdown is not an overlay: its options are spliced INTO the row list as indented rows, so
 // nothing needs `floating`, a second clip group, or an overlay-first hit test.
 
-// Tighter than FT_ROW_PAD: this pane is a dense form rather than a list you scan.
-CONFIG_ROW_PAD :: 2
-
 // Content area, row height, display rows, and the content width in whole cells. No row is
 // reserved for a header: the first row is already a section rule.
 config_geom :: proc(

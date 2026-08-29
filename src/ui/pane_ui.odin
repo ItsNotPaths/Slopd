@@ -11,9 +11,6 @@ import "../gfx"
 // only it knows and must carry no selection, which a click changes mid-frame. Once the selection
 // has settled they convert to Pane_Row, the drawable view.
 
-// Every list pane agrees on this, so a row is the same height whichever one is up.
-LIST_ROW_PAD :: 2
-
 // What every phase of a pane's frame sizes itself from.
 list_geom :: proc(
     pane: gfx.Rect,
@@ -23,8 +20,8 @@ list_geom :: proc(
     row_h: i32,
     rows, cols: int,
 ) {
-    area = inset(pane, gfx.edge(line_h))
-    row_h = i32(line_h) + gfx.hairline(line_h)
+    area = gfx.grid_snap(inset(pane, gfx.edge(line_h)), cell_w, line_h)
+    row_h = gfx.row(line_h)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 || cell_w <= 0 {
         return area, row_h, 0, 0
     }
@@ -114,7 +111,9 @@ pane_declare :: proc(u: UI_Ctx, face: gfx.Face, d: Pane_Draw, rows: []Pane_Row) 
         if clay.UI(clay.ID(d.ids.body))(
             {
                 layout = {
-                    sizing          = {clay.SizingGrow(), clay.SizingGrow()},
+                    // Capped at the pane (rule 8): a row wider than the pane is a row the clip
+                    // has to cut, and a growing clip group would widen to fit it instead.
+                    sizing          = {clay.SizingGrow({max = f32(d.area.w)}), clay.SizingGrow()},
                     layoutDirection = .TopToBottom,
                 },
                 clip = {horizontal = true, vertical = true},

@@ -111,8 +111,11 @@ font_load :: proc(f: ^Font, ttf: []u8, px: f32) -> bool {
     scale := stbtt.ScaleForPixelHeight(&f.info, px)
     ascent, descent, line_gap: c.int
     stbtt.GetFontVMetrics(&f.info, &ascent, &descent, &line_gap)
-    f.ascent = f32(ascent) * scale
-    f.line_height = f32(ascent - descent + line_gap) * scale
+    // Whole pixels, for the same reason cell_w is: the layout above stacks rows by this, and a
+    // fractional line box lands every row after the first on a fractional boundary — the grid
+    // the graphical mode is built on has to be integral in both axes.
+    f.ascent = math.round(f32(ascent) * scale)
+    f.line_height = math.round(f32(ascent - descent + line_gap) * scale)
     advance, lsb: c.int
     stbtt.GetCodepointHMetrics(&f.info, 'M', &advance, &lsb) // monospace: any glyph
     // Snapped to a whole physical pixel. Glyphs step the pen by this fixed width, not their own

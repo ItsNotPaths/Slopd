@@ -66,3 +66,68 @@ edge :: proc(line_height: f32) -> i32 {
 gap :: proc(size: f32) -> i32 {
     return max(1, i32(size))
 }
+
+// One text row: the line box, whole. Every stacked row in the graphical mode is this tall, so a
+// row here is a row in the terminal pane and a row in the strip.
+row :: proc(line_height: f32) -> i32 {
+    return max(1, i32(line_height))
+}
+
+// `n` whole cells. The horizontal twin of `row`, for a margin or a fixed column that has to land
+// on the grid rather than near it.
+cells :: proc(cell_w: f32, n: i32) -> i32 {
+    return max(0, i32(cell_w) * n)
+}
+
+// The column the grid is in phase with. Every pane's content starts inside its ring, so that is
+// where the columns start: at phase 0 the ring would push every pane's first column a whole cell
+// in, and the band it left behind would show under anything pinned to that edge.
+grid_phase :: proc(line_height: f32) -> i32 {
+    return edge(line_height)
+}
+
+// How far past the last grid column `x` sits, counting from `from` — a point already on the grid,
+// usually the content area's own left edge. Subtract it to walk a box the solver centred (or
+// pinned to a right edge) back onto a column.
+grid_off :: proc(x, from, cell_w: f32) -> f32 {
+    if cell_w <= 0 {
+        return 0
+    }
+    d := x - from
+    return d - math.floor(d / cell_w) * cell_w
+}
+
+// A box that keeps its size but starts on a column — a popup placed at the pointer, which lands
+// wherever the pointer was. Back to the column below it, so a box the caller already fitted on
+// screen stays on it.
+grid_place :: proc(r: Rect, cell_w, line_h: f32) -> Rect {
+    ph := grid_phase(line_h)
+    if cw := i32(cell_w); cw > 0 && r.x > ph {
+        return Rect{ph + (r.x - ph) / cw * cw, r.y, r.w, r.h}
+    }
+    return r
+}
+
+// Whole cells that fit in a pixel width — the count, where `cells` gives the width.
+cells_fit :: proc(w: i32, cell_w: f32) -> i32 {
+    cw := i32(cell_w)
+    return cw > 0 ? max(0, w / cw) : 0
+}
+
+// A pane's content, put in phase with the window's COLUMNS: the origin moves IN to the next cell
+// boundary. So column 40 of the editor is column 40 of the command line, whatever the split
+// between them lands on.
+//
+// Rows want no such thing. Every pane's content starts at the top of the same content area and
+// every row is one line box, so a row in one pane is already level with a row in the next.
+//
+// The far edges stay where they are: trimmed back to a whole cell, a pane would keep a band of
+// background under whatever is pinned to that edge — which is a gap, not alignment.
+grid_snap :: proc(r: Rect, cell_w, line_h: f32) -> Rect {
+    cw, ph := i32(cell_w), grid_phase(line_h)
+    if cw <= 0 || r.w <= 0 || r.h <= 0 {
+        return r
+    }
+    x := ph + ((max(0, r.x - ph) + cw - 1) / cw) * cw
+    return Rect{x, r.y, max(0, r.x + r.w - x), r.h}
+}

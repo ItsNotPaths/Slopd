@@ -25,8 +25,9 @@ import "../edit"
 // `clipTo = .AttachedParent` keeps them in the strip's scissor, which a floating child does not
 // get by default — it is hoisted to the root's floating list and would paint over the panes.
 
-// Logical pixels, shared by both modes.
-STRIP_PAD :: 8
+// The margin either end, in cells, past the ring the strip does not draw — a pane's text starts
+// one cell inside its ring, and the strip's has to start on the same column.
+STRIP_PAD_CELLS :: 1
 
 // Named because two phases ask it: the ring and the declaration.
 Strip_Mode :: enum {
@@ -38,10 +39,11 @@ strip_mode :: proc(a: ^App) -> Strip_Mode {
     return a.cl_active ? .Command : .Status
 }
 
-// The region and the margin, in Clay's units. No inset: the strip has no focus ring, being
-// nothing you can focus.
-strip_geom :: proc(strip: gfx.Rect, line_h: f32) -> (area: gfx.Rect, pad: u16) {
-    return strip, u16(gfx.pad(line_h, STRIP_PAD))
+// The region and the margin, in Clay's units. The region is the whole strip — it has no focus
+// ring, being nothing you can focus — but the margin is ruled as if it had one, or the typed
+// line would sit a ring's width off the editor's columns.
+strip_geom :: proc(strip: gfx.Rect, line_h, cell_w: f32) -> (area: gfx.Rect, pad: u16) {
+    return strip, u16(gfx.grid_phase(line_h) + gfx.cells(cell_w, STRIP_PAD_CELLS))
 }
 
 // Pinned to one corner, out of the flow — see the header. The offset is the margin: a floating
@@ -114,7 +116,7 @@ strip_paint_cl :: proc(t: ^gfx.Draw, r, clip: gfx.Rect, win_w, win_h: i32, host:
 //                st_right   language / caret / line count / cursors / scroll, pinned right
 strip_declare :: proc(a: ^App, face: gfx.Face, strip: gfx.Rect, now: f64 = 0) {
     th := &a.theme
-    area, pad := strip_geom(strip, a.face.line_height)
+    area, pad := strip_geom(strip, face.line_height, face.cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }
@@ -141,7 +143,7 @@ strip_declare :: proc(a: ^App, face: gfx.Face, strip: gfx.Rect, now: f64 = 0) {
         case .Command:
             strip_declare_command(a, cw, lh, now)
         case .Status:
-            strip_declare_status(a, lh, pad)
+            strip_declare_status(a, face, area, pad)
         }
     }
 }
@@ -184,8 +186,10 @@ strip_declare_command :: proc(a: ^App, cw: f32, lh: i32, now: f64) {
 // An emacs-style readout of the document pane, as three anchored labels. The right-hand one is
 // a single string: it is one thing in one colour, and "   " says what three gaps would.
 @(private = "file")
-strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
+strip_declare_status :: proc(a: ^App, face: gfx.Face, area: gfx.Rect, pad: u16) {
     th := &a.theme
+    lh := i32(face.line_height)
+    cw := face.cell_w
     dx := f32(pad)
 
     // No editor on screen: name the aux pane. The rest is about a document, and there is none.
@@ -232,14 +236,19 @@ strip_declare_status :: proc(a: ^App, lh: i32, pad: u16) {
     if clay.UI(clay.ID("st_left"))(strip_slot(.LeftCenter, dx)) {
         clay.Text(left, ui.clay_text_config(left_col, lh))
     }
-    if clay.UI(clay.ID("st_right"))(strip_slot(.RightCenter, -dx)) {
+    // Clay pins and centres in pixels, so either label lands mid-cell as often as not; the extra
+    // offset walks it back to the column below it, where the left one already starts.
+    col0 := f32(area.x + gfx.grid_phase(face.line_height)) // the strip's first column
+    right_dx := dx + gfx.grid_off(f32(area.x + area.w) - dx - gfx.text_w(right, cw), col0, cw)
+    if clay.UI(clay.ID("st_right"))(strip_slot(.RightCenter, -right_dx)) {
         clay.Text(right, ui.clay_text_config(th.muted, lh))
     }
 
     // The project root, so the root the tools and `:tu` use is visible whenever the command
     // line is not.
     if root := home_abbrev(a.project_root, context.temp_allocator); root != "" {
-        if clay.UI(clay.ID("st_root"))(strip_slot(.CenterCenter, 0)) {
+        root_dx := -gfx.grid_off(f32(area.x) + (f32(area.w) - gfx.text_w(root, cw)) / 2, col0, cw)
+        if clay.UI(clay.ID("st_root"))(strip_slot(.CenterCenter, root_dx)) {
             clay.Text(root, ui.clay_text_config(th.muted, lh))
         }
     }

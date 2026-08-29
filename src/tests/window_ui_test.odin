@@ -29,9 +29,9 @@ ED_AREA :: gfx.Rect{2, 2, 245, 276} // inset by the 2px focus ring
 @(private = "file")
 AUX_PANE :: gfx.Rect{251, 0, 249, 280}
 @(private = "file")
-AUX_AREA :: gfx.Rect{253, 2, 245, 276}
+AUX_AREA :: gfx.Rect{262, 2, 236, 276} // …and shifted to the next column, which is the grid
 @(private = "file")
-FT_ROW_H :: 18
+FT_ROW_H :: 16
 
 // Into ONE tree, in window_frame's order. The declarations are the app's own procs; only the
 // pair of calls is written out, which is what window_frame's aux_mode switch does.
@@ -58,7 +58,7 @@ fixture :: proc(a: ^app.App, face: gfx.Face) -> app.Editor_View {
         append(&a.tree.entries, app.FileEntry{name = "e", path = "/tmp/ft/e", display = "e"})
     }
 
-    area, row_h, rows := app.editor_geom(ED_PANE, face.line_height)
+    area, row_h, rows := app.editor_geom(ED_PANE, face.line_height, face.cell_w)
     return app.editor_view(edit.editor_current(&a.editor), face, area, row_h, rows, 0)
 }
 

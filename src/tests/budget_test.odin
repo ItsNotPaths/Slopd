@@ -41,7 +41,7 @@ test_element_budget_at_minimum_font :: proc(t: ^testing.T) {
     a.scale = 1
     a.face = f
     a.tree.dir = "/tmp/budget"
-    _, row_h, rows := app.filetree_geom(gfx.Rect{0, 0, BUDGET_W, BUDGET_H}, f.line_height)
+    _, row_h, rows := app.filetree_geom(gfx.Rect{0, 0, BUDGET_W, BUDGET_H}, f.line_height, f.cell_w)
 
     // Twice as many entries as fit, so the viewport is genuinely full.
     for i in 0 ..< rows * 2 {

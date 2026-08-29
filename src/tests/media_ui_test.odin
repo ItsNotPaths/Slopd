@@ -55,13 +55,13 @@ press :: proc(a: ^app.App, count: int) {
     a.mouse.click_count = count
 }
 
-// The content area inside the focus ring: the same inset the pane backdrop leaves.
+// The content area inside the focus ring, snapped to the glyph grid like every other pane's.
 @(test)
 test_media_geom_is_the_ring_inset :: proc(t: ^testing.T) {
-    testing.expect_value(t, app.media_geom(PANE, 16), AREA) // a 16px line box: a 2-unit ring
-    testing.expect_value(t, app.media_geom(PANE, 32), gfx.Rect{4, 4, 192, 272}) // 2x DPI doubles it
+    testing.expect_value(t, app.media_geom(PANE, 16, 10), AREA) // a 16px line box: a 2-unit ring
+    testing.expect_value(t, app.media_geom(PANE, 32, 20), gfx.Rect{4, 4, 192, 272}) // 2x DPI
     // Too small to have an inside yields a rect with no area, which every phase refuses.
-    testing.expect(t, app.media_geom(gfx.Rect{}, 16).w <= 0, "a hidden pane has no content area")
+    testing.expect(t, app.media_geom(gfx.Rect{}, 16, 10).w <= 0, "a hidden pane has no content area")
 }
 
 // The image lands at media_fit_rect's answer, inside the pane's clip group: what used to be an
@@ -132,10 +132,10 @@ test_media_declares_a_placeholder_when_empty :: proc(t: ^testing.T) {
 
     testing.expect_value(t, images, 0)
     testing.expect_value(t, texts, 1)
-    // Centred in the content area, one 8px margin in: the hand painter's arithmetic, by the
-    // solver now.
-    testing.expect_value(t, label.x, AREA.x + 8)
-    testing.expect_value(t, label.y, AREA.y + (AREA.h - 16) / 2)
+    // A cell in from the margin, and centred by whole rows: the middle row of the 16 the pane
+    // holds, not the middle pixel.
+    testing.expect_value(t, label.x, AREA.x + 10)
+    testing.expect_value(t, label.y, AREA.y + 16 * ((AREA.h / 16 - 1) / 2))
 }
 
 // The pan is a RE-DERIVATION from the press-time view rather than an accumulation of per-frame

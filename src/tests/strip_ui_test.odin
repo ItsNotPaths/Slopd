@@ -13,8 +13,9 @@ import "../edit"
 // is the whole of it: which of the things it shows, and where each piece lands.
 //
 // Every expected box is derived from the arithmetic the hand-drawn painters used, not from what
-// Clay printed. The strip is {0, 280, 500, 20} at scale 1 with the synthetic 10x16 font: pad 8,
-// text top 282, a 10-wide cell.
+// Clay printed. The strip is the window's last text row — {0, 284, 500, 16} at scale 1 with the
+// synthetic 10x16 font — and its margin is a pane's ring plus one 10px cell, so its columns are
+// the panes' columns.
 //
 //   command line:  prompt at strip.x + pad, text origin two cells further, hint at
 //                  origin + cw * (len + 1)
@@ -23,15 +24,17 @@ import "../edit"
 //                  is a floating slot and not a row cell
 
 @(private = "file")
-STRIP :: gfx.Rect{0, 280, 500, 20}
+STRIP :: gfx.Rect{0, 284, 500, 16}
 @(private = "file")
 WIN_W :: 500
 @(private = "file")
 WIN_H :: 300
 @(private = "file")
-TEXT_Y :: 282
+TEXT_Y :: 284
 @(private = "file")
-PAD :: 8
+PAD :: 12
+@(private = "file")
+COL0 :: 2 // the first column: a pane's ring, which the strip is ruled by without drawing one
 
 @(private = "file")
 fixture :: proc(a: ^app.App, text: string) {
@@ -114,15 +117,20 @@ test_strip_status_command_list :: proc(t: ^testing.T) {
     left := text_box(&cmds, "  untitled")
     testing.expect_value(t, left, gfx.Rect{PAD, TEXT_Y, 100, 16})
 
-    // Right: language, caret, line count, scroll — one string, ending at the far pad.
+    // Right: language, caret, line count, scroll — one string, on the last column that keeps it
+    // inside the far pad. Pinned to the pixel it would end on, a readout starts mid-cell.
     right := text_box(&cmds, "text   L1:1   2 lines   Top")
     testing.expect_value(t, right.w, i32(270))
-    testing.expect_value(t, right.x + right.w, i32(STRIP.w - PAD))
+    testing.expect_value(t, right.x, i32(212))
+    testing.expect_value(t, (right.x - COL0) % 10, i32(0))
+    testing.expect(t, right.x + right.w <= STRIP.w - PAD, "the readout ran past the far pad")
     testing.expect_value(t, right.y, i32(TEXT_Y))
 
-    // Centre: the project root, centred in the STRIP, not between its neighbours.
+    // Centre: the project root, on the column nearest the STRIP's centre, not between its
+    // neighbours.
     root := text_box(&cmds, "/zz/proj")
-    testing.expect_value(t, root, gfx.Rect{(STRIP.w - 80) / 2, TEXT_Y, 80, 16})
+    testing.expect_value(t, root, gfx.Rect{202, TEXT_Y, 80, 16})
+    testing.expect(t, root.x <= (STRIP.w - 80) / 2, "the root did not centre on a column")
 
     // The strip paints its own background, and rings itself only when holding something that
     // wants an answer.
@@ -177,8 +185,8 @@ test_strip_labels_are_anchored_not_a_row :: proc(t: ^testing.T) {
     root := text_box(&cmds, "/zz/proj")
 
     testing.expect_value(t, left.x, i32(PAD))
-    testing.expect_value(t, right.x + right.w, i32(STRIP.w - PAD)) // still on the far pad
-    testing.expect_value(t, root.x, i32((STRIP.w - 80) / 2)) // still on the strip's centre
+    testing.expect_value(t, right.x, i32(212)) // still on the last column inside the far pad
+    testing.expect_value(t, root.x, i32(202)) // still on the strip's centre column
 
     // They now OVERLAP, which is pre-existing behaviour being preserved rather than a property
     // claimed: three independent draws have always been free to run into each other. Stated so

@@ -13,13 +13,10 @@ import "../search"
 //   - the flattening happens once per frame and survives the click, since GrepRow carries no
 //     selection state.
 
-// Logical pixels, airier than FT_ROW_PAD so the stacked context blocks do not read as a wall.
-GREP_ROW_PAD :: 5
-
 // filetree_geom's twin: content area, row height, and display rows under the header.
-grep_geom :: proc(pane: gfx.Rect, line_h: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
-    area = ui.inset(pane, gfx.edge(line_h))
-    row_h = i32(line_h) + gfx.pad(line_h, GREP_ROW_PAD)
+grep_geom :: proc(pane: gfx.Rect, line_h, cell_w: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
+    area = gfx.grid_snap(ui.inset(pane, gfx.edge(line_h)), cell_w, line_h)
+    row_h = gfx.row(line_h)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {
         return area, row_h, 0
     }
@@ -78,7 +75,7 @@ grep_click :: proc(a: ^App, hit: int) {
 //         gp_gut/i            the right-aligned line-number gutter (context rows only)
 grep_declare :: proc(u: ui.UI_Ctx, g: ^search.GrepPane, face: gfx.Face, pane: gfx.Rect, rows: []search.GrepRow) {
     th := u.theme
-    area, row_h, max_rows := grep_geom(pane, face.line_height)
+    area, row_h, max_rows := grep_geom(pane, face.line_height, face.cell_w)
     cw := face.cell_w
     lh := i32(face.line_height)
     rail := u16(gfx.hairline(u.face.line_height))
@@ -195,7 +192,7 @@ grep_declare :: proc(u: ui.UI_Ctx, g: ^search.GrepPane, face: gfx.Face, pane: gf
 // blank row.
 grep_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect) {
     u := ctx_of(a)
-    area, _, max_rows := grep_geom(pane, gfx.face(t).line_height)
+    area, _, max_rows := grep_geom(pane, gfx.face(t).line_height, gfx.face(t).cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }

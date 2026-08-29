@@ -53,7 +53,8 @@ press :: proc(a: ^app.App) {
 test_color_rows_carry_their_rails :: proc(t: ^testing.T) {
     a := color_app(0, 0, true)
     prev := app.color_preview_rect(app.ctx_of(&a), PANE)
-    testing.expect_value(t, prev, gfx.Rect{10, 10, 180, 36}) // 2px ring + an 8px margin
+    // The ring, then a cell in and a row down: a 3-row swatch.
+    testing.expect_value(t, prev, gfx.Rect{12, 18, 176, 48})
 
     last_bottom := prev.y + prev.h
     for i in 0 ..< 4 {
@@ -66,13 +67,13 @@ test_color_rows_carry_their_rails :: proc(t: ^testing.T) {
         last_bottom = row.y + row.h
     }
 
-    // The live format line is one text line plus its gap, and it moves the rails, not just
-    // the paint: a row that stayed put would sit under the text the picker draws over it.
+    // The live format line takes a whole row, and it moves the rails, not just the paint: a
+    // row that stayed put would sit under the text the picker draws over it.
     dead := color_app(0, 0, true)
     still, _ := app.color_row(app.ctx_of(&dead), &dead.color, PANE, 0, LH)
     a.color.live = true
     row, _ := app.color_row(app.ctx_of(&a), &a.color, PANE, 0, LH)
-    testing.expect_value(t, row.y - still.y, i32(LH) + 10)
+    testing.expect_value(t, row.y - still.y, i32(LH))
 }
 
 // A press anywhere on a row grabs that row's channel and drops it where the pointer is —

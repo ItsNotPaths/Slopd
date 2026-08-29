@@ -27,30 +27,30 @@ PANE :: gfx.Rect{100, 50, 300, 300}
 @(private = "file")
 AREA :: gfx.Rect{102, 52, 296, 296}
 @(private = "file")
-FT_ROW_H :: 18 // the filetree's rows, under the bar
+FT_ROW_H :: 16 // the filetree's rows, under the bar
 @(private = "file")
-ROW_H :: 22 // the bar's own: a 16px line plus CHORD_ROW_PAD
+ROW_H :: 16 // the bar's own: one line box, like every other row
 @(private = "file")
-PAD :: 8
+PAD :: 10 // one cell either end
 @(private = "file")
-// Fourteen chords plus a clipboard-empty "[0 marked]" readout, packed into 28 cells — the
-// readout still fits beside the last chord, so the rows are the same six. The packing test
-// below feeds a longer readout, which does not.
+// Fourteen chords plus a clipboard-empty "[0 marked]" readout, packed into 27 cells — the
+// readout still fits beside the last chord, so the rows are six. The packing test below feeds a
+// longer readout, which does not.
 NROWS :: 6
 @(private = "file")
-BAR_H :: NROWS * ROW_H // 132
+BAR_H :: NROWS * ROW_H // 96
 @(private = "file")
-BAR_Y :: 216 // 52 + 296 - 132: the bottom of the content area
+BAR_Y :: 252 // 52 + 296 - 96: the bottom of the content area
 
-// {0, 0, 240, 200} insets to {2, 2, 236, 196}, holding 8 switcher rows of 22px.
+// {0, 0, 240, 200} insets to {2, 2, 236, 196}, holding 12 switcher rows of 16px.
 @(private = "file")
 TERM_PANE :: gfx.Rect{0, 0, 240, 200}
 @(private = "file")
 TERM_AREA :: gfx.Rect{2, 2, 236, 196}
 @(private = "file")
-COLW :: 32 // two 10px cells plus SWITCHER_COL_PAD
+COLW :: 40 // four cells: two digits with one either side
 @(private = "file")
-SW_ROWS :: 8
+SW_ROWS :: 12
 
 // Four distinguishable slots: every overlay colour is a lerp out of `bg`, and a zero Theme
 // would make all four equal, letting a painter that used the wrong one pass.
@@ -178,6 +178,9 @@ test_chord_bar_in_both_faces :: proc(t: ^testing.T) {
     br_bar, bok := box_of(&br, clay.ID("ch_bar"), .Rectangle)
     testing.expect(t, bok, "the browser face declared no chord bar")
 
+    // The bottom edge is the assertion that matters, and the pane is 296px of 16px rows on
+    // purpose: a content area trimmed back to whole rows would leave the last 8px of the pane
+    // showing under the bar, which reads as a gap rather than as alignment.
     for r in ([?]gfx.Rect{ls_bar, br_bar}) {
         testing.expect_value(t, r.x, AREA.x)
         testing.expect_value(t, r.w, AREA.w)
@@ -272,29 +275,32 @@ test_chord_bar_command_list :: proc(t: ^testing.T) {
     }
     testing.expect_value(t, len(runs), 2 * 14 + 1) // fourteen chords of two runs, plus one
 
-    // "^y" on the margin, "mark" one cell past it, "^u" nine cells in (seven plus the gap),
-    // "^c" at 20.
+    // "^y" on the margin, "mark" one cell past it, "^u" nine cells in (seven plus the gap).
     testing.expect_value(t, runs[0].x, AREA.x + PAD)
     testing.expect_value(t, runs[1].x, AREA.x + PAD + 30)
     testing.expect_value(t, runs[2].x, AREA.x + PAD + 90)
+    // A row IS the line box now, so there is nothing to centre in it.
+    testing.expect_value(t, runs[0].y, BAR_Y)
+
+    // "^c" is third on the same row, at cell 20.
     testing.expect_value(t, runs[4].x, AREA.x + PAD + 200)
-    // Centred in a 22px row by the solver, not by (row_h - lh) / 2.
-    testing.expect_value(t, runs[0].y, BAR_Y + (ROW_H - 16) / 2)
+    testing.expect_value(t, runs[4].y, BAR_Y)
 
     // The second packed row starts back on the margin.
     testing.expect_value(t, runs[6].x, AREA.x + PAD)
-    testing.expect_value(t, runs[6].y, BAR_Y + ROW_H + (ROW_H - 16) / 2)
+    testing.expect_value(t, runs[6].y, BAR_Y + ROW_H)
 
+    // "^o" opens the fourth row.
     testing.expect_value(t, runs[18].x, AREA.x + PAD)
-    testing.expect_value(t, runs[18].y, BAR_Y + 3 * ROW_H + (ROW_H - 16) / 2)
+    testing.expect_value(t, runs[18].y, BAR_Y + 3 * ROW_H)
     // The fifth row carries the two widest chords, so ^k drops to the sixth — and a
     // clipboard-empty "[0 marked]" is short enough to sit beside it.
     testing.expect_value(t, runs[24].x, AREA.x + PAD + 140)
-    testing.expect_value(t, runs[24].y, BAR_Y + 4 * ROW_H + (ROW_H - 16) / 2)
+    testing.expect_value(t, runs[24].y, BAR_Y + 4 * ROW_H)
     testing.expect_value(t, runs[26].x, AREA.x + PAD)
-    testing.expect_value(t, runs[26].y, BAR_Y + 5 * ROW_H + (ROW_H - 16) / 2)
+    testing.expect_value(t, runs[26].y, BAR_Y + 5 * ROW_H)
     testing.expect_value(t, runs[28].x, AREA.x + PAD + 120)
-    testing.expect_value(t, runs[28].y, BAR_Y + 5 * ROW_H + (ROW_H - 16) / 2)
+    testing.expect_value(t, runs[28].y, BAR_Y + 5 * ROW_H)
 }
 
 // The occlusion probe. clay_paint composites under-quads, images, then glyphs within one
@@ -380,7 +386,7 @@ test_chord_bar_captures_the_pointer :: proc(t: ^testing.T) {
     chord_app(&a, 20)
     defer delete(a.tree.entries)
 
-    _, _, rows := app.filetree_geom(PANE, f.line_height)
+    _, _, rows := app.filetree_geom(PANE, f.line_height, f.cell_w)
     _ = app.filetree_layout(&a, f, PANE, 500, 400) // frame 1: boxes to hit against
 
     // The first entry row, well clear of the bar.
@@ -389,7 +395,7 @@ test_chord_bar_captures_the_pointer :: proc(t: ^testing.T) {
     testing.expect_value(t, app.filetree_hit(&a.tree, a.tree.scroll, rows), 0)
     testing.expect(t, !clay.PointerOver(clay.ID("ch_bar")), "the bar claimed a pointer above it")
 
-    // A row the bar sits on top of: row 11 starts at 268, the bar at 260.
+    // A row the bar sits on top of.
     clay.SetPointerState({f32(AREA.x + 50), f32(BAR_Y + 12)}, false)
     _ = app.filetree_layout(&a, f, PANE, 500, 400)
     testing.expect(t, clay.PointerOver(clay.ID("ch_bar")), "the bar did not answer for its own box")
@@ -407,22 +413,27 @@ test_chord_bar_captures_the_pointer :: proc(t: ^testing.T) {
 // session centred" is a derivation, and pinning it pins the whole of the pane's scrolling.
 @(test)
 test_switcher_geom_and_window :: proc(t: ^testing.T) {
-    colw, row_h, rows := app.switcher_geom(TERM_AREA, 16, 10)
-    testing.expect_value(t, colw, i32(COLW)) // two cells plus the padding
+    colw, row_h, rows := app.switcher_geom(TERM_AREA, 16, 10, 12)
+    testing.expect_value(t, colw, i32(COLW)) // four whole cells
     testing.expect_value(t, row_h, i32(ROW_H))
-    testing.expect_value(t, rows, SW_ROWS) // 196 / 22
+    testing.expect_value(t, rows, SW_ROWS) // 196 / 16
 
-    // Never wider than the pane it is inside.
-    narrow, _, _ := app.switcher_geom(gfx.Rect{0, 0, 12, 196}, 16, 10)
-    testing.expect_value(t, narrow, i32(12))
+    // Never wider than the pane it is inside, and still a whole number of cells.
+    narrow, _, _ := app.switcher_geom(gfx.Rect{0, 0, 12, 196}, 16, 10, 12)
+    testing.expect_value(t, narrow, i32(10))
+
+    // Nine sessions or fewer is the ordinary case, and it gets a three-cell column: reserving
+    // the second digit always would leave every number sitting in a gap.
+    nine, _, _ := app.switcher_geom(TERM_AREA, 16, 10, 9)
+    testing.expect_value(t, nine, i32(30))
 
     // A hidden pane is a zero rect and reports no rows.
-    _, _, none := app.switcher_geom(gfx.Rect{}, 16, 10)
+    _, _, none := app.switcher_geom(gfx.Rect{}, 16, 10, 12)
     testing.expect_value(t, none, 0)
 
     // Centred on the active session, then clamped at both ends.
     first, visible := app.switcher_window(12, 7, SW_ROWS)
-    testing.expect_value(t, first, 3)
+    testing.expect_value(t, first, 0)
     testing.expect_value(t, visible, SW_ROWS)
 
     first, visible = app.switcher_window(12, 0, SW_ROWS) // clamped at the top
@@ -430,7 +441,7 @@ test_switcher_geom_and_window :: proc(t: ^testing.T) {
     testing.expect_value(t, visible, SW_ROWS)
 
     first, visible = app.switcher_window(12, 11, SW_ROWS) // and at the bottom
-    testing.expect_value(t, first, 4)
+    testing.expect_value(t, first, 0)
     testing.expect_value(t, visible, SW_ROWS)
 
     first, visible = app.switcher_window(3, 1, SW_ROWS) // fewer sessions than rows
@@ -443,8 +454,8 @@ test_switcher_geom_and_window :: proc(t: ^testing.T) {
 }
 
 // The pane's top-left corner, one row per visible session keyed by SESSION index, the active
-// one filled, and the numbers centred by the solver — a one-digit and a two-digit label centre
-// at different offsets, which the hand-drawn code spelled out.
+// one filled, and the numbers RIGHT-ALIGNED in whole cells — twelve sessions here, so the column
+// is two digits wide and a one-digit number leads by two cells rather than sitting mid-cell.
 @(test)
 test_switcher_command_list :: proc(t: ^testing.T) {
     raw := clay_test_context(500, 300)
@@ -463,17 +474,17 @@ test_switcher_command_list :: proc(t: ^testing.T) {
     testing.expect(t, ok, "the switcher drew no column")
     testing.expect_value(t, col, gfx.Rect{TERM_AREA.x, TERM_AREA.y, COLW, SW_ROWS * ROW_H})
 
-    // Sessions 3..10 are on screen, so the active row is the fifth down — keyed 7, not 4, which
-    // is what makes the id name a session.
+    // All twelve fit, so the active row is the eighth down — keyed 7, which is what makes the
+    // id name a session rather than a row.
     active, act_ok := box_of(&cmds, clay.ID("sw_row", 7), .Rectangle)
     testing.expect(t, act_ok, "the active session drew no fill")
-    testing.expect_value(t, active, gfx.Rect{TERM_AREA.x, TERM_AREA.y + 4 * ROW_H, COLW, ROW_H})
+    testing.expect_value(t, active, gfx.Rect{TERM_AREA.x, TERM_AREA.y + 7 * ROW_H, COLW, ROW_H})
 
     // Only the active one: the rest are transparent and emit no command.
     _, idle_ok := box_of(&cmds, clay.ID("sw_row", 6), .Rectangle)
     testing.expect(t, !idle_ok, "an inactive session painted a background")
 
-    // "8" is one cell in a 32px column and "10" is two, centring at 11 and 6.
+    // "8" is one cell of the two the column reserves here, so it leads by one more than "10"..
     texts, one_digit, two_digit, locked_col := 0, i32(-1), i32(-1), [3]f32{}
     for i in 0 ..< cmds.length {
         c := clay.RenderCommandArray_Get(&cmds, i)
@@ -491,12 +502,46 @@ test_switcher_command_list :: proc(t: ^testing.T) {
         }
         texts += 1
     }
-    testing.expect_value(t, texts, SW_ROWS) // virtualised: eight rows, not twelve
-    testing.expect_value(t, one_digit, TERM_AREA.x + (COLW - 10) / 2)
-    testing.expect_value(t, two_digit, TERM_AREA.x + (COLW - 20) / 2)
+    testing.expect_value(t, texts, SW_ROWS)
+    testing.expect_value(t, one_digit, TERM_AREA.x + 20)
+    testing.expect_value(t, two_digit, TERM_AREA.x + 10)
 
     // Session 10 is locked, so its number greys rather than taking the foreground.
     testing.expect_value(t, locked_col, a.theme.muted)
+}
+
+// The ordinary case, and what the two-digit column above costs it: with three sessions open the
+// column is three cells, and the number sits in the middle one with a cell either side. Sized
+// for a digit nobody has, every number would carry a trailing gap.
+@(test)
+test_switcher_column_fits_the_digits_in_use :: proc(t: ^testing.T) {
+    raw := clay_test_context(500, 300)
+    defer clay_test_context_free(raw)
+    f := clay_test_face()
+    ui.clay_use_face(&f)
+
+    a: app.App
+    switcher_app(&a, 3, 1)
+    defer switcher_app_free(&a)
+
+    cmds := app.switcher_layout(&a, f, TERM_AREA, 500, 300)
+
+    col, ok := box_of(&cmds, clay.ID("sw_col"), .Rectangle)
+    testing.expect(t, ok, "the switcher drew no column")
+    testing.expect_value(t, col.w, i32(30))
+
+    nums := 0
+    for i in 0 ..< cmds.length {
+        c := clay.RenderCommandArray_Get(&cmds, i)
+        if c.commandType != .Text {
+            continue
+        }
+        r := ui.clay_rect(c.boundingBox)
+        testing.expect_value(t, r.x, TERM_AREA.x + 10) // one cell in, one cell spare
+        testing.expect_value(t, r.w, i32(10))
+        nums += 1
+    }
+    testing.expect_value(t, nums, 3)
 }
 
 // A floating root inside the terminal pane, exactly as the chord bar is: its own scissor group,
@@ -577,7 +622,7 @@ test_overlay_outranks_everything_declared_after_it :: proc(t: ^testing.T) {
 
     ed_pane := gfx.Rect{0, 0, 90, 380}
     strip := gfx.Rect{0, 380, 500, 20}
-    ed_area, ed_row_h, ed_rows := app.editor_geom(ed_pane, f.line_height)
+    ed_area, ed_row_h, ed_rows := app.editor_geom(ed_pane, f.line_height, f.cell_w)
     v := app.editor_view(edit.editor_current(&a.editor), f, ed_area, ed_row_h, ed_rows, 0)
 
     app.clay_window_begin(500, 400)

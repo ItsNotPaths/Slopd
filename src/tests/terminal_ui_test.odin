@@ -233,7 +233,7 @@ test_terminal_hit_scrollback_is_not_live :: proc(t: ^testing.T) {
     tall := mkview(pty.terminal_view_top(term))
     tall.rows = ROWS + 6
     tall.area.h = i32(tall.rows) * ROW_H
-    a.mouse.y = AREA.y + i32(ROWS + 4) * ROW_H + 3
+    a.mouse.y = AREA.y + i32(ROWS + 5) * ROW_H + 3
     hit = app.terminal_hit(app.ctx_of(&a), term, tall)
     testing.expect(t, hit.ok)
     testing.expect(t, !hit.live, "a screen row past the session's grid is not a cell yet")
@@ -357,10 +357,10 @@ test_terminal_click_selects_by_character :: proc(t: ^testing.T) {
     // pointer's row names a line past the end. The clamp makes that cost a selection on the
     // wrong line rather than an index off the end of the history.
     stale := mkview(8)
-    point_at(&a, 10, 0) // absolute line 18, where the bottom is 11
+    point_at(&a, 10, 0) // a row past the end of the stale view
     press(&a)
     app.terminal_click(app.ctx_of(&a), term, a.term_active, app.terminal_hit(app.ctx_of(&a), term, stale))
-    testing.expect_value(t, term.msel.head.line, 11)
+    testing.expect_value(t, term.msel.head.line, ROWS - 1)
 }
 
 // By character, with the grade fixed at the press applying for the whole gesture.

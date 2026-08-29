@@ -13,16 +13,16 @@ import "../search"
 // and the anchor the scroll policy frames a block by.
 //
 // The pane is {100, 50, 300, 200} at scale 1 with the synthetic 10x16 font: a content area of
-// {102, 52, 296, 196}, a 21px row, and 8 display rows under the query header.
+// {102, 52, 296, 196}, a 16px row, and 11 display rows under the query header.
 
 @(private = "file")
 PANE :: gfx.Rect{100, 50, 300, 200}
 @(private = "file")
 AREA :: gfx.Rect{102, 52, 296, 196}
 @(private = "file")
-ROW_H :: 21
+ROW_H :: 16
 @(private = "file")
-MAX_ROWS :: 8
+MAX_ROWS :: 11
 
 // Hit 0 is a three-line block around line 10, hit 1 a two-line block around line 100, so the
 // gutter widens to three cells. The strings are literals and the ctx slices point at
@@ -112,15 +112,15 @@ test_grep_anchor :: proc(t: ^testing.T) {
     testing.expect_value(t, a.grep.scroll, 5 - 4 + 1)
 }
 
-// GREP_ROW_PAD, not the filetree's: the panes are deliberately not the same density.
+// Every pane's rows are one line box tall, and its content area starts on the window's grid.
 @(test)
 test_grep_geom :: proc(t: ^testing.T) {
-    area, row_h, rows := app.grep_geom(PANE, 16)
+    area, row_h, rows := app.grep_geom(PANE, 16, 10)
     testing.expect_value(t, area, AREA)
     testing.expect_value(t, row_h, i32(ROW_H))
-    testing.expect_value(t, rows, MAX_ROWS) // (196 - 21) / 21
+    testing.expect_value(t, rows, MAX_ROWS) // (196 - 16) / 16
 
-    _, _, none := app.grep_geom(gfx.Rect{}, 16)
+    _, _, none := app.grep_geom(gfx.Rect{}, 16, 10)
     testing.expect_value(t, none, 0)
 }
 

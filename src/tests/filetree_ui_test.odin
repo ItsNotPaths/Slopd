@@ -15,17 +15,17 @@ import "../edit"
 // gets selected cannot disagree. Headless: a Clay context over test memory, a synthetic 10x16
 // font, no GL.
 //
-// The pane is {100, 50, 300, 100} at scale 1, insetting to {102, 52, 296, 96}: an 18px row
-// height, an 18px header, and a 78px body holding 4 rows.
+// The pane is {100, 50, 300, 100} at scale 1, insetting to {102, 52, 296, 96}: a 16px row
+// height, a 16px header, and an 80px body holding 5 rows.
 
 @(private = "file")
 PANE :: gfx.Rect{100, 50, 300, 100}
 @(private = "file")
 AREA :: gfx.Rect{102, 52, 296, 96}
 @(private = "file")
-ROW_H :: 18
+ROW_H :: 16
 @(private = "file")
-ROWS :: 4 // entry rows that fit under the header
+ROWS :: 5 // entry rows that fit under the header
 
 // By hand rather than off a disk: the assertions want a known count and stable names. The
 // strings are literals, so this is torn down with plain `delete`, not filetree_destroy, which
@@ -49,24 +49,24 @@ fake_tree_free :: proc(a: ^app.App) {
 // Every phase sizes itself from this one proc, so its numbers are worth pinning outright.
 @(test)
 test_filetree_geom :: proc(t: ^testing.T) {
-    area, row_h, rows := app.filetree_geom(PANE, 16)
-    testing.expect_value(t, area, AREA) // inside the 2px focus ring
+    area, row_h, rows := app.filetree_geom(PANE, 16, 10)
+    testing.expect_value(t, area, AREA) // inside the 2px focus ring, then on the grid
     testing.expect_value(t, row_h, i32(ROW_H))
-    testing.expect_value(t, rows, ROWS) // (96 - 18) / 18, the header taking the first row
+    testing.expect_value(t, rows, ROWS) // (96 - 16) / 16, the header taking the first row
 
     // A hidden pane is a zero rect and must report no rows, not a negative count.
-    _, _, none := app.filetree_geom(gfx.Rect{}, 16)
+    _, _, none := app.filetree_geom(gfx.Rect{}, 16, 10)
     testing.expect_value(t, none, 0)
 
     // Too short for even one row still reports one: the clip keeps it inside the pane.
-    _, _, tiny := app.filetree_geom(gfx.Rect{0, 0, 300, 24}, 16)
+    _, _, tiny := app.filetree_geom(gfx.Rect{0, 0, 300, 24}, 16, 10)
     testing.expect_value(t, tiny, 1)
 
-    // DPI scale reaches the inset and the row padding both, so the whole pane stays on the
-    // cell grid at 2x.
-    area2, row_h2, _ := app.filetree_geom(PANE, 32)
+    // DPI scale reaches the inset and the grid both, so the whole pane stays on the cell grid
+    // at 2x.
+    area2, row_h2, _ := app.filetree_geom(PANE, 32, 20)
     testing.expect_value(t, area2, gfx.Rect{104, 54, 292, 92})
-    testing.expect_value(t, row_h2, i32(36))
+    testing.expect_value(t, row_h2, i32(32))
 }
 
 // A normal state update rather than a side effect of painting, so it can be exercised without a
@@ -171,25 +171,21 @@ test_filetree_command_list :: proc(t: ^testing.T) {
     testing.expect_value(t, row_boxes[6], gfx.Rect{AREA.x, AREA.y + ROW_H + ROW_H, AREA.w, ROW_H})
     testing.expect(t, !row_seen[5], "an unselected, unmarked row must not paint a background")
 
-    // The partial row at the bottom edge IS declared and runs past the body: the clip cuts it,
-    // which is the point of declaring it.
-    a.tree.selected = 5 + ROWS // the fifth row of the window
-    partial := app.filetree_layout(&a, f, PANE, 500, 300, 0)
-    pbox, pok := box_of(&partial, clay.ID("ft_row", u32(5 + ROWS)), .Rectangle)
-    testing.expect(t, pok, "the partially-visible bottom row was not declared")
-    testing.expect(t, pbox.y + pbox.h > AREA.y + AREA.h, "the bottom row was not the partial one")
+    // This pane's body is 80px of 16px rows, so at rest there is no partial row to declare.
+    // Mid-tween there is one wherever the rows have lifted — see the ease test.
+    a.tree.selected = 5 + ROWS
+    settled := app.filetree_layout(&a, f, PANE, 500, 300, 0)
+    _, pok := box_of(&settled, clay.ID("ft_row", u32(5 + ROWS)), .Rectangle)
+    testing.expect(t, !pok, "a row past the last whole one was declared at rest")
     a.tree.selected = 6
 
     // Prefix on cell 1, name on cell 3: the two-cell prefix column.
     testing.expect_value(t, prefix_x, AREA.x + 10)
     testing.expect_value(t, name_x, AREA.x + 30)
 
-    // Virtualisation: header plus (prefix, name) per visible row, not one per entry.
-    //
-    // Five rows, not four: the body is 78px and a row 18, so four fit WHOLE and 6px of a fifth
-    // is on screen. The policy counts whole rows, but the declaration has to cover what the
-    // region touches, or that 6px band renders as a gap.
-    testing.expect_value(t, texts, 1 + 2 * (ROWS + 1))
+    // Virtualisation: header plus (prefix, name) per visible row, not one per entry. Four rows
+    // and no fifth: at rest the body holds whole rows only.
+    testing.expect_value(t, texts, 1 + 2 * ROWS)
 }
 
 // To the ENTRY index, not the visible row index: the two agree only at the top. Clay answers
@@ -329,11 +325,11 @@ test_filetree_scroll_eases :: proc(t: ^testing.T) {
     testing.expect(t, !shown, "the view teleported to the target on the first frame")
 
     // Halfway through SCROLL_DUR the ease-out cubic is 0.875 of the way, so the view sits at
-    // row 8.75: the window starts at 8 and every row lifts by 0.75 of a row (13px of 18).
+    // row 8.75: the window starts at 8 and every row lifts by 0.75 of a row (12px of 16).
     mid := app.filetree_layout(&a, f, PANE, 500, 300, 1 + ui.SCROLL_DUR / 2)
     box, ok := box_of(&mid, clay.ID("ft_row", 10), .Rectangle)
     testing.expect(t, ok, "the target row was not declared mid-scroll")
-    testing.expect_value(t, box.y, AREA.y + ROW_H + 2 * ROW_H - 13)
+    testing.expect_value(t, box.y, AREA.y + ROW_H + 2 * ROW_H - 12)
     testing.expect(t, box.y % ROW_H != AREA.y % ROW_H, "mid-scroll the rows sat back on the row grid")
 
     // The extra row easing in must not stretch the clip group: the body's scissor is the body's

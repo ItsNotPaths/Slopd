@@ -10,8 +10,9 @@ import "../ui"
 // POINTER rather than the layout, and it paints OVER a pane rather than inside one — so its clip
 // group opens after that pane's has closed, which is invisible in the boxes.
 //
-// With the 10x16 test font at scale 1: rows are 20px, a separator band 5px, the margin 8px
-// either side. The menu below is 12 cells at its widest item, so 136px by 65px.
+// With the 10x16 test font at scale 1: every row is one 16px line box, a separator is a row of
+// its own, and the margin is one cell either side. The menu below is 12 cells at its widest
+// item, so 140px by 64px, opened at (10, 10) and walked back onto a column.
 
 @(private = "file")
 ITEMS := [?]ui.Menu_Item {
@@ -22,7 +23,7 @@ ITEMS := [?]ui.Menu_Item {
 }
 
 @(private = "file")
-MENU :: gfx.Rect{10, 10, 136, 65}
+MENU :: gfx.Rect{2, 10, 140, 64}
 
 @(private = "file")
 menu_app :: proc(a: ^app.App, x: i32 = 10, y: i32 = 10) {
@@ -47,9 +48,9 @@ test_ctxmenu_command_list :: proc(t: ^testing.T) {
 
     rect, row_h, sep_h, pad := app.ctxmenu_geom(&a.ctxmenu, 16, 10, 600, 300)
     testing.expect_value(t, rect, MENU)
-    testing.expect_value(t, row_h, i32(20))
-    testing.expect_value(t, sep_h, i32(5))
-    testing.expect_value(t, pad, u16(8))
+    testing.expect_value(t, row_h, i32(16))
+    testing.expect_value(t, sep_h, i32(16))
+    testing.expect_value(t, pad, u16(10))
     testing.expect_value(t, ui.ctxmenu_width_cells(&a.ctxmenu), 12) // "Open" + 3 + "Enter"
 
     cmds := app.ctxmenu_layout(&a, f, 600, 300)
@@ -61,12 +62,12 @@ test_ctxmenu_command_list :: proc(t: ^testing.T) {
     // The highlighted row takes the selection bar; a disabled one takes nothing.
     first, fok := box_of(&cmds, clay.ID("cm_item", 0), .Rectangle)
     testing.expect(t, fok, "the selected item drew no bar")
-    testing.expect_value(t, first, gfx.Rect{MENU.x, MENU.y, MENU.w, 20})
+    testing.expect_value(t, first, gfx.Rect{MENU.x, MENU.y, MENU.w, 16})
     _, dok := box_of(&cmds, clay.ID("cm_item", 3), .Rectangle)
     testing.expect(t, !dok, "a disabled item painted a background")
 
-    // A band with a single top border, not a filled bar, so the rows either side are 20px
-    // apart plus the 5px gap.
+    // A band with a single top border, not a filled bar: the separator holds a row without
+    // filling it.
     cut, cok := box_of(&cmds, clay.ID("cm_item", 2), .Rectangle)
     testing.expect(t, !cok, "an unselected item painted a background")
     _ = cut
@@ -86,8 +87,8 @@ test_ctxmenu_command_list :: proc(t: ^testing.T) {
         }
         seen += 1
     }
-    testing.expect_value(t, label.x, MENU.x + 8)
-    testing.expect_value(t, hint.x + hint.w, MENU.x + MENU.w - 8) // ends on the far margin
+    testing.expect_value(t, label.x, MENU.x + 10)
+    testing.expect_value(t, hint.x + hint.w, MENU.x + MENU.w - 10) // ends on the far margin
     testing.expect_value(t, seen, 6) // three items of label + hint; the separator has none
 }
 
@@ -171,26 +172,26 @@ test_ctxmenu_hit_and_click :: proc(t: ^testing.T) {
     a.ctxmenu.rect = MENU
 
     _ = app.ctxmenu_layout(&a, f, 600, 300) // frame 1: boxes for the pointer
-    clay.SetPointerState({50, 45}, false) // the third row
+    clay.SetPointerState({50, 55}, false) // the third row
     _ = app.ctxmenu_layout(&a, f, 600, 300)
     testing.expect_value(t, app.ctxmenu_hit(&a.ctxmenu), 2)
 
     // The separator band is dead space, as chrome rows are everywhere else.
-    clay.SetPointerState({50, 32}, false)
+    clay.SetPointerState({50, 34}, false)
     _ = app.ctxmenu_layout(&a, f, 600, 300)
     testing.expect_value(t, app.ctxmenu_hit(&a.ctxmenu), -1)
 
     // A press on a separator is claimed anyway, swallowed rather than passed down.
     a.mouse.click = true
     a.mouse.click_count = 1
-    a.mouse.x, a.mouse.y = 50, 32
+    a.mouse.x, a.mouse.y = 50, 34
     app.ctxmenu_click(&a, -1)
     testing.expect(t, !a.mouse.click, "a press inside the popup must not fall through to a pane")
     testing.expect(t, app.ctxmenu_shown(&a), "a press on a separator must not close the menu")
 
     // A live item runs on the FIRST press and closes the menu with it.
     a.mouse.click = true
-    a.mouse.x, a.mouse.y = 50, 45
+    a.mouse.x, a.mouse.y = 50, 55
     app.ctxmenu_click(&a, 2)
     testing.expect(t, !app.ctxmenu_shown(&a), "a single press on an item did not activate it")
 

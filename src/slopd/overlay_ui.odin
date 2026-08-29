@@ -41,9 +41,14 @@ clay_overlay_float :: proc(at: clay.FloatingAttachPointType) -> clay.FloatingEle
 // The terminal switcher
 // ---------------------------------------------------------------------------------------
 
-// Logical pixels: the column's width around two digits, and the extra height per row.
-SWITCHER_COL_PAD :: 12
-SWITCHER_ROW_PAD :: 6
+// A cell either side of the number. The width follows the DIGITS in use: ten sessions is rare,
+// and reserving its second column always leaves every one-digit number sitting in a gap.
+SWITCHER_PAD_CELLS :: 1
+
+// Cells across: the widest session number plus the padding either side.
+switcher_cells :: proc(n: int) -> i32 {
+    return i32(num_digits(max(1, n))) + 2 * SWITCHER_PAD_CELLS
+}
 
 // Plain Alt only: Alt+Ctrl and Alt+Shift drive the terminal's copy cursor. One proc, so
 // app_next_wake's fade clause and the declaration cannot disagree.
@@ -51,15 +56,11 @@ switcher_shown :: proc(a: ^App) -> bool {
     return a.aux_mode == .Terminal && a.alt_held && !a.ctrl_held && !a.shift_held
 }
 
-// Two digits wide plus padding, never wider than the pane. The one source every phase sizes
-// itself from.
-switcher_geom :: proc(area: gfx.Rect, line_h, cell_w: f32) -> (colw, row_h: i32, rows: int) {
-    margin := gfx.pad(line_h, SWITCHER_COL_PAD)
-    if margin == 0 {
-        margin = 2 * gfx.gap(cell_w)
-    }
-    colw = min(i32(cell_w * 2) + margin, area.w)
-    row_h = i32(line_h) + gfx.pad(line_h, SWITCHER_ROW_PAD)
+// The number's own width plus padding, never wider than the pane. The one source every phase
+// sizes itself from.
+switcher_geom :: proc(area: gfx.Rect, line_h, cell_w: f32, n: int) -> (colw, row_h: i32, rows: int) {
+    colw = gfx.cells(cell_w, min(switcher_cells(n), gfx.cells_fit(area.w, cell_w)))
+    row_h = gfx.row(line_h)
     if area.h <= 0 || row_h <= 0 {
         return colw, row_h, 0
     }
@@ -85,7 +86,7 @@ switcher_window :: proc(n, active, rows: int) -> (first, visible: int) {
 // visibility bit here, not a blend factor.
 switcher_declare :: proc(u: ui.UI_Ctx, terms: []^pty.Terminal, active: int, fade_anim: ^ui.Anim, face: gfx.Face, area: gfx.Rect, now: f64) {
     th := u.theme
-    colw, row_h, rows := switcher_geom(area, face.line_height, face.cell_w)
+    colw, row_h, rows := switcher_geom(area, face.line_height, face.cell_w, len(terms))
     first, visible := switcher_window(len(terms), active, rows)
     if colw <= 0 || visible <= 0 {
         return
@@ -112,23 +113,21 @@ switcher_declare :: proc(u: ui.UI_Ctx, terms: []^pty.Terminal, active: int, fade
             if i == active {
                 bg = col_active
             }
-            // Capped: a four-digit session number is wider than the column, and SizingGrow
-            // means "at least fit your content".
+            // Right-aligned in whole CELLS, so the numbers line up under each other and the
+            // padding stays a cell. Capped, too — a session number wider than the column would
+            // grow it, SizingGrow meaning "at least fit your content".
+            label := fmt.tprintf("%d", i + 1) // temp: Clay's command list points at it
+            lead := gfx.cells(face.cell_w, max(0, switcher_cells(len(terms)) - SWITCHER_PAD_CELLS - i32(len(label))))
             if clay.UI(clay.ID("sw_row", u32(i)))(
                 {
                     layout = {
-                        sizing         = {clay.SizingGrow({max = f32(colw)}), clay.SizingFixed(f32(row_h))},
-                        childAlignment = {x = .Center, y = .Center},
+                        sizing  = {clay.SizingGrow({max = f32(colw)}), clay.SizingFixed(f32(row_h))},
+                        padding = {left = u16(lead)},
                     },
                     backgroundColor = bg,
                 },
             ) {
-                // Centred by the solver (rule 5). Temp-allocated: Clay's command list points
-                // at it, and the frame's arena outlives EndLayout.
-                clay.Text(
-                    fmt.tprintf("%d", i + 1),
-                    ui.clay_text_config(terms[i].locked ? col_lock : col_fg, lh),
-                )
+                clay.Text(label, ui.clay_text_config(terms[i].locked ? col_lock : col_fg, lh))
             }
         }
     }
@@ -156,10 +155,9 @@ switcher_layout :: proc(
 // The filetree chord bar
 // ---------------------------------------------------------------------------------------
 
-// Margin, extra row height, and the gap between packed items in CELLS — the packing counts
+// The margin either end and the gap between packed items, both in CELLS — the packing counts
 // columns.
-CHORD_PAD :: 8
-CHORD_ROW_PAD :: 6
+CHORD_PAD_CELLS :: 1
 CHORD_GAP :: 2
 
 // Each key carries a "^" so the bar reads as the Ctrl menu. Package-level so the packing and
@@ -216,13 +214,9 @@ Chord_Item :: struct {
 // Row height, margin in Clay's units, and how many CELLS wide the packing may run. The one
 // call the packing and the declaration both size themselves from.
 chord_geom :: proc(area: gfx.Rect, line_h, cell_w: f32) -> (row_h: i32, pad: u16, maxw: int) {
-    row_h = i32(line_h) + gfx.pad(line_h, CHORD_ROW_PAD)
-    p := gfx.pad(line_h, CHORD_PAD)
-    pad = u16(p)
-    maxw = 1
-    if cell_w > 0 {
-        maxw = max(1, int(f32(area.w - 2 * p) / cell_w))
-    }
+    row_h = gfx.row(line_h)
+    pad = u16(gfx.cells(cell_w, CHORD_PAD_CELLS))
+    maxw = max(1, int(gfx.cells_fit(area.w, cell_w)) - 2 * CHORD_PAD_CELLS)
     return
 }
 

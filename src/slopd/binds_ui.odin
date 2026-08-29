@@ -12,8 +12,6 @@ import "../ui"
 // A row carries SEVERAL selectable chords, so the highlight has two coordinates here, as an open
 // dropdown gives the config pane two.
 
-BINDS_ROW_PAD :: 2
-
 // How the pane works, said once at the top. Both edit paths end in the same `:rebind` grammar.
 @(rodata)
 BINDS_BANNER := [?]string {

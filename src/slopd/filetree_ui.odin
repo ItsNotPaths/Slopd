@@ -16,15 +16,12 @@ import "../edit"
 //   2. Then move the viewport, so a click that changed the selection scrolls in the same frame.
 //   3. Then declare, so the frame paints the post-click state.
 
-// Logical pixels; the twin of GREP_ROW_PAD. Rows are whole pixels tall so the list stays on
-// the cell grid — Clay solves in floats.
-FT_ROW_PAD :: 2
-
 // The content area inside the focus ring, the row height, and how many rows fit under the
-// header. Shared by every phase of the frame. `rows` is at least 1 even in a too-short pane.
-filetree_geom :: proc(pane: gfx.Rect, line_h: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
-    area = ui.inset(pane, gfx.edge(line_h))
-    row_h = i32(line_h) + gfx.pad(line_h, FT_ROW_PAD)
+// header. Shared by every phase of the frame. `rows` is at least 1 wherever the pane has a
+// whole row to give the header.
+filetree_geom :: proc(pane: gfx.Rect, line_h, cell_w: f32) -> (area: gfx.Rect, row_h: i32, rows: int) {
+    area = gfx.grid_snap(ui.inset(pane, gfx.edge(line_h)), cell_w, line_h)
+    row_h = gfx.row(line_h)
     if area.w <= 0 || area.h <= 0 || row_h <= 0 {
         return area, row_h, 0
     }
@@ -110,7 +107,7 @@ filetree_rclick :: proc(a: ^App, row: int) {
 filetree_declare :: proc(u: ui.UI_Ctx, a: ^App, face: gfx.Face, pane: gfx.Rect, top: int, off: i32, now: f64 = 0) {
     ft := &a.tree
     th := u.theme
-    area, row_h, _ := filetree_geom(pane, face.line_height)
+    area, row_h, _ := filetree_geom(pane, face.line_height, face.cell_w)
     cw := face.cell_w
     lh := i32(face.line_height)
 
@@ -225,7 +222,7 @@ filetree_layout :: proc(
     win_w, win_h: i32,
     now: f64 = 0,
 ) -> clay.ClayArray(clay.RenderCommand) {
-    _, row_h, _ := filetree_geom(pane, face.line_height)
+    _, row_h, _ := filetree_geom(pane, face.line_height, face.cell_w)
     top, off := ui.smooth_scroll(&a.tree.scroll_anim, a.tree.scroll, now, row_h)
     clay_window_begin(win_w, win_h)
     if clay.UI(clay.ID(WIN_ROOT))(clay_window_root(win_w, win_h)) {
@@ -238,7 +235,7 @@ filetree_layout :: proc(
 // The phases and their order ARE the pane template.
 filetree_frame :: proc(t: ^gfx.Draw, a: ^App, pane: gfx.Rect, now: f64) {
     u := ctx_of(a)
-    area, row_h, rows := filetree_geom(pane, gfx.face(t).line_height)
+    area, row_h, rows := filetree_geom(pane, gfx.face(t).line_height, gfx.face(t).cell_w)
     if area.w <= 0 || area.h <= 0 {
         return
     }
