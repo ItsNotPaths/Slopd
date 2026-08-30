@@ -218,6 +218,36 @@ test_terminal_resize_under_active_pen_stays_default :: proc(t: ^testing.T) {
     }
 }
 
+// Growing the grid pops scrollback back onto it, and libvterm hands the callback a buffer it
+// has NOT blanked, then walks all `cols` of it stepping by each cell's width. A line captured
+// at a narrower width leaves a tail the callback must fill: a stale width of 0 there never
+// terminates the walk, and a negative one writes off the front of the new grid.
+//
+// Two widenings, because it takes the second for the popped line to be narrower than the width
+// libvterm reports — which is what a font-zoom sequence does a step at a time.
+@(test)
+test_terminal_popline_blanks_the_tail :: proc(t: ^testing.T) {
+    term := mkterm(3, 10)
+    defer pty.terminal_vt_destroy(&term)
+    pty.terminal_enable_scrollback(&term)
+
+    feed(&term, "L0\r\nL1\r\nL2\r\nL3\r\nL4") // L0 and L1 scroll off at 10 columns
+    testing.expect_value(t, term.sb_total, 2)
+
+    pty.terminal_resize(&term, 4, 14) // pops L1, captured at the current width
+    pty.terminal_resize(&term, 6, 20) // pops L0, four columns narrower than libvterm reports
+    testing.expect_value(t, term.sb_total, 0)
+
+    testing.expect_value(t, pty.terminal_cell_rune(&term, 0, 0), 'L')
+    testing.expect_value(t, pty.terminal_cell_rune(&term, 0, 1), '0')
+    for col in 2 ..< 20 {
+        cell, _ := pty.terminal_cell(&term, 0, col)
+        testing.expectf(t, cell.chars[0] == 0, "col %d of the popped line must be blank", col)
+        _, def := pty.terminal_color(&term, cell.bg)
+        testing.expectf(t, def, "col %d of the popped line must be default bg", col)
+    }
+}
+
 // The line-selector stays within the live grid: the pre-TUI primary scrollback is behind the
 // TUI, not part of it. The cursor pins at the top live row; driving the TUI's own scroll goes
 // through the PTY, a no-op on this headless core.

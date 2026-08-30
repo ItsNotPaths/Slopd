@@ -796,7 +796,14 @@ term_sb_popline_cb :: proc "c" (cols: c.int, cells: [^]vt.ScreenCell, user: rawp
     }
     line := pop(&t.scrollback)
     n := min(int(cols), len(line.cells))
-    copy(cells[:n], line.cells[:n]) // libvterm pre-blanks the rest
+    copy(cells[:n], line.cells[:n])
+    // The buffer is libvterm's and is NOT pre-blanked: after a widen it is a fresh malloc. It
+    // then walks all `cols` of it stepping by each cell's width, so a stale width of 0 never
+    // terminates and a negative one writes off the front of the new grid. A line narrower than
+    // `cols` is the ordinary case once the pane has been resized twice, so blank the tail.
+    for i in n ..< int(cols) {
+        cells[i] = {width = 1, fg = {type = vt.COLOR_DEFAULT_FG}, bg = {type = vt.COLOR_DEFAULT_BG}}
+    }
     delete(line.cells)
     t.sb_total -= 1
     return 1

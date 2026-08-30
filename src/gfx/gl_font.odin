@@ -178,7 +178,8 @@ font_teardown :: proc(f: ^Font) {
 // Bakes on first use. ok=false means there is nothing to draw — a control char, a codepoint
 // neither face has, or a full atlas — and the caller still steps the pen.
 font_glyph :: proc(f: ^Font, r: rune) -> (pc: stbtt.packedchar, ok: bool) {
-    if r < 32 {
+    // A re-bake that failed left the pack context closed; packing into it would use it freed.
+    if r < 32 || !f.ready {
         return {}, false
     }
     if f.ascii_ok && r < 127 {
